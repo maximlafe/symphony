@@ -22,7 +22,13 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Workspace
 
       import SymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [
+          write_workflow_file!: 1,
+          write_workflow_file!: 2,
+          write_executable!: 2,
+          restore_env: 2,
+          stop_default_http_server: 0
+        ]
 
       setup do
         workflow_root =
@@ -66,6 +72,12 @@ defmodule SymphonyElixir.TestSupport do
     :ok
   end
 
+  def write_executable!(path, contents) when is_binary(contents) do
+    File.write!(path, contents)
+    File.chmod!(path, 0o755)
+    :ok
+  end
+
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
 
@@ -101,6 +113,9 @@ defmodule SymphonyElixir.TestSupport do
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
+          lead_enabled: false,
+          lead_interval_ms: 1_200_000,
+          lead_trigger_on_idle: true,
           max_concurrent_agents: 10,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
@@ -136,6 +151,9 @@ defmodule SymphonyElixir.TestSupport do
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
+    lead_enabled = Keyword.get(config, :lead_enabled)
+    lead_interval_ms = Keyword.get(config, :lead_interval_ms)
+    lead_trigger_on_idle = Keyword.get(config, :lead_trigger_on_idle)
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
@@ -174,6 +192,10 @@ defmodule SymphonyElixir.TestSupport do
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
         "workspace:",
         "  root: #{yaml_value(workspace_root)}",
+        "lead:",
+        "  enabled: #{yaml_value(lead_enabled)}",
+        "  interval_ms: #{yaml_value(lead_interval_ms)}",
+        "  trigger_on_idle: #{yaml_value(lead_trigger_on_idle)}",
         "agent:",
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",

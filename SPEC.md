@@ -559,6 +559,9 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `tracker.terminal_states`: list/string, default `Closed, Cancelled, Canceled, Duplicate, Done`
 - `polling.interval_ms`: integer, default `30000`
 - `workspace.root`: path, default `<system-temp>/symphony_workspaces`
+- `lead.enabled`: boolean, default `false`
+- `lead.interval_ms`: integer, default `1200000`
+- `lead.trigger_on_idle`: boolean, default `true`
 - `hooks.after_create`: shell script or null
 - `hooks.before_run`: shell script or null
 - `hooks.after_run`: shell script or null
@@ -618,6 +621,26 @@ Important nuance:
 - Once the worker exits normally, the orchestrator still schedules a short continuation retry
   (about 1 second) so it can re-check whether the issue remains active and needs another worker
   session.
+
+### 7.2 Lead Agent Role
+
+Implementations may support an optional lead-agent role in addition to issue workers.
+
+Lead-agent responsibilities may include:
+
+- periodically reviewing tracker inbox/board health
+- reacting to worker help requests
+- unblocking stuck work by adjusting dependencies, adding context, or creating follow-up issues
+- creating new issues when the ready queue is empty but more planned work exists
+
+Lead-agent requirements:
+
+- Lead runs must be explicitly enabled by workflow config.
+- Lead runs must not count against worker concurrency (`agent.max_concurrent_agents`).
+- At most one lead run should be active at a time.
+- A lead should run in its own isolated workspace/check-out, not in a worker's live workspace.
+- Lead prompts should be rendered from the same workflow template but with `role = "lead"`.
+- Lead runs are board-scoped, not tied to one issue payload.
 
 ### 7.2 Run Attempt Lifecycle
 
@@ -1020,6 +1043,7 @@ Important emitted events may include:
 - `approval_auto_approved`
 - `unsupported_tool_call`
 - `notification`
+- `lead_requested`
 - `other_message`
 - `malformed`
 
@@ -1056,6 +1080,15 @@ Optional client-side tool extension:
 - If implemented, supported tools should be advertised to the app-server session during startup
   using the protocol mechanism supported by the targeted Codex app-server version.
 - Unsupported tool names should still return a failure result and continue the session.
+
+Optional control request extension:
+
+- A worker may send JSON-RPC request method `symphony/request_lead` during a turn.
+- Params may include optional `reason` string.
+- The runtime should acknowledge the request with `{"acknowledged": true}`, emit a structured
+  upstream event (for example `lead_requested`), and continue the worker turn without blocking.
+- Implementations may log the reason for operator visibility, but they do not need to inject it
+  into the lead prompt.
 
 `linear_graphql` extension contract:
 
@@ -1949,6 +1982,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `codex.command` is preserved as a shell command string
 - Per-state concurrency override map normalizes state names and ignores invalid values
 - Prompt template renders `issue` and `attempt`
+- Prompt template may render `role` with values such as `worker` and `lead`
 - Prompt rendering fails on unknown variables (strict mode)
 
 ### 17.2 Workspace Manager and Safety
@@ -1966,6 +2000,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `before_remove` hook runs on cleanup and failures/timeouts are ignored
 - Workspace path sanitization and root containment invariants are enforced before agent launch
 - Agent launch uses the per-issue workspace path as cwd and rejects out-of-root paths
+- If lead support is implemented, lead workspace path is also isolated under `workspace.root`
 
 ### 17.3 Issue Tracker Client
 
@@ -1983,6 +2018,13 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 - Dispatch sort order is priority then oldest creation time
 - `Todo` issue with non-terminal blockers is not eligible
+- If lead support is implemented, periodic lead timer fires at `lead.interval_ms`
+- If lead support is implemented, worker `symphony/request_lead` requests trigger an immediate
+  lead check-in without blocking the worker
+- If lead support is implemented, idle-board condition (`no workers`, `no ready work`, `open
+  candidate issues`) triggers a lead check-in when `lead.trigger_on_idle=true`
+- If lead support is implemented, lead does not count toward worker concurrency and does not stack
+  multiple concurrent lead runs
 - `Todo` issue with terminal blockers is eligible
 - Active-state issue refresh updates running entry state
 - Non-active state stops running agent without workspace cleanup

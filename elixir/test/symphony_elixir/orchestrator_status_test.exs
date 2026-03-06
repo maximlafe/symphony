@@ -101,6 +101,183 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            }
   end
 
+  test "orchestrator snapshot includes active lead metadata" do
+    orchestrator_name = Module.concat(__MODULE__, :LeadSnapshotOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    lead_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      workspace_identifier: "__lead__",
+      session_id: nil,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      Map.put(initial_state, :lead, lead_entry)
+    end)
+
+    now = DateTime.utc_now()
+
+    send(
+      pid,
+      {:codex_lead_update,
+       %{
+         event: :notification,
+         payload: %{method: "lead-review"},
+         timestamp: now
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{lead: lead_snapshot} = snapshot
+    assert lead_snapshot.active == true
+    assert lead_snapshot.workspace_identifier == "__lead__"
+    assert lead_snapshot.last_codex_timestamp == now
+    assert is_integer(lead_snapshot.runtime_seconds)
+
+    assert lead_snapshot.last_codex_message == %{
+             event: :notification,
+             message: %{method: "lead-review"},
+             timestamp: now
+           }
+  end
+
+  test "manual lead trigger is ignored while a lead agent is already running" do
+    orchestrator_name = Module.concat(__MODULE__, :LeadTriggerOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    lead_ref = make_ref()
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:lead_enabled, true)
+      |> Map.put(:lead, %{
+        pid: self(),
+        ref: lead_ref,
+        workspace_identifier: "__lead__",
+        started_at: DateTime.utc_now()
+      })
+    end)
+
+    assert :ok = Orchestrator.trigger_lead_check_in(orchestrator_name)
+
+    state = :sys.get_state(pid)
+    assert state.lead.ref == lead_ref
+    assert state.lead.workspace_identifier == "__lead__"
+  end
+
+  test "orchestrator triggers a lead check-in when idle work is blocked" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-orchestrator-idle-lead-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      lead_workspace = AgentRunner.lead_workspace_identifier()
+
+      File.mkdir_p!(workspace_root)
+
+      write_executable!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{\"id\":1,\"result\":{}}'
+            ;;
+          3)
+            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-idle-lead\"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-idle-lead\"}}}'
+            sleep 5
+            ;;
+          *)
+            sleep 5
+            ;;
+        esac
+      done
+      """)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        lead_enabled: true,
+        lead_trigger_on_idle: true,
+        prompt: """
+        {% if role == "lead" %}
+        Lead review
+        {% else %}
+        Worker {{ issue.identifier }}
+        {% endif %}
+        """
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: "issue-blocked-idle",
+          identifier: "MT-BLOCKED",
+          title: "Blocked issue",
+          description: "Nothing dispatchable",
+          state: "Todo",
+          blocked_by: [%{state: "In Progress"}]
+        }
+      ])
+
+      orchestrator_name = Module.concat(__MODULE__, :IdleLeadTriggerOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      send(pid, :run_poll_cycle)
+
+      assert %{
+               lead: %{
+                 active: true,
+                 workspace_identifier: ^lead_workspace
+               }
+             } =
+               wait_for_snapshot(
+                 pid,
+                 fn
+                   %{lead: %{active: true, workspace_identifier: ^lead_workspace}} -> true
+                   _ -> false
+                 end,
+                 1_000
+               )
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do
     issue_id = "issue-usage-snapshot"
 

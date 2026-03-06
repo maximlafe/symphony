@@ -24,6 +24,9 @@ defmodule SymphonyElixir.Config do
   """
   @default_poll_interval_ms 30_000
   @default_workspace_root Path.join(System.tmp_dir!(), "symphony_workspaces")
+  @default_lead_enabled false
+  @default_lead_interval_ms 1_200_000
+  @default_lead_trigger_on_idle true
   @default_hook_timeout_ms 60_000
   @default_max_concurrent_agents 10
   @default_agent_max_turns 20
@@ -76,6 +79,21 @@ defmodule SymphonyElixir.Config do
                                default: %{},
                                keys: [
                                  root: [type: {:or, [:string, nil]}, default: @default_workspace_root]
+                               ]
+                             ],
+                             lead: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 enabled: [type: :boolean, default: @default_lead_enabled],
+                                 interval_ms: [
+                                   type: :pos_integer,
+                                   default: @default_lead_interval_ms
+                                 ],
+                                 trigger_on_idle: [
+                                   type: :boolean,
+                                   default: @default_lead_trigger_on_idle
+                                 ]
                                ]
                              ],
                              agent: [
@@ -229,6 +247,21 @@ defmodule SymphonyElixir.Config do
     validated_workflow_options()
     |> get_in([:workspace, :root])
     |> resolve_path_value(@default_workspace_root)
+  end
+
+  @spec lead_enabled() :: boolean()
+  def lead_enabled do
+    get_in(validated_workflow_options(), [:lead, :enabled])
+  end
+
+  @spec lead_interval_ms() :: pos_integer()
+  def lead_interval_ms do
+    get_in(validated_workflow_options(), [:lead, :interval_ms])
+  end
+
+  @spec lead_trigger_on_idle() :: boolean()
+  def lead_trigger_on_idle do
+    get_in(validated_workflow_options(), [:lead, :trigger_on_idle])
   end
 
   @spec workspace_hooks() :: workspace_hooks()
@@ -449,6 +482,7 @@ defmodule SymphonyElixir.Config do
       tracker: extract_tracker_options(section_map(config, "tracker")),
       polling: extract_polling_options(section_map(config, "polling")),
       workspace: extract_workspace_options(section_map(config, "workspace")),
+      lead: extract_lead_options(section_map(config, "lead")),
       agent: extract_agent_options(section_map(config, "agent")),
       codex: extract_codex_options(section_map(config, "codex")),
       hooks: extract_hooks_options(section_map(config, "hooks")),
@@ -475,6 +509,13 @@ defmodule SymphonyElixir.Config do
   defp extract_workspace_options(section) do
     %{}
     |> put_if_present(:root, binary_value(Map.get(section, "root")))
+  end
+
+  defp extract_lead_options(section) do
+    %{}
+    |> put_if_present(:enabled, boolean_value(Map.get(section, "enabled")))
+    |> put_if_present(:interval_ms, positive_integer_value(Map.get(section, "interval_ms")))
+    |> put_if_present(:trigger_on_idle, boolean_value(Map.get(section, "trigger_on_idle")))
   end
 
   defp extract_agent_options(section) do

@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Orchestrator do
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
+  @lead_workspace_identifier AgentRunner.lead_workspace_identifier()
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -29,14 +30,33 @@ defmodule SymphonyElixir.Orchestrator do
     defstruct [
       :poll_interval_ms,
       :max_concurrent_agents,
+      :lead_enabled,
+      :lead_interval_ms,
+      :lead_trigger_on_idle,
+      :lead_timer_ref,
+      :lead_timer_message_ref,
       :next_poll_due_at_ms,
       :poll_check_in_progress,
       running: %{},
+      lead: nil,
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
       codex_rate_limits: nil
+    ]
+  end
+
+  defmodule RuntimeSpec do
+    @moduledoc false
+
+    defstruct [
+      :target,
+      :log_context,
+      :start_fun,
+      :post_spawn_handler,
+      :spawn_error_handler,
+      entry_overrides: %{}
     ]
   end
 
@@ -53,11 +73,17 @@ defmodule SymphonyElixir.Orchestrator do
     state = %State{
       poll_interval_ms: Config.poll_interval_ms(),
       max_concurrent_agents: Config.max_concurrent_agents(),
+      lead_enabled: Config.lead_enabled(),
+      lead_interval_ms: Config.lead_interval_ms(),
+      lead_trigger_on_idle: Config.lead_trigger_on_idle(),
+      lead_timer_ref: nil,
+      lead_timer_message_ref: nil,
       next_poll_due_at_ms: now_ms,
       poll_check_in_progress: false,
       codex_totals: @empty_codex_totals,
       codex_rate_limits: nil
     }
+    |> ensure_lead_check_in_timer()
 
     run_terminal_workspace_cleanup()
     :ok = schedule_tick(0)
@@ -88,71 +114,63 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
+  def handle_info({:lead_check_in, :timer, message_ref}, state) do
+    state = refresh_runtime_config(state)
+
+    if state.lead_timer_message_ref == message_ref do
+      state =
+        state
+        |> clear_lead_check_in_timer()
+        |> ensure_lead_check_in_timer()
+        |> maybe_start_lead(:timer)
+
+      notify_dashboard()
+      {:noreply, state}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info({:lead_check_in, source}, state) when source in [:manual, :idle] do
+    state =
+      state
+      |> refresh_runtime_config()
+      |> maybe_start_lead(source)
+
+    notify_dashboard()
+    {:noreply, state}
+  end
+
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
         %{running: running} = state
       ) do
-    case find_issue_id_for_ref(running, ref) do
+    case runtime_target_for_ref(%{state | running: running}, ref) do
+      {:worker, issue_id} ->
+        {:noreply, handle_worker_exit(state, issue_id, reason)}
+
+      :lead ->
+        {:noreply, handle_lead_exit(state, reason)}
+
       nil ->
-        {:noreply, state}
-
-      issue_id ->
-        {running_entry, state} = pop_running_entry(state, issue_id)
-        state = record_session_completion_totals(state, running_entry)
-        session_id = running_entry_session_id(running_entry)
-
-        state =
-          case reason do
-            :normal ->
-              Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
-
-              state
-              |> complete_issue(issue_id)
-              |> schedule_issue_retry(issue_id, 1, %{
-                identifier: running_entry.identifier,
-                delay_type: :continuation
-              })
-
-            _ ->
-              Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
-
-              next_attempt = next_retry_attempt_from_running(running_entry)
-
-              schedule_issue_retry(state, issue_id, next_attempt, %{
-                identifier: running_entry.identifier,
-                error: "agent exited: #{inspect(reason)}"
-              })
-          end
-
-        Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
-
-        notify_dashboard()
         {:noreply, state}
     end
   end
 
   def handle_info(
         {:codex_worker_update, issue_id, %{event: _, timestamp: _} = update},
-        %{running: running} = state
+        state
       ) do
-    case Map.get(running, issue_id) do
-      nil ->
-        {:noreply, state}
-
-      running_entry ->
-        {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
-
-        state =
-          state
-          |> apply_codex_token_delta(token_delta)
-          |> apply_codex_rate_limits(update)
-
-        notify_dashboard()
-        {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
-    end
+    handle_runtime_update_message(state, {:worker, issue_id}, update)
   end
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+
+  def handle_info({:codex_lead_update, %{event: _, timestamp: _} = update}, state) do
+    handle_runtime_update_message(state, :lead, update)
+  end
+
+  def handle_info({:codex_lead_update, _update}, state), do: {:noreply, state}
 
   def handle_info({:retry_issue, issue_id}, state) do
     result =
@@ -174,9 +192,15 @@ defmodule SymphonyElixir.Orchestrator do
     state = reconcile_running_issues(state)
 
     with :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(),
-         true <- available_slots(state) > 0 do
-      choose_issues(issues, state)
+         {:ok, issues} <- Tracker.fetch_candidate_issues() do
+      {state, dispatched_any?} =
+        if available_slots(state) > 0 do
+          choose_issues(issues, state)
+        else
+          {state, false}
+        end
+
+      maybe_trigger_lead_on_idle(state, issues, dispatched_any?)
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
@@ -226,9 +250,6 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
-        state
-
-      false ->
         state
     end
   end
@@ -441,13 +462,23 @@ defmodule SymphonyElixir.Orchestrator do
 
     issues
     |> sort_issues_for_dispatch()
-    |> Enum.reduce(state, fn issue, state_acc ->
+    |> Enum.reduce({state, false}, fn issue, {state_acc, dispatched?} ->
       if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
-        dispatch_issue(state_acc, issue)
+        {dispatch_issue(state_acc, issue, nil, terminal_states), true}
       else
-        state_acc
+        {state_acc, dispatched?}
       end
     end)
+  end
+
+  defp maybe_trigger_lead_on_idle(%State{} = state, issues, dispatched_any?)
+       when is_list(issues) do
+    if state.lead_trigger_on_idle and map_size(state.running) == 0 and issues != [] and
+         not dispatched_any? do
+      maybe_start_lead(state, :idle)
+    else
+      state
+    end
   end
 
   defp sort_issues_for_dispatch(issues) when is_list(issues) do
@@ -575,8 +606,12 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil) do
-    case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
+  defp dispatch_issue(%State{} = state, issue, attempt) do
+    dispatch_issue(state, issue, attempt, terminal_state_set())
+  end
+
+  defp dispatch_issue(%State{} = state, issue, attempt, terminal_states) do
+    case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_states) do
       {:ok, %Issue{} = refreshed_issue} ->
         do_dispatch_issue(state, refreshed_issue, attempt)
 
@@ -596,54 +631,59 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp do_dispatch_issue(%State{} = state, issue, attempt) do
-    recipient = self()
+    start_runtime(state, worker_runtime_spec(issue, attempt))
+  end
 
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt)
-         end) do
-      {:ok, pid} ->
-        ref = Process.monitor(pid)
+  defp maybe_start_lead(%State{lead_enabled: false} = state, _source), do: state
 
-        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}")
+  defp maybe_start_lead(%State{lead: %{}} = state, source) do
+    Logger.debug("Skipping lead check-in trigger=#{source}; lead already running")
+    state
+  end
 
-        running =
-          Map.put(state.running, issue.id, %{
-            pid: pid,
-            ref: ref,
-            identifier: issue.identifier,
-            issue: issue,
-            session_id: nil,
-            last_codex_message: nil,
-            last_codex_timestamp: nil,
-            last_codex_event: nil,
-            codex_app_server_pid: nil,
-            codex_input_tokens: 0,
-            codex_output_tokens: 0,
-            codex_total_tokens: 0,
-            codex_last_reported_input_tokens: 0,
-            codex_last_reported_output_tokens: 0,
-            codex_last_reported_total_tokens: 0,
-            turn_count: 0,
-            retry_attempt: normalize_retry_attempt(attempt),
-            started_at: DateTime.utc_now()
-          })
+  defp maybe_start_lead(%State{} = state, source) do
+    start_runtime(state, lead_runtime_spec(source))
+  end
 
+  defp worker_runtime_spec(%Issue{} = issue, attempt) do
+    %RuntimeSpec{
+      target: {:worker, issue.id},
+      log_context: "#{issue_context(issue)} attempt=#{inspect(attempt)}",
+      start_fun: fn recipient -> AgentRunner.run(issue, recipient, attempt: attempt) end,
+      post_spawn_handler: fn state ->
         %{
           state
-          | running: running,
-            claimed: MapSet.put(state.claimed, issue.id),
+          | claimed: MapSet.put(state.claimed, issue.id),
             retry_attempts: Map.delete(state.retry_attempts, issue.id)
         }
-
-      {:error, reason} ->
-        Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
+      end,
+      spawn_error_handler: fn state, reason ->
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
         schedule_issue_retry(state, issue.id, next_attempt, %{
           identifier: issue.identifier,
           error: "failed to spawn agent: #{inspect(reason)}"
         })
-    end
+      end,
+      entry_overrides: %{
+        identifier: issue.identifier,
+        issue: issue,
+        retry_attempt: normalize_retry_attempt(attempt)
+      }
+    }
+  end
+
+  defp lead_runtime_spec(source) do
+    %RuntimeSpec{
+      target: :lead,
+      log_context: "trigger=#{source} workspace_identifier=#{@lead_workspace_identifier}",
+      start_fun: fn recipient -> AgentRunner.run_lead(recipient) end,
+      post_spawn_handler: fn state -> state end,
+      spawn_error_handler: fn state, _reason -> state end,
+      entry_overrides: %{
+        workspace_identifier: @lead_workspace_identifier
+      }
+    }
   end
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
@@ -787,7 +827,82 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+      end
+  end
+
+  defp start_runtime(%State{} = state, %RuntimeSpec{} = spec) do
+    recipient = self()
+
+    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+           spec.start_fun.(recipient)
+         end) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+        Logger.info("Dispatching #{runtime_label(spec.target)} #{spec.log_context} pid=#{inspect(pid)}")
+
+        state
+        |> put_runtime_entry(spec.target, new_runtime_entry(pid, ref, spec.entry_overrides))
+        |> spec.post_spawn_handler.()
+
+      {:error, reason} ->
+        Logger.error("Unable to spawn #{runtime_label(spec.target)} #{spec.log_context}: #{inspect(reason)}")
+        spec.spawn_error_handler.(state, reason)
     end
+  end
+
+  defp handle_worker_exit(%State{} = state, issue_id, reason) do
+    {running_entry, state} = pop_running_entry(state, issue_id)
+    state = record_session_completion_totals(state, running_entry)
+    session_id = running_entry_session_id(running_entry)
+
+    state =
+      case reason do
+        :normal ->
+          Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+
+          state
+          |> complete_issue(issue_id)
+          |> schedule_issue_retry(issue_id, 1, %{
+            identifier: running_entry.identifier,
+            delay_type: :continuation
+          })
+
+        _ ->
+          Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
+
+          next_attempt = next_retry_attempt_from_running(running_entry)
+
+          schedule_issue_retry(state, issue_id, next_attempt, %{
+            identifier: running_entry.identifier,
+            error: "agent exited: #{inspect(reason)}"
+          })
+      end
+
+    Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
+    notify_dashboard()
+    state
+  end
+
+  defp handle_lead_exit(%State{} = state, reason) do
+    lead_entry = state.lead
+
+    state =
+      state
+      |> clear_lead_entry()
+      |> record_session_completion_totals(lead_entry)
+
+    session_id = running_entry_session_id(lead_entry)
+
+    case reason do
+      :normal ->
+        Logger.info("Lead task completed workspace_identifier=#{lead_entry.workspace_identifier} session_id=#{session_id}")
+
+      _ ->
+        Logger.warning("Lead task exited workspace_identifier=#{lead_entry.workspace_identifier} session_id=#{session_id} reason=#{inspect(reason)}")
+    end
+
+    notify_dashboard()
+    state
   end
 
   defp notify_dashboard do
@@ -795,8 +910,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do
-    if retry_candidate_issue?(issue, terminal_state_set()) and
-         dispatch_slots_available?(issue, state) do
+    if dispatch_slots_available?(issue, state) do
       {:noreply, dispatch_issue(state, issue, attempt)}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
@@ -871,6 +985,28 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp running_entry_session_id(_running_entry), do: "n/a"
 
+  defp runtime_label({:worker, _issue_id}), do: "issue agent"
+  defp runtime_label(:lead), do: "lead agent"
+
+  defp runtime_entry(%State{running: running}, {:worker, issue_id}), do: Map.get(running, issue_id)
+  defp runtime_entry(%State{lead: lead}, :lead), do: lead
+
+  defp put_runtime_entry(%State{running: running} = state, {:worker, issue_id}, entry) do
+    %{state | running: Map.put(running, issue_id, entry)}
+  end
+
+  defp put_runtime_entry(%State{} = state, :lead, entry), do: %{state | lead: entry}
+
+  defp runtime_target_for_ref(%State{running: running, lead: lead}, ref) do
+    case find_issue_id_for_ref(running, ref) do
+      nil ->
+        if is_map(lead) and lead.ref == ref, do: :lead, else: nil
+
+      issue_id ->
+        {:worker, issue_id}
+    end
+  end
+
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
@@ -885,6 +1021,24 @@ defmodule SymphonyElixir.Orchestrator do
   @spec request_refresh() :: map() | :unavailable
   def request_refresh do
     request_refresh(__MODULE__)
+  end
+
+  @doc """
+  Requests an immediate lead check-in without waiting for the periodic timer.
+  """
+  @spec trigger_lead_check_in() :: :ok | :unavailable
+  def trigger_lead_check_in do
+    trigger_lead_check_in(__MODULE__)
+  end
+
+  @spec trigger_lead_check_in(GenServer.server()) :: :ok | :unavailable
+  def trigger_lead_check_in(server) do
+    if pid = Process.whereis(server) do
+      send(pid, {:lead_check_in, :manual})
+      :ok
+    else
+      :unavailable
+    end
   end
 
   @spec request_refresh(GenServer.server()) :: map() | :unavailable
@@ -952,9 +1106,12 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    lead = snapshot_lead(state.lead, now)
+
     {:reply,
      %{
        running: running,
+       lead: lead,
        retrying: retrying,
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
@@ -1068,6 +1225,26 @@ defmodule SymphonyElixir.Orchestrator do
     :ok
   end
 
+  defp ensure_lead_check_in_timer(%State{lead_enabled: true, lead_timer_ref: nil} = state) do
+    schedule_lead_check_in_timer(state, state.lead_interval_ms || Config.lead_interval_ms())
+  end
+
+  defp ensure_lead_check_in_timer(state), do: state
+
+  defp schedule_lead_check_in_timer(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms > 0 do
+    message_ref = make_ref()
+    timer_ref = Process.send_after(self(), {:lead_check_in, :timer, message_ref}, delay_ms)
+    %{state | lead_timer_ref: timer_ref, lead_timer_message_ref: message_ref}
+  end
+
+  defp clear_lead_check_in_timer(%State{} = state) do
+    if is_reference(state.lead_timer_ref) do
+      Process.cancel_timer(state.lead_timer_ref)
+    end
+
+    %{state | lead_timer_ref: nil, lead_timer_message_ref: nil}
+  end
+
   defp next_poll_in_ms(nil, _now_ms), do: nil
 
   defp next_poll_in_ms(next_poll_due_at_ms, now_ms) when is_integer(next_poll_due_at_ms) do
@@ -1098,10 +1275,47 @@ defmodule SymphonyElixir.Orchestrator do
   defp record_session_completion_totals(state, _running_entry), do: state
 
   defp refresh_runtime_config(%State{} = state) do
+    state =
+      %{
+        state
+        | poll_interval_ms: Config.poll_interval_ms(),
+          max_concurrent_agents: Config.max_concurrent_agents(),
+          lead_enabled: Config.lead_enabled(),
+          lead_interval_ms: Config.lead_interval_ms(),
+          lead_trigger_on_idle: Config.lead_trigger_on_idle()
+      }
+
+    state =
+      if state.lead_enabled do
+        ensure_lead_check_in_timer(state)
+      else
+        clear_lead_check_in_timer(state)
+      end
+
+    state
+  end
+
+  defp clear_lead_entry(%State{} = state) do
+    %{state | lead: nil}
+  end
+
+  defp snapshot_lead(nil, _now), do: nil
+
+  defp snapshot_lead(lead_entry, now) when is_map(lead_entry) do
     %{
-      state
-      | poll_interval_ms: Config.poll_interval_ms(),
-        max_concurrent_agents: Config.max_concurrent_agents()
+      active: true,
+      workspace_identifier: lead_entry.workspace_identifier,
+      session_id: lead_entry.session_id,
+      codex_app_server_pid: lead_entry.codex_app_server_pid,
+      codex_input_tokens: Map.get(lead_entry, :codex_input_tokens, 0),
+      codex_output_tokens: Map.get(lead_entry, :codex_output_tokens, 0),
+      codex_total_tokens: Map.get(lead_entry, :codex_total_tokens, 0),
+      turn_count: Map.get(lead_entry, :turn_count, 0),
+      started_at: lead_entry.started_at,
+      last_codex_timestamp: lead_entry.last_codex_timestamp,
+      last_codex_message: lead_entry.last_codex_message,
+      last_codex_event: lead_entry.last_codex_event,
+      runtime_seconds: running_seconds(lead_entry.started_at, now)
     }
   end
 
@@ -1135,6 +1349,55 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp apply_codex_rate_limits(state, _update), do: state
+
+  defp handle_runtime_update(%State{} = state, running_entry, update, put_updated_entry)
+       when is_function(put_updated_entry, 2) do
+    {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
+
+    state =
+      state
+      |> apply_codex_token_delta(token_delta)
+      |> apply_codex_rate_limits(update)
+      |> put_updated_entry.(updated_running_entry)
+
+    notify_dashboard()
+    {:noreply, state}
+  end
+
+  defp handle_runtime_update_message(%State{} = state, target, update) do
+    case runtime_entry(state, target) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        handle_runtime_update(state, running_entry, update, fn state, updated_running_entry ->
+          put_runtime_entry(state, target, updated_running_entry)
+        end)
+    end
+  end
+
+  defp new_runtime_entry(pid, ref, attrs) do
+    Map.merge(
+      %{
+        pid: pid,
+        ref: ref,
+        session_id: nil,
+        last_codex_message: nil,
+        last_codex_timestamp: nil,
+        last_codex_event: nil,
+        codex_app_server_pid: nil,
+        codex_input_tokens: 0,
+        codex_output_tokens: 0,
+        codex_total_tokens: 0,
+        codex_last_reported_input_tokens: 0,
+        codex_last_reported_output_tokens: 0,
+        codex_last_reported_total_tokens: 0,
+        turn_count: 0,
+        started_at: DateTime.utc_now()
+      },
+      attrs
+    )
+  end
 
   defp apply_token_delta(codex_totals, token_delta) do
     input_tokens = Map.get(codex_totals, :input_tokens, 0) + token_delta.input_tokens

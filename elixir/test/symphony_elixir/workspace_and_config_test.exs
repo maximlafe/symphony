@@ -659,6 +659,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.linear_api_token() == nil
     assert Config.linear_project_slug() == nil
     assert Config.workspace_root() == Path.join(System.tmp_dir!(), "symphony_workspaces")
+    assert Config.lead_enabled() == false
+    assert Config.lead_interval_ms() == 1_200_000
+    assert Config.lead_trigger_on_idle() == true
     assert Config.max_concurrent_agents() == 10
     assert Config.codex_command() == "codex app-server"
 
@@ -722,6 +725,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       tracker_terminal_states: %{done: true},
       poll_interval_ms: %{bad: true},
       workspace_root: 123,
+      lead_enabled: "bad",
+      lead_interval_ms: 0,
+      lead_trigger_on_idle: "bad",
       max_retry_backoff_ms: 0,
       max_concurrent_agents_by_state: %{"Todo" => "1", "Review" => 0, "Done" => "bad"},
       hook_timeout_ms: 0,
@@ -736,6 +742,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.linear_terminal_states() == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert Config.poll_interval_ms() == 30_000
     assert Config.workspace_root() == Path.join(System.tmp_dir!(), "symphony_workspaces")
+    assert Config.lead_enabled() == false
+    assert Config.lead_interval_ms() == 1_200_000
+    assert Config.lead_trigger_on_idle() == true
     assert Config.max_retry_backoff_ms() == 300_000
     assert Config.max_concurrent_agents_for_state("Todo") == 1
     assert Config.max_concurrent_agents_for_state("Review") == 10
@@ -820,11 +829,17 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "$#{api_key_env_var}",
       workspace_root: "$#{workspace_env_var}",
+      lead_enabled: true,
+      lead_interval_ms: 600_000,
+      lead_trigger_on_idle: false,
       codex_command: "#{codex_bin} app-server"
     )
 
     assert Config.linear_api_token() == api_key
     assert Config.workspace_root() == Path.expand(workspace_root)
+    assert Config.lead_enabled() == true
+    assert Config.lead_interval_ms() == 600_000
+    assert Config.lead_trigger_on_idle() == false
     assert Config.codex_command() == "#{codex_bin} app-server"
   end
 

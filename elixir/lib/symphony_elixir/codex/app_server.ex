@@ -404,64 +404,104 @@ defmodule SymphonyElixir.Codex.AppServer do
        ) do
     metadata = metadata_from_message(port, payload)
 
-    case maybe_handle_approval_request(
-           port,
-           method,
-           payload,
-           payload_string,
-           on_message,
-           metadata,
-           tool_executor,
-           auto_approve_requests
-         ) do
-      :input_required ->
-        emit_message(
-          on_message,
-          :turn_input_required,
-          %{payload: payload, raw: payload_string},
-          metadata
-        )
-
-        {:error, {:turn_input_required, payload}}
-
-      :approved ->
+    case maybe_handle_special_request(port, method, payload, payload_string, on_message, metadata) do
+      :handled ->
         receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
 
-      :approval_required ->
-        emit_message(
-          on_message,
-          :approval_required,
-          %{payload: payload, raw: payload_string},
-          metadata
-        )
-
-        {:error, {:approval_required, payload}}
-
       :unhandled ->
-        if needs_input?(method, payload) do
-          emit_message(
-            on_message,
-            :turn_input_required,
-            %{payload: payload, raw: payload_string},
-            metadata
-          )
+        case maybe_handle_approval_request(
+               port,
+               method,
+               payload,
+               payload_string,
+               on_message,
+               metadata,
+               tool_executor,
+               auto_approve_requests
+             ) do
+          :input_required ->
+            emit_message(
+              on_message,
+              :turn_input_required,
+              %{payload: payload, raw: payload_string},
+              metadata
+            )
 
-          {:error, {:turn_input_required, payload}}
-        else
-          emit_message(
-            on_message,
-            :notification,
-            %{
-              payload: payload,
-              raw: payload_string
-            },
-            metadata
-          )
+            {:error, {:turn_input_required, payload}}
 
-          Logger.debug("Codex notification: #{inspect(method)}")
-          receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+          :approved ->
+            receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+
+          :approval_required ->
+            emit_message(
+              on_message,
+              :approval_required,
+              %{payload: payload, raw: payload_string},
+              metadata
+            )
+
+            {:error, {:approval_required, payload}}
+
+          :unhandled ->
+            if needs_input?(method, payload) do
+              emit_message(
+                on_message,
+                :turn_input_required,
+                %{payload: payload, raw: payload_string},
+                metadata
+              )
+
+              {:error, {:turn_input_required, payload}}
+            else
+              emit_message(
+                on_message,
+                :notification,
+                %{
+                  payload: payload,
+                  raw: payload_string
+                },
+                metadata
+              )
+
+              Logger.debug("Codex notification: #{inspect(method)}")
+              receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+            end
         end
     end
+  end
+
+  defp maybe_handle_special_request(
+         port,
+         "symphony/request_lead",
+         %{"id" => id} = payload,
+         payload_string,
+         on_message,
+         metadata
+       ) do
+    params = Map.get(payload, "params")
+    reason = lead_request_reason(params)
+
+    send_message(port, %{"id" => id, "result" => %{"acknowledged" => true}})
+
+    emit_message(
+      on_message,
+      :lead_requested,
+      %{payload: payload, raw: payload_string, reason: reason},
+      metadata
+    )
+
+    :handled
+  end
+
+  defp maybe_handle_special_request(
+         _port,
+         _method,
+         _payload,
+         _payload_string,
+         _on_message,
+         _metadata
+       ) do
+    :unhandled
   end
 
   defp maybe_handle_approval_request(
@@ -942,6 +982,22 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp tool_call_arguments(_params), do: %{}
+
+  defp lead_request_reason(%{"reason" => reason}) when is_binary(reason) do
+    case String.trim(reason) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp lead_request_reason(%{reason: reason}) when is_binary(reason) do
+    case String.trim(reason) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp lead_request_reason(_params), do: nil
 
   defp send_message(port, message) do
     line = Jason.encode!(message) <> "\n"

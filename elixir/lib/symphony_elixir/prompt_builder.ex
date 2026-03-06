@@ -9,6 +9,18 @@ defmodule SymphonyElixir.PromptBuilder do
 
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
+    render_prompt(issue, "worker", opts)
+  end
+
+  @doc """
+  Builds the lead-agent prompt from the workflow template.
+  """
+  @spec build_lead_prompt(keyword()) :: String.t()
+  def build_lead_prompt(opts \\ []) do
+    render_prompt(nil, "lead", opts)
+  end
+
+  defp render_prompt(issue, role, opts) do
     template =
       Workflow.current()
       |> prompt_template!()
@@ -16,14 +28,29 @@ defmodule SymphonyElixir.PromptBuilder do
 
     template
     |> Solid.render!(
-      %{
-        "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
-      },
+      render_context(issue, role, opts),
       @render_opts
     )
     |> IO.iodata_to_binary()
   end
+
+  defp render_context(issue, role, opts) do
+    %{
+      "attempt" => Keyword.get(opts, :attempt),
+      "role" => role
+    }
+    |> maybe_put_issue(issue)
+  end
+
+  defp maybe_put_issue(context, %{__struct__: _} = issue) do
+    Map.put(context, "issue", issue |> Map.from_struct() |> to_solid_map())
+  end
+
+  defp maybe_put_issue(context, %{} = issue) do
+    Map.put(context, "issue", to_solid_map(issue))
+  end
+
+  defp maybe_put_issue(context, _issue), do: context
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
 

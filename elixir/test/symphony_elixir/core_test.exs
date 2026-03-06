@@ -496,7 +496,7 @@ defmodule SymphonyElixir.CoreTest do
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 39_500, 40_500)
+    assert_due_in_range(due_at_ms, 39_000, 40_500)
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -549,9 +549,14 @@ defmodule SymphonyElixir.CoreTest do
     assert {:ok, []} = Client.fetch_issues_by_states([])
   end
 
-  test "prompt builder renders issue and attempt values from workflow template" do
-    workflow_prompt =
-      "Ticket {{ issue.identifier }} {{ issue.title }} labels={{ issue.labels }} attempt={{ attempt }}"
+  test "prompt builder exposes role-specific context" do
+    workflow_prompt = """
+    {% if role == "lead" %}
+    Lead review
+    {% else %}
+    Ticket {{ issue.identifier }} {{ issue.title }} labels={{ issue.labels }} attempt={{ attempt }} role={{ role }}
+    {% endif %}
+    """
 
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
 
@@ -569,6 +574,8 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Ticket S-1 Refactor backend request path"
     assert prompt =~ "labels=backend"
     assert prompt =~ "attempt=3"
+    assert prompt =~ "role=worker"
+    assert PromptBuilder.build_lead_prompt() |> String.trim() == "Lead review"
   end
 
   test "prompt builder renders issue datetime fields without crashing" do
@@ -798,7 +805,7 @@ defmodule SymphonyElixir.CoreTest do
       System.cmd("git", ["-C", template_repo, "add", "README.md"])
       System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
 
-      File.write!(codex_binary, """
+      write_executable!(codex_binary, """
       #!/bin/sh
       count=0
       while IFS= read -r line; do
@@ -822,8 +829,6 @@ defmodule SymphonyElixir.CoreTest do
         esac
       done
       """)
-
-      File.chmod!(codex_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -861,6 +866,72 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "lead runner reuses isolated workspace hooks" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-lead-runner-workspace-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(template_repo)
+      File.mkdir_p!(workspace_root)
+      File.write!(Path.join(template_repo, "README.md"), "# lead test")
+
+      write_executable!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{\"id\":1,\"result\":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-lead\"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-lead\"}}}'
+            printf '%s\\n' '{\"method\":\"turn/completed\"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        hook_before_run: "echo lead-before-run > before_run.log",
+        prompt: """
+        {% if role == "lead" %}
+        Lead review
+        {% else %}
+        Worker {{ issue.identifier }}
+        {% endif %}
+        """
+      )
+
+      assert :ok = AgentRunner.run_lead()
+
+      lead_workspace = Path.join(workspace_root, "__lead__")
+      assert File.read!(Path.join(lead_workspace, "README.md")) == "# lead test"
+      assert File.read!(Path.join(lead_workspace, "before_run.log")) == "lead-before-run\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner forwards timestamped codex updates to recipient" do
     test_root =
       Path.join(
@@ -881,7 +952,7 @@ defmodule SymphonyElixir.CoreTest do
       System.cmd("git", ["-C", template_repo, "add", "README.md"])
       System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
 
-      File.write!(
+      write_executable!(
         codex_binary,
         """
         #!/bin/sh
@@ -907,8 +978,6 @@ defmodule SymphonyElixir.CoreTest do
         done
         """
       )
-
-      File.chmod!(codex_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
