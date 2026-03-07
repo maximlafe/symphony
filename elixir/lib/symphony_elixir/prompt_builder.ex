@@ -37,7 +37,8 @@ defmodule SymphonyElixir.PromptBuilder do
   defp render_context(issue, role, opts) do
     %{
       "attempt" => Keyword.get(opts, :attempt),
-      "role" => role
+      "role" => role,
+      "lead_enabled" => Config.lead_enabled()
     }
     |> maybe_put_issue(issue)
   end

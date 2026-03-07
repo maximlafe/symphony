@@ -578,6 +578,29 @@ defmodule SymphonyElixir.CoreTest do
     assert PromptBuilder.build_lead_prompt() |> String.trim() == "Lead review"
   end
 
+  test "prompt builder exposes lead_enabled in template context" do
+    workflow_prompt = "lead_enabled={{ lead_enabled }}"
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt, lead_enabled: false)
+
+    issue = %Issue{
+      identifier: "S-2",
+      title: "Test lead_enabled",
+      description: "",
+      state: "Todo",
+      url: "https://example.org/issues/S-2",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+    assert prompt =~ "lead_enabled=false"
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt, lead_enabled: true)
+
+    prompt = PromptBuilder.build_prompt(issue)
+    assert prompt =~ "lead_enabled=true"
+  end
+
   test "prompt builder renders issue datetime fields without crashing" do
     workflow_prompt = "Ticket {{ issue.identifier }} created={{ issue.created_at }} updated={{ issue.updated_at }}"
 
@@ -924,7 +947,7 @@ defmodule SymphonyElixir.CoreTest do
 
       assert :ok = AgentRunner.run_lead()
 
-      lead_workspace = Path.join(workspace_root, "__lead__")
+      lead_workspace = Path.join(workspace_root, AgentRunner.lead_workspace_identifier())
       assert File.read!(Path.join(lead_workspace, "README.md")) == "# lead test"
       assert File.read!(Path.join(lead_workspace, "before_run.log")) == "lead-before-run\n"
     after

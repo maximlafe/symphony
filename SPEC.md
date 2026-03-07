@@ -460,6 +460,9 @@ Template input variables:
 - `attempt` (integer or null)
   - `null`/absent on first attempt.
   - Integer on retry or continuation run.
+- `lead_enabled` (boolean)
+  - Whether the lead agent is enabled in the workflow config (`lead.enabled`).
+  - Allows templates to vary merge strategy, PR targets, and autonomy level based on supervision mode.
 
 Fallback prompt behavior:
 
