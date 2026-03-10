@@ -35,14 +35,39 @@ Note: `mise install` downloads precompiled Erlang/Elixir if available for the pl
 
 ## Prepare the user's repo
 
-Ask the user for:
-- **repo path** and **repo clone URL**
-- **setup commands** after clone (if any)
-- **Does the project have a UI/app that needs runtime testing?** If yes, what's the launch command?
+Auto-detect as much as possible. Only ask the user to confirm or fill gaps.
 
-**Auto-discover Linear project** — don't ask the user for the slug. Query Linear directly using `curl` + `$LINEAR_API_KEY` to list projects, present the choices, and let the user pick. See [references/linear-graphql.md](references/linear-graphql.md) for the GraphQL patterns.
+### Auto-detect repo info
 
-**Auto-check workflow states** — after the user picks a project, query the team's workflow states to check if the 3 custom states (Rework, Human Review, Merging) already exist. Report which are missing so the user knows exactly what to add. See [references/linear-graphql.md](references/linear-graphql.md) for the query.
+- **Repo path** — `git rev-parse --show-toplevel` from the current directory. If not in a git repo, ask.
+- **Clone URL** — `git remote get-url origin`. Verify it works non-interactively: `git clone --depth 1 <url> /tmp/test-clone && rm -rf /tmp/test-clone`.
+- **Setup commands** — infer from the repo:
+  - `package-lock.json` → `npm install`
+  - `yarn.lock` → `yarn install`
+  - `pnpm-lock.yaml` → `pnpm install`
+  - `bun.lockb` → `bun install`
+  - `Gemfile` → `bundle install`
+  - `requirements.txt` → `pip install -r requirements.txt`
+  - `go.mod` → `go mod download`
+  - If multiple or none match, ask. Confirm with the user either way.
+
+### Auto-discover Linear project
+
+Query Linear via `curl` + `$LINEAR_API_KEY` to list projects (see [references/linear-graphql.md](references/linear-graphql.md)). Present the list and let the user pick.
+
+### Auto-check and create workflow states
+
+After the user picks a project, query the team's workflow states. If any of the 3 required states (Rework, Human Review, Merging) are missing, offer to create them via `workflowStateCreate` (see [references/linear-graphql.md](references/linear-graphql.md)). Confirm before creating.
+
+### Auto-detect app/UI
+
+Check whether the project has a launchable UI before asking:
+- `electron` or `electron-builder` in package.json dependencies → Electron app
+- `react-scripts`, `next`, `vite`, `nuxt` in dependencies → web app with dev server
+- `start` or `dev` script in package.json → likely has a dev server
+- `Procfile`, `docker-compose.yml` → service with runtime
+
+If detected, propose a `launch-app` skill based on what you find (framework, start script, default port). Confirm with the user and adjust. If nothing detected, ask whether there's a UI — for pure libraries/CLIs/APIs, skip the launch skill.
 
 Copy two things from Symphony into the user's repo:
 
