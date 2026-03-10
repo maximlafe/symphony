@@ -37,9 +37,12 @@ Note: `mise install` downloads precompiled Erlang/Elixir if available for the pl
 
 Ask the user for:
 - **repo path** and **repo clone URL**
-- **Linear project slug** (right-click project in Linear → copy URL → slug is in the path)
 - **setup commands** after clone (if any)
 - **Does the project have a UI/app that needs runtime testing?** If yes, what's the launch command?
+
+**Auto-discover Linear project** — don't ask the user for the slug. Query Linear directly using `curl` + `$LINEAR_API_KEY` to list projects, present the choices, and let the user pick. See [references/linear-graphql.md](references/linear-graphql.md) for the GraphQL patterns.
+
+**Auto-check workflow states** — after the user picks a project, query the team's workflow states to check if the 3 custom states (Rework, Human Review, Merging) already exist. Report which are missing so the user knows exactly what to add. See [references/linear-graphql.md](references/linear-graphql.md) for the query.
 
 Copy two things from Symphony into the user's repo:
 
@@ -97,7 +100,7 @@ After pushing, verify: `git log origin/$(git branch --show-current) --oneline -1
 
 ## Linear custom states
 
-The workflow requires three non-standard states the user must add manually in Linear (Team Settings → Workflow): **Rework**, **Human Review**, **Merging**. Without them, agents can't transition tickets through the full lifecycle.
+The workflow requires three non-standard states: **Rework**, **Human Review**, **Merging**. If the auto-check during repo preparation found any missing, remind the user which ones to add in Linear (Team Settings → Workflow). Without them, agents can't transition tickets through the full lifecycle.
 
 ## Run
 
@@ -125,7 +128,7 @@ Once Symphony is running, help the user with their first workflows:
 
 ### Break down a feature into tickets
 
-The user has a big feature idea. Help them break it into Linear tickets using `linear_graphql` (via the `linear` skill in their repo). For each ticket:
+The user has a big feature idea. Help them break it into Linear tickets using `curl` + `$LINEAR_API_KEY` (see [references/linear-graphql.md](references/linear-graphql.md) for GraphQL patterns). For each ticket:
 - Clear title and description with acceptance criteria
 - Set dependencies between tickets using `issueRelationCreate` (type: `blocks`)
 - Assign to the Symphony project so agents can pick them up
