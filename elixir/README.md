@@ -14,7 +14,7 @@ Fork of [openai/symphony](https://github.com/openai/symphony) with setup frictio
 If you're using Claude Code or Codex, install the setup skill — it handles everything below plus project-specific config like `launch-app`:
 
 ```
-npx skills add https://github.com/odysseus0/symphony/tree/getting-started -s symphony-setup
+npx skills add https://github.com/odysseus0/symphony/tree/getting-started -s symphony-setup -y
 ```
 
 Otherwise, the quick start:
