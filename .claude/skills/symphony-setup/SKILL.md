@@ -133,10 +133,15 @@ During the auto-check in repo preparation, if any are missing, **create them via
 
 ```bash
 cd <symphony-path>/elixir
-mise exec -- ./bin/symphony <repo-path>/WORKFLOW.md
+mise exec -- ./bin/symphony <repo-path>/WORKFLOW.md \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
+The guardrails flag is required — Symphony runs Codex agents with `danger-full-access` sandboxing.
+
 Add `--port <port>` to enable the Phoenix web dashboard.
+
+`LINEAR_API_KEY` must be available in the shell environment when starting Symphony. If it's managed by sops-nix or similar, ensure it's sourced before running.
 
 ## Verify
 
