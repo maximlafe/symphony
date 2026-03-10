@@ -7,14 +7,17 @@ description: Set up Symphony (OpenAI's Codex orchestrator) for a user's repo. Us
 
 Set up [Symphony](https://github.com/openai/symphony) — OpenAI's orchestrator that turns Linear tickets into pull requests via autonomous Codex agents.
 
-## Prerequisites
+## Preflight checks
 
-Ensure these are available before proceeding:
+Run these checks first and **stop if any fail** — resolve before continuing:
 
-- **Codex CLI** — installed and authenticated
-- **mise** — Symphony requires Elixir 1.19 / OTP 28 (pinned in `elixir/mise.toml`). mise handles version management.
-- **LINEAR_API_KEY** — personal API key from Linear (Settings → Security & access → Personal API keys). Must persist in shell config.
-- **GitHub** — the workflow is GitHub-centric: agents commit, push, and create PRs via `gh`. Other hosts need workflow modifications.
+1. **`codex`** — run `codex --version`. Must be installed and authenticated.
+2. **`mise`** — run `mise --version`. Needed for Elixir/Erlang version management.
+3. **`gh`** — run `gh auth status`. Must be installed AND authenticated. Agents use `gh` to create PRs and close orphaned PRs. Silent failure without it.
+4. **`LINEAR_API_KEY`** — run `echo $LINEAR_API_KEY` (or `echo $LINEAR_API_KEY` in fish). Must be set in the current shell and persist across sessions (shell config, not just `export`).
+5. **Git clone auth** — the `after_create` hook runs `git clone` unattended. Verify the user's repo clone URL works non-interactively: `git clone --depth 1 <url> /tmp/test-clone && rm -rf /tmp/test-clone`. HTTPS with password prompts will silently fail. Use SSH keys (no passphrase) or HTTPS with credential helper / token.
+
+Report results to the user before proceeding.
 
 ## Build Symphony
 
@@ -27,6 +30,8 @@ mise trust && mise install
 mise exec -- mix setup
 mise exec -- mix build
 ```
+
+Note: `mise install` downloads precompiled Erlang/Elixir if available for the platform. If not, it compiles from source — this can take 10-20 minutes. Let the user know before starting.
 
 ## Prepare the user's repo
 
@@ -86,7 +91,9 @@ The WORKFLOW.md prompt tells agents to "run runtime validation" for app-touching
 
 ## Commit and push
 
-Commit `.codex/`, `WORKFLOW.md`, and `launch-app` skill (if created) to the user's repo and push. Agents clone from the remote, so changes must be pushed.
+Commit `.codex/`, `WORKFLOW.md`, and `launch-app` skill (if created) to the user's repo and push. **Push is critical** — agents clone from the remote, so unpushed changes are invisible to workers.
+
+After pushing, verify: `git log origin/$(git branch --show-current) --oneline -1` should show your commit.
 
 ## Linear custom states
 
@@ -101,4 +108,40 @@ mise exec -- ./bin/symphony <repo-path>/WORKFLOW.md
 
 Add `--port <port>` to enable the Phoenix web dashboard.
 
-Have the user push a test ticket to Todo in Linear to verify. If the first worker fails, common causes: `LINEAR_API_KEY` not available in the shell running Symphony, `codex` not authenticated, or repo clone URL requires interactive auth.
+## Verify
+
+Have the user push a test ticket to Todo in Linear. Watch for the first worker to claim it. If it fails, run this checklist:
+
+- [ ] `LINEAR_API_KEY` available in the shell running Symphony?
+- [ ] `codex` authenticated?
+- [ ] `gh auth status` passing?
+- [ ] Repo clone URL works non-interactively?
+- [ ] `.codex/skills/` and `WORKFLOW.md` pushed to remote?
+- [ ] Custom Linear states (Rework, Human Review, Merging) added?
+
+## Getting started after setup
+
+Once Symphony is running, help the user with their first workflows:
+
+### Break down a feature into tickets
+
+The user has a big feature idea. Help them break it into Linear tickets using `linear_graphql` (via the `linear` skill in their repo). For each ticket:
+- Clear title and description with acceptance criteria
+- Set dependencies between tickets using `issueRelationCreate` (type: `blocks`)
+- Assign to the Symphony project so agents can pick them up
+- Start with tickets that have no blockers in Todo
+
+### First run
+
+Push a few tickets to Todo and watch. Walk the user through what to expect:
+- Agents claim tickets within seconds (polling interval)
+- Each agent writes a plan as a Linear comment before implementing
+- PRs appear on GitHub with the `symphony` label
+- The Linear board updates as agents move tickets through states
+
+### Tune on the fly
+
+WORKFLOW.md hot-reloads within ~1 second — no restart needed. Common adjustments:
+- `agent.max_concurrent_agents` — scale up/down based on API limits or repo complexity
+- `agent.max_turns` — increase for complex tickets, decrease to limit token spend
+- `polling.interval_ms` — how often Symphony checks for new/changed tickets
