@@ -20,9 +20,10 @@ workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/maximlafe/symphony .
-    if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
+    git clone --depth 1 "$SOURCE_REPO_URL" .
+    if command -v poetry >/dev/null 2>&1; then
+      poetry config virtualenvs.in-project true --local
+      poetry install --no-interaction
     fi
   before_remove: |
     branch=$(git branch --show-current 2>/dev/null)
@@ -40,6 +41,8 @@ codex:
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
     type: dangerFullAccess
+server:
+  host: "0.0.0.0"
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`
