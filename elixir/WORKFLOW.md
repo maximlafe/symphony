@@ -113,14 +113,20 @@ The agent talks to Linear via the `linear_graphql` tool injected by Symphony's a
    - `Merging` -> on entry, use the `land` skill; do not call `gh pr merge` directly.
    - `Rework` -> run rework flow.
    - `Done` -> do nothing and shut down.
-4. Check whether a PR already exists for the current branch and whether it is closed.
+4. Inspect only the minimal local repo state needed for routing (`branch`, `HEAD`) before any GitHub call.
+5. Query GitHub for an existing branch PR only when at least one reuse signal exists:
+   - current local branch is not `main`;
+   - the issue already contains a PR URL/attachment or an explicit PR reference in comments;
+   - the current state is `In Progress`, `Human Review`, `Rework`, or `Merging`.
+   - For fresh `Todo` runs on `main` with no PR signal, skip `gh pr list` entirely.
    - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
    - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
-5. For `Todo` tickets, do startup sequencing in this exact order:
+   - If the GitHub lookup was intentionally skipped, do not add a placeholder `PR not found` note to `workpad.md`.
+6. For `Todo` tickets, do startup sequencing in this exact order:
    - `update_issue(..., state: "In Progress")`
    - find/create `## Codex Workpad` bootstrap comment
    - only then begin analysis/planning/implementation work.
-6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
+7. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
 
 ## Step 1: Start/continue execution (Todo or In Progress)
 
