@@ -26,6 +26,12 @@ defmodule SymphonyElixir.Config do
           turn_sandbox_policy: map()
         }
 
+  @type codex_account :: %{
+          id: String.t(),
+          codex_home: Path.t(),
+          explicit?: boolean()
+        }
+
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     case Workflow.current() do
@@ -110,6 +116,50 @@ defmodule SymphonyElixir.Config do
            turn_sandbox_policy: turn_sandbox_policy
          }}
       end
+    end
+  end
+
+  @spec codex_accounts() :: [codex_account()]
+  def codex_accounts do
+    settings = settings!()
+
+    case settings.codex.accounts do
+      [] ->
+        [
+          %{
+            id: "default",
+            codex_home: ambient_codex_home(),
+            explicit?: false
+          }
+        ]
+
+      accounts ->
+        Enum.map(accounts, fn account ->
+          %{
+            id: account.id,
+            codex_home: account.codex_home,
+            explicit?: true
+          }
+        end)
+    end
+  end
+
+  @spec codex_minimum_remaining_percent() :: non_neg_integer()
+  def codex_minimum_remaining_percent do
+    settings!().codex.minimum_remaining_percent
+  end
+
+  @spec codex_monitored_windows_mins() :: [pos_integer()]
+  def codex_monitored_windows_mins do
+    settings!().codex.monitored_windows_mins
+  end
+
+  @spec ambient_codex_home() :: Path.t()
+  def ambient_codex_home do
+    System.get_env("CODEX_HOME")
+    |> case do
+      value when is_binary(value) and value != "" -> Path.expand(value)
+      _ -> Path.join(System.user_home!(), ".codex")
     end
   end
 

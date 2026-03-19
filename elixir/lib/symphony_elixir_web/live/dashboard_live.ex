@@ -131,6 +131,61 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
             <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
           </article>
+
+          <article class="metric-card">
+            <p class="metric-label">Active account</p>
+            <p class="metric-value"><%= @payload.active_codex_account_id || "n/a" %></p>
+            <p class="metric-detail">Global account used for new Codex starts.</p>
+          </article>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Codex accounts</h2>
+              <p class="section-copy">Current health and safe metadata for each configured `CODEX_HOME`.</p>
+            </div>
+          </div>
+
+          <%= if @payload.codex_accounts in [nil, []] do %>
+            <p class="empty-state">No Codex account metadata available.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 840px;">
+                <thead>
+                  <tr>
+                    <th>Account</th>
+                    <th>Status</th>
+                    <th>Auth</th>
+                    <th>Plan</th>
+                    <th>Email</th>
+                    <th>Checked</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={account <- @payload.codex_accounts}>
+                    <td>
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= account.id || "n/a" %></span>
+                        <span :if={account.id == @payload.active_codex_account_id} class="muted">active</span>
+                      </div>
+                    </td>
+                    <td>
+                      <span class={state_badge_class(if(account.healthy, do: "active", else: "blocked"))}>
+                        <%= if account.healthy, do: "healthy", else: "unhealthy" %>
+                      </span>
+                    </td>
+                    <td><%= account.auth_mode || "n/a" %></td>
+                    <td><%= account.plan_type || "n/a" %></td>
+                    <td class="mono"><%= account.email || "n/a" %></td>
+                    <td class="mono"><%= account.checked_at || "n/a" %></td>
+                    <td><%= account.health_reason || "n/a" %></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
         </section>
 
         <section class="section-card">
@@ -169,6 +224,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <tr>
                     <th>Issue</th>
                     <th>State</th>
+                    <th>Account</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
                     <th>Codex update</th>
@@ -188,6 +244,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <%= entry.state %>
                       </span>
                     </td>
+                    <td class="mono"><%= entry.codex_account_id || "n/a" %></td>
                     <td>
                       <div class="session-stack">
                         <%= if entry.session_id do %>

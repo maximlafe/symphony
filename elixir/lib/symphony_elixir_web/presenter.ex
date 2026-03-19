@@ -17,6 +17,8 @@ defmodule SymphonyElixirWeb.Presenter do
             running: length(snapshot.running),
             retrying: length(snapshot.retrying)
           },
+          active_codex_account_id: Map.get(snapshot, :active_codex_account_id),
+          codex_accounts: Enum.map(Map.get(snapshot, :codex_accounts, []), &account_payload/1),
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           codex_totals: snapshot.codex_totals,
@@ -99,6 +101,7 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       state: entry.state,
+      codex_account_id: Map.get(entry, :codex_account_id),
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,
@@ -125,6 +128,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp running_issue_payload(running) do
     %{
+      codex_account_id: Map.get(running, :codex_account_id),
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
@@ -161,6 +165,24 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp account_payload(account) when is_map(account) do
+    %{
+      id: Map.get(account, :id),
+      healthy: Map.get(account, :healthy, false),
+      health_reason: Map.get(account, :health_reason),
+      auth_mode: Map.get(account, :auth_mode),
+      email: Map.get(account, :email),
+      plan_type: Map.get(account, :plan_type),
+      requires_openai_auth: Map.get(account, :requires_openai_auth, false),
+      checked_at: iso8601(Map.get(account, :checked_at)),
+      missing_windows_mins: Map.get(account, :missing_windows_mins, []),
+      insufficient_windows_mins: Map.get(account, :insufficient_windows_mins, []),
+      rate_limits: Map.get(account, :rate_limits)
+    }
+  end
+
+  defp account_payload(_account), do: %{}
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()

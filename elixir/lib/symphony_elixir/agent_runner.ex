@@ -49,8 +49,9 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+    codex_account = Keyword.get(opts, :codex_account)
 
-    with {:ok, session} <- AppServer.start_session(workspace) do
+    with {:ok, session} <- AppServer.start_session(workspace, codex_launch_options(codex_account)) do
       try do
         do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after
@@ -151,4 +152,14 @@ defmodule SymphonyElixir.AgentRunner do
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
+
+  defp codex_launch_options(%{id: id, codex_home: codex_home})
+       when is_binary(id) and is_binary(codex_home) do
+    [
+      account_id: id,
+      command_env: [{"CODEX_HOME", codex_home}]
+    ]
+  end
+
+  defp codex_launch_options(_codex_account), do: []
 end

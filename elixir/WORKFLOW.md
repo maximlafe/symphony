@@ -39,6 +39,11 @@ codex:
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
     type: dangerFullAccess
+  accounts:
+    - id: primary
+      codex_home: ~/.codex-primary
+    - id: backup
+      codex_home: ~/.codex-backup
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`

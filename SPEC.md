@@ -229,6 +229,9 @@ Fields:
 - `codex_input_tokens` (integer)
 - `codex_output_tokens` (integer)
 - `codex_total_tokens` (integer)
+- `codex_account_id` (string or null)
+  - Account identity used to launch this worker. Existing sessions may keep an older account after
+    global failover.
 - `last_reported_input_tokens` (integer)
 - `last_reported_output_tokens` (integer)
 - `last_reported_total_tokens` (integer)
@@ -260,8 +263,11 @@ Fields:
 - `claimed` (set of issue IDs reserved/running/retrying)
 - `retry_attempts` (map `issue_id -> RetryEntry`)
 - `completed` (set of issue IDs; bookkeeping only, not dispatch gating)
+- `codex_accounts` (map `account_id -> account health/status`)
+- `active_codex_account_id` (string or null)
+- `codex_dispatch_reason` (string or null)
 - `codex_totals` (aggregate tokens + runtime seconds)
-- `codex_rate_limits` (latest rate-limit snapshot from agent events)
+- `codex_rate_limits` (latest active-account rate-limit snapshot; compatibility alias)
 
 ### 4.2 Stable Identifiers and Normalization Rules
 
@@ -575,6 +581,10 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
+- `codex.accounts`: ordered list of `{id, codex_home}` entries; optional; when omitted, the
+  implementation may use the ambient `CODEX_HOME`
+- `codex.minimum_remaining_percent`: integer, default `5`
+- `codex.monitored_windows_mins`: list of integers, default `[300, 10080]`
 - `server.port` (extension): integer, optional; enables the optional HTTP server, `0` may be used
   for ephemeral local bind, and CLI `--port` overrides it
 
@@ -1289,14 +1299,17 @@ If the implementation exposes a synchronous runtime snapshot (for dashboards or 
 should return:
 
 - `running` (list of running session rows)
+- each running row should include `codex_account_id` when account routing is supported
 - each running row should include `turn_count`
 - `retrying` (list of retry queue rows)
+- `active_codex_account_id` (string or null)
+- `codex_accounts` (list of safe per-account status rows)
 - `codex_totals`
   - `input_tokens`
   - `output_tokens`
   - `total_tokens`
   - `seconds_running` (aggregate runtime seconds as of snapshot time, including active sessions)
-- `rate_limits` (latest coding-agent rate limit payload, if available)
+- `rate_limits` (latest active-account coding-agent rate limit payload, if available)
 
 Recommended snapshot error modes:
 
@@ -1402,11 +1415,28 @@ Minimum endpoints:
         "running": 2,
         "retrying": 1
       },
+      "active_codex_account_id": "primary",
+      "codex_accounts": [
+        {
+          "id": "primary",
+          "healthy": true,
+          "health_reason": null,
+          "auth_mode": "chatgpt",
+          "email": "primary@example.com",
+          "plan_type": "pro",
+          "requires_openai_auth": false,
+          "checked_at": "2026-02-24T20:15:29Z",
+          "missing_windows_mins": [],
+          "insufficient_windows_mins": [],
+          "rate_limits": null
+        }
+      ],
       "running": [
         {
           "issue_id": "abc123",
           "issue_identifier": "MT-649",
           "state": "In Progress",
+          "codex_account_id": "primary",
           "session_id": "thread-1-turn-1",
           "turn_count": 7,
           "last_event": "turn_completed",
@@ -1457,6 +1487,7 @@ Minimum endpoints:
         "current_retry_attempt": 2
       },
       "running": {
+        "codex_account_id": "primary",
         "session_id": "thread-1-turn-1",
         "turn_count": 7,
         "state": "In Progress",
@@ -1692,8 +1723,11 @@ function start_service():
     claimed: set(),
     retry_attempts: {},
     completed: set(),
+    codex_accounts: {},
+    active_codex_account_id: null,
     codex_totals: {input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
-    codex_rate_limits: null
+    codex_rate_limits: null,
+    codex_dispatch_reason: null
   }
 
   validation = validate_dispatch_config()

@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
+  alias SymphonyElixir.Codex.{AccountProbe, Accounts}
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
@@ -37,8 +38,11 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
+      codex_accounts: %{},
+      active_codex_account_id: nil,
       codex_totals: nil,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      codex_dispatch_reason: nil
     ]
   end
 
@@ -60,8 +64,11 @@ defmodule SymphonyElixir.Orchestrator do
       poll_check_in_progress: false,
       tick_timer_ref: nil,
       tick_token: nil,
+      codex_accounts: %{},
+      active_codex_account_id: nil,
       codex_totals: @empty_codex_totals,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      codex_dispatch_reason: nil
     }
 
     run_terminal_workspace_cleanup()
@@ -108,6 +115,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
+    state = refresh_codex_accounts(state)
     state = maybe_dispatch(state)
     state = schedule_tick(state, state.poll_interval_ms)
     state = %{state | poll_check_in_progress: false}
@@ -173,7 +181,7 @@ defmodule SymphonyElixir.Orchestrator do
         state =
           state
           |> apply_codex_token_delta(token_delta)
-          |> apply_codex_rate_limits(update)
+          |> apply_codex_rate_limits(update, Map.get(updated_running_entry, :codex_account_id))
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -205,7 +213,8 @@ defmodule SymphonyElixir.Orchestrator do
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
-         true <- available_slots(state) > 0 do
+         true <- available_slots(state) > 0,
+         true <- active_codex_account_available?(state) do
       choose_issues(issues, state)
     else
       {:error, :missing_linear_api_token} ->
@@ -650,52 +659,60 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp do_dispatch_issue(%State{} = state, issue, attempt) do
     recipient = self()
+    codex_account = active_codex_account(state)
 
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt)
-         end) do
-      {:ok, pid} ->
-        ref = Process.monitor(pid)
+    if is_nil(codex_account) do
+      state
+    else
+      case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+             AgentRunner.run(issue, recipient, attempt: attempt, codex_account: codex_account)
+           end) do
+        {:ok, pid} ->
+          ref = Process.monitor(pid)
 
-        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}")
+          Logger.info(
+            "Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} codex_account_id=#{codex_account.id}"
+          )
 
-        running =
-          Map.put(state.running, issue.id, %{
-            pid: pid,
-            ref: ref,
+          running =
+            Map.put(state.running, issue.id, %{
+              pid: pid,
+              ref: ref,
+              identifier: issue.identifier,
+              issue: issue,
+              session_id: nil,
+              codex_account_id: codex_account.id,
+              last_codex_message: nil,
+              last_codex_timestamp: nil,
+              last_codex_event: nil,
+              codex_app_server_pid: nil,
+              codex_input_tokens: 0,
+              codex_output_tokens: 0,
+              codex_total_tokens: 0,
+              codex_last_reported_input_tokens: 0,
+              codex_last_reported_output_tokens: 0,
+              codex_last_reported_total_tokens: 0,
+              turn_count: 0,
+              retry_attempt: normalize_retry_attempt(attempt),
+              started_at: DateTime.utc_now()
+            })
+
+          %{
+            state
+            | running: running,
+              claimed: MapSet.put(state.claimed, issue.id),
+              retry_attempts: Map.delete(state.retry_attempts, issue.id)
+          }
+
+        {:error, reason} ->
+          Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
+          next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
+
+          schedule_issue_retry(state, issue.id, next_attempt, %{
             identifier: issue.identifier,
-            issue: issue,
-            session_id: nil,
-            last_codex_message: nil,
-            last_codex_timestamp: nil,
-            last_codex_event: nil,
-            codex_app_server_pid: nil,
-            codex_input_tokens: 0,
-            codex_output_tokens: 0,
-            codex_total_tokens: 0,
-            codex_last_reported_input_tokens: 0,
-            codex_last_reported_output_tokens: 0,
-            codex_last_reported_total_tokens: 0,
-            turn_count: 0,
-            retry_attempt: normalize_retry_attempt(attempt),
-            started_at: DateTime.utc_now()
+            error: "failed to spawn agent: #{inspect(reason)}"
           })
-
-        %{
-          state
-          | running: running,
-            claimed: MapSet.put(state.claimed, issue.id),
-            retry_attempts: Map.delete(state.retry_attempts, issue.id)
-        }
-
-      {:error, reason} ->
-        Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
-        next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
-
-        schedule_issue_retry(state, issue.id, next_attempt, %{
-          identifier: issue.identifier,
-          error: "failed to spawn agent: #{inspect(reason)}"
-        })
+      end
     end
   end
 
@@ -982,6 +999,7 @@ defmodule SymphonyElixir.Orchestrator do
           issue_id: issue_id,
           identifier: metadata.identifier,
           state: metadata.issue.state,
+          codex_account_id: Map.get(metadata, :codex_account_id),
           session_id: metadata.session_id,
           codex_app_server_pid: metadata.codex_app_server_pid,
           codex_input_tokens: metadata.codex_input_tokens,
@@ -1012,8 +1030,10 @@ defmodule SymphonyElixir.Orchestrator do
      %{
        running: running,
        retrying: retrying,
+       active_codex_account_id: state.active_codex_account_id,
+       codex_accounts: snapshot_codex_accounts(state),
        codex_totals: state.codex_totals,
-       rate_limits: Map.get(state, :codex_rate_limits),
+       rate_limits: active_codex_rate_limits(state),
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
@@ -1043,6 +1063,10 @@ defmodule SymphonyElixir.Orchestrator do
     codex_output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
     codex_total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
     codex_app_server_pid = Map.get(running_entry, :codex_app_server_pid)
+    codex_account_id =
+      Map.get(update, :codex_account_id) ||
+        Map.get(update, "codex_account_id") ||
+        Map.get(running_entry, :codex_account_id)
     last_reported_input = Map.get(running_entry, :codex_last_reported_input_tokens, 0)
     last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
@@ -1053,6 +1077,7 @@ defmodule SymphonyElixir.Orchestrator do
         last_codex_timestamp: timestamp,
         last_codex_message: summarize_codex_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),
+        codex_account_id: codex_account_id,
         last_codex_event: event,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
@@ -1171,6 +1196,31 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
+  defp refresh_codex_accounts(%State{} = state) do
+    accounts = Config.codex_accounts()
+
+    probed_accounts =
+      AccountProbe.probe_accounts(
+        accounts,
+        cwd: System.tmp_dir!(),
+        monitored_windows_mins: Config.codex_monitored_windows_mins(),
+        minimum_remaining_percent: Config.codex_minimum_remaining_percent(),
+        timeout_ms: max(Config.settings!().codex.read_timeout_ms * 2, 2_000)
+      )
+
+    codex_accounts =
+      probed_accounts
+      |> Enum.map(fn account_status ->
+        existing = Map.get(state.codex_accounts, account_status.id, %{})
+        {account_status.id, Map.merge(existing, account_status)}
+      end)
+      |> Map.new()
+
+    state
+    |> Map.put(:codex_accounts, codex_accounts)
+    |> reselect_active_codex_account()
+  end
+
   defp retry_candidate_issue?(%Issue{} = issue, terminal_states) do
     candidate_issue?(issue, active_state_set(), terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states)
@@ -1190,8 +1240,25 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp apply_codex_token_delta(state, _token_delta), do: state
 
-  defp apply_codex_rate_limits(%State{} = state, update) when is_map(update) do
+  defp apply_codex_rate_limits(%State{} = state, update, account_id) when is_map(update) do
     case extract_rate_limits(update) do
+      %{} = rate_limits when is_binary(account_id) ->
+        existing = Map.get(state.codex_accounts, account_id, %{id: account_id})
+        health = Accounts.health(rate_limits, Config.codex_monitored_windows_mins(), Config.codex_minimum_remaining_percent())
+
+        updated_account =
+          existing
+          |> Map.put(:rate_limits, rate_limits)
+          |> Map.put(:checked_at, DateTime.utc_now())
+          |> Map.put(:missing_windows_mins, health.missing_windows_mins)
+          |> Map.put(:insufficient_windows_mins, health.insufficient_windows_mins)
+          |> Map.put(:health_reason, health.reason)
+          |> Map.put(:healthy, existing_logged_in?(existing) and health.healthy?)
+
+        state
+        |> Map.put(:codex_accounts, Map.put(state.codex_accounts, account_id, updated_account))
+        |> reselect_active_codex_account()
+
       %{} = rate_limits ->
         %{state | codex_rate_limits: rate_limits}
 
@@ -1199,8 +1266,6 @@ defmodule SymphonyElixir.Orchestrator do
         state
     end
   end
-
-  defp apply_codex_rate_limits(state, _update), do: state
 
   defp apply_token_delta(codex_totals, token_delta) do
     input_tokens = Map.get(codex_totals, :input_tokens, 0) + token_delta.input_tokens
@@ -1288,12 +1353,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp extract_rate_limits(update) do
-    rate_limits_from_payload(update[:rate_limits]) ||
-      rate_limits_from_payload(Map.get(update, "rate_limits")) ||
-      rate_limits_from_payload(Map.get(update, :rate_limits)) ||
-      rate_limits_from_payload(update[:payload]) ||
-      rate_limits_from_payload(Map.get(update, "payload")) ||
-      rate_limits_from_payload(update)
+    find_rate_limits_snapshot(update)
   end
 
   defp absolute_token_usage_from_payload(payload) when is_map(payload) do
@@ -1329,72 +1389,100 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp turn_completed_usage_from_payload(_payload), do: nil
 
-  defp rate_limits_from_payload(payload) when is_map(payload) do
-    direct = Map.get(payload, "rate_limits") || Map.get(payload, :rate_limits)
+  defp find_rate_limits_snapshot(payload) when is_map(payload) do
+    Accounts.select_rate_limits_snapshot(payload) ||
+      payload
+      |> Map.values()
+      |> Enum.reduce_while(nil, fn
+        value, nil ->
+          case find_rate_limits_snapshot(value) do
+            nil -> {:cont, nil}
+            rate_limits -> {:halt, rate_limits}
+          end
 
-    cond do
-      rate_limits_map?(direct) ->
-        direct
+        _value, result ->
+          {:halt, result}
+      end)
+  end
 
-      rate_limits_map?(payload) ->
-        payload
+  defp find_rate_limits_snapshot(payload) when is_list(payload) do
+    Enum.reduce_while(payload, nil, fn
+      value, nil ->
+        case find_rate_limits_snapshot(value) do
+          nil -> {:cont, nil}
+          rate_limits -> {:halt, rate_limits}
+        end
 
-      true ->
-        rate_limit_payloads(payload)
+      _value, result ->
+        {:halt, result}
+    end)
+  end
+
+  defp find_rate_limits_snapshot(_payload), do: nil
+
+  defp existing_logged_in?(existing) when is_map(existing) do
+    Map.get(existing, :requires_openai_auth) != true
+  end
+
+  defp existing_logged_in?(_existing), do: true
+
+  defp active_codex_account_available?(%State{active_codex_account_id: account_id}) when is_binary(account_id), do: true
+  defp active_codex_account_available?(_state), do: false
+
+  defp active_codex_account(%State{active_codex_account_id: account_id, codex_accounts: codex_accounts})
+       when is_binary(account_id) do
+    Map.get(codex_accounts, account_id)
+  end
+
+  defp active_codex_account(_state), do: nil
+
+  defp active_codex_rate_limits(%State{} = state) do
+    case active_codex_account(state) do
+      %{rate_limits: rate_limits} -> rate_limits
+      _ -> state.codex_rate_limits
     end
   end
 
-  defp rate_limits_from_payload(payload) when is_list(payload) do
-    rate_limit_payloads(payload)
-  end
-
-  defp rate_limits_from_payload(_payload), do: nil
-
-  defp rate_limit_payloads(payload) when is_map(payload) do
-    Map.values(payload)
-    |> Enum.reduce_while(nil, fn
-      value, nil ->
-        case rate_limits_from_payload(value) do
-          nil -> {:cont, nil}
-          rate_limits -> {:halt, rate_limits}
-        end
-
-      _value, result ->
-        {:halt, result}
+  defp snapshot_codex_accounts(%State{} = state) do
+    Config.codex_accounts()
+    |> Enum.map(fn account ->
+      Map.get(state.codex_accounts, account.id, %{
+        id: account.id,
+        explicit?: account.explicit?,
+        healthy: false,
+        health_reason: "not yet probed",
+        auth_mode: "unknown",
+        email: nil,
+        plan_type: nil,
+        requires_openai_auth: false,
+        rate_limits: nil,
+        account: nil
+      })
     end)
   end
 
-  defp rate_limit_payloads(payload) when is_list(payload) do
-    payload
-    |> Enum.reduce_while(nil, fn
-      value, nil ->
-        case rate_limits_from_payload(value) do
-          nil -> {:cont, nil}
-          rate_limits -> {:halt, rate_limits}
+  defp reselect_active_codex_account(%State{} = state) do
+    active_codex_account_id =
+      Config.codex_accounts()
+      |> Enum.find_value(fn account ->
+        case Map.get(state.codex_accounts, account.id) do
+          %{healthy: true} -> account.id
+          _ -> nil
         end
+      end)
 
-      _value, result ->
-        {:halt, result}
-    end)
+    %{
+      state
+      | active_codex_account_id: active_codex_account_id,
+        codex_rate_limits:
+          if(is_binary(active_codex_account_id),
+            do: get_in(state.codex_accounts, [active_codex_account_id, :rate_limits]),
+            else: nil
+          ),
+        codex_dispatch_reason:
+          if(is_binary(active_codex_account_id), do: nil, else: "no healthy codex account")
+    }
   end
-
-  defp rate_limits_map?(payload) when is_map(payload) do
-    limit_id =
-      Map.get(payload, "limit_id") ||
-        Map.get(payload, :limit_id) ||
-        Map.get(payload, "limit_name") ||
-        Map.get(payload, :limit_name)
-
-    has_buckets =
-      Enum.any?(
-        ["primary", :primary, "secondary", :secondary, "credits", :credits],
-        &Map.has_key?(payload, &1)
-      )
-
-    !is_nil(limit_id) and has_buckets
-  end
-
-  defp rate_limits_map?(_payload), do: false
 
   defp explicit_map_at_paths(payload, paths) when is_map(payload) and is_list(paths) do
     Enum.find_value(paths, fn path ->

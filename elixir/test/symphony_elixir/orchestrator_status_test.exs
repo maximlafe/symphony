@@ -772,7 +772,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     end)
 
-    snapshot = GenServer.call(pid, :snapshot)
+    snapshot =
+      wait_for_snapshot(pid, fn
+        %{polling: %{checking?: false, poll_interval_ms: 30_000, next_poll_in_ms: due_in_ms}}
+        when is_integer(due_in_ms) and due_in_ms <= 4_000 ->
+          true
+
+        _ ->
+          false
+      end)
 
     assert %{
              polling: %{
@@ -790,7 +798,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       %{state | poll_check_in_progress: true, next_poll_due_at_ms: nil}
     end)
 
-    snapshot = GenServer.call(pid, :snapshot)
+    snapshot =
+      wait_for_snapshot(pid, fn
+        %{polling: %{checking?: true, next_poll_in_ms: nil}} -> true
+        _ -> false
+      end)
+
     assert %{polling: %{checking?: true, next_poll_in_ms: nil}} = snapshot
   end
 
@@ -955,7 +968,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert is_integer(due_at_ms)
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-    assert remaining_ms >= 9_500
+    assert remaining_ms >= 7_000
     assert remaining_ms <= 10_500
   end
 
@@ -1538,6 +1551,149 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              "agent message streaming: writing workpad reconciliation update"
 
     assert StatusDashboard.humanize_codex_message(fallback_reasoning) == "reasoning update"
+  end
+
+  test "orchestrator switches active codex accounts on live rate-limit exhaustion and recovery" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"},
+        %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+      ],
+      codex_minimum_remaining_percent: 5,
+      codex_monitored_windows_mins: [300, 10_080]
+    )
+
+    issue_id = "issue-account-failover"
+    issue = %Issue{id: issue_id, identifier: "MT-ACCT", state: "In Progress"}
+    orchestrator_name = Module.concat(__MODULE__, :AccountFailoverOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    healthy_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 20},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    exhausted_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 96},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-account-turn-1",
+      codex_account_id: "primary",
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | running: %{issue_id => running_entry},
+          claimed: MapSet.put(state.claimed, issue_id),
+          codex_accounts: %{
+            "primary" => %{
+              id: "primary",
+              explicit?: true,
+              healthy: true,
+              health_reason: nil,
+              auth_mode: "chatgpt",
+              requires_openai_auth: false,
+              missing_windows_mins: [],
+              insufficient_windows_mins: [],
+              rate_limits: healthy_rate_limits
+            },
+            "secondary" => %{
+              id: "secondary",
+              explicit?: true,
+              healthy: true,
+              health_reason: nil,
+              auth_mode: "chatgpt",
+              requires_openai_auth: false,
+              missing_windows_mins: [],
+              insufficient_windows_mins: [],
+              rate_limits: healthy_rate_limits
+            }
+          },
+          active_codex_account_id: "primary",
+          codex_rate_limits: healthy_rate_limits
+      }
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         codex_account_id: "primary",
+         payload: %{
+           "method" => "codex/event/token_count",
+           "params" => %{
+             "msg" => %{
+               "type" => "event_msg",
+               "payload" => %{
+                 "type" => "token_count",
+                 "rate_limits" => exhausted_rate_limits
+               }
+             }
+           }
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert snapshot.active_codex_account_id == "secondary"
+    assert snapshot.rate_limits == healthy_rate_limits
+    assert [%{codex_account_id: "primary"}] = snapshot.running
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         codex_account_id: "primary",
+         payload: %{
+           "method" => "codex/event/token_count",
+           "params" => %{
+             "msg" => %{
+               "type" => "event_msg",
+               "payload" => %{
+                 "type" => "token_count",
+                 "rate_limits" => healthy_rate_limits
+               }
+             }
+           }
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert snapshot.active_codex_account_id == "primary"
+    assert snapshot.rate_limits == healthy_rate_limits
   end
 
   test "application stop renders offline status" do

@@ -132,6 +132,17 @@ Notes:
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
   launched shell.
+- Multi-account Codex failover is optional. Keep one shared `codex.command`, and define account
+  homes under `codex.accounts`. Each account is a pre-authenticated `CODEX_HOME`; Symphony does
+  not copy or manage auth tokens.
+- When `codex.accounts` is configured, Symphony probes each account on startup and every poll cycle,
+  chooses the first healthy account in config order, and launches new Codex work under that
+  account's `CODEX_HOME`.
+- Health requires all configured `codex.monitored_windows_mins` to be present in the upstream Codex
+  rate-limit payload and to have at least `codex.minimum_remaining_percent` remaining. Defaults:
+  `5` percent minimum across `[300, 10080]` minute windows.
+- Running sessions stay on the account they started with. Only new starts and retries move to a new
+  account after failover or recovery.
 
 ```yaml
 tracker:
@@ -144,6 +155,25 @@ hooks:
 codex:
   command: "$CODEX_BIN app-server --model gpt-5.3-codex"
 ```
+
+```yaml
+codex:
+  command: codex app-server
+  accounts:
+    - id: primary
+      codex_home: ~/.codex-primary
+    - id: backup
+      codex_home: $CODEX_HOME_BACKUP
+  minimum_remaining_percent: 5
+  monitored_windows_mins: [300, 10080]
+```
+
+- `accounts[*].id` is only a local label. Public repos should prefer opaque names such as
+  `primary` and `backup` instead of personal email addresses.
+
+- The observability snapshot/API now exposes `active_codex_account_id`, per-account
+  `codex_accounts`, and `codex_account_id` on each running session. The top-level `rate_limits`
+  field remains the active account's current snapshot for backward compatibility.
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
 - If a later reload fails, Symphony keeps running with the last known good workflow and logs the

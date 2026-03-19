@@ -1183,4 +1183,82 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
     assert Config.workflow_prompt() == workflow_prompt
   end
+
+  test "config expands codex account homes and exposes multi-account getters" do
+    codex_home_env = "SYMPHONY_CODEX_HOME_#{System.unique_integer([:positive])}"
+    env_codex_home = Path.join(System.tmp_dir!(), "symphony-codex-home-primary")
+    previous_codex_home_env = System.get_env(codex_home_env)
+    previous_ambient_codex_home = System.get_env("CODEX_HOME")
+
+    System.put_env(codex_home_env, env_codex_home)
+    System.put_env("CODEX_HOME", Path.join(System.tmp_dir!(), "ambient-codex-home"))
+
+    on_exit(fn ->
+      restore_env(codex_home_env, previous_codex_home_env)
+      restore_env("CODEX_HOME", previous_ambient_codex_home)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_accounts: [
+        %{id: "primary", codex_home: "$#{codex_home_env}"},
+        %{id: "secondary", codex_home: "~/.codex-secondary"}
+      ],
+      codex_minimum_remaining_percent: 7,
+      codex_monitored_windows_mins: [300, 10_080]
+    )
+
+    assert Config.codex_accounts() == [
+             %{id: "primary", codex_home: Path.expand(env_codex_home), explicit?: true},
+             %{id: "secondary", codex_home: Path.expand("~/.codex-secondary"), explicit?: true}
+           ]
+
+    assert Config.codex_minimum_remaining_percent() == 7
+    assert Config.codex_monitored_windows_mins() == [300, 10_080]
+  end
+
+  test "config preserves legacy single-account behavior from ambient CODEX_HOME" do
+    previous_ambient_codex_home = System.get_env("CODEX_HOME")
+    ambient_codex_home = Path.join(System.tmp_dir!(), "ambient-codex-home-legacy")
+
+    System.put_env("CODEX_HOME", ambient_codex_home)
+
+    on_exit(fn ->
+      restore_env("CODEX_HOME", previous_ambient_codex_home)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_accounts: [])
+
+    assert Config.codex_accounts() == [
+             %{id: "default", codex_home: Path.expand(ambient_codex_home), explicit?: false}
+           ]
+  end
+
+  test "config rejects duplicate and invalid codex account homes" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_accounts: [
+        %{id: "dup", codex_home: "/tmp/codex-a"},
+        %{id: "dup", codex_home: "/tmp/codex-b"}
+      ]
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "codex.accounts"
+    assert message =~ "duplicate codex account id"
+
+    missing_env = "SYMPHONY_CODEX_HOME_MISSING_#{System.unique_integer([:positive])}"
+    previous_missing_env = System.get_env(missing_env)
+    System.delete_env(missing_env)
+
+    on_exit(fn ->
+      restore_env(missing_env, previous_missing_env)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_accounts: [%{id: "missing", codex_home: "$#{missing_env}"}]
+    )
+
+    assert {:error, {:invalid_workflow_config, missing_message}} = Config.settings()
+    assert missing_message =~ "codex.accounts.0.codex_home"
+    assert missing_message =~ "env-backed path is missing"
+  end
 end

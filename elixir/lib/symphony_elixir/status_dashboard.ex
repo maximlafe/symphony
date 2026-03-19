@@ -315,6 +315,8 @@ defmodule SymphonyElixir.StatusDashboard do
            %{
              running: running,
              retrying: retrying,
+             active_codex_account_id: Map.get(snapshot, :active_codex_account_id),
+             codex_accounts: Map.get(snapshot, :codex_accounts, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
@@ -334,6 +336,8 @@ defmodule SymphonyElixir.StatusDashboard do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
         rate_limits = Map.get(snapshot, :rate_limits)
+        active_codex_account_id = Map.get(snapshot, :active_codex_account_id)
+        codex_accounts = Map.get(snapshot, :codex_accounts, [])
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
@@ -362,7 +366,9 @@ defmodule SymphonyElixir.StatusDashboard do
              colorize("out #{format_count(codex_output_tokens)}", @ansi_yellow) <>
              colorize(" | ", @ansi_gray) <>
              colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
+           colorize("│ Active Account: ", @ansi_bold) <> format_active_account(active_codex_account_id),
            colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
+           colorize("│ Accounts: ", @ansi_bold) <> format_codex_accounts(codex_accounts, active_codex_account_id),
            project_link_lines,
            project_refresh_line,
            colorize("├─ Running", @ansi_bold),
@@ -591,7 +597,10 @@ defmodule SymphonyElixir.StatusDashboard do
     issue = format_cell(running_entry.identifier || "unknown", @running_id_width)
     state = running_entry.state || "unknown"
     state_display = format_cell(to_string(state), @running_stage_width)
-    session = running_entry.session_id |> compact_session_id() |> format_cell(@running_session_width)
+    session =
+      running_entry
+      |> compact_running_session()
+      |> format_cell(@running_session_width)
     pid = format_cell(running_entry.codex_app_server_pid || "n/a", @running_pid_width)
     total_tokens = running_entry.codex_total_tokens || 0
     runtime_seconds = running_entry.runtime_seconds || 0
@@ -840,6 +849,19 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
+  defp compact_running_session(running_entry) when is_map(running_entry) do
+    session_id = compact_session_id(Map.get(running_entry, :session_id))
+    account_id = Map.get(running_entry, :codex_account_id)
+
+    if is_binary(account_id) and account_id != "" do
+      "#{session_id}/#{account_id}"
+    else
+      session_id
+    end
+  end
+
+  defp compact_running_session(_running_entry), do: "n/a"
+
   defp group_thousands(value) when is_binary(value) do
     sign = if String.starts_with?(value, "-"), do: "-", else: ""
     unsigned = if sign == "", do: value, else: String.slice(value, 1, String.length(value) - 1)
@@ -925,6 +947,7 @@ defmodule SymphonyElixir.StatusDashboard do
   defp format_rate_limits(rate_limits) when is_map(rate_limits) do
     limit_id =
       map_value(rate_limits, ["limit_id", :limit_id, "limit_name", :limit_name]) ||
+        map_value(rate_limits, ["limitId", :limitId, "limitName", :limitName, "planType", :planType, "plan_type", :plan_type]) ||
         "unknown"
 
     primary = format_rate_limit_bucket(map_value(rate_limits, ["primary", :primary]))
@@ -952,6 +975,8 @@ defmodule SymphonyElixir.StatusDashboard do
   defp format_rate_limit_bucket(bucket) when is_map(bucket) do
     remaining = map_value(bucket, ["remaining", :remaining])
     limit = map_value(bucket, ["limit", :limit])
+    used_percent = map_value(bucket, ["used_percent", :used_percent, "usedPercent", :usedPercent])
+    window_mins = map_value(bucket, ["window_minutes", :window_minutes, "windowDurationMins", :windowDurationMins])
 
     reset_value =
       map_value(bucket, [
@@ -979,6 +1004,12 @@ defmodule SymphonyElixir.StatusDashboard do
 
         integer_like?(limit) ->
           "limit #{format_count(limit)}"
+
+        is_number(used_percent) and is_integer(window_mins) ->
+          "#{used_percent}%/#{window_mins}m"
+
+        is_number(used_percent) ->
+          "#{used_percent}% used"
 
         map_size(bucket) == 0 ->
           "n/a"
@@ -1636,7 +1667,13 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_rate_limit_bucket_summary(bucket) when is_map(bucket) do
     used_percent = map_value(bucket, ["usedPercent", :usedPercent])
-    window_mins = map_value(bucket, ["windowDurationMins", :windowDurationMins])
+    window_mins =
+      map_value(bucket, [
+        "windowDurationMins",
+        :windowDurationMins,
+        "window_minutes",
+        :window_minutes
+      ])
 
     cond do
       is_number(used_percent) and is_integer(window_mins) ->
@@ -1651,6 +1688,41 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_rate_limit_bucket_summary(_bucket), do: nil
+
+  defp format_active_account(nil), do: colorize("n/a", @ansi_gray)
+  defp format_active_account(account_id), do: colorize(to_string(account_id), @ansi_cyan)
+
+  defp format_codex_accounts([], _active_codex_account_id), do: colorize("unavailable", @ansi_gray)
+
+  defp format_codex_accounts(codex_accounts, active_codex_account_id) when is_list(codex_accounts) do
+    codex_accounts
+    |> Enum.map(fn account ->
+      id = map_value(account, ["id", :id]) || "unknown"
+      healthy = map_value(account, ["healthy", :healthy]) == true
+      reason = map_value(account, ["health_reason", :health_reason])
+      active? = id == active_codex_account_id
+
+      label =
+        cond do
+          healthy and active? -> "#{id} active"
+          healthy -> "#{id} healthy"
+          is_binary(reason) and reason != "" -> "#{id} #{truncate(reason, 32)}"
+          true -> "#{id} unhealthy"
+        end
+
+      color =
+        cond do
+          healthy and active? -> @ansi_green
+          healthy -> @ansi_cyan
+          true -> @ansi_gray
+        end
+
+      colorize(label, color)
+    end)
+    |> Enum.join(colorize(" | ", @ansi_gray))
+  end
+
+  defp format_codex_accounts(_codex_accounts, _active_codex_account_id), do: colorize("unavailable", @ansi_gray)
 
   defp format_error_value(%{"message" => message}) when is_binary(message), do: message
   defp format_error_value(%{message: message}) when is_binary(message), do: message

@@ -25,6 +25,7 @@ The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatt
 - **Cheaper Linear calls** — agents no longer burn tokens on schema introspection before every GraphQL call, and workpad sync is a single dynamic tool instead of a hand-rolled mutation
 - **Correct sandbox** — the workflow is git + GitHub PR centric. Upstream's default sandbox blocks `.git/` writes, which silently breaks the entire flow. Fixed.
 - **Media uploads via Linear** — upstream references a GitHub media upload skill that doesn't ship. The workflow and Linear skill now use Linear's native `fileUpload` mutation for screenshots and recordings
+- **Multi-account Codex failover** — Symphony can rotate between multiple pre-authenticated `CODEX_HOME` directories and stop starting new work on an account when its 5-hour or weekly Codex budget is nearly exhausted
 - **Setup skill** — auto-detects your repo, installs worker skills, creates Linear workflow states, and verifies everything before launch
 
 ## Manual setup

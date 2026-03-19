@@ -136,6 +136,25 @@ defmodule SymphonyElixir.Config.Schema do
     use Ecto.Schema
     import Ecto.Changeset
 
+    defmodule Account do
+      @moduledoc false
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      @primary_key false
+      embedded_schema do
+        field(:id, :string)
+        field(:codex_home, :string)
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(attrs, [:id, :codex_home], empty_values: [])
+        |> validate_required([:id, :codex_home])
+      end
+    end
+
     @primary_key false
     embedded_schema do
       field(:command, :string, default: "codex app-server")
@@ -155,6 +174,10 @@ defmodule SymphonyElixir.Config.Schema do
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
+      field(:minimum_remaining_percent, :integer, default: 5)
+      field(:monitored_windows_mins, {:array, :integer}, default: [300, 10_080])
+
+      embeds_many(:accounts, Account, on_replace: :delete)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -169,14 +192,21 @@ defmodule SymphonyElixir.Config.Schema do
           :turn_sandbox_policy,
           :turn_timeout_ms,
           :read_timeout_ms,
-          :stall_timeout_ms
+          :stall_timeout_ms,
+          :minimum_remaining_percent,
+          :monitored_windows_mins
         ],
         empty_values: []
       )
+      |> cast_embed(:accounts, with: &Account.changeset/2)
       |> validate_required([:command])
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+      |> validate_number(:minimum_remaining_percent, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
+      |> update_change(:monitored_windows_mins, &SymphonyElixir.Config.Schema.normalize_monitored_windows/1)
+      |> SymphonyElixir.Config.Schema.validate_monitored_windows(:monitored_windows_mins)
+      |> SymphonyElixir.Config.Schema.validate_unique_codex_account_ids()
     end
   end
 
@@ -262,7 +292,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> apply_action(:validate)
     |> case do
       {:ok, settings} ->
-        {:ok, finalize_settings(settings)}
+        finalize_settings(settings)
 
       {:error, changeset} ->
         {:error, {:invalid_workflow_config, format_errors(changeset)}}
@@ -326,6 +356,74 @@ defmodule SymphonyElixir.Config.Schema do
     end)
   end
 
+  @doc false
+  @spec normalize_monitored_windows(nil | list()) :: [integer()]
+  def normalize_monitored_windows(nil), do: []
+
+  def normalize_monitored_windows(windows) when is_list(windows) do
+    windows
+    |> Enum.reduce([], fn
+      window, acc when is_integer(window) -> acc ++ [window]
+      _window, acc -> acc
+    end)
+    |> Enum.uniq()
+  end
+
+  def normalize_monitored_windows(_windows), do: []
+
+  @doc false
+  @spec validate_monitored_windows(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
+  def validate_monitored_windows(changeset, field) do
+    validate_change(changeset, field, fn ^field, windows ->
+      cond do
+        not is_list(windows) ->
+          [{field, "must be a list of positive integers"}]
+
+        windows == [] ->
+          [{field, "must contain at least one positive integer"}]
+
+        Enum.any?(windows, fn window -> not is_integer(window) or window <= 0 end) ->
+          [{field, "must contain positive integers"}]
+
+        true ->
+          []
+      end
+    end)
+  end
+
+  @doc false
+  @spec validate_unique_codex_account_ids(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  def validate_unique_codex_account_ids(changeset) do
+    ids =
+      changeset
+      |> get_field(:accounts, [])
+      |> Enum.map(&codex_account_id/1)
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&String.trim/1)
+
+    duplicate_ids =
+      ids
+      |> Enum.frequencies()
+      |> Enum.filter(fn {_id, count} -> count > 1 end)
+      |> Enum.map(fn {id, _count} -> id end)
+
+    changeset =
+      if Enum.any?(ids, &(&1 == "")) do
+        add_error(changeset, :accounts, "ids must not be blank")
+      else
+        changeset
+      end
+
+    Enum.reduce(duplicate_ids, changeset, fn id, acc ->
+      add_error(acc, :accounts, "duplicate codex account id #{inspect(id)}")
+    end)
+  end
+
+  defp codex_account_id(%Ecto.Changeset{} = changeset), do: get_field(changeset, :id)
+  defp codex_account_id(%{id: id}), do: id
+  defp codex_account_id(%{"id" => id}), do: id
+  defp codex_account_id(_account), do: nil
+
   defp changeset(attrs) do
     %__MODULE__{}
     |> cast(attrs, [])
@@ -351,13 +449,17 @@ defmodule SymphonyElixir.Config.Schema do
       | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "symphony_workspaces"))
     }
 
-    codex = %{
-      settings.codex
-      | approval_policy: normalize_keys(settings.codex.approval_policy),
-        turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
-    }
+    with {:ok, codex_accounts} <- resolve_codex_accounts(settings.codex.accounts) do
+      codex = %{
+        settings.codex
+        | approval_policy: normalize_keys(settings.codex.approval_policy),
+          turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy),
+          monitored_windows_mins: normalize_monitored_windows(settings.codex.monitored_windows_mins),
+          accounts: codex_accounts
+      }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+      {:ok, %{settings | tracker: tracker, workspace: workspace, codex: codex}}
+    end
   end
 
   defp normalize_keys(value) when is_map(value) do
@@ -409,6 +511,19 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defp resolve_required_path_value(value) when is_binary(value) do
+    case normalize_path_token(value) do
+      :missing ->
+        {:error, "env-backed path is missing"}
+
+      "" ->
+        {:error, "path must not be blank"}
+
+      path ->
+        {:ok, Path.expand(path)}
+    end
+  end
+
   defp resolve_env_value(value, fallback) when is_binary(value) do
     case env_reference_name(value) do
       {:ok, env_name} ->
@@ -452,6 +567,28 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp normalize_secret_value(_value), do: nil
+
+  defp resolve_codex_accounts(accounts) when is_list(accounts) do
+    accounts
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn
+      {%{id: id, codex_home: codex_home} = account, index}, {:ok, acc}
+      when is_binary(id) and is_binary(codex_home) ->
+        case resolve_required_path_value(codex_home) do
+          {:ok, resolved_codex_home} ->
+            resolved_account = %{account | id: String.trim(id), codex_home: resolved_codex_home}
+            {:cont, {:ok, acc ++ [resolved_account]}}
+
+          {:error, reason} ->
+            {:halt, {:error, {:invalid_workflow_config, "codex.accounts.#{index}.codex_home #{reason}"}}}
+        end
+
+      {_account, index}, _acc ->
+        {:halt, {:error, {:invalid_workflow_config, "codex.accounts.#{index} is invalid"}}}
+    end)
+  end
+
+  defp resolve_codex_accounts(_accounts), do: {:ok, []}
 
   defp default_turn_sandbox_policy(workspace) do
     writable_root =

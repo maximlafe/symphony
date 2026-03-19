@@ -343,8 +343,26 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
              "counts" => %{"running" => 1, "retrying" => 1},
+             "active_codex_account_id" => "primary",
+             "codex_accounts" => [
+               %{
+                 "id" => "primary",
+                 "healthy" => true,
+                 "health_reason" => nil,
+                 "auth_mode" => "chatgpt",
+                 "email" => "primary@example.com",
+                 "plan_type" => "pro",
+                 "requires_openai_auth" => false,
+                 "checked_at" =>
+                   state_payload["codex_accounts"] |> List.first() |> Map.fetch!("checked_at"),
+                 "missing_windows_mins" => [],
+                 "insufficient_windows_mins" => [],
+                 "rate_limits" => %{"primary" => %{"remaining" => 11}}
+               }
+             ],
              "running" => [
                %{
+                 "codex_account_id" => "primary",
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
@@ -385,6 +403,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              "workspace" => %{"path" => Path.join(Config.settings!().workspace.root, "MT-HTTP")},
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
+               "codex_account_id" => "primary",
                "session_id" => "thread-http",
                "turn_count" => 7,
                "state" => "In Progress",
@@ -495,9 +514,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
-    assert dashboard_css =~ ".status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+    assert dashboard_css =~ ".status-badge-liveview-live"
+    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-liveview-live"
+    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-liveview-offline"
 
     phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
     assert phoenix_html_js =~ "phoenix.link.click"
@@ -530,21 +549,24 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
+    assert html =~ "Symphony Observability"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "rendered"
     assert html =~ "Runtime"
-    assert html =~ "Live"
-    assert html =~ "Offline"
+    assert html =~ "Active account"
+    assert html =~ "Codex accounts"
+    assert html =~ "primary@example.com"
+    assert html =~ "LiveView"
+    assert html =~ "LiveView offline"
     assert html =~ "Copy ID"
     assert html =~ "Codex update"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
     refute html =~ "Transport"
-    assert html =~ "status-badge-live"
-    assert html =~ "status-badge-offline"
+    assert html =~ "status-badge-liveview-live"
+    assert html =~ "status-badge-liveview-offline"
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -676,11 +698,28 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   defp static_snapshot do
     %{
+      active_codex_account_id: "primary",
+      codex_accounts: [
+        %{
+          id: "primary",
+          healthy: true,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          email: "primary@example.com",
+          plan_type: "pro",
+          requires_openai_auth: false,
+          checked_at: DateTime.utc_now(),
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: %{"primary" => %{"remaining" => 11}}
+        }
+      ],
       running: [
         %{
           issue_id: "issue-http",
           identifier: "MT-HTTP",
           state: "In Progress",
+          codex_account_id: "primary",
           session_id: "thread-http",
           turn_count: 7,
           codex_app_server_pid: nil,

@@ -35,6 +35,7 @@ defmodule SymphonyElixir.TestSupport do
         workflow_file = Path.join(workflow_root, "WORKFLOW.md")
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)
+        SymphonyElixir.TestSupport.ensure_application_started()
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
         stop_default_http_server()
 
@@ -69,19 +70,33 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
 
+  def ensure_application_started do
+    case Application.ensure_all_started(:symphony_elixir) do
+      {:ok, _started} -> :ok
+      {:error, {:already_started, _app}} -> :ok
+      other -> raise "failed to start :symphony_elixir for test setup: #{inspect(other)}"
+    end
+  end
+
   def stop_default_http_server do
-    case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
-           {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
-           _child -> false
-         end) do
-      {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) ->
-        :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      pid when is_pid(pid) ->
+        case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
+               {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
+               _child -> false
+             end) do
+          {SymphonyElixir.HttpServer, child_pid, _type, _modules} when is_pid(child_pid) ->
+            :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
 
-        if Process.alive?(pid) do
-          Process.exit(pid, :normal)
+            if Process.alive?(child_pid) do
+              Process.exit(child_pid, :normal)
+            end
+
+            :ok
+
+          _ ->
+            :ok
         end
-
-        :ok
 
       _ ->
         :ok
@@ -112,6 +127,9 @@ defmodule SymphonyElixir.TestSupport do
           codex_turn_timeout_ms: 3_600_000,
           codex_read_timeout_ms: 5_000,
           codex_stall_timeout_ms: 300_000,
+          codex_accounts: [],
+          codex_minimum_remaining_percent: 5,
+          codex_monitored_windows_mins: [300, 10_080],
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -147,6 +165,9 @@ defmodule SymphonyElixir.TestSupport do
     codex_turn_timeout_ms = Keyword.get(config, :codex_turn_timeout_ms)
     codex_read_timeout_ms = Keyword.get(config, :codex_read_timeout_ms)
     codex_stall_timeout_ms = Keyword.get(config, :codex_stall_timeout_ms)
+    codex_accounts = Keyword.get(config, :codex_accounts)
+    codex_minimum_remaining_percent = Keyword.get(config, :codex_minimum_remaining_percent)
+    codex_monitored_windows_mins = Keyword.get(config, :codex_monitored_windows_mins)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -187,6 +208,9 @@ defmodule SymphonyElixir.TestSupport do
         "  turn_timeout_ms: #{yaml_value(codex_turn_timeout_ms)}",
         "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
+        "  accounts: #{yaml_value(codex_accounts)}",
+        "  minimum_remaining_percent: #{yaml_value(codex_minimum_remaining_percent)}",
+        "  monitored_windows_mins: #{yaml_value(codex_monitored_windows_mins)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
