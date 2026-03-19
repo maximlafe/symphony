@@ -213,6 +213,12 @@ pre,
   min-width: min(100%, 9rem);
 }
 
+.liveview-status-stack {
+  display: grid;
+  justify-items: end;
+  gap: 0.45rem;
+}
+
 .status-badge {
   display: inline-flex;
   align-items: center;
