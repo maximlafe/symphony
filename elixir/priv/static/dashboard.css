@@ -255,10 +255,12 @@ pre,
   color: var(--muted);
 }
 
+html.liveview-connected .status-badge-liveview-live,
 [data-phx-main].phx-connected .status-badge-liveview-live {
   display: inline-flex;
 }
 
+html.liveview-connected .status-badge-liveview-offline,
 [data-phx-main].phx-connected .status-badge-liveview-offline {
   display: none;
 }

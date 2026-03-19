@@ -27,9 +27,17 @@ defmodule SymphonyElixirWeb.Layouts do
         <script defer src={"/vendor/phoenix_live_view/phoenix_live_view.js?v=#{@asset_version}"}></script>
         <script>
           window.addEventListener("DOMContentLoaded", function () {
+            var root = document.documentElement;
             var csrfToken = document
               .querySelector("meta[name='csrf-token']")
               ?.getAttribute("content");
+
+            var setLiveViewStatus = function (connected) {
+              root.classList.toggle("liveview-connected", connected);
+              root.classList.toggle("liveview-disconnected", !connected);
+            };
+
+            setLiveViewStatus(false);
 
             if (!window.Phoenix || !window.LiveView) return;
 
@@ -37,7 +45,16 @@ defmodule SymphonyElixirWeb.Layouts do
               params: {_csrf_token: csrfToken}
             });
 
+            var syncLiveViewStatus = function () {
+              setLiveViewStatus(Boolean(liveSocket.isConnected && liveSocket.isConnected()));
+            };
+
+            liveSocket.socket.onOpen(syncLiveViewStatus);
+            liveSocket.socket.onClose(syncLiveViewStatus);
+            liveSocket.socket.onError(syncLiveViewStatus);
+
             liveSocket.connect();
+            syncLiveViewStatus();
             window.liveSocket = liveSocket;
           });
         </script>
