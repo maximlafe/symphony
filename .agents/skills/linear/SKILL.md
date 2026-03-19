@@ -24,29 +24,43 @@ failed even if the tool call completed.
 ## Workpad
 
 Maintain a local `workpad.md` in your workspace. Edit freely (zero API cost),
-then sync to Linear at milestones — plan finalized, implementation done,
-validation complete. Do not sync after every small change.
+then sync to Linear at milestones — bootstrap create, plan finalized,
+implementation done, validation complete. Do not sync after every small change.
 
-**First sync** — create the comment, save the ID:
+Treat `.workpad-id` as the single source of truth for the live workpad comment
+ID.
 
-```graphql
-mutation CreateComment($issueId: String!, $body: String!) {
-  commentCreate(input: { issueId: $issueId, body: $body }) {
-    success
-    comment { id }
-  }
+**Live workpad sync** — when `sync_workpad` is available, always use it for the
+live workpad. Pass an absolute `file_path` to the local `workpad.md`; relative
+paths may fail depending on the tool runner's cwd. Do not send live workpad
+bodies through inline `commentCreate`/`commentUpdate`; reserve raw comment
+mutations for stage-start comments and other non-workpad comments.
+
+**First sync** — create the live workpad from the local file:
+
+```json
+{
+  "issue_id": "LET-123",
+  "file_path": "/abs/path/to/workpad.md"
 }
 ```
 
-Write the returned `comment.id` to `.workpad-id` so subsequent syncs can update.
+Write the returned `comment.id` to `.workpad-id` so subsequent syncs can update
+the same live workpad comment.
 
-**Subsequent syncs** — read `.workpad-id`, update in place:
+**Subsequent syncs** — read `.workpad-id`, update the same live workpad in
+place:
 
-```graphql
-mutation UpdateComment($id: String!, $body: String!) {
-  commentUpdate(id: $id, input: { body: $body }) { success }
+```json
+{
+  "issue_id": "LET-123",
+  "comment_id": "<comment-id>",
+  "file_path": "/abs/path/to/workpad.md"
 }
 ```
+
+Only if `sync_workpad` is unavailable in-session may you fall back to raw
+GraphQL `commentCreate`/`commentUpdate` for the live workpad.
 
 ## Query an issue
 
@@ -175,5 +189,9 @@ Input: `issueId`, `relatedIssueId`, `type` (`blocks` or `related`).
   pattern you need is documented above.
 - Keep queries narrowly scoped — ask only for fields you need.
 - Sync the workpad at milestones, not after every change.
+- Use `sync_workpad` for live workpad create/update whenever the tool is
+  available.
+- Never inline the live workpad body into `commentCreate`/`commentUpdate` when
+  `sync_workpad` is available.
 - For state transitions, always fetch team states first — never hardcode state IDs.
 - Prefer `attachmentLinkGitHubPR` over generic URL attachment for GitHub PRs.
