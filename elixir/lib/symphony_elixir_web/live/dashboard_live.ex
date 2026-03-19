@@ -72,11 +72,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <span class="status-badge-dot"></span>
               <%= api_badge_text(@payload) %>
             </span>
-            <span class="status-badge status-badge-liveview-live">
+            <span
+              id="liveview-status-live"
+              class="status-badge status-badge-liveview-live"
+              hidden
+              aria-hidden="true"
+            >
               <span class="status-badge-dot"></span>
               LiveView
             </span>
-            <span class="status-badge status-badge-liveview-offline">
+            <span
+              id="liveview-status-offline"
+              class="status-badge status-badge-liveview-offline"
+              aria-hidden="false"
+            >
               <span class="status-badge-dot"></span>
               LiveView offline
             </span>

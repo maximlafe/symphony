@@ -28,34 +28,100 @@ defmodule SymphonyElixirWeb.Layouts do
         <script>
           window.addEventListener("DOMContentLoaded", function () {
             var root = document.documentElement;
+            var liveSocket;
+            var liveViewObserver;
+            var connectPoll;
             var csrfToken = document
               .querySelector("meta[name='csrf-token']")
               ?.getAttribute("content");
 
+            var resolveStatusNode = function (id) {
+              return document.getElementById(id);
+            };
+
+            var setBadgeVisibility = function (node, visible) {
+              if (!node) return;
+
+              node.hidden = !visible;
+              node.setAttribute("aria-hidden", String(!visible));
+              node.style.display = visible ? "inline-flex" : "none";
+            };
+
             var setLiveViewStatus = function (connected) {
               root.classList.toggle("liveview-connected", connected);
               root.classList.toggle("liveview-disconnected", !connected);
+
+              setBadgeVisibility(resolveStatusNode("liveview-status-live"), connected);
+              setBadgeVisibility(resolveStatusNode("liveview-status-offline"), !connected);
+            };
+
+            var liveViewRootConnected = function () {
+              var liveViewRoot = document.querySelector("[data-phx-main]");
+              return Boolean(liveViewRoot && liveViewRoot.classList.contains("phx-connected"));
             };
 
             setLiveViewStatus(false);
 
             if (!window.Phoenix || !window.LiveView) return;
 
-            var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
+            liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
               params: {_csrf_token: csrfToken}
             });
 
             var syncLiveViewStatus = function () {
-              setLiveViewStatus(Boolean(liveSocket.isConnected && liveSocket.isConnected()));
+              var socketConnected = Boolean(liveSocket.isConnected && liveSocket.isConnected());
+              setLiveViewStatus(socketConnected || liveViewRootConnected());
+
+              if ((socketConnected || liveViewRootConnected()) && connectPoll) {
+                window.clearInterval(connectPoll);
+                connectPoll = null;
+              }
+            };
+
+            var observeLiveViewRoot = function () {
+              var liveViewRoot = document.querySelector("[data-phx-main]");
+
+              if (!liveViewRoot) return;
+
+              if (liveViewObserver) {
+                liveViewObserver.disconnect();
+              }
+
+              liveViewObserver = new MutationObserver(syncLiveViewStatus);
+              liveViewObserver.observe(liveViewRoot, {
+                attributes: true,
+                attributeFilter: ["class"]
+              });
             };
 
             liveSocket.socket.onOpen(syncLiveViewStatus);
             liveSocket.socket.onClose(syncLiveViewStatus);
             liveSocket.socket.onError(syncLiveViewStatus);
 
+            observeLiveViewRoot();
             liveSocket.connect();
             syncLiveViewStatus();
             window.liveSocket = liveSocket;
+
+            connectPoll = window.setInterval(syncLiveViewStatus, 500);
+            window.setTimeout(function () {
+              if (!connectPoll) return;
+              window.clearInterval(connectPoll);
+              connectPoll = null;
+              syncLiveViewStatus();
+            }, 10000);
+
+            window.addEventListener("pageshow", function () {
+              observeLiveViewRoot();
+              if (liveSocket.isConnected && !liveSocket.isConnected()) {
+                liveSocket.connect();
+              }
+              syncLiveViewStatus();
+            });
+
+            document.addEventListener("visibilitychange", function () {
+              if (!document.hidden) syncLiveViewStatus();
+            });
           });
         </script>
         <link rel="stylesheet" href={"/dashboard.css?v=#{@asset_version}"} />
