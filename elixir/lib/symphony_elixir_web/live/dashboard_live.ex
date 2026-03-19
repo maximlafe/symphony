@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.Config
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
@@ -14,6 +15,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
+      |> assign(:project_slug, project_slug())
+      |> assign(:service_name, service_name())
+      |> assign(:server_port, Config.server_port())
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -48,21 +52,33 @@ defmodule SymphonyElixirWeb.DashboardLive do
               Symphony Observability
             </p>
             <h1 class="hero-title">
-              Operations Dashboard
+              <%= @service_name %>
             </h1>
             <p class="hero-copy">
               Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
             </p>
+            <div class="meta-row">
+              <span class="meta-chip">
+                Project: <span class="mono"><%= @project_slug %></span>
+              </span>
+              <span class="meta-chip">
+                Port: <span class="mono"><%= @server_port %></span>
+              </span>
+            </div>
           </div>
 
           <div class="status-stack">
-            <span class="status-badge status-badge-live">
+            <span class={api_badge_class(@payload)}>
               <span class="status-badge-dot"></span>
-              Live
+              <%= api_badge_text(@payload) %>
             </span>
-            <span class="status-badge status-badge-offline">
+            <span class="status-badge status-badge-liveview-live">
               <span class="status-badge-dot"></span>
-              Offline
+              LiveView
+            </span>
+            <span class="status-badge status-badge-liveview-offline">
+              <span class="status-badge-dot"></span>
+              LiveView offline
             </span>
           </div>
         </div>
@@ -324,6 +340,25 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
   end
+
+  defp project_slug do
+    Config.settings!().tracker.project_slug || "unknown-project"
+  end
+
+  defp service_name do
+    project_slug()
+    |> String.replace(~r/-[0-9a-f]{8,}$/i, "")
+    |> case do
+      "" -> "operations-dashboard"
+      name -> name
+    end
+  end
+
+  defp api_badge_class(%{error: error}) when not is_nil(error), do: "status-badge status-badge-offline"
+  defp api_badge_class(_payload), do: "status-badge status-badge-api"
+
+  defp api_badge_text(%{error: error}) when not is_nil(error), do: "API degraded"
+  defp api_badge_text(_payload), do: "API OK"
 
   defp pretty_value(nil), do: "n/a"
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
