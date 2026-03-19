@@ -3,6 +3,8 @@ defmodule SymphonyElixir.PromptBuilder do
   Builds agent prompts from Linear issue data.
   """
 
+  require Logger
+
   alias SymphonyElixir.{Config, Workflow}
 
   @render_opts [strict_variables: true, strict_filters: true]
@@ -23,6 +25,7 @@ defmodule SymphonyElixir.PromptBuilder do
       @render_opts
     )
     |> IO.iodata_to_binary()
+    |> ensure_valid_utf8()
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
@@ -60,5 +63,28 @@ defmodule SymphonyElixir.PromptBuilder do
     else
       prompt
     end
+  end
+
+  defp ensure_valid_utf8(prompt) when is_binary(prompt) do
+    if String.valid?(prompt) do
+      prompt
+    else
+      Logger.warning("PromptBuilder rendered invalid UTF-8; replacing invalid byte sequences in prompt output")
+      replace_invalid_utf8(prompt, [])
+    end
+  end
+
+  defp replace_invalid_utf8(<<>>, acc) do
+    acc
+    |> Enum.reverse()
+    |> IO.iodata_to_binary()
+  end
+
+  defp replace_invalid_utf8(<<codepoint::utf8, rest::binary>>, acc) do
+    replace_invalid_utf8(rest, [<<codepoint::utf8>> | acc])
+  end
+
+  defp replace_invalid_utf8(<<_invalid, rest::binary>>, acc) do
+    replace_invalid_utf8(rest, [<<0xEF, 0xBF, 0xBD>> | acc])
   end
 end

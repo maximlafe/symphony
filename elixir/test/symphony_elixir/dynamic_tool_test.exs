@@ -12,6 +12,18 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert graphql_spec["inputSchema"]["required"] == ["query"]
   end
 
+  test "tool_specs advertises GitHub runtime tools" do
+    specs = DynamicTool.tool_specs()
+    snapshot_spec = Enum.find(specs, &(&1["name"] == "github_pr_snapshot"))
+    wait_spec = Enum.find(specs, &(&1["name"] == "github_wait_for_checks"))
+
+    assert snapshot_spec["inputSchema"]["required"] == ["repo", "pr_number"]
+    assert snapshot_spec["description"] =~ "GitHub"
+
+    assert wait_spec["inputSchema"]["required"] == ["repo", "pr_number"]
+    assert wait_spec["description"] =~ "checks"
+  end
+
   test "unsupported tools return a failure payload with the supported tool list" do
     response = DynamicTool.execute("not_a_real_tool", %{})
 
@@ -27,7 +39,12 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(text) == %{
              "error" => %{
                "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
-               "supportedTools" => ["linear_graphql", "sync_workpad"]
+               "supportedTools" => [
+                 "linear_graphql",
+                 "sync_workpad",
+                 "github_pr_snapshot",
+                 "github_wait_for_checks"
+               ]
              }
            }
   end
@@ -374,6 +391,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     path
   end
 
+  defp decode_tool_text(response) do
+    assert [%{"text" => text}] = response["contentItems"]
+    Jason.decode!(text)
+  end
+
   test "sync_workpad creates a comment from file when no comment_id given" do
     test_pid = self()
     path = write_tmp_workpad("## Codex Workpad\n\nProgress.")
@@ -470,5 +492,313 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["success"] == false
     assert [%{"text" => text}] = response["contentItems"]
     assert Jason.decode!(text)["error"]["message"] =~ "cannot read"
+  end
+
+  test "github_pr_snapshot returns a compact summary without feedback details by default" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "github_pr_snapshot",
+        %{"repo" => "maximlafe/lead_status", "pr_number" => 62},
+        workspace: "/tmp/test-workspace",
+        gh_runner: fn args, opts ->
+          send(test_pid, {:gh, args, opts})
+
+          case args do
+            ["pr", "view", "62", "-R", "maximlafe/lead_status", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://github.com/maximlafe/lead_status/pull/62",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "",
+                 "mergeStateStatus" => "CLEAN",
+                 "statusCheckRollup" => [
+                   %{
+                     "name" => "test",
+                     "status" => "COMPLETED",
+                     "conclusion" => "SUCCESS",
+                     "workflowName" => "CI Pipeline",
+                     "detailsUrl" => "https://example.test/check"
+                   }
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/lead_status/issues/62/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/lead_status/pulls/62/reviews?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/lead_status/pulls/62/comments?per_page=100"] ->
+              {:ok, "[]"}
+          end
+        end
+      )
+
+    assert_received {:gh, ["pr", "view", "62", "-R", "maximlafe/lead_status", "--json", _], [workspace: "/tmp/test-workspace"]}
+    assert response["success"] == true
+
+    payload = decode_tool_text(response)
+
+    assert payload == %{
+             "all_checks_green" => true,
+             "checks" => [
+               %{
+                 "conclusion" => "SUCCESS",
+                 "details_url" => "https://example.test/check",
+                 "name" => "test",
+                 "status" => "COMPLETED",
+                 "workflow_name" => "CI Pipeline"
+               }
+             ],
+             "has_actionable_feedback" => false,
+             "has_pending_checks" => false,
+             "inline_comment_count" => 0,
+             "labels" => ["symphony"],
+             "merge_state_status" => "CLEAN",
+             "review_count" => 0,
+             "review_decision" => nil,
+             "state" => "OPEN",
+             "top_level_comment_count" => 0,
+             "url" => "https://github.com/maximlafe/lead_status/pull/62"
+           }
+  end
+
+  test "github_pr_snapshot returns normalized actionable feedback details when requested" do
+    response =
+      DynamicTool.execute(
+        "github_pr_snapshot",
+        %{
+          "repo" => "maximlafe/lead_status",
+          "pr_number" => 62,
+          "include_feedback_details" => true
+        },
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "62", "-R", "maximlafe/lead_status", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://github.com/maximlafe/lead_status/pull/62",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "CHANGES_REQUESTED",
+                 "mergeStateStatus" => "DIRTY",
+                 "statusCheckRollup" => [
+                   %{"name" => "test", "status" => "IN_PROGRESS", "conclusion" => "", "workflowName" => "CI"}
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/lead_status/issues/62/comments?per_page=100"] ->
+              {:ok,
+               Jason.encode!([
+                 %{"user" => %{"login" => "linear"}, "body" => "<!-- linear-linkback -->", "url" => "https://example.test/ignore"},
+                 %{
+                   "user" => %{"login" => "reviewer"},
+                   "body" => "Нужно проверить handoff flow.",
+                   "url" => "https://example.test/comment/1",
+                   "createdAt" => "2026-03-19T10:00:00Z"
+                 }
+               ])}
+
+            ["api", "repos/maximlafe/lead_status/pulls/62/reviews?per_page=100"] ->
+              {:ok,
+               Jason.encode!([
+                 %{
+                   "user" => %{"login" => "qa-reviewer"},
+                   "state" => "CHANGES_REQUESTED",
+                   "body" => "Покрой сценарий зелёного CI.",
+                   "submittedAt" => "2026-03-19T10:01:00Z"
+                 }
+               ])}
+
+            ["api", "repos/maximlafe/lead_status/pulls/62/comments?per_page=100"] ->
+              {:ok,
+               Jason.encode!([
+                 %{
+                   "user" => %{"login" => "bot-reviewer"},
+                   "body" => "Нужен один compact flow.",
+                   "path" => "WORKFLOW.md",
+                   "line" => 256,
+                   "html_url" => "https://example.test/inline/1",
+                   "created_at" => "2026-03-19T10:02:00Z"
+                 }
+               ])}
+          end
+        end
+      )
+
+    assert response["success"] == true
+    payload = decode_tool_text(response)
+
+    assert payload["has_pending_checks"] == true
+    assert payload["all_checks_green"] == false
+    assert payload["has_actionable_feedback"] == true
+    assert payload["top_level_comment_count"] == 1
+    assert payload["review_count"] == 1
+    assert payload["inline_comment_count"] == 1
+    assert payload["review_decision"] == "CHANGES_REQUESTED"
+    assert length(payload["actionable_feedback"]) == 3
+
+    assert Enum.any?(payload["actionable_feedback"], fn item ->
+             item["channel"] == "top_level_comment" and item["author"] == "reviewer"
+           end)
+
+    assert Enum.any?(payload["actionable_feedback"], fn item ->
+             item["channel"] == "review" and item["state"] == "CHANGES_REQUESTED"
+           end)
+
+    assert Enum.any?(payload["actionable_feedback"], fn item ->
+             item["channel"] == "inline_comment" and item["path"] == "WORKFLOW.md"
+           end)
+  end
+
+  test "github_wait_for_checks waits outside the model loop until checks are green" do
+    {:ok, agent} =
+      Agent.start_link(fn ->
+        %{call_count: 0, now_ms: 0}
+      end)
+
+    gh_runner = fn args, _opts ->
+      Agent.get_and_update(agent, fn %{call_count: call_count} = state ->
+        next_count = call_count + 1
+
+        payload =
+          if next_count == 1 do
+            %{
+              "state" => "OPEN",
+              "url" => "https://example.test/pr/62",
+              "labels" => [],
+              "reviewDecision" => "",
+              "mergeStateStatus" => "UNSTABLE",
+              "statusCheckRollup" => [
+                %{"name" => "test", "status" => "IN_PROGRESS", "conclusion" => "", "workflowName" => "CI"}
+              ]
+            }
+          else
+            %{
+              "state" => "OPEN",
+              "url" => "https://example.test/pr/62",
+              "labels" => [],
+              "reviewDecision" => "",
+              "mergeStateStatus" => "CLEAN",
+              "statusCheckRollup" => [
+                %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+              ]
+            }
+          end
+
+        result =
+          case args do
+            ["pr", "view", "62", "-R", "maximlafe/lead_status", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+              {:ok, Jason.encode!(payload)}
+          end
+
+        {result, %{state | call_count: next_count}}
+      end)
+    end
+
+    sleep_fn = fn duration_ms ->
+      Agent.update(agent, fn state -> %{state | now_ms: state.now_ms + duration_ms} end)
+    end
+
+    monotonic_time_ms = fn ->
+      Agent.get(agent, & &1.now_ms)
+    end
+
+    response =
+      DynamicTool.execute(
+        "github_wait_for_checks",
+        %{
+          "repo" => "maximlafe/lead_status",
+          "pr_number" => 62,
+          "timeout_ms" => 1_000,
+          "poll_interval_ms" => 200
+        },
+        gh_runner: gh_runner,
+        sleep_fn: sleep_fn,
+        monotonic_time_ms: monotonic_time_ms
+      )
+
+    on_exit(fn ->
+      if Process.alive?(agent), do: Agent.stop(agent)
+    end)
+
+    assert response["success"] == true
+    payload = decode_tool_text(response)
+
+    assert payload["all_green"] == true
+    assert payload["failed_checks"] == []
+    assert payload["pending_checks"] == []
+    assert payload["checks"] == [
+             %{
+               "conclusion" => "SUCCESS",
+               "details_url" => nil,
+               "name" => "test",
+               "status" => "COMPLETED",
+               "workflow_name" => "CI"
+             }
+           ]
+
+    assert payload["duration_ms"] == 200
+    assert Agent.get(agent, & &1.call_count) == 2
+  end
+
+  test "github_wait_for_checks reports a timeout with compact pending check details" do
+    {:ok, agent} =
+      Agent.start_link(fn ->
+        %{now_ms: 0}
+      end)
+
+    gh_runner = fn args, _opts ->
+      case args do
+        ["pr", "view", "62", "-R", "maximlafe/lead_status", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+          {:ok,
+           Jason.encode!(%{
+             "state" => "OPEN",
+             "url" => "https://example.test/pr/62",
+             "labels" => [],
+             "reviewDecision" => "",
+             "mergeStateStatus" => "UNSTABLE",
+             "statusCheckRollup" => [
+               %{"name" => "test", "status" => "IN_PROGRESS", "conclusion" => "", "workflowName" => "CI"}
+             ]
+           })}
+      end
+    end
+
+    sleep_fn = fn duration_ms ->
+      Agent.update(agent, fn state -> %{state | now_ms: state.now_ms + duration_ms} end)
+    end
+
+    monotonic_time_ms = fn ->
+      Agent.get(agent, & &1.now_ms)
+    end
+
+    response =
+      DynamicTool.execute(
+        "github_wait_for_checks",
+        %{
+          "repo" => "maximlafe/lead_status",
+          "pr_number" => 62,
+          "timeout_ms" => 250,
+          "poll_interval_ms" => 100
+        },
+        gh_runner: gh_runner,
+        sleep_fn: sleep_fn,
+        monotonic_time_ms: monotonic_time_ms
+      )
+
+    on_exit(fn ->
+      if Process.alive?(agent), do: Agent.stop(agent)
+    end)
+
+    assert response["success"] == false
+    payload = decode_tool_text(response)
+    assert payload["error"]["message"] =~ "timed out"
+    assert payload["error"]["details"]["timeout_ms"] == 250
+    assert payload["error"]["details"]["duration_ms"] >= 300
+    assert length(payload["error"]["details"]["pending_checks"]) == 1
   end
 end

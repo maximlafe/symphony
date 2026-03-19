@@ -71,222 +71,141 @@ Instructions:
 1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.
 2. Only stop early for a true blocker (missing required auth/permissions/secrets). If blocked, record it in the workpad and move the issue according to workflow.
 3. Final message must report completed actions and blockers only. Do not include "next steps for user".
+4. Work only in the provided repository copy. Do not touch any other path.
+5. Use the compact runtime tools when available:
+   - `linear_graphql` for narrowly scoped Linear reads/writes.
+   - `sync_workpad` for the live workpad comment; do not inline the workpad body into raw `commentCreate`/`commentUpdate` when `sync_workpad` is available.
+   - `github_pr_snapshot` for compact PR status/feedback summaries.
+   - `github_wait_for_checks` for CI waits outside the model loop.
 
-Work only in the provided repository copy. Do not touch any other path.
+## Operating rules
 
-## Prerequisite: `linear_graphql` tool is available
-
-The agent talks to Linear via the `linear_graphql` tool injected by Symphony's app-server. If it is not present, stop and ask the user to configure Linear. Do not use a Linear MCP server — it returns full JSON payloads that waste tokens. Use `linear_graphql` with narrowly scoped queries instead.
-
-## Default posture
-
-- Start by determining the ticket's current status, then follow the matching flow for that status.
-- Treat a single persistent workpad comment as the detailed execution log and keep local `workpad.md` as the working copy.
-- Sync the live workpad only at milestones, not after every local edit.
-- Reproduce first: always confirm the current behavior/issue signal before changing code so the fix target is explicit.
-- Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as non-negotiable acceptance input.
-- Move status only when the matching quality bar is met.
-- File meaningful out-of-scope improvements as separate Backlog issues instead of expanding current scope.
-- Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
+- Determine the current state first and follow the matching flow.
+- Keep exactly one persistent workpad comment (`## Codex Workpad`) and use local `workpad.md` as the working copy for the implementation checklist and execution log.
+- Treat the issue description as the tracker/task statement; do not turn it into a workpad, checklist, or marker-delimited plan block unless a repo-specific workflow explicitly requires a separate task-spec contract.
+- Sync the live workpad only at bootstrap, meaningful milestones, and final handoff.
+- Reproduce or capture the current signal before code changes when it materially improves confidence.
+- Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.
+- Do not reread skill bodies in straightforward runs unless the workflow does not cover the needed behavior.
+- Move state only when the matching quality bar is satisfied.
 
 ## Status map
 
-- `Backlog` -> out of scope for this workflow; do not modify.
-- `Todo` -> queued; immediately transition to `In Progress` before active work.
-  - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `Human Review`).
-- `In Progress` -> implementation actively underway.
-- `Human Review` -> PR is attached and validated; waiting on human approval.
-- `Merging` -> approved by human; execute the `land` skill flow (do not call `gh pr merge` directly).
-- `Rework` -> reviewer requested changes; planning + implementation required.
+- `Backlog` -> out of scope; do not modify.
+- `Todo` -> immediately move to `In Progress`, then bootstrap the workpad and execute.
+- `In Progress` -> active implementation.
+- `Human Review` -> PR is attached and validated; wait for human review.
+- `Merging` -> approved by human; use the `land` skill and do not call `gh pr merge` directly.
+- `Rework` -> start a fresh attempt from updated review feedback.
 - `Done` -> terminal state; no further action required.
 
-## Step 0: Determine current ticket state and route
+## Step 0: Route and recover
 
-1. Fetch the issue by explicit ticket ID.
-2. Read the current state.
+1. Fetch the issue by explicit ticket ID and read the current state.
+2. Inspect only the minimal local repo state needed for routing (`branch`, `HEAD`, `git status` only when needed).
 3. Route to the matching flow:
-   - `Backlog` -> do not modify issue content/state; stop and wait for human to move it to `Todo`.
-   - `Todo` -> immediately move to `In Progress`, then ensure bootstrap workpad comment exists (create if missing), then start execution flow.
-     - If PR is already attached, start by reviewing all open PR comments and deciding required changes vs explicit pushback responses.
-   - `In Progress` -> continue execution flow from current scratchpad comment.
-   - `Human Review` -> wait and poll for decision/review updates.
-   - `Merging` -> on entry, use the `land` skill; do not call `gh pr merge` directly.
-   - `Rework` -> run rework flow.
+   - `Backlog` -> stop and wait for a human move to `Todo`.
+   - `Todo` -> move to `In Progress`, then bootstrap the workpad and start execution.
+   - `In Progress` -> resume execution, preferring minimal recovery over a full reread.
+   - `Human Review` -> wait and poll for review decisions.
+   - `Merging` -> use the `land` skill.
+   - `Rework` -> run the rework flow.
    - `Done` -> do nothing and shut down.
-4. Inspect only the minimal local repo state needed for routing (`branch`, `HEAD`) before any GitHub call.
-5. Query GitHub for an existing branch PR only when at least one reuse signal exists:
-   - current local branch is not `main`;
-   - the issue already contains a PR URL/attachment or an explicit PR reference in comments;
+4. Query GitHub for an existing PR only when at least one reuse signal exists:
+   - current branch is not `main`;
+   - the issue already references a PR in links, attachments, or comments;
    - the current state is `In Progress`, `Human Review`, `Rework`, or `Merging`.
-   - For fresh `Todo` runs on `main` with no PR signal, skip `gh pr list` entirely.
-   - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
-   - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
-   - If the GitHub lookup was intentionally skipped, do not add a placeholder `PR not found` note to `workpad.md`.
-6. For `Todo` tickets, do startup sequencing in this exact order:
-   - `update_issue(..., state: "In Progress")`
-   - find/create `## Codex Workpad` bootstrap comment
-   - only then begin analysis/planning/implementation work.
-7. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
+   - For fresh `Todo` runs on `main` with no PR signal, skip branch PR lookup and do not log placeholder notes.
+5. Minimal recovery for straightforward `In Progress` runs:
+   - if `.workpad-id` exists and the live workpad is available, read only the current state, live workpad, current branch/HEAD, and PR link or attachment if present;
+   - reread full comment/history context only for missing workpad, state/content mismatch, `Rework`, or real ambiguity.
+6. If the existing branch PR is already closed or merged, do not reuse that branch. Create a fresh branch from `origin/main` and continue as a new attempt.
 
-## Step 1: Start/continue execution (Todo or In Progress)
+## Step 1: Execute (Todo or In Progress)
 
-1.  Find or create a single persistent scratchpad comment for the issue:
-    - Search existing comments for a marker header: `## Codex Workpad`.
-    - Ignore resolved comments while searching; only active/unresolved comments are eligible to be reused as the live workpad.
-    - If found, reuse that comment; do not create a new workpad comment.
-    - If not found, create one workpad comment and use it for all updates.
-    - Persist the workpad comment ID in `.workpad-id`.
-2.  If arriving from `Todo`, do not delay on additional status transitions: the issue should already be `In Progress` before this step begins.
-3.  Keep `workpad.md` as the local execution source of truth:
-    - Reconcile and refine the plan locally as many times as needed.
-    - Create/bootstrap the live workpad once if it does not exist.
-    - After bootstrap, sync the live workpad only at milestones.
-    - Use `sync_workpad` for live workpad create/update whenever the tool is available.
-    - Pass the absolute path to local `workpad.md` when calling `sync_workpad`.
-4.  Start work by writing/updating a hierarchical plan in local `workpad.md`.
-5.  Ensure the workpad includes a compact environment stamp at the top as a code fence line:
-    - Format: `<host>:<abs-workdir>@<short-sha>`
-    - Example: `devbox-01:/home/dev-user/code/symphony-workspaces/MT-32@7bdde33bc`
-    - Do not include metadata already inferable from Linear issue fields (`issue ID`, `status`, `branch`, `PR link`).
-6.  Add explicit acceptance criteria and TODOs in checklist form in the same comment.
-    - If changes are user-facing, include a UI walkthrough acceptance criterion that describes the end-to-end user path to validate.
-    - If changes touch app files or app behavior, add explicit app-specific flow checks to `Acceptance Criteria` in the workpad (for example: launch path, changed interaction path, and expected result path).
-    - If the ticket description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
-7.  Tighten the initial plan locally before implementation starts.
-8.  Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
-9.  Run the `pull` skill to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
-    - Include a `pull skill evidence` note with:
-      - merge source(s),
-      - result (`clean` or `conflicts resolved`),
-      - resulting `HEAD` short SHA.
-10. Compact context and proceed to execution.
+1. Find or create a single persistent workpad comment:
+   - search active comments for `## Codex Workpad`;
+   - reuse it if found;
+   - otherwise create it once and persist its ID in `.workpad-id`.
+2. Keep local `workpad.md` as the execution source of truth:
+   - bootstrap the live workpad once if missing;
+   - pass the absolute path to local `workpad.md` when calling `sync_workpad`;
+   - keep subsequent edits local until a meaningful milestone or final handoff.
+3. Maintain the workpad with a compact environment stamp, plan, acceptance criteria, validation checklist, and notes.
+4. Before code edits, run the `pull` skill to sync with latest `origin/main`, then record the result in `Notes` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
+5. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before handoff.
+6. Run the required validation for the scope:
+   - execute all ticket-provided validation/test-plan requirements when present;
+   - prefer targeted proof for the changed behavior;
+   - revert every temporary proof edit before commit or push;
+   - if app-touching, capture runtime evidence and upload it to Linear.
+7. Before every `git push`, rerun the required validation and confirm it passes.
+8. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
+9. Merge latest `origin/main` into the branch before final handoff, resolve conflicts, and rerun required validation.
 
-## PR feedback sweep protocol (required)
+## PR handoff protocol (required before Human Review)
 
-When a ticket has an attached PR, run this protocol before moving to `Human Review`:
+1. Identify the PR number from issue links or attachments.
+2. Run `github_pr_snapshot` once with default summary output.
+3. Only if the summary shows reviews, top-level comments, inline comments, or actionable feedback:
+   - run `github_pr_snapshot` with `include_feedback_details: true`;
+   - treat every actionable item as blocking until code/docs/tests are updated or an explicit justified pushback reply is posted;
+   - update the workpad checklist with the feedback items and their resolution status;
+   - rerun required validation after feedback-driven changes.
+4. Use `github_wait_for_checks` to wait for CI outside the model loop.
+5. When checks complete, run `github_pr_snapshot` again.
+6. If checks are not green or actionable feedback remains, continue the fix/validate loop.
+7. If checks are green and no actionable feedback remains:
+   - finalize local `workpad.md`;
+   - sync the live workpad once;
+   - ensure the issue still links to the PR;
+   - move the issue to `Human Review`.
+8. Do not repeat label or attachment checks in the same run unless the PR changed.
+9. Do not fetch full GitHub feedback payloads when the summary snapshot shows no review activity.
 
-1. Identify the PR number from issue links/attachments.
-2. Gather feedback from all channels:
-   - Top-level PR comments (`gh pr view --comments`).
-   - Inline review comments (`gh api repos/<owner>/<repo>/pulls/<pr>/comments`).
-   - Review summaries/states (`gh pr view --json reviews`).
-3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
-   - code/test/docs updated to address it, or
-   - explicit, justified pushback reply is posted on that thread.
-4. Update the workpad plan/checklist to include each feedback item and its resolution status.
-5. Re-run validation after feedback-driven changes and push updates.
-6. Repeat this sweep until there are no outstanding actionable comments.
-
-## Blocked-access escape hatch (required behavior)
+## Blocked-access escape hatch
 
 Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
 
-- GitHub is **not** a valid blocker by default. Always try fallback strategies first (alternate remote/auth mode, then continue publish/review flow).
-- Do not move to `Human Review` for GitHub access/auth until all fallback strategies have been attempted and documented in the workpad.
-- If a non-GitHub required tool is missing, or required non-GitHub auth is unavailable, move the ticket to `Human Review` with a short blocker brief in the workpad that includes:
-  - what is missing,
-  - why it blocks required acceptance/validation,
-  - exact human action needed to unblock.
-- Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
+- GitHub is not a valid blocker by default; try fallback publish/review strategies first.
+- If a required non-GitHub tool or auth path is missing, record a concise blocker brief in the workpad with what is missing, why it blocks acceptance, and the exact human unblock action, then move the issue to `Human Review`.
 
-## Step 2: Execution phase (Todo -> In Progress -> Human Review)
+## Step 2: Human Review and merge handling
 
-1.  Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `pull` sync result is already recorded in the workpad before implementation continues.
-2.  If current issue state is `Todo`, move it to `In Progress`; otherwise leave the current state unchanged.
-3.  Load the existing workpad comment and treat it as the active execution checklist.
-    - Edit it liberally whenever reality changes (scope, risks, validation approach, discovered tasks).
-4.  Implement against the hierarchical TODOs and keep local `workpad.md` current:
-    - Check off completed items.
-    - Add newly discovered items in the appropriate section.
-    - Keep parent/child structure intact as scope evolves.
-    - Sync the live workpad via `sync_workpad` only after meaningful milestones or before handoff.
-    - Pass the absolute path to local `workpad.md` when calling `sync_workpad`.
-    - Never leave completed work unchecked in the plan.
-    - For tickets that started as `Todo` with an attached PR, run the full PR feedback sweep protocol immediately after kickoff and before new feature work.
-5.  Run validation/tests required for the scope.
-    - Mandatory gate: execute all ticket-provided `Validation`/`Test Plan`/ `Testing` requirements when present; treat unmet items as incomplete work.
-    - Prefer a targeted proof that directly demonstrates the behavior you changed.
-    - You may make temporary local proof edits to validate assumptions (for example: tweak a local build input for `make`, or hardcode a UI account / response path) when this increases confidence.
-    - Revert every temporary proof edit before commit/push.
-    - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
-    - If app-touching, run runtime validation and capture screenshots/recordings. Upload media to Linear using the `linear` skill's `fileUpload` flow and embed in the workpad comment.
-6.  Re-check all acceptance criteria and close any gaps.
-7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
-8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
-    - Ensure the GitHub PR has label `symphony` (add it if missing).
-9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
-10. Update local `workpad.md` with final checklist status and validation notes, then sync the live workpad once for handoff.
-    - Mark completed plan/acceptance/validation checklist items as checked.
-    - Add final handoff notes (commit + validation summary) in the same workpad comment.
-    - Do not include PR URL in the workpad comment; keep PR linkage on the issue via attachment/link fields.
-    - Add a short `### Confusions` section at the bottom when any part of task execution was unclear/confusing, with concise bullets.
-    - Do not post any additional completion summary comment.
-11. Before moving to `Human Review`, poll PR feedback and checks:
-    - Read the PR `Manual QA Plan` comment (when present) and use it to sharpen UI/runtime test coverage for the current change.
-    - Run the full PR feedback sweep protocol.
-    - Confirm PR checks are passing (green) after the latest changes.
-    - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
-    - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
-    - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
-12. Only then move issue to `Human Review`.
-    - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, move to `Human Review` with the blocker brief and explicit unblock actions.
-13. For `Todo` tickets that already had a PR attached at kickoff:
-    - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
-    - Ensure branch was pushed with any required updates.
-    - Then move to `Human Review`.
-
-## Step 3: Human Review and merge handling
-
-1. When the issue is in `Human Review`, do not code or change ticket content.
-2. Poll for updates as needed, including GitHub PR review comments from humans and bots.
+1. In `Human Review`, do not code or change ticket content.
+2. Poll for review updates as needed.
 3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
-4. If approved, human moves the issue to `Merging`.
-5. When the issue is in `Merging`, use the `land` skill and run it in a loop until the PR is merged. Do not call `gh pr merge` directly.
-6. After merge is complete, move the issue to `Done`.
+4. If approved, a human moves the issue to `Merging`.
+5. In `Merging`, use the `land` skill until the PR is merged, then move the issue to `Done`.
 
-## Step 4: Rework handling
+## Step 3: Rework handling
 
-1. Treat `Rework` as a full approach reset, not incremental patching.
-2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
+1. Treat `Rework` as a fresh attempt, not incremental patching on top of stale execution state.
+2. Re-read the issue body and human review feedback, explicitly identify what changes this attempt.
 3. Close the existing PR tied to the issue.
-4. Remove the existing `## Codex Workpad` comment from the issue.
+4. Remove the existing `## Codex Workpad` comment.
 5. Create a fresh branch from `origin/main`.
-6. Start over from the normal kickoff flow:
-   - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
-   - Create a new bootstrap `## Codex Workpad` comment.
-   - Build a fresh plan/checklist and execute end-to-end.
+6. Bootstrap a new workpad and execute the normal flow again.
 
 ## Completion bar before Human Review
 
-- Step 1/2 checklist is fully complete and accurately reflected in the single workpad comment.
-- Acceptance criteria and required ticket-provided validation items are complete.
-- Validation/tests are green for the latest commit.
-- PR feedback sweep is complete and no actionable comments remain.
-- PR checks are green, branch is pushed, and PR is linked on the issue.
-- Required PR metadata is present (`symphony` label).
-- If app-touching, runtime validation is complete and media evidence is uploaded to the Linear workpad.
+- The single workpad comment accurately reflects the completed plan, acceptance criteria, validation, and handoff notes.
+- Required validation/tests are green for the latest commit.
+- The PR is pushed, linked on the issue, and labeled `symphony`.
+- Actionable PR feedback is resolved.
+- PR checks are green.
+- Runtime evidence is uploaded when the change is app-touching.
 
 ## Guardrails
 
-- If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
-- For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
-- If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
-- Do not edit the issue body/description for planning or progress tracking.
-- Use exactly one persistent workpad comment (`## Codex Workpad`) per issue and sync it through `sync_workpad` whenever the tool is available.
+- If issue state is `Backlog`, do not modify it.
+- If state is terminal (`Done`), do nothing and shut down.
+- Use exactly one persistent workpad comment and sync it via `sync_workpad` whenever available.
 - Pass the absolute path to local `workpad.md` when calling `sync_workpad`.
 - Never inline the live workpad body into raw `commentCreate`/`commentUpdate` when `sync_workpad` is available.
-- If comment editing is unavailable in-session, use the update script. Only report blocked if both `linear_graphql` editing and `sync_workpad`/script-based syncing are unavailable.
 - Temporary proof edits are allowed only for local verification and must be reverted before commit.
-- If out-of-scope improvements are found, create a separate Backlog issue rather
-  than expanding current scope, and include a clear
-  title/description/acceptance criteria, same-project assignment, a `related`
-  link to the current issue, and `blockedBy` when the follow-up depends on the
-  current issue.
+- Out-of-scope improvements go to a separate Backlog issue instead of expanding current scope.
 - Treat the completion bar before `Human Review` as a hard gate.
-- In `Human Review`, do not make changes; wait and poll.
-- If state is terminal (`Done`), do nothing and shut down.
-- Keep issue text concise, specific, and reviewer-oriented.
-- If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action.
 
 ## Workpad template
 

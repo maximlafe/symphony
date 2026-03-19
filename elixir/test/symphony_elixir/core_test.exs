@@ -108,7 +108,8 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
-    assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
+    assert Map.get(hooks, "before_remove") =~ "gh pr list --head \"$branch\" --state open --json number"
+    assert Map.get(hooks, "before_remove") =~ "gh pr close \"$pr\" --comment"
 
     assert String.trim(prompt) != ""
     assert is_binary(Config.workflow_prompt())
@@ -765,6 +766,26 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "updated=2026-02-26T18:07:03Z"
   end
 
+  test "prompt builder preserves valid UTF-8 for Russian workflow and issue text" do
+    workflow_prompt = "Задача {{ issue.identifier }} {{ issue.title }} статус={{ issue.state }}"
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
+
+    issue = %Issue{
+      identifier: "LET-182",
+      title: "Создать phase1-smoke.md",
+      description: "Русский smoke test",
+      state: "Planning",
+      url: "https://example.org/issues/LET-182",
+      labels: ["smoke"]
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert String.valid?(prompt)
+    assert prompt == "Задача LET-182 Создать phase1-smoke.md статус=Planning"
+  end
+
   test "prompt builder normalizes nested date-like values, maps, and structs in issue fields" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
 
@@ -921,8 +942,9 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "This is an unattended orchestration session."
     assert prompt =~ "Only stop early for a true blocker"
     assert prompt =~ "Do not include \"next steps for user\""
-    assert prompt =~ "use the `land` skill"
-    assert prompt =~ "Do not call `gh pr merge` directly"
+    assert prompt =~ "use the `land` skill and do not call `gh pr merge` directly"
+    assert prompt =~ "`github_pr_snapshot`"
+    assert prompt =~ "`github_wait_for_checks`"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
   end
