@@ -19,6 +19,7 @@ polling:
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
+  timeout_ms: 600000
   after_create: |
     export GIT_TERMINAL_PROMPT=0
     export SOURCE_REPO_URL="${SOURCE_REPO_URL:-https://github.com/maximlafe/lead_status.git}"
