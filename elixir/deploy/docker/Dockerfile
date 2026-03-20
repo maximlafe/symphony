@@ -2,6 +2,7 @@ FROM elixir:1.19.5-otp-28
 
 ENV DEBIAN_FRONTEND=noninteractive \
     MIX_ENV=dev \
+    NPM_VERSION=11.6.2 \
     POETRY_VERSION=1.8.5 \
     CODEX_HOME=/root/.codex \
     PATH=/usr/local/bin:/root/.local/bin:${PATH}
@@ -21,7 +22,7 @@ RUN apt-get update \
       python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @openai/codex
+RUN npm install -g "npm@${NPM_VERSION}" @openai/codex
 
 RUN python3 -m venv /opt/poetry-venv \
     && /opt/poetry-venv/bin/pip install --upgrade pip \

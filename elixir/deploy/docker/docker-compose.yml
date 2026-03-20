@@ -27,6 +27,8 @@ services:
       - /srv/symphony/workflows:/srv/symphony/workflows:ro
       - /srv/symphony/workspaces/task-extract:/srv/symphony/workspaces/task-extract
       - /srv/symphony/logs/task-extract:/srv/symphony/logs/task-extract
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "4101:4101"
     healthcheck:
@@ -62,6 +64,8 @@ services:
       - /srv/symphony/workflows:/srv/symphony/workflows:ro
       - /srv/symphony/workspaces/team-master:/srv/symphony/workspaces/team-master
       - /srv/symphony/logs/team-master:/srv/symphony/logs/team-master
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "4102:4102"
     healthcheck:
@@ -97,6 +101,8 @@ services:
       - /srv/symphony/workflows:/srv/symphony/workflows:ro
       - /srv/symphony/workspaces/platform:/srv/symphony/workspaces/platform
       - /srv/symphony/logs/platform:/srv/symphony/logs/platform
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "4103:4103"
     healthcheck:
