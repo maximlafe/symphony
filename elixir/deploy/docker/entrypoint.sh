@@ -11,6 +11,19 @@ export CODEX_HOME="${CODEX_HOME:-/root/.codex}"
 export POETRY_NO_INTERACTION=1
 export POETRY_VIRTUALENVS_IN_PROJECT="${POETRY_VIRTUALENVS_IN_PROJECT:-true}"
 
+if [ -n "${SYMPHONY_REQUIRED_ENV_VARS:-}" ]; then
+  missing_vars=0
+  for var_name in $SYMPHONY_REQUIRED_ENV_VARS; do
+    if [ -z "${!var_name:-}" ]; then
+      echo "Required environment variable ${var_name} is missing." >&2
+      missing_vars=1
+    fi
+  done
+  if [ "$missing_vars" -ne 0 ]; then
+    exit 1
+  fi
+fi
+
 mkdir -p "$SYMPHONY_WORKSPACE_ROOT" "$SYMPHONY_LOGS_ROOT" "$CODEX_HOME/skills"
 
 if [ -n "${GH_TOKEN:-}" ] && ! gh auth status >/dev/null 2>&1; then

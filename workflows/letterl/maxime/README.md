@@ -19,6 +19,21 @@ Notes:
 - Auth and permission blockers move the issue to `Blocked`.
 - Each Symphony process must use its own workspace root, logs root, and dashboard port.
 - `gh auth status` is currently failing in this environment. Fix GitHub auth before launching unattended workers.
+- Worker bootstrap now runs `make symphony-bootstrap` inside the cloned `lead_status` repo, so the repo must expose that target on the branch Symphony clones.
+
+Required `/etc/symphony/symphony.env` contract for these workers:
+
+- Required: `LINEAR_API_KEY`, `GH_TOKEN`, `OPENAI_API_KEY`, `DATABASE_URL`
+- Optional for Gemini-backed runtime flows only: `GEMINI_API_KEY` and related Gemini tuning env vars
+- `GH_TOKEN` is the default unattended Git transport contract; the workflows no longer rely on a local `file://` fallback.
+
+Suggested preflight before launch:
+
+- `gh auth status`
+- verify `git clone`/`git ls-remote` for the configured `SOURCE_REPO_URL` work without prompts
+- confirm `DATABASE_URL` points to reachable PostgreSQL
+- confirm Node/npm are installed in the container image
+- confirm Playwright browser bootstrap can run in a fresh workspace
 
 Suggested ports:
 
@@ -30,6 +45,9 @@ Launch template:
 
 ```bash
 export LINEAR_API_KEY=...
+export GH_TOKEN=...
+export OPENAI_API_KEY=...
+export DATABASE_URL=postgresql://...
 export SYMPHONY_WORKSPACE_ROOT=/srv/symphony/workspaces/izvlechenie-zadach-maxime
 
 cd /path/to/symphony/elixir

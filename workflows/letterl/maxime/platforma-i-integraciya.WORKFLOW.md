@@ -20,11 +20,26 @@ workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
   after_create: |
-    git clone --depth 1 "$SOURCE_REPO_URL" .
-    if command -v poetry >/dev/null 2>&1; then
-      poetry config virtualenvs.in-project true --local
-      poetry install --no-interaction
+    export GIT_TERMINAL_PROMPT=0
+    export SOURCE_REPO_URL="${SOURCE_REPO_URL:-https://github.com/maximlafe/lead_status.git}"
+    if [ -z "${GH_TOKEN:-}" ]; then
+      echo "GH_TOKEN is required for unattended lead_status clone/push access." >&2
+      exit 1
     fi
+    if ! command -v gh >/dev/null 2>&1; then
+      echo "`gh` is required for unattended lead_status clone/push access." >&2
+      exit 1
+    fi
+    gh auth status >/dev/null 2>&1 || {
+      echo "GitHub auth is unavailable. Export GH_TOKEN in /etc/symphony/symphony.env." >&2
+      exit 1
+    }
+    gh auth setup-git >/dev/null 2>&1 || {
+      echo "Failed to configure git credentials via gh auth setup-git." >&2
+      exit 1
+    }
+    git clone --depth 1 "$SOURCE_REPO_URL" .
+    make symphony-bootstrap
   before_remove: |
     branch=$(git branch --show-current 2>/dev/null)
     if [ -n "$branch" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
@@ -81,6 +96,7 @@ Instructions:
    - `sync_workpad` for the live workpad comment; do not inline the workpad body into raw `commentCreate`/`commentUpdate` when `sync_workpad` is available.
    - `github_pr_snapshot` for compact PR status/feedback summaries.
    - `github_wait_for_checks` for CI waits outside the model loop.
+6. For Team Master UI/backend/runtime work, use the repo-local `launch-app` skill for live verification after the validation matrix passes.
 
 ## Operating rules
 
@@ -90,6 +106,7 @@ Instructions:
 - Sync the live workpad only at bootstrap, meaningful milestones, and final handoff.
 - Reproduce or capture the current signal before code changes when it materially improves confidence.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.
+- Run `make symphony-preflight` before treating auth/env/tooling gaps as blockers, and use the validation matrix below instead of ad-hoc test selection.
 - Do not reread skill bodies in straightforward runs unless the workflow does not cover the needed behavior.
 - Move state only when the matching quality bar is satisfied.
 
@@ -149,6 +166,19 @@ Instructions:
 8. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
 9. Merge latest `origin/main` into the branch before final handoff, resolve conflicts, and rerun required validation.
 
+## Validation preflight
+
+Run `make symphony-preflight` once per run before treating auth/env/tooling gaps as blockers. If it fails, record the exact failing check and whether it blocks the ticket's required validation.
+
+## Validation matrix
+
+- Backend-only changes: run targeted pytest for the touched modules and at least `make test-unit`.
+- Stateful, `task_v3`, database, or schema changes: run targeted pytest, `poetry run pytest tests/integration/test_task_v3_stateful_repeatability.py -v -m integration`, and `poetry run alembic upgrade head`.
+- Hosted UI or frontend changes: run `make team-master-ui-e2e`; if the change is app-touching, use the `launch-app` skill, verify `/health` and `/api/dashboard`, and capture runtime evidence.
+- Repo-wide infra or runtime changes: run `make test` plus the relevant targeted smoke checks.
+- Ticket-authored validation or test-plan steps are mandatory on top of this matrix.
+- Only move to `Blocked` when the ticket requires a matrix item that still cannot run after `make symphony-preflight` identifies the missing capability.
+
 ## PR handoff protocol (required before In Review)
 
 1. Identify the PR number from issue links or attachments.
@@ -174,6 +204,7 @@ Instructions:
 Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
 
 - GitHub is not a valid blocker by default; try fallback publish/review strategies first.
+- Run `make symphony-preflight` before using this escape hatch.
 - If a required non-GitHub tool or auth path is missing, record a concise blocker brief in the workpad with what is missing, why it blocks acceptance, and the exact human unblock action, then move the issue to `Blocked`.
 
 ## Step 2: In Review and merge handling
