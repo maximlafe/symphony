@@ -19,6 +19,7 @@ services:
       SYMPHONY_WORKSPACE_ROOT: /srv/symphony/workspaces/task-extract
       SYMPHONY_LOGS_ROOT: /srv/symphony/logs/task-extract
     volumes:
+      - /root/.codex:/root/.codex
       - /srv/symphony/workflows:/srv/symphony/workflows:ro
       - /srv/symphony/workspaces/task-extract:/srv/symphony/workspaces/task-extract
       - /srv/symphony/logs/task-extract:/srv/symphony/logs/task-extract
@@ -49,6 +50,7 @@ services:
       SYMPHONY_WORKSPACE_ROOT: /srv/symphony/workspaces/team-master
       SYMPHONY_LOGS_ROOT: /srv/symphony/logs/team-master
     volumes:
+      - /root/.codex:/root/.codex
       - /srv/symphony/workflows:/srv/symphony/workflows:ro
       - /srv/symphony/workspaces/team-master:/srv/symphony/workspaces/team-master
       - /srv/symphony/logs/team-master:/srv/symphony/logs/team-master
@@ -79,6 +81,7 @@ services:
       SYMPHONY_WORKSPACE_ROOT: /srv/symphony/workspaces/platform
       SYMPHONY_LOGS_ROOT: /srv/symphony/logs/platform
     volumes:
+      - /root/.codex:/root/.codex
       - /srv/symphony/workflows:/srv/symphony/workflows:ro
       - /srv/symphony/workspaces/platform:/srv/symphony/workspaces/platform
       - /srv/symphony/logs/platform:/srv/symphony/logs/platform
