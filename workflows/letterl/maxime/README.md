@@ -18,8 +18,8 @@ Notes:
 - PR handoff uses `In Review` instead of `Human Review`.
 - Auth and permission blockers move the issue to `Blocked`.
 - Each Symphony process must use its own workspace root, logs root, and dashboard port.
-- `gh auth status` is currently failing in this environment. Fix GitHub auth before launching unattended workers.
 - Worker bootstrap now runs `make symphony-bootstrap` inside the cloned `lead_status` repo, so the repo must expose that target on the branch Symphony clones.
+- Docker on the VPS should mount `/srv/symphony/app/workflows/letterl/maxime` directly into `/srv/symphony/workflows`, so the active worker rules stay aligned with the checked-out repo.
 
 Required `/etc/symphony/symphony.env` contract for these workers:
 
