@@ -20,6 +20,8 @@ services:
       SYMPHONY_LOGS_ROOT: /srv/symphony/logs/task-extract
     volumes:
       - /root/.codex:/root/.codex
+      - /root/.codex-furrow:/root/.codex-furrow
+      - /root/.codex-rebecca:/root/.codex-rebecca
       - /srv/symphony/workflows:/srv/symphony/workflows:ro
       - /srv/symphony/workspaces/task-extract:/srv/symphony/workspaces/task-extract
       - /srv/symphony/logs/task-extract:/srv/symphony/logs/task-extract
@@ -51,6 +53,8 @@ services:
       SYMPHONY_LOGS_ROOT: /srv/symphony/logs/team-master
     volumes:
       - /root/.codex:/root/.codex
+      - /root/.codex-furrow:/root/.codex-furrow
+      - /root/.codex-rebecca:/root/.codex-rebecca
       - /srv/symphony/workflows:/srv/symphony/workflows:ro
       - /srv/symphony/workspaces/team-master:/srv/symphony/workspaces/team-master
       - /srv/symphony/logs/team-master:/srv/symphony/logs/team-master
@@ -82,6 +86,8 @@ services:
       SYMPHONY_LOGS_ROOT: /srv/symphony/logs/platform
     volumes:
       - /root/.codex:/root/.codex
+      - /root/.codex-furrow:/root/.codex-furrow
+      - /root/.codex-rebecca:/root/.codex-rebecca
       - /srv/symphony/workflows:/srv/symphony/workflows:ro
       - /srv/symphony/workspaces/platform:/srv/symphony/workspaces/platform
       - /srv/symphony/logs/platform:/srv/symphony/logs/platform
