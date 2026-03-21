@@ -180,7 +180,11 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command],
+          cd: workspace,
+          env: hook_env(issue_context),
+          stderr_to_stdout: true
+        )
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -248,28 +252,61 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp issue_context(%{id: issue_id, identifier: identifier}) do
+  defp issue_context(%{} = issue) do
     %{
-      issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_id: Map.get(issue, :id),
+      issue_identifier: Map.get(issue, :identifier) || "issue",
+      issue_title: Map.get(issue, :title),
+      issue_description: Map.get(issue, :description),
+      issue_state: Map.get(issue, :state),
+      issue_branch_name: Map.get(issue, :branch_name),
+      issue_url: Map.get(issue, :url)
     }
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
     %{
       issue_id: nil,
-      issue_identifier: identifier
+      issue_identifier: identifier,
+      issue_title: nil,
+      issue_description: nil,
+      issue_state: nil,
+      issue_branch_name: nil,
+      issue_url: nil
     }
   end
 
   defp issue_context(_identifier) do
     %{
       issue_id: nil,
-      issue_identifier: "issue"
+      issue_identifier: "issue",
+      issue_title: nil,
+      issue_description: nil,
+      issue_state: nil,
+      issue_branch_name: nil,
+      issue_url: nil
     }
   end
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do
     "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"
   end
+
+  defp hook_env(issue_context) when is_map(issue_context) do
+    [
+      {"SYMPHONY_ISSUE_ID", env_value(Map.get(issue_context, :issue_id))},
+      {"SYMPHONY_ISSUE_IDENTIFIER", env_value(Map.get(issue_context, :issue_identifier))},
+      {"SYMPHONY_ISSUE_TITLE", env_value(Map.get(issue_context, :issue_title))},
+      {"SYMPHONY_ISSUE_DESCRIPTION", env_value(Map.get(issue_context, :issue_description))},
+      {"SYMPHONY_ISSUE_STATE", env_value(Map.get(issue_context, :issue_state))},
+      {"SYMPHONY_ISSUE_BRANCH_NAME", env_value(Map.get(issue_context, :issue_branch_name))},
+      {"SYMPHONY_ISSUE_URL", env_value(Map.get(issue_context, :issue_url))}
+    ]
+  end
+
+  defp hook_env(_issue_context), do: []
+
+  defp env_value(nil), do: ""
+  defp env_value(value) when is_binary(value), do: value
+  defp env_value(value), do: to_string(value)
 end
