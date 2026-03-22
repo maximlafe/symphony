@@ -93,6 +93,8 @@ tracker:
   project_slug: "..."
 workspace:
   root: ~/code/workspaces
+  cleanup_keep_recent: 5
+  warning_threshold_bytes: 10737418240
 hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
@@ -126,6 +128,10 @@ Notes:
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
+- `workspace.cleanup_keep_recent` controls how many of the most recent terminal issue workspaces
+  Symphony keeps on disk before retention cleanup removes older ones. Default: `5`.
+- `workspace.warning_threshold_bytes` sets the workspace-root disk-usage threshold that triggers a
+  runtime warning and dashboard highlight. Default: `10737418240` bytes (`10 GiB`).
 - Workspace hooks receive issue metadata in environment variables such as
   `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_TITLE`, `SYMPHONY_ISSUE_DESCRIPTION`,
   `SYMPHONY_ISSUE_STATE`, `SYMPHONY_ISSUE_BRANCH_NAME`, and `SYMPHONY_ISSUE_URL`.
@@ -153,6 +159,8 @@ tracker:
   api_key: $LINEAR_API_KEY
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
+  cleanup_keep_recent: 5
+  warning_threshold_bytes: 10737418240
 hooks:
   after_create: |
     git clone --depth 1 "$SOURCE_REPO_URL" .

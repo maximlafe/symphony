@@ -392,7 +392,12 @@ defmodule SymphonyElixir.ExtensionsTest do
                "total_tokens" => 12,
                "seconds_running" => 42.5
              },
-             "rate_limits" => %{"primary" => %{"remaining" => 11}}
+             "rate_limits" => %{"primary" => %{"remaining" => 11}},
+             "workspace" => %{
+               "usage_bytes" => 2_147_483_648,
+               "warning_threshold_bytes" => 10_737_418_240,
+               "done_closed_keep_count" => 5
+             }
            }
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
@@ -566,6 +571,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "primary@example.com"
     assert html =~ "LiveView"
     assert html =~ "LiveView offline"
+    assert html =~ "Workspace disk"
     assert html =~ "Copy ID"
     assert html =~ "Codex update"
     refute html =~ "data-runtime-clock="
@@ -752,7 +758,12 @@ defmodule SymphonyElixir.ExtensionsTest do
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
-      rate_limits: %{"primary" => %{"remaining" => 11}}
+      rate_limits: %{"primary" => %{"remaining" => 11}},
+      workspace: %{
+        usage_bytes: 2_147_483_648,
+        warning_threshold_bytes: 10_737_418_240,
+        done_closed_keep_count: 5
+      }
     }
   end
 

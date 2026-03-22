@@ -319,6 +319,7 @@ defmodule SymphonyElixir.StatusDashboard do
              codex_accounts: Map.get(snapshot, :codex_accounts, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
+             workspace: Map.get(snapshot, :workspace),
              polling: Map.get(snapshot, :polling)
            }},
           update_token_samples(token_samples, now_ms, total_tokens)
@@ -338,8 +339,10 @@ defmodule SymphonyElixir.StatusDashboard do
         rate_limits = Map.get(snapshot, :rate_limits)
         active_codex_account_id = Map.get(snapshot, :active_codex_account_id)
         codex_accounts = Map.get(snapshot, :codex_accounts, [])
+        workspace = Map.get(snapshot, :workspace)
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
+        workspace_line = format_workspace_usage_lines(workspace)
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
         codex_output_tokens = Map.get(codex_totals, :output_tokens, 0)
         codex_total_tokens = Map.get(codex_totals, :total_tokens, 0)
@@ -367,6 +370,7 @@ defmodule SymphonyElixir.StatusDashboard do
              colorize(" | ", @ansi_gray) <>
              colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
            colorize("│ Active Account: ", @ansi_bold) <> format_active_account(active_codex_account_id),
+           workspace_line,
            colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
            colorize("│ Accounts: ", @ansi_bold) <> format_codex_accounts(codex_accounts, active_codex_account_id),
            project_link_lines,
@@ -433,6 +437,46 @@ defmodule SymphonyElixir.StatusDashboard do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("n/a", @ansi_gray)
   end
 
+  defp format_workspace_usage_line(%{usage_bytes: usage_bytes} = workspace)
+       when is_integer(usage_bytes) and usage_bytes >= 0 do
+    threshold_bytes = Map.get(workspace, :warning_threshold_bytes)
+    keep_recent = Map.get(workspace, :done_closed_keep_count) || Map.get(workspace, :cleanup_keep_recent)
+
+    colorize("│ Workspace disk: ", @ansi_bold) <>
+      colorize(format_bytes(usage_bytes), workspace_usage_color(usage_bytes, threshold_bytes)) <>
+      colorize(" (warn #{workspace_threshold_text(threshold_bytes)}, keep #{workspace_keep_text(keep_recent)})", @ansi_gray)
+  end
+
+  defp format_workspace_usage_line(_workspace), do: nil
+
+  defp format_workspace_usage_lines(workspace) do
+    case format_workspace_usage_line(workspace) do
+      nil -> []
+      line -> [line]
+    end
+  end
+
+  defp workspace_usage_color(usage_bytes, threshold_bytes) do
+    if workspace_threshold_exceeded?(usage_bytes, threshold_bytes) do
+      @ansi_orange
+    else
+      @ansi_cyan
+    end
+  end
+
+  defp workspace_threshold_exceeded?(usage_bytes, threshold_bytes)
+       when is_integer(usage_bytes) and is_integer(threshold_bytes) and threshold_bytes > 0 do
+    usage_bytes > threshold_bytes
+  end
+
+  defp workspace_threshold_exceeded?(_usage_bytes, _threshold_bytes), do: false
+
+  defp workspace_threshold_text(value) when is_integer(value) and value > 0, do: format_bytes(value)
+  defp workspace_threshold_text(_value), do: "n/a"
+
+  defp workspace_keep_text(value) when is_integer(value) and value >= 0, do: Integer.to_string(value)
+  defp workspace_keep_text(_value), do: "n/a"
+
   defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
 
   defp dashboard_url do
@@ -469,6 +513,29 @@ defmodule SymphonyElixir.StatusDashboard do
       true ->
         trimmed_host
     end
+  end
+
+  defp format_bytes(bytes) when is_integer(bytes) and bytes < 1024 do
+    "#{bytes} B"
+  end
+
+  defp format_bytes(bytes) when is_integer(bytes) and bytes >= 1024 do
+    units = ["KB", "MB", "GB", "TB", "PB"]
+    format_scaled_bytes(bytes / 1024.0, units)
+  end
+
+  defp format_bytes(_bytes), do: "n/a"
+
+  defp format_scaled_bytes(value, [unit]) do
+    :erlang.float_to_binary(value, decimals: 2) <> " " <> unit
+  end
+
+  defp format_scaled_bytes(value, [unit | _rest_units]) when value < 1024.0 do
+    :erlang.float_to_binary(value, decimals: 2) <> " " <> unit
+  end
+
+  defp format_scaled_bytes(value, [_unit | rest_units]) do
+    format_scaled_bytes(value / 1024.0, rest_units)
   end
 
   defp render_to_terminal(content) do
@@ -566,8 +633,11 @@ defmodule SymphonyElixir.StatusDashboard do
            %{
              running: running,
              retrying: retrying,
+             active_codex_account_id: Map.get(snapshot, :active_codex_account_id),
+             codex_accounts: Map.get(snapshot, :codex_accounts, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
+             workspace: Map.get(snapshot, :workspace),
              polling: Map.get(snapshot, :polling)
            }}
 
