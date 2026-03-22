@@ -692,6 +692,90 @@ defmodule SymphonyElixir.CoreTest do
            } = state.retry_attempts[issue_id]
   end
 
+  test "retry dispatch preserves trace_id from retry metadata" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-retry-trace-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-retry-trace"
+    issue_identifier = "MT-562"
+    trace_id = "trace-retry-preserved"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: issue_id,
+          identifier: issue_identifier,
+          title: "Retry trace preservation",
+          description: "Keep the same trace_id across retry dispatch",
+          state: "In Progress",
+          url: "https://example.org/issues/#{issue_identifier}",
+          labels: []
+        }
+      ])
+
+      orchestrator_name = Module.concat(__MODULE__, :RetryTraceOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      retry_token = make_ref()
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:codex_accounts, %{
+          "primary" => %{id: "primary", codex_home: System.tmp_dir!(), healthy: true}
+        })
+        |> Map.put(:active_codex_account_id, "primary")
+        |> Map.put(:retry_attempts, %{
+          issue_id => %{
+            attempt: 1,
+            timer_ref: nil,
+            retry_token: retry_token,
+            due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+            identifier: issue_identifier,
+            trace_id: trace_id,
+            error: "agent exited: :boom"
+          }
+        })
+      end)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{trace_id: ^trace_id}, Map.get(state.running, issue_id))
+        end)
+
+      assert %{identifier: ^issue_identifier, trace_id: ^trace_id, pid: worker_pid} =
+               state.running[issue_id]
+
+      Process.exit(worker_pid, :kill)
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "manual refresh coalesces repeated requests and ignores superseded ticks" do
     now_ms = System.monotonic_time(:millisecond)
     stale_tick_token = make_ref()

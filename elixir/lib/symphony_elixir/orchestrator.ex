@@ -650,10 +650,10 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil) do
+  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, trace_id \\ nil) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt)
+        do_dispatch_issue(state, refreshed_issue, attempt, trace_id)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -670,13 +670,19 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, trace_id) do
     case active_codex_account(state) do
       nil ->
         state
 
       codex_account ->
-        dispatch_issue_with_account(state, issue, attempt, codex_account, new_trace_id())
+        dispatch_issue_with_account(
+          state,
+          issue,
+          attempt,
+          codex_account,
+          dispatch_trace_id(issue, trace_id)
+        )
     end
   end
 
@@ -961,7 +967,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_active_retry(state, issue, attempt, metadata) do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) do
-      {:noreply, dispatch_issue(state, issue, attempt)}
+      {:noreply, dispatch_issue(state, issue, attempt, metadata[:trace_id])}
     else
       with_log_metadata(issue_log_metadata(issue.id, issue.identifier, nil, metadata[:trace_id]), fn ->
         Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
@@ -1249,6 +1255,15 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp new_trace_id do
     Ecto.UUID.generate()
+  end
+
+  defp dispatch_trace_id(_issue, trace_id) when is_binary(trace_id) and trace_id != "", do: trace_id
+
+  defp dispatch_trace_id(issue, _trace_id) do
+    case Map.get(issue, :trace_id) do
+      trace_id when is_binary(trace_id) and trace_id != "" -> trace_id
+      _ -> new_trace_id()
+    end
   end
 
   defp issue_log_metadata(issue_id, issue_identifier, session_id, trace_id) do
