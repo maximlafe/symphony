@@ -80,6 +80,9 @@ Continuation context:
 - This is retry attempt #{{ attempt }} because the ticket is still in an active state.
 - Resume from the current workspace state instead of restarting from scratch.
 - Do not repeat already-completed investigation or validation unless needed for new code changes.
+- Treat every retry as a context-budgeted continuation: prefer the current diff, `workpad.md`, and compact tool summaries over rereading full history.
+- If available context is already low (`low-context`), finish at most one atomic action, sync the workpad, and prepare a classified checkpoint instead of starting a broad new investigation.
+- Do not spend the remaining context budget restating prior work or retrying the same failing path without a materially new signal.
 - Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets.
   {% endif %}
 
@@ -130,10 +133,10 @@ Instructions:
 - `Planning` -> приведи issue description к русскому task-spec и подготовь детальный русский workpad; продуктовый код не меняй.
 - `Plan Review` -> человеческий гейт для плана; не кодируй.
 - `In Progress` -> активная реализация.
-- `In Review` -> PR приложен и провалидирован; ждём человеческий тест/ревью.
+- `In Review` -> `checkpoint_type: human-verify`; PR приложен и провалидирован, ждём человеческий тест/ревью.
 - `Merging` -> одобрено человеком; используй `land` skill и не вызывай `gh pr merge` напрямую.
 - `Rework` -> новый заход после review feedback с новой веткой и новым PR.
-- `Blocked` -> автономный прогресс упёрся во внешнее ограничение.
+- `Blocked` -> `checkpoint_type: decision` или `human-action`; автономный прогресс упёрся во внешний выбор или ручное действие.
 - `Done` -> терминальное состояние.
 
 ## Step 0: Determine current ticket state and route
@@ -192,6 +195,7 @@ Instructions:
 8. Before moving to `Plan Review`, do one final planning handoff:
    - ensure the task-spec issue description is current;
    - ensure the final local `workpad.md` is synced exactly once;
+   - do not fill the classified `Checkpoint` section for this planning-only gate; `Plan Review` is an unclassified review of the plan, not an execution handoff;
    - record notes such as `на этапе Planning продуктовые файлы не изменялись` locally before that final sync, not through an extra sync cycle.
 9. Move the issue to `Plan Review`.
 10. Do not begin implementation until a human moves the issue to `In Progress`.
@@ -239,6 +243,7 @@ Use this only when completion is blocked by missing required tools or missing au
 3. Run the `pull` skill before code edits, then record the result in `Заметки` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
 4. Use the issue description as the canonical task contract and local `workpad.md` as the implementation plan and detailed execution log.
 5. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before final handoff.
+   - фиксируй повторные попытки исправить один и тот же сигнал в workpad и соблюдай лимит auto-fix attempts ниже;
 6. Run the required validation for the scope:
    - run `make symphony-preflight` before concluding that auth/env/tooling is missing for the current task;
    - apply the validation matrix above instead of picking tests heuristically;
@@ -251,18 +256,19 @@ Use this only when completion is blocked by missing required tools or missing au
 9. Merge latest `origin/main` into the branch before final handoff, resolve conflicts, and rerun required validation.
 10. Before moving to `In Review`, use the compact PR/check flow:
    - run the PR feedback and checks protocol above;
-   - if checks are green and no actionable feedback remains, first rewrite every final checklist item so it is already true before the state transition (for example, `PR checks зелёные; задача готова к переводу в In Review` instead of `задача переведена в In Review`), then close all satisfied parent and child checkboxes, finalize local `workpad.md`, sync the live workpad once, update the task-spec description once if the task contract changed, and only then move the issue to `In Review`;
+   - if checks are green and no actionable feedback remains, first rewrite every final checklist item so it is already true before the state transition (for example, `PR checks зелёные; задача готова к переводу в In Review` instead of `задача переведена в In Review`), затем заполни `Checkpoint` с `checkpoint_type: human-verify`, обоснованным `risk_level` и однострочным `summary`, закрой все выполненные parent/child checkboxes, финализируй local `workpad.md`, один раз синхронизируй live workpad, при необходимости один раз обнови task-spec description и только потом переводи issue в `In Review`;
    - do not repeat label or attachment checks in the same run unless the PR changed.
-11. If PR publication or handoff is blocked by missing required non-GitHub tools/auth/permissions after all fallbacks, move the issue to `Blocked` with the blocker brief and explicit unblock action.
+11. If PR publication or handoff is blocked by missing required non-GitHub tools/auth/permissions after all fallbacks, заполни `Checkpoint` с `checkpoint_type: human-action`, подходящим `risk_level` и blocker summary, затем переводи issue в `Blocked` с blocker brief и явным unblock action.
 
 ## Step 3: In Review and merge handling
 
-1. In `In Review`, do not code or change ticket content.
-2. Poll for updates as needed.
-3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
-4. If approved, a human moves the issue to `Merging`.
-5. In `Merging`, first create the separate top-level comment `Начал слияние задачи: <DD.MM.YYYY HH:MM MSK>`, then use the `land` skill until the PR is merged.
-6. After merge is complete, move the issue to `Done`.
+1. `In Review` используй только для `checkpoint_type: human-verify`; `decision` и `human-action` должны ждать в `Blocked`.
+2. В `In Review` не кодируй и не меняй содержимое тикета.
+3. Poll for updates as needed.
+4. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
+5. If approved, a human moves the issue to `Merging`.
+6. In `Merging`, first create the separate top-level comment `Начал слияние задачи: <DD.MM.YYYY HH:MM MSK>`, then use the `land` skill until the PR is merged.
+7. After merge is complete, move the issue to `Done`.
 
 ## Step 4: Rework handling
 
@@ -283,10 +289,12 @@ Use this only when completion is blocked by missing required tools or missing au
 - Required `Критерии приемки` and `Проверка` checklists are explicit and reviewable.
 - Any important reproduction or investigation signal is recorded in the workpad.
 - No product code changes, commits, or PR publication happened during `Planning`.
+- `Plan Review` does not require a classified `Checkpoint`; classified checkpoints begin with execution handoffs to `In Review` or `Blocked`.
 
 ## Completion bar before In Review
 
 - The workpad accurately reflects the completed plan, acceptance criteria, validation, and handoff notes.
+- В workpad заполнен классифицированный `Checkpoint` с `checkpoint_type: human-verify` и обоснованным `risk_level`.
 - Every final checklist item in the workpad is phrased as a pre-transition fact or readiness statement, so it can be truthfully checked before the move to `In Review`.
 - The Russian task-spec description reflects the delivered scope.
 - Required validation/tests are green for the latest commit.
@@ -295,15 +303,54 @@ Use this only when completion is blocked by missing required tools or missing au
 - The PR is pushed, linked on the issue, and labeled `symphony`.
 - Runtime evidence is uploaded when the change is app-touching.
 
+## Protocol for classified checkpoints
+
+Используй этот протокол для execution-handoff: когда переводишь задачу в `In Review` или `Blocked`, либо останавливаешь автономный прогресс во время реализации.
+
+- `Plan Review` сюда не относится: это отдельный planning-only human gate без `Checkpoint`.
+
+- Перед финальным `sync_workpad` добавь компактный checkpoint в локальный `workpad.md`.
+- В checkpoint обязательно укажи:
+  - `checkpoint_type`: ровно один из `human-verify`, `decision`, `human-action`
+  - `risk_level`: ровно один из `low`, `medium`, `high`
+  - `summary`: краткая, опирающаяся на факты причина текущего handoff
+- `human-verify`:
+  - используй, когда реализация готова к человеческому тесту/ревью и не требует дополнительного выбора или внешнего действия;
+  - это единственный обычный handoff для перевода в `In Review`.
+- `decision`:
+  - используй, когда дальше нужен продуктовый/технический выбор, конфликтуют требования, или после повторных попыток остаётся несколько правдоподобных направлений;
+  - зафиксируй варианты, свою рекомендацию и цену неверного выбора;
+  - переводи задачу в `Blocked`, а не в обычный `In Review`.
+- `human-action`:
+  - используй, когда нужен внешний ручной шаг: доступ, секрет, рестарт сервиса, deploy gate, правка внешнего состояния или недостающий ввод;
+  - зафиксируй точное действие и почему агент не может выполнить его сам;
+  - переводи задачу в `Blocked`.
+- Классифицируй риск консервативно:
+  - `low` для локального обратимого изменения с сильным набором доказательств;
+  - `medium` для изменений в нескольких местах или неполной верификации;
+  - `high` для destructive/data correctness/auth-security риска или заметной неопределённости по пользовательскому эффекту.
+- Не вставляй в checkpoint большие сырые логи. Кратко перескажи сигнал и опирайся на compact tools (`github_pr_snapshot`, `sync_workpad`).
+
+## Auto-fix loop discipline
+
+- Считай одну auto-fix attempt каждый раз, когда меняешь код или конфиг, чтобы исправить один и тот же failing signal после уже полученного reproducer, CI failure или review feedback.
+- Лимит: максимум 2 auto-fix attempts на один distinct root cause или failing signal.
+- Если вторая попытка не дала явного результата, прекращай спекулятивный цикл, один раз синхронизируй workpad и переходи к классифицированному handoff.
+- Используй `checkpoint_type: decision`, когда осталось несколько правдоподобных фиксов, `checkpoint_type: human-action`, когда прогресс упёрся во внешнюю зависимость, и `checkpoint_type: human-verify` только когда реализация уже готова и осталось человеческое подтверждение.
+- Материально новый failure mode сбрасывает счётчик; blind reruns и косметические переписывания не сбрасывают.
+
 ## Guardrails
 
 - If issue state is `Backlog`, do not modify it.
 - If state is terminal (`Done`), do nothing and shut down.
 - Preserve all material user-authored facts and constraints when normalizing the issue description; full reformatting into canonical sections is allowed.
+- Никогда не делай unclassified execution handoff: для переходов в `In Review` или `Blocked` всегда указывай и `checkpoint_type`, и `risk_level`.
 - Use exactly one persistent workpad comment and sync it via `sync_workpad` whenever available.
 - Pass the absolute path to local `workpad.md` when calling `sync_workpad`.
 - Stage-start announcements must be separate top-level comments and must be posted before the first live workpad sync of that stage.
 - Never inline the live workpad body into raw `commentCreate` or `commentUpdate` when `sync_workpad` is available.
+- При low-context предпочитай классифицированный checkpoint широкому reread.
+- После 2 неуспешных auto-fix attempts по одному сигналу не начинай третью спекулятивную правку.
 - Temporary proof edits are allowed only for local verification and must be reverted before commit.
 - Out-of-scope improvements go to a separate Backlog issue instead of expanding current scope.
 - Treat the completion bars for `Plan Review` and `In Review` as hard gates.
@@ -373,6 +420,12 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Проверка
 
 - [ ] целевая проверка: `<command>`
+
+### Checkpoint
+
+- `checkpoint_type`: `<human-verify|decision|human-action>` (заполняй только при handoff)
+- `risk_level`: `<low|medium|high>` (заполняй только при handoff)
+- `summary`: <кратко и по фактам, почему сейчас нужен handoff>
 
 ### Заметки
 

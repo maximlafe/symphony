@@ -1283,6 +1283,13 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "`github_wait_for_checks`"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
+    assert prompt =~ "`checkpoint_type`"
+    assert prompt =~ "`risk_level`"
+    assert prompt =~ "`human-verify`"
+    assert prompt =~ "`decision`"
+    assert prompt =~ "`human-action`"
+    assert prompt =~ "`low-context`"
+    assert prompt =~ "Limit yourself to 2 auto-fix attempts"
   end
 
   test "prompt builder adds continuation guidance for retries" do
