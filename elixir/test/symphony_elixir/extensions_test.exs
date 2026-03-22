@@ -353,8 +353,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "email" => "primary@example.com",
                  "plan_type" => "pro",
                  "requires_openai_auth" => false,
-                 "checked_at" =>
-                   state_payload["codex_accounts"] |> List.first() |> Map.fetch!("checked_at"),
+                 "checked_at" => state_payload["codex_accounts"] |> List.first() |> Map.fetch!("checked_at"),
                  "missing_windows_mins" => [],
                  "insufficient_windows_mins" => [],
                  "rate_limits" => %{"primary" => %{"remaining" => 11}}
@@ -365,6 +364,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "codex_account_id" => "primary",
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
+                 "trace_id" => "trace-http",
                  "state" => "In Progress",
                  "session_id" => "thread-http",
                  "turn_count" => 7,
@@ -380,6 +380,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-retry",
                  "issue_identifier" => "MT-RETRY",
                  "attempt" => 2,
+                 "trace_id" => "trace-retry",
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom"
                }
@@ -399,11 +400,13 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert issue_payload == %{
              "issue_identifier" => "MT-HTTP",
              "issue_id" => "issue-http",
+             "trace_id" => "trace-http",
              "status" => "running",
              "workspace" => %{"path" => Path.join(Config.settings!().workspace.root, "MT-HTTP")},
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
                "codex_account_id" => "primary",
+               "trace_id" => "trace-http",
                "session_id" => "thread-http",
                "turn_count" => 7,
                "state" => "In Progress",
@@ -718,6 +721,7 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           issue_id: "issue-http",
           identifier: "MT-HTTP",
+          trace_id: "trace-http",
           state: "In Progress",
           codex_account_id: "primary",
           session_id: "thread-http",
@@ -737,6 +741,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           issue_id: "issue-retry",
           identifier: "MT-RETRY",
           attempt: 2,
+          trace_id: "trace-retry",
           due_in_ms: 2_000,
           error: "boom"
         }

@@ -66,6 +66,7 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_identifier: issue_identifier,
       issue_id: issue_id_from_entries(running, retry),
+      trace_id: trace_id_from_entries(running, retry),
       status: issue_status(running, retry),
       workspace: %{
         path: Path.join(Config.settings!().workspace.root, issue_identifier)
@@ -88,6 +89,9 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_id_from_entries(running, retry),
     do: (running && running.issue_id) || (retry && retry.issue_id)
 
+  defp trace_id_from_entries(running, retry),
+    do: (running && running.trace_id) || (retry && retry.trace_id)
+
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0
   defp retry_attempt(retry), do: retry.attempt || 0
@@ -100,6 +104,7 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
+      trace_id: Map.get(entry, :trace_id),
       state: entry.state,
       codex_account_id: Map.get(entry, :codex_account_id),
       session_id: entry.session_id,
@@ -120,6 +125,7 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
+      trace_id: Map.get(entry, :trace_id),
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error
@@ -129,6 +135,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp running_issue_payload(running) do
     %{
       codex_account_id: Map.get(running, :codex_account_id),
+      trace_id: Map.get(running, :trace_id),
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
@@ -146,6 +153,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp retry_issue_payload(retry) do
     %{
+      trace_id: Map.get(retry, :trace_id),
       attempt: retry.attempt,
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error
@@ -157,6 +165,7 @@ defmodule SymphonyElixirWeb.Presenter do
       %{
         at: iso8601(running.last_codex_timestamp),
         event: running.last_codex_event,
+        trace_id: Map.get(running, :trace_id),
         message: summarize_message(running.last_codex_message)
       }
     ]

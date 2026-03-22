@@ -87,6 +87,7 @@ defmodule SymphonyElixir.Codex.Accounts do
     response = unwrap_response_payload(response)
     account = map_value(response, ["account", :account]) || %{}
     account_present? = account_present?(account)
+
     requires_openai_auth? =
       if(account_present?,
         do: false,
@@ -129,17 +130,12 @@ defmodule SymphonyElixir.Codex.Accounts do
     map_value(payload, ["rateLimits", :rateLimits, "rate_limits", :rate_limits])
   end
 
-  defp fallback_rate_limits_snapshot(_payload), do: nil
-
   defp windows_by_duration(rate_limits) when is_map(rate_limits) do
     [map_value(rate_limits, ["primary", :primary]), map_value(rate_limits, ["secondary", :secondary])]
     |> Enum.reduce(%{}, fn bucket, acc ->
       case bucket_window_minutes(bucket) do
         window_mins when is_integer(window_mins) and window_mins > 0 ->
-          case bucket_remaining_percent(bucket) do
-            remaining when is_number(remaining) -> Map.put(acc, window_mins, remaining)
-            _ -> acc
-          end
+          maybe_put_bucket_remaining(acc, window_mins, bucket)
 
         _ ->
           acc
@@ -171,17 +167,15 @@ defmodule SymphonyElixir.Codex.Accounts do
         :used_percent
       ])
 
-    cond do
-      is_number(used_percent) ->
-        max(0.0, 100.0 - used_percent * 1.0)
+    if is_number(used_percent) do
+      max(0.0, 100.0 - used_percent * 1.0)
+    else
+      remaining = map_value(bucket, ["remaining", :remaining])
+      limit = map_value(bucket, ["limit", :limit])
 
-      true ->
-        remaining = map_value(bucket, ["remaining", :remaining])
-        limit = map_value(bucket, ["limit", :limit])
-
-        if integer_like?(remaining) and integer_like?(limit) and to_int(limit) > 0 do
-          max(0.0, to_int(remaining) * 100.0 / to_int(limit))
-        end
+      if integer_like?(remaining) and integer_like?(limit) and to_int(limit) > 0 do
+        max(0.0, to_int(remaining) * 100.0 / to_int(limit))
+      end
     end
   end
 
@@ -198,15 +192,21 @@ defmodule SymphonyElixir.Codex.Accounts do
   defp health_reason(_rate_limits, _missing_windows_mins, insufficient_windows_mins, windows)
        when insufficient_windows_mins != [] do
     insufficient_windows_mins
-    |> Enum.map(fn window_mins ->
+    |> Enum.map_join(", ", fn window_mins ->
       remaining = Map.get(windows, window_mins)
       "#{window_mins}m=#{format_remaining(remaining)}"
     end)
-    |> Enum.join(", ")
     |> then(&"threshold exceeded #{&1}")
   end
 
   defp health_reason(_rate_limits, _missing_windows_mins, _insufficient_windows_mins, _windows), do: nil
+
+  defp maybe_put_bucket_remaining(acc, window_mins, bucket) do
+    case bucket_remaining_percent(bucket) do
+      remaining when is_number(remaining) -> Map.put(acc, window_mins, remaining)
+      _ -> acc
+    end
+  end
 
   defp format_remaining(remaining) when is_number(remaining) do
     :erlang.float_to_binary(remaining * 1.0, decimals: 1) <> "%"

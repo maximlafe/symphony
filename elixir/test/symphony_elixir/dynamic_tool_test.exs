@@ -731,6 +731,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert payload["all_green"] == true
     assert payload["failed_checks"] == []
     assert payload["pending_checks"] == []
+
     assert payload["checks"] == [
              %{
                "conclusion" => "SUCCESS",

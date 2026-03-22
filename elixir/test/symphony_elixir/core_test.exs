@@ -546,8 +546,13 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     send(pid, {:DOWN, ref, :process, self(), :normal})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        not Map.has_key?(state.running, issue_id) and
+          MapSet.member?(state.completed, issue_id) and
+          is_map(state.retry_attempts[issue_id])
+      end)
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
@@ -589,8 +594,11 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        match?(%{attempt: 3}, state.retry_attempts[issue_id])
+      end)
 
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
@@ -628,8 +636,11 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        match?(%{attempt: 1}, state.retry_attempts[issue_id])
+      end)
 
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
@@ -667,14 +678,18 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     send(pid, {:retry_issue, issue_id, stale_retry_token})
-    Process.sleep(50)
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        match?(%{retry_token: ^current_retry_token}, state.retry_attempts[issue_id])
+      end)
 
     assert %{
              attempt: 2,
              retry_token: ^current_retry_token,
              identifier: "MT-561",
              error: "agent exited: :boom"
-           } = :sys.get_state(pid).retry_attempts[issue_id]
+           } = state.retry_attempts[issue_id]
   end
 
   test "manual refresh coalesces repeated requests and ignores superseded ticks" do
@@ -1120,18 +1135,21 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       test_pid = self()
+      trace_id = "trace-live-updates"
 
       assert :ok =
                AgentRunner.run(
                  issue,
                  test_pid,
-                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 trace_id: trace_id
                )
 
       assert_receive {:codex_worker_update, "issue-live-updates",
                       %{
                         event: :session_started,
                         timestamp: %DateTime{},
+                        trace_id: ^trace_id,
                         session_id: session_id
                       }},
                      500
@@ -1724,4 +1742,25 @@ defmodule SymphonyElixir.CoreTest do
       File.rm_rf(test_root)
     end
   end
+
+  defp wait_for_orchestrator_state(pid, predicate, attempts \\ 40)
+
+  defp wait_for_orchestrator_state(pid, predicate, attempts)
+       when is_pid(pid) and is_function(predicate, 1) and attempts > 0 do
+    state =
+      try do
+        :sys.get_state(pid)
+      catch
+        :exit, _reason -> nil
+      end
+
+    if is_map(state) and predicate.(state) do
+      state
+    else
+      Process.sleep(25)
+      wait_for_orchestrator_state(pid, predicate, attempts - 1)
+    end
+  end
+
+  defp wait_for_orchestrator_state(pid, _predicate, 0), do: :sys.get_state(pid)
 end

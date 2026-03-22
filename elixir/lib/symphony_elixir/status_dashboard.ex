@@ -597,10 +597,12 @@ defmodule SymphonyElixir.StatusDashboard do
     issue = format_cell(running_entry.identifier || "unknown", @running_id_width)
     state = running_entry.state || "unknown"
     state_display = format_cell(to_string(state), @running_stage_width)
+
     session =
       running_entry
       |> compact_running_session()
       |> format_cell(@running_session_width)
+
     pid = format_cell(running_entry.codex_app_server_pid || "n/a", @running_pid_width)
     total_tokens = running_entry.codex_total_tokens || 0
     runtime_seconds = running_entry.runtime_seconds || 0
@@ -975,53 +977,13 @@ defmodule SymphonyElixir.StatusDashboard do
   defp format_rate_limit_bucket(bucket) when is_map(bucket) do
     remaining = map_value(bucket, ["remaining", :remaining])
     limit = map_value(bucket, ["limit", :limit])
-    used_percent = map_value(bucket, ["used_percent", :used_percent, "usedPercent", :usedPercent])
-    window_mins = map_value(bucket, ["window_minutes", :window_minutes, "windowDurationMins", :windowDurationMins])
+    used_percent = rate_limit_bucket_used_percent(bucket)
+    window_mins = rate_limit_bucket_window_mins(bucket)
+    base = format_rate_limit_bucket_base(bucket, remaining, limit, used_percent, window_mins)
 
-    reset_value =
-      map_value(bucket, [
-        "reset_in_seconds",
-        :reset_in_seconds,
-        "resetInSeconds",
-        :resetInSeconds,
-        "reset_at",
-        :reset_at,
-        "resetAt",
-        :resetAt,
-        "resets_at",
-        :resets_at,
-        "resetsAt",
-        :resetsAt
-      ])
-
-    base =
-      cond do
-        integer_like?(remaining) and integer_like?(limit) ->
-          "#{format_count(remaining)}/#{format_count(limit)}"
-
-        integer_like?(remaining) ->
-          "remaining #{format_count(remaining)}"
-
-        integer_like?(limit) ->
-          "limit #{format_count(limit)}"
-
-        is_number(used_percent) and is_integer(window_mins) ->
-          "#{used_percent}%/#{window_mins}m"
-
-        is_number(used_percent) ->
-          "#{used_percent}% used"
-
-        map_size(bucket) == 0 ->
-          "n/a"
-
-        true ->
-          bucket |> inspect(limit: 6) |> truncate(40)
-      end
-
-    if is_nil(reset_value) do
-      base
-    else
-      "#{base} reset #{format_reset_value(reset_value)}"
+    case rate_limit_bucket_reset_value(bucket) do
+      nil -> base
+      reset_value -> "#{base} reset #{format_reset_value(reset_value)}"
     end
   end
 
@@ -1667,6 +1629,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_rate_limit_bucket_summary(bucket) when is_map(bucket) do
     used_percent = map_value(bucket, ["usedPercent", :usedPercent])
+
     window_mins =
       map_value(bucket, [
         "windowDurationMins",
@@ -1696,33 +1659,109 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_codex_accounts(codex_accounts, active_codex_account_id) when is_list(codex_accounts) do
     codex_accounts
-    |> Enum.map(fn account ->
-      id = map_value(account, ["id", :id]) || "unknown"
-      healthy = map_value(account, ["healthy", :healthy]) == true
-      reason = map_value(account, ["health_reason", :health_reason])
-      active? = id == active_codex_account_id
-
-      label =
-        cond do
-          healthy and active? -> "#{id} active"
-          healthy -> "#{id} healthy"
-          is_binary(reason) and reason != "" -> "#{id} #{truncate(reason, 32)}"
-          true -> "#{id} unhealthy"
-        end
-
-      color =
-        cond do
-          healthy and active? -> @ansi_green
-          healthy -> @ansi_cyan
-          true -> @ansi_gray
-        end
-
-      colorize(label, color)
+    |> Enum.map_join(colorize(" | ", @ansi_gray), fn account ->
+      format_codex_account(account, active_codex_account_id)
     end)
-    |> Enum.join(colorize(" | ", @ansi_gray))
   end
 
   defp format_codex_accounts(_codex_accounts, _active_codex_account_id), do: colorize("unavailable", @ansi_gray)
+
+  defp rate_limit_bucket_used_percent(bucket) do
+    map_value(bucket, ["used_percent", :used_percent, "usedPercent", :usedPercent])
+  end
+
+  defp rate_limit_bucket_window_mins(bucket) do
+    map_value(bucket, ["window_minutes", :window_minutes, "windowDurationMins", :windowDurationMins])
+  end
+
+  defp rate_limit_bucket_reset_value(bucket) do
+    map_value(bucket, [
+      "reset_in_seconds",
+      :reset_in_seconds,
+      "resetInSeconds",
+      :resetInSeconds,
+      "reset_at",
+      :reset_at,
+      "resetAt",
+      :resetAt,
+      "resets_at",
+      :resets_at,
+      "resetsAt",
+      :resetsAt
+    ])
+  end
+
+  defp format_rate_limit_bucket_base(bucket, remaining, limit, used_percent, window_mins) do
+    format_rate_limit_bucket_count_pair(remaining, limit) ||
+      format_rate_limit_bucket_remaining_only(remaining, limit) ||
+      format_rate_limit_bucket_limit_only(remaining, limit) ||
+      format_rate_limit_bucket_used_percent(used_percent, window_mins) ||
+      format_rate_limit_bucket_fallback(bucket)
+  end
+
+  defp format_codex_account(account, active_codex_account_id) do
+    id = map_value(account, ["id", :id]) || "unknown"
+    healthy = map_value(account, ["healthy", :healthy]) == true
+    reason = map_value(account, ["health_reason", :health_reason])
+    active? = id == active_codex_account_id
+
+    label = format_codex_account_label(id, healthy, active?, reason)
+    color = format_codex_account_color(healthy, active?)
+    colorize(label, color)
+  end
+
+  defp format_codex_account_label(id, true, true, _reason), do: "#{id} active"
+  defp format_codex_account_label(id, true, false, _reason), do: "#{id} healthy"
+
+  defp format_codex_account_label(id, false, _active?, reason)
+       when is_binary(reason) and reason != "" do
+    "#{id} #{truncate(reason, 32)}"
+  end
+
+  defp format_codex_account_label(id, false, _active?, _reason), do: "#{id} unhealthy"
+
+  defp format_codex_account_color(true, true), do: @ansi_green
+  defp format_codex_account_color(true, false), do: @ansi_cyan
+  defp format_codex_account_color(false, _active?), do: @ansi_gray
+
+  defp format_rate_limit_bucket_count_pair(remaining, limit) do
+    if integer_like?(remaining) and integer_like?(limit) do
+      "#{format_count(remaining)}/#{format_count(limit)}"
+    end
+  end
+
+  defp format_rate_limit_bucket_remaining_only(remaining, limit) do
+    if integer_like?(remaining) and not integer_like?(limit) do
+      "remaining #{format_count(remaining)}"
+    end
+  end
+
+  defp format_rate_limit_bucket_limit_only(remaining, limit) do
+    if integer_like?(limit) and not integer_like?(remaining) do
+      "limit #{format_count(limit)}"
+    end
+  end
+
+  defp format_rate_limit_bucket_used_percent(used_percent, window_mins) do
+    cond do
+      is_number(used_percent) and is_integer(window_mins) ->
+        "#{used_percent}%/#{window_mins}m"
+
+      is_number(used_percent) ->
+        "#{used_percent}% used"
+
+      true ->
+        nil
+    end
+  end
+
+  defp format_rate_limit_bucket_fallback(bucket) do
+    if map_size(bucket) == 0 do
+      "n/a"
+    else
+      bucket |> inspect(limit: 6) |> truncate(40)
+    end
+  end
 
   defp format_error_value(%{"message" => message}) when is_binary(message), do: message
   defp format_error_value(%{message: message}) when is_binary(message), do: message

@@ -9,49 +9,67 @@ defmodule SymphonyElixir.AgentRunner do
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
-    Logger.info("Starting agent run for #{issue_context(issue)}")
+    trace_id = trace_id(issue, opts)
+    issue_with_trace = attach_trace_id(issue, trace_id)
 
-    case Workspace.create_for_issue(issue) do
-      {:ok, workspace} ->
-        try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue),
-               :ok <- run_codex_turns(workspace, issue, codex_update_recipient, opts) do
-            :ok
-          else
-            {:error, reason} ->
-              Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-              raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+    with_issue_logger_metadata(issue_with_trace, trace_id, fn ->
+      Logger.info("Starting agent run for #{issue_context(issue)}")
+
+      case Workspace.create_for_issue(issue_with_trace) do
+        {:ok, workspace} ->
+          try do
+            with :ok <- Workspace.run_before_run_hook(workspace, issue_with_trace, trace_id: trace_id),
+                 :ok <- run_codex_turns(workspace, issue_with_trace, codex_update_recipient, opts) do
+              :ok
+            else
+              {:error, reason} ->
+                Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
+                raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+            end
+          after
+            Workspace.run_after_run_hook(workspace, issue_with_trace, trace_id: trace_id)
           end
-        after
-          Workspace.run_after_run_hook(workspace, issue)
-        end
 
-      {:error, reason} ->
-        Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-        raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
-    end
+        {:error, reason} ->
+          Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
+          raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+      end
+    end)
   end
 
-  defp codex_message_handler(recipient, issue) do
+  defp codex_message_handler(recipient, issue, trace_id) do
     fn message ->
-      send_codex_update(recipient, issue, message)
+      send_codex_update(recipient, issue, message, trace_id)
     end
   end
 
-  defp send_codex_update(recipient, %Issue{id: issue_id}, message)
+  defp send_codex_update(recipient, %Issue{id: issue_id}, message, trace_id)
        when is_binary(issue_id) and is_pid(recipient) do
+    message =
+      if is_binary(trace_id) do
+        Map.put_new(message, :trace_id, trace_id)
+      else
+        message
+      end
+
     send(recipient, {:codex_worker_update, issue_id, message})
     :ok
   end
 
-  defp send_codex_update(_recipient, _issue, _message), do: :ok
+  defp send_codex_update(_recipient, _issue, _message, _trace_id), do: :ok
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
     codex_account = Keyword.get(opts, :codex_account)
+    trace_id = trace_id(issue, opts)
 
-    with {:ok, session} <- AppServer.start_session(workspace, codex_launch_options(codex_account)) do
+    session_opts =
+      codex_launch_options(codex_account)
+      |> Keyword.put(:issue, issue)
+      |> maybe_put_trace_id_opt(trace_id)
+
+    with {:ok, session} <- AppServer.start_session(workspace, session_opts) do
       try do
         do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after
@@ -68,7 +86,8 @@ defmodule SymphonyElixir.AgentRunner do
              app_session,
              prompt,
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
+             on_message: codex_message_handler(codex_update_recipient, issue, trace_id(issue, opts)),
+             trace_id: trace_id(issue, opts)
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
@@ -148,6 +167,45 @@ defmodule SymphonyElixir.AgentRunner do
     |> String.trim()
     |> String.downcase()
   end
+
+  defp trace_id(issue, opts) when is_list(opts) do
+    Keyword.get(opts, :trace_id) || Map.get(issue, :trace_id)
+  end
+
+  defp attach_trace_id(%Issue{} = issue, trace_id) when is_binary(trace_id) and trace_id != "" do
+    Map.put(issue, :trace_id, trace_id)
+  end
+
+  defp attach_trace_id(issue, _trace_id), do: issue
+
+  defp maybe_put_trace_id_opt(opts, trace_id) when is_binary(trace_id) and trace_id != "" do
+    Keyword.put(opts, :trace_id, trace_id)
+  end
+
+  defp maybe_put_trace_id_opt(opts, _trace_id), do: opts
+
+  defp with_issue_logger_metadata(issue, trace_id, fun) when is_function(fun, 0) do
+    previous_metadata = Logger.metadata()
+
+    metadata =
+      []
+      |> maybe_put_logger_metadata(:issue_id, Map.get(issue, :id))
+      |> maybe_put_logger_metadata(:issue_identifier, Map.get(issue, :identifier))
+      |> maybe_put_logger_metadata(:trace_id, trace_id)
+
+    if metadata != [] do
+      Logger.metadata(metadata)
+    end
+
+    try do
+      fun.()
+    after
+      Logger.reset_metadata(previous_metadata)
+    end
+  end
+
+  defp maybe_put_logger_metadata(metadata, _key, value) when value in [nil, ""], do: metadata
+  defp maybe_put_logger_metadata(metadata, key, value), do: Keyword.put(metadata, key, value)
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
