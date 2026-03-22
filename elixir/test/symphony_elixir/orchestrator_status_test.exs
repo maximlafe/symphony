@@ -731,7 +731,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       timer_ref: nil,
       due_at_ms: System.monotonic_time(:millisecond) + 5_000,
       identifier: "MT-500",
-      error: "agent exited: :boom"
+      error: "agent exited: :boom",
+      error_class: "transient"
     }
 
     initial_state = :sys.get_state(pid)
@@ -747,7 +748,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                attempt: 2,
                due_in_ms: due_in_ms,
                identifier: "MT-500",
-               error: "agent exited: :boom"
+               error: "agent exited: :boom",
+               error_class: "transient"
              }
            ] = snapshot.retrying
 
@@ -930,7 +932,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
               attempt: 1,
               identifier: "MT-STALL",
               trace_id: "trace-stall",
-              error: "stalled for " <> _
+              error: "stalled for " <> _,
+              error_class: "transient"
             },
             state.retry_attempts[issue_id]
           )
@@ -944,7 +947,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              due_at_ms: due_at_ms,
              identifier: "MT-STALL",
              trace_id: "trace-stall",
-             error: "stalled for " <> _
+             error: "stalled for " <> _,
+             error_class: "transient"
            } = state.retry_attempts[issue_id]
 
     assert is_integer(due_at_ms)

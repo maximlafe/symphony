@@ -4,8 +4,19 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
+  import Bitwise
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, ErrorClassifier, Linear.Issue, PromptBuilder, Tracker, Workspace}
+
+  defmodule RunError do
+    @moduledoc false
+    defexception [:message, :issue_id, :issue_identifier, :error_class, :reason]
+  end
+
+  @empty_turn_threshold_ms 5_000
+  @max_consecutive_empty_turns 3
+  @empty_turn_backoff_base_ms 2_000
+  @type error_class :: ErrorClassifier.error_class()
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
@@ -23,16 +34,14 @@ defmodule SymphonyElixir.AgentRunner do
               :ok
             else
               {:error, reason} ->
-                Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-                raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+                raise_run_error(issue_with_trace, reason)
             end
           after
             Workspace.run_after_run_hook(workspace, issue_with_trace, trace_id: trace_id)
           end
 
         {:error, reason} ->
-          Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-          raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+          raise_run_error(issue_with_trace, reason)
       end
     end)
   end
@@ -70,54 +79,133 @@ defmodule SymphonyElixir.AgentRunner do
       |> maybe_put_trace_id_opt(trace_id)
 
     with {:ok, session} <- AppServer.start_session(workspace, session_opts) do
+      session_context = %{
+        app_session: session,
+        workspace: workspace,
+        codex_update_recipient: codex_update_recipient,
+        opts: opts,
+        issue_state_fetcher: issue_state_fetcher,
+        max_turns: max_turns,
+        trace_id: trace_id
+      }
+
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_codex_turns(session_context, issue, 1, 0)
       after
         AppServer.stop_session(session)
       end
     end
   end
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+  defp do_run_codex_turns(session_context, issue, turn_number, consecutive_empty) do
+    turn_start_ms = System.monotonic_time(:millisecond)
+    prompt = build_turn_prompt(issue, session_context.opts, turn_number, session_context.max_turns)
 
     with {:ok, turn_session} <-
            AppServer.run_turn(
-             app_session,
+             session_context.app_session,
              prompt,
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue, trace_id(issue, opts)),
-             trace_id: trace_id(issue, opts)
+             on_message:
+               codex_message_handler(
+                 session_context.codex_update_recipient,
+                 issue,
+                 session_context.trace_id
+               ),
+             trace_id: session_context.trace_id
            ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
-
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
-
-          do_run_codex_turns(
-            app_session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
-
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
-
-          :ok
-
-        {:done, _refreshed_issue} ->
-          :ok
-
-        {:error, reason} ->
-          {:error, reason}
-      end
+      continue_after_turn(
+        session_context,
+        issue,
+        turn_session,
+        turn_number,
+        turn_start_ms,
+        consecutive_empty
+      )
     end
+  end
+
+  defp continue_after_turn(
+         session_context,
+         issue,
+         turn_session,
+         turn_number,
+         turn_start_ms,
+         consecutive_empty
+       ) do
+    turn_elapsed_ms = System.monotonic_time(:millisecond) - turn_start_ms
+    empty_turn? = turn_elapsed_ms < @empty_turn_threshold_ms
+
+    Logger.info(
+      "Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{session_context.workspace} turn=#{turn_number}/#{session_context.max_turns} elapsed_ms=#{turn_elapsed_ms}"
+    )
+
+    case continue_with_issue?(issue, session_context.issue_state_fetcher) do
+      {:continue, refreshed_issue} ->
+        maybe_continue_turn(
+          session_context,
+          refreshed_issue,
+          turn_number,
+          consecutive_empty,
+          empty_turn?
+        )
+
+      {:done, _refreshed_issue} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_continue_turn(
+         %{max_turns: max_turns},
+         refreshed_issue,
+         turn_number,
+         _consecutive_empty,
+         _empty_turn?
+       )
+       when turn_number >= max_turns do
+    Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+
+    :ok
+  end
+
+  defp maybe_continue_turn(session_context, refreshed_issue, turn_number, consecutive_empty, empty_turn?) do
+    next_consecutive_empty = next_consecutive_empty_turns(consecutive_empty, empty_turn?)
+
+    if next_consecutive_empty >= @max_consecutive_empty_turns do
+      Logger.warning(
+        "Empty turn circuit breaker: #{next_consecutive_empty} consecutive empty turns (<#{@empty_turn_threshold_ms}ms) for #{issue_context(refreshed_issue)}; returning control to orchestrator"
+      )
+
+      :ok
+    else
+      maybe_backoff_empty_turn(
+        refreshed_issue,
+        turn_number,
+        session_context.max_turns,
+        empty_turn?,
+        next_consecutive_empty
+      )
+
+      Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{session_context.max_turns}")
+
+      do_run_codex_turns(session_context, refreshed_issue, turn_number + 1, next_consecutive_empty)
+    end
+  end
+
+  defp next_consecutive_empty_turns(consecutive_empty, true), do: consecutive_empty + 1
+  defp next_consecutive_empty_turns(_consecutive_empty, false), do: 0
+
+  defp maybe_backoff_empty_turn(_issue, _turn_number, _max_turns, false, _consecutive_empty), do: :ok
+
+  defp maybe_backoff_empty_turn(issue, turn_number, max_turns, true, consecutive_empty) do
+    backoff_ms = @empty_turn_backoff_base_ms * (1 <<< min(consecutive_empty - 1, 4))
+
+    Logger.info("Empty turn detected for #{issue_context(issue)} turn=#{turn_number}/#{max_turns}; backing off #{backoff_ms}ms")
+
+    Process.sleep(backoff_ms)
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
@@ -167,6 +255,27 @@ defmodule SymphonyElixir.AgentRunner do
     |> String.trim()
     |> String.downcase()
   end
+
+  defp raise_run_error(issue, reason) do
+    context = issue_context(issue)
+    error_class = ErrorClassifier.classify(reason)
+    message = "Agent run failed for #{context} error_class=#{error_class}: #{inspect(reason)}"
+
+    Logger.error(message)
+
+    raise RunError,
+      message: message,
+      issue_id: issue_id(issue),
+      issue_identifier: issue_identifier(issue),
+      error_class: error_class,
+      reason: reason
+  end
+
+  defp issue_id(%Issue{id: issue_id}) when is_binary(issue_id), do: issue_id
+  defp issue_id(_issue), do: nil
+
+  defp issue_identifier(%Issue{identifier: identifier}) when is_binary(identifier), do: identifier
+  defp issue_identifier(_issue), do: nil
 
   defp trace_id(issue, opts) when is_list(opts) do
     Keyword.get(opts, :trace_id) || Map.get(issue, :trace_id)

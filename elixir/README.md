@@ -42,6 +42,7 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
      issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
      Team Settings → Workflow in Linear.
+   - Orchestrator failure escalation uses `tracker.manual_intervention_state` (default: `Blocked`).
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
 ## Prerequisites
