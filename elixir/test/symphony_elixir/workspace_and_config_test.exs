@@ -56,6 +56,131 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Path.basename(first_workspace) == "MT_Det"
   end
 
+  test "workspace hooks receive issue metadata in environment variables" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hook-env-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: """
+        {
+          printf 'id=%s\\n' "$SYMPHONY_ISSUE_IDENTIFIER"
+          printf 'title=%s\\n' "$SYMPHONY_ISSUE_TITLE"
+          printf 'branch=%s\\n' "$SYMPHONY_ISSUE_BRANCH_NAME"
+          printf 'state=%s\\n' "$SYMPHONY_ISSUE_STATE"
+          printf 'url=%s\\n' "$SYMPHONY_ISSUE_URL"
+        } > issue-env.txt
+        printf '%s' "$SYMPHONY_ISSUE_DESCRIPTION" > issue-description.txt
+        """
+      )
+
+      issue = %Issue{
+        id: "issue-branch",
+        identifier: "LET-188",
+        title: "Branch marker test",
+        description: "## Symphony\nBase branch: feature/tg-source\n",
+        state: "Todo",
+        branch_name: "feature/worker-head",
+        url: "https://linear.example/LET-188"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+
+      assert File.read!(Path.join(workspace, "issue-env.txt")) ==
+               """
+               id=LET-188
+               title=Branch marker test
+               branch=feature/worker-head
+               state=Todo
+               url=https://linear.example/LET-188
+               """
+
+      assert File.read!(Path.join(workspace, "issue-description.txt")) ==
+               "## Symphony\nBase branch: feature/tg-source\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "before_run hooks can refresh issue metadata in a reused workspace" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-before-run-env-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "printf '%s' \"$SYMPHONY_ISSUE_DESCRIPTION\" > issue-description.txt",
+        hook_before_run: """
+        {
+          printf 'id=%s\\n' "$SYMPHONY_ISSUE_IDENTIFIER"
+          printf 'branch=%s\\n' "$SYMPHONY_ISSUE_BRANCH_NAME"
+        } > issue-env.txt
+        printf '%s' "$SYMPHONY_ISSUE_DESCRIPTION" > issue-description.txt
+        """
+      )
+
+      initial_issue = %Issue{
+        id: "issue-branch",
+        identifier: "LET-188",
+        title: "Branch marker test",
+        description: "## Symphony\nBase branch: feature/tg-source\n",
+        state: "Todo",
+        branch_name: "feature/worker-head",
+        url: "https://linear.example/LET-188"
+      }
+
+      updated_issue = %{
+        initial_issue
+        | description: "## Symphony\nBase branch: feature/tg-target\n",
+          branch_name: "feature/worker-refresh"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(initial_issue)
+
+      assert File.read!(Path.join(workspace, "issue-description.txt")) ==
+               "## Symphony\nBase branch: feature/tg-source\n"
+
+      assert :ok = Workspace.run_before_run_hook(workspace, initial_issue)
+
+      assert File.read!(Path.join(workspace, "issue-env.txt")) ==
+               """
+               id=LET-188
+               branch=feature/worker-head
+               """
+
+      assert {:ok, ^workspace} = Workspace.create_for_issue(updated_issue)
+
+      assert File.read!(Path.join(workspace, "issue-description.txt")) ==
+               "## Symphony\nBase branch: feature/tg-source\n"
+
+      assert :ok = Workspace.run_before_run_hook(workspace, updated_issue)
+
+      assert File.read!(Path.join(workspace, "issue-env.txt")) ==
+               """
+               id=LET-188
+               branch=feature/worker-refresh
+               """
+
+      assert File.read!(Path.join(workspace, "issue-description.txt")) ==
+               "## Symphony\nBase branch: feature/tg-target\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace reuses existing issue directory without deleting local changes" do
     workspace_root =
       Path.join(

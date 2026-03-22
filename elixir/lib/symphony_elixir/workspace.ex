@@ -181,7 +181,7 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true, env: env)
+        System.cmd("sh", ["-lc", command], cd: workspace, env: env, stderr_to_stdout: true)
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -255,6 +255,11 @@ defmodule SymphonyElixir.Workspace do
     %{
       issue_id: issue_id,
       issue_identifier: identifier || "issue",
+      issue_title: Map.get(issue, :title),
+      issue_description: Map.get(issue, :description),
+      issue_state: Map.get(issue, :state),
+      issue_branch_name: Map.get(issue, :branch_name),
+      issue_url: Map.get(issue, :url),
       trace_id: Keyword.get(opts, :trace_id) || issue_trace_id(issue)
     }
   end
@@ -263,6 +268,11 @@ defmodule SymphonyElixir.Workspace do
     %{
       issue_id: nil,
       issue_identifier: identifier,
+      issue_title: nil,
+      issue_description: nil,
+      issue_state: nil,
+      issue_branch_name: nil,
+      issue_url: nil,
       trace_id: Keyword.get(opts, :trace_id)
     }
   end
@@ -271,6 +281,11 @@ defmodule SymphonyElixir.Workspace do
     %{
       issue_id: nil,
       issue_identifier: "issue",
+      issue_title: nil,
+      issue_description: nil,
+      issue_state: nil,
+      issue_branch_name: nil,
+      issue_url: nil,
       trace_id: Keyword.get(opts, :trace_id)
     }
   end
@@ -280,13 +295,22 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp hook_env(issue_context) when is_map(issue_context) do
-    []
-    |> maybe_put_env("SYMPHONY_TRACE_ID", Map.get(issue_context, :trace_id))
+    [
+      {"SYMPHONY_ISSUE_ID", env_value(Map.get(issue_context, :issue_id))},
+      {"SYMPHONY_ISSUE_IDENTIFIER", env_value(Map.get(issue_context, :issue_identifier))},
+      {"SYMPHONY_ISSUE_TITLE", env_value(Map.get(issue_context, :issue_title))},
+      {"SYMPHONY_ISSUE_DESCRIPTION", env_value(Map.get(issue_context, :issue_description))},
+      {"SYMPHONY_ISSUE_STATE", env_value(Map.get(issue_context, :issue_state))},
+      {"SYMPHONY_ISSUE_BRANCH_NAME", env_value(Map.get(issue_context, :issue_branch_name))},
+      {"SYMPHONY_ISSUE_URL", env_value(Map.get(issue_context, :issue_url))},
+      {"SYMPHONY_TRACE_ID", env_value(Map.get(issue_context, :trace_id))}
+    ]
   end
 
   defp issue_trace_id(%{trace_id: trace_id}) when is_binary(trace_id) and trace_id != "", do: trace_id
   defp issue_trace_id(_issue), do: nil
 
-  defp maybe_put_env(env, _name, value) when value in [nil, ""], do: env
-  defp maybe_put_env(env, name, value), do: [{name, value} | env]
+  defp env_value(nil), do: ""
+  defp env_value(value) when is_binary(value), do: value
+  defp env_value(value), do: to_string(value)
 end

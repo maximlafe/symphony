@@ -920,8 +920,21 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     send(pid, :tick)
-    Process.sleep(100)
-    state = :sys.get_state(pid)
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        not Process.alive?(worker_pid) and
+          not Map.has_key?(state.running, issue_id) and
+          match?(
+            %{
+              attempt: 1,
+              identifier: "MT-STALL",
+              trace_id: "trace-stall",
+              error: "stalled for " <> _
+            },
+            state.retry_attempts[issue_id]
+          )
+      end)
 
     refute Process.alive?(worker_pid)
     refute Map.has_key?(state.running, issue_id)
@@ -1691,6 +1704,27 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       else
         Process.sleep(5)
         do_wait_for_snapshot(pid, predicate, deadline_ms)
+      end
+    end
+  end
+
+  defp wait_for_orchestrator_state(pid, predicate, timeout_ms \\ 1_000)
+       when is_function(predicate, 1) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
+  end
+
+  defp do_wait_for_orchestrator_state(pid, predicate, deadline_ms) do
+    state = :sys.get_state(pid)
+
+    if predicate.(state) do
+      state
+    else
+      if System.monotonic_time(:millisecond) >= deadline_ms do
+        flunk("timed out waiting for orchestrator runtime state: #{inspect(state)}")
+      else
+        Process.sleep(10)
+        do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
       end
     end
   end

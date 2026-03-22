@@ -10,7 +10,7 @@ description:
 
 ## Goals
 
-- Ensure the PR is conflict-free with main.
+- Ensure the PR is conflict-free with the configured base branch.
 - Keep CI green and fix failures when they occur.
 - Squash-merge the PR once checks pass.
 - Do not yield to the user until the PR is merged; keep the watcher loop running
@@ -29,30 +29,32 @@ description:
 2. Confirm the full gauntlet is green locally before any push.
 3. If the working tree has uncommitted changes, commit with the `commit` skill
    and push with the `push` skill before proceeding.
-4. Check mergeability and conflicts against main.
-5. If conflicts exist, use the `pull` skill to fetch/merge `origin/main` and
+4. Resolve the configured base branch from `.symphony-base-branch`, otherwise
+   fall back to the repo default branch and then `main`.
+5. Check mergeability and conflicts against that base branch.
+6. If conflicts exist, use the `pull` skill to fetch/merge `origin/$base_branch` and
    resolve conflicts, then use the `push` skill to publish the updated branch.
-6. Ensure Codex review comments (if present) are acknowledged and any required
+7. Ensure Codex review comments (if present) are acknowledged and any required
    fixes are handled before merging.
-7. Watch checks until complete.
-8. If checks fail, pull logs, fix the issue, commit with the `commit` skill,
+8. Watch checks until complete.
+9. If checks fail, pull logs, fix the issue, commit with the `commit` skill,
    push with the `push` skill, and re-run checks.
-9. When all checks are green and review feedback is addressed, squash-merge and
+10. When all checks are green and review feedback is addressed, squash-merge and
    delete the branch using the PR title/body for the merge subject/body.
-10. **Context guard:** Before implementing review feedback, confirm it does not
+11. **Context guard:** Before implementing review feedback, confirm it does not
     conflict with the user’s stated intent or task context. If it conflicts,
     respond inline with a justification and ask the user before changing code.
-11. **Pushback template:** When disagreeing, reply inline with: acknowledge +
+12. **Pushback template:** When disagreeing, reply inline with: acknowledge +
     rationale + offer alternative.
-12. **Ambiguity gate:** When ambiguity blocks progress, use the clarification
+13. **Ambiguity gate:** When ambiguity blocks progress, use the clarification
     flow (assign PR to current GH user, mention them, wait for response). Do not
     implement until ambiguity is resolved.
     - If you are confident you know better than the reviewer, you may proceed
       without asking the user, but reply inline with your rationale.
-13. **Per-comment mode:** For each review comment, choose one of: accept,
+14. **Per-comment mode:** For each review comment, choose one of: accept,
     clarify, or push back. Reply inline (or in the issue thread for Codex
     reviews) stating the mode before changing code.
-14. **Reply before change:** Always respond with intended action before pushing
+15. **Reply before change:** Always respond with intended action before pushing
     code changes (inline for review comments, issue thread for Codex reviews).
 
 ## Commands
@@ -60,6 +62,11 @@ description:
 ```
 # Ensure branch and PR context
 branch=$(git branch --show-current)
+base_branch=$(cat .symphony-base-branch 2>/dev/null || true)
+if [ -z "$base_branch" ]; then
+  base_branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+fi
+[ -n "$base_branch" ] || base_branch=main
 pr_number=$(gh pr view --json number -q .number)
 pr_title=$(gh pr view --json title -q .title)
 pr_body=$(gh pr view --json body -q .body)
@@ -68,7 +75,8 @@ pr_body=$(gh pr view --json body -q .body)
 mergeable=$(gh pr view --json mergeable -q .mergeable)
 
 if [ "$mergeable" = "CONFLICTING" ]; then
-  # Run the `pull` skill to handle fetch + merge + conflict resolution.
+  # Run the `pull` skill to handle fetch + merge + conflict resolution against
+  # "origin/$base_branch".
   # Then run the `push` skill to publish the updated branch.
 fi
 
@@ -122,10 +130,10 @@ Exit codes:
   timeout on only one platform), you may proceed without fixing it.
 - If CI pushes an auto-fix commit (authored by GitHub Actions), it does not
   trigger a fresh CI run. Detect the updated PR head, pull locally, merge
-  `origin/main` if needed, add a real author commit, and force-push to retrigger
+  `origin/$base_branch` if needed, add a real author commit, and force-push to retrigger
   CI, then restart the checks loop.
 - If all jobs fail with corrupted pnpm lockfile errors on the merge commit, the
-  remediation is to fetch latest `origin/main`, merge, force-push, and rerun CI.
+  remediation is to fetch latest `origin/$base_branch`, merge, force-push, and rerun CI.
 - If mergeability is `UNKNOWN`, wait and re-check.
 - Do not merge while review comments (human or Codex review) are outstanding.
 - Codex review jobs retry on failure and are non-blocking; use the presence of
