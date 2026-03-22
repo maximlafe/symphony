@@ -441,30 +441,10 @@ defmodule SymphonyElixir.StatusDashboard do
        when is_integer(usage_bytes) and usage_bytes >= 0 do
     threshold_bytes = Map.get(workspace, :warning_threshold_bytes)
     keep_recent = Map.get(workspace, :done_closed_keep_count) || Map.get(workspace, :cleanup_keep_recent)
-    exceeded? = is_integer(threshold_bytes) and threshold_bytes > 0 and usage_bytes > threshold_bytes
-
-    usage_color =
-      if exceeded? do
-        @ansi_orange
-      else
-        @ansi_cyan
-      end
-
-    threshold_text =
-      case threshold_bytes do
-        value when is_integer(value) and value > 0 -> format_bytes(value)
-        _ -> "n/a"
-      end
-
-    keep_text =
-      case keep_recent do
-        value when is_integer(value) and value >= 0 -> Integer.to_string(value)
-        _ -> "n/a"
-      end
 
     colorize("│ Workspace disk: ", @ansi_bold) <>
-      colorize(format_bytes(usage_bytes), usage_color) <>
-      colorize(" (warn #{threshold_text}, keep #{keep_text})", @ansi_gray)
+      colorize(format_bytes(usage_bytes), workspace_usage_color(usage_bytes, threshold_bytes)) <>
+      colorize(" (warn #{workspace_threshold_text(threshold_bytes)}, keep #{workspace_keep_text(keep_recent)})", @ansi_gray)
   end
 
   defp format_workspace_usage_line(_workspace), do: nil
@@ -475,6 +455,28 @@ defmodule SymphonyElixir.StatusDashboard do
       line -> [line]
     end
   end
+
+  defp workspace_usage_color(usage_bytes, threshold_bytes) do
+    if workspace_threshold_exceeded?(usage_bytes, threshold_bytes) do
+      @ansi_orange
+    else
+      @ansi_cyan
+    end
+  end
+
+  defp workspace_threshold_exceeded?(usage_bytes, threshold_bytes)
+       when is_integer(usage_bytes) and is_integer(threshold_bytes) and threshold_bytes > 0 do
+    usage_bytes > threshold_bytes
+  end
+
+  defp workspace_threshold_exceeded?(_usage_bytes, _threshold_bytes), do: false
+
+  defp workspace_threshold_text(value) when is_integer(value) and value > 0, do: format_bytes(value)
+  defp workspace_threshold_text(_value), do: "n/a"
+
+  defp workspace_keep_text(value) when is_integer(value) and value >= 0, do: Integer.to_string(value)
+  defp workspace_keep_text(_value), do: "n/a"
+
   defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
 
   defp dashboard_url do

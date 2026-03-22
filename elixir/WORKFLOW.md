@@ -18,6 +18,8 @@ polling:
   interval_ms: 5000
 workspace:
   root: ~/code/symphony-workspaces
+  cleanup_keep_recent: 5
+  warning_threshold_bytes: 10737418240
 hooks:
   after_create: |
     git clone --depth 1 https://github.com/maximlafe/symphony .

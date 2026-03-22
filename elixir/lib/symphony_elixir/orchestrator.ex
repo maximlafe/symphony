@@ -36,6 +36,7 @@ defmodule SymphonyElixir.Orchestrator do
       :tick_timer_ref,
       :tick_token,
       :workspace_usage_bytes,
+      :workspace_cleanup_ref,
       :workspace_usage_refresh_ref,
       :workspace_threshold_exceeded?,
       running: %{},
@@ -69,6 +70,7 @@ defmodule SymphonyElixir.Orchestrator do
       tick_timer_ref: nil,
       tick_token: nil,
       workspace_usage_bytes: 0,
+      workspace_cleanup_ref: nil,
       workspace_usage_refresh_ref: nil,
       workspace_threshold_exceeded?: false,
       codex_accounts: %{},
@@ -138,7 +140,7 @@ defmodule SymphonyElixir.Orchestrator do
       ) do
     case find_issue_id_for_ref(running, ref) do
       nil ->
-        {:noreply, state}
+        handle_background_task_down(state, ref, reason)
 
       issue_id ->
         {running_entry, state} = pop_running_entry(state, issue_id)
@@ -205,6 +207,21 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:retry_issue, _issue_id}, state), do: {:noreply, state}
+
+  def handle_info(
+        {ref, {:workspace_cleanup_completed, source, cleanup_result}},
+        %{workspace_cleanup_ref: ref} = state
+      )
+      when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    state = %{state | workspace_cleanup_ref: nil}
+    state = apply_workspace_cleanup_result(state, cleanup_result, source)
+    {:noreply, state}
+  end
+
+  def handle_info({ref, {:workspace_cleanup_completed, _source, _cleanup_result}}, state)
+      when is_reference(ref),
+      do: {:noreply, state}
 
   def handle_info(
         {:workspace_usage_sample, refresh_ref, source, usage_result},
@@ -997,7 +1014,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp run_workspace_housekeeping(%State{} = state, source) do
     state = maybe_schedule_workspace_usage_refresh(state, source)
-    :ok = spawn_terminal_workspace_cleanup(source)
+    state = maybe_schedule_terminal_workspace_cleanup(state, source)
     state
   end
 
@@ -1020,12 +1037,20 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | workspace_usage_refresh_ref: refresh_ref}
   end
 
-  defp spawn_terminal_workspace_cleanup(source) do
-    Task.start(fn ->
-      run_terminal_workspace_cleanup(source)
-    end)
+  defp maybe_schedule_terminal_workspace_cleanup(
+         %State{workspace_cleanup_ref: cleanup_ref} = state,
+         _source
+       )
+       when is_reference(cleanup_ref),
+       do: state
 
-    :ok
+  defp maybe_schedule_terminal_workspace_cleanup(%State{} = state, source) do
+    task =
+      Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
+        {:workspace_cleanup_completed, source, run_terminal_workspace_cleanup(source)}
+      end)
+
+    %{state | workspace_cleanup_ref: task.ref}
   end
 
   defp run_terminal_workspace_cleanup(source) do
@@ -1049,6 +1074,22 @@ defmodule SymphonyElixir.Orchestrator do
         :ok
     end
   end
+
+  defp apply_workspace_cleanup_result(%State{} = state, :ok, _source), do: state
+
+  defp apply_workspace_cleanup_result(%State{} = state, cleanup_result, source) do
+    Logger.warning("Workspace retention cleanup returned unexpected result source=#{source}: #{inspect(cleanup_result)}")
+
+    state
+  end
+
+  defp handle_background_task_down(%State{workspace_cleanup_ref: ref} = state, ref, reason)
+       when is_reference(ref) do
+    Logger.warning("Workspace retention cleanup crashed: #{inspect(reason)}")
+    {:noreply, %{state | workspace_cleanup_ref: nil}}
+  end
+
+  defp handle_background_task_down(state, _ref, _reason), do: {:noreply, state}
 
   defp terminal_cleanup_states do
     states =

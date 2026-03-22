@@ -221,18 +221,20 @@ defmodule SymphonyElixir.Workspace do
   defp usage_for_directory(path) do
     case File.ls(path) do
       {:ok, entries} ->
-        Enum.reduce_while(entries, {:ok, 0}, fn entry, {:ok, acc} ->
-          case usage_for_path(Path.join(path, entry)) do
-            {:ok, size} -> {:cont, {:ok, acc + size}}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-        end)
+        Enum.reduce_while(entries, {:ok, 0}, &accumulate_directory_usage(path, &1, &2))
 
       {:error, :enoent} ->
         {:ok, 0}
 
       {:error, reason} ->
         {:error, {:workspace_usage_scan_failed, path, reason}}
+    end
+  end
+
+  defp accumulate_directory_usage(path, entry, {:ok, acc}) do
+    case usage_for_path(Path.join(path, entry)) do
+      {:ok, size} -> {:cont, {:ok, acc + size}}
+      {:error, reason} -> {:halt, {:error, reason}}
     end
   end
 

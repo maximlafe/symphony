@@ -428,6 +428,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp format_keep_recent(value) when is_integer(value) and value >= 0, do: Integer.to_string(value)
   defp format_keep_recent(_value), do: "n/a"
+
   defp state_badge_class(state) do
     base = "state-badge"
     normalized = state |> to_string() |> String.downcase()

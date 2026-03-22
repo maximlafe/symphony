@@ -211,6 +211,67 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
   end
 
+  test "workspace cleanup does not overlap when before_remove is slow" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-serialized-workspace-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    hook_log = Path.join(test_root, "before-remove.log")
+
+    issue = %Issue{
+      id: "issue-slow-cleanup",
+      identifier: "MT-SLOW-CLEANUP",
+      state: "Cancelled",
+      title: "Slow cleanup issue",
+      updated_at: DateTime.utc_now()
+    }
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    orchestrator_name = Module.concat(__MODULE__, :SerializedWorkspaceCleanupOrchestrator)
+    workspace = Path.join(test_root, issue.identifier)
+
+    try do
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "marker.txt"), issue.identifier)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"],
+        poll_interval_ms: 50,
+        workspace_cleanup_keep_recent: 0,
+        hook_before_remove: """
+        printf 'cleanup\\n' >> "#{hook_log}"
+        sleep 0.3
+        """
+      )
+
+      {:ok, _pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      assert_eventually(fn -> not File.exists?(workspace) end)
+      Process.sleep(150)
+
+      assert File.read!(hook_log) == "cleanup\n"
+    after
+      case Process.whereis(orchestrator_name) do
+        pid when is_pid(pid) -> Process.exit(pid, :normal)
+        _ -> :ok
+      end
+
+      if is_nil(previous_memory_issues) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_memory_issues)
+      end
+
+      File.rm_rf(test_root)
+    end
+  end
+
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do
     issue_id = "issue-usage-snapshot"
 
@@ -1869,4 +1930,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
     |> elem(1)
   end
+
+  defp assert_eventually(fun, attempts \\ 20)
+
+  defp assert_eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      true
+    else
+      Process.sleep(50)
+      assert_eventually(fun, attempts - 1)
+    end
+  end
+
+  defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
 end
