@@ -32,7 +32,7 @@ The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatt
 
 1. Build: `git clone https://github.com/odysseus0/symphony && cd symphony/elixir && mise trust && mise install && mise exec -- mix setup && mise exec -- mix build`
 2. Install skills: `npx skills add odysseus0/symphony -a codex -s linear land commit push pull debug --copy -y` and copy `elixir/WORKFLOW.md` to your repo
-3. In WORKFLOW.md, set `tracker.project_slug` and `hooks.after_create` (clone your repo + setup commands)
+3. In WORKFLOW.md, set `tracker.project_slug` and `hooks.after_create` (clone your repo + setup commands). Hooks also receive issue metadata in env vars like `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_DESCRIPTION`, and `SYMPHONY_ISSUE_BRANCH_NAME` if you need per-issue bootstrap behavior.
 4. Add **Rework**, **Human Review**, **Merging** as custom states in Linear (Team Settings → Workflow)
 5. Commit, push, then: `mise exec -- ./bin/symphony /path/to/your-repo/WORKFLOW.md`
 

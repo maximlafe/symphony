@@ -24,6 +24,36 @@ hooks:
   after_create: |
     export GIT_TERMINAL_PROMPT=0
     export SOURCE_REPO_URL="${SOURCE_REPO_URL:-https://github.com/maximlafe/lead_status.git}"
+    extract_requested_base_branch() {
+      printf '%s\n' "${SYMPHONY_ISSUE_DESCRIPTION:-}" | awk '
+        BEGIN { in_section = 0 }
+        /^[[:space:]]*##[[:space:]]+Symphony[[:space:]]*$/ {
+          in_section = 1
+          next
+        }
+        in_section && /^[[:space:]]*##[[:space:]]+/ { exit }
+        in_section && /^[[:space:]]*Base branch:[[:space:]]*/ {
+          line = $0
+          sub(/^[[:space:]]*Base branch:[[:space:]]*/, "", line)
+          sub(/[[:space:]]+$/, "", line)
+          if (length(line) == 0) {
+            print "__EMPTY__"
+          } else {
+            print line
+          }
+        }
+      '
+    }
+    detect_repo_default_branch() {
+      branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+      if [ -z "$branch" ]; then
+        branch=$(git branch --show-current 2>/dev/null)
+      fi
+      if [ -z "$branch" ]; then
+        branch=main
+      fi
+      printf '%s\n' "$branch"
+    }
     if [ -z "${GH_TOKEN:-}" ]; then
       echo "GH_TOKEN is required for unattended lead_status clone/push access." >&2
       exit 1
@@ -40,8 +70,95 @@ hooks:
       echo "Failed to configure git credentials via gh auth setup-git." >&2
       exit 1
     }
-    git clone --depth 1 "$SOURCE_REPO_URL" .
+    requested_markers=$(extract_requested_base_branch)
+    marker_count=$(printf '%s\n' "$requested_markers" | sed '/^$/d' | wc -l | tr -d ' ')
+    requested_base_branch=
+    base_branch=
+    base_branch_error=
+    if [ "$marker_count" -gt 1 ]; then
+      base_branch_error="В секции ## Symphony найдено несколько строк Base branch:."
+    elif [ "$marker_count" -eq 1 ]; then
+      requested_base_branch=$requested_markers
+      if [ "$requested_base_branch" = "__EMPTY__" ] || printf '%s' "$requested_base_branch" | grep -Eq '[[:space:]]'; then
+        base_branch_error="Строка Base branch: в секции ## Symphony пуста или содержит пробелы."
+      elif git ls-remote --exit-code --heads "$SOURCE_REPO_URL" "$requested_base_branch" >/dev/null 2>&1; then
+        git clone --depth 1 --single-branch --branch "$requested_base_branch" "$SOURCE_REPO_URL" .
+        base_branch=$requested_base_branch
+      else
+        base_branch_error="Ветка '$requested_base_branch' из Base branch: не найдена в origin."
+      fi
+    fi
+    if [ -z "$base_branch" ]; then
+      git clone --depth 1 "$SOURCE_REPO_URL" .
+      base_branch=$(detect_repo_default_branch)
+    fi
+    printf '%s\n' "$base_branch" > .symphony-base-branch
+    if [ -n "$base_branch_error" ]; then
+      printf '%s\n' "$base_branch_error" > .symphony-base-branch-error
+    elif [ -z "$requested_base_branch" ]; then
+      printf 'Маркер Base branch не задан; использую дефолтную ветку репозитория %s.\n' "$base_branch" > .symphony-base-branch-note
+    fi
     make symphony-bootstrap
+  before_run: |
+    export SOURCE_REPO_URL="${SOURCE_REPO_URL:-https://github.com/maximlafe/lead_status.git}"
+    extract_requested_base_branch() {
+      printf '%s\n' "${SYMPHONY_ISSUE_DESCRIPTION:-}" | awk '
+        BEGIN { in_section = 0 }
+        /^[[:space:]]*##[[:space:]]+Symphony[[:space:]]*$/ {
+          in_section = 1
+          next
+        }
+        in_section && /^[[:space:]]*##[[:space:]]+/ { exit }
+        in_section && /^[[:space:]]*Base branch:[[:space:]]*/ {
+          line = $0
+          sub(/^[[:space:]]*Base branch:[[:space:]]*/, "", line)
+          sub(/[[:space:]]+$/, "", line)
+          if (length(line) == 0) {
+            print "__EMPTY__"
+          } else {
+            print line
+          }
+        }
+      '
+    }
+    detect_repo_default_branch() {
+      previous_base_branch=$(cat .symphony-base-branch 2>/dev/null || true)
+      branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+      if [ -z "$branch" ] && [ -n "$previous_base_branch" ]; then
+        branch=$previous_base_branch
+      fi
+      if [ -z "$branch" ]; then
+        branch=main
+      fi
+      printf '%s\n' "$branch"
+    }
+    requested_markers=$(extract_requested_base_branch)
+    marker_count=$(printf '%s\n' "$requested_markers" | sed '/^$/d' | wc -l | tr -d ' ')
+    requested_base_branch=
+    base_branch=
+    base_branch_error=
+    rm -f .symphony-base-branch-error .symphony-base-branch-note
+    if [ "$marker_count" -gt 1 ]; then
+      base_branch_error="В секции ## Symphony найдено несколько строк Base branch:."
+    elif [ "$marker_count" -eq 1 ]; then
+      requested_base_branch=$requested_markers
+      if [ "$requested_base_branch" = "__EMPTY__" ] || printf '%s' "$requested_base_branch" | grep -Eq '[[:space:]]'; then
+        base_branch_error="Строка Base branch: в секции ## Symphony пуста или содержит пробелы."
+      elif git ls-remote --exit-code --heads origin "$requested_base_branch" >/dev/null 2>&1; then
+        base_branch=$requested_base_branch
+      else
+        base_branch_error="Ветка '$requested_base_branch' из Base branch: не найдена в origin."
+      fi
+    fi
+    if [ -z "$base_branch" ]; then
+      base_branch=$(detect_repo_default_branch)
+    fi
+    printf '%s\n' "$base_branch" > .symphony-base-branch
+    if [ -n "$base_branch_error" ]; then
+      printf '%s\n' "$base_branch_error" > .symphony-base-branch-error
+    elif [ -z "$requested_base_branch" ]; then
+      printf 'Маркер Base branch не задан; использую дефолтную ветку репозитория %s.\n' "$base_branch" > .symphony-base-branch-note
+    fi
   before_remove: |
     branch=$(git branch --show-current 2>/dev/null)
     if [ -n "$branch" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
@@ -117,6 +234,9 @@ Instructions:
 - Keep the issue description as the canonical task-spec and exactly one persistent workpad comment as the implementation plan and execution log.
 - Use local `workpad.md` as the working copy and sync the live workpad only at bootstrap, meaningful milestones, and final handoff.
 - Before each automated stage (`Planning`, `In Progress`, `Rework`, `Merging`), post one separate top-level stage-start comment before the first live workpad sync of that stage.
+- Before any Git sync or branch decision, treat `.symphony-base-branch` as the authoritative base branch for the current workspace when the file exists.
+- If `.symphony-base-branch-note` exists, mirror it into `Заметки` once and continue without asking a human.
+- If `.symphony-base-branch-error` exists, treat it as a configuration blocker: record it in the workpad, move the issue to `Blocked`, and stop.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.
 - Run `make symphony-preflight` before treating auth/env/tooling gaps as blockers, and use the validation matrix below instead of ad-hoc test selection.
 - Do not reread skill bodies in straightforward runs unless the workflow does not cover the needed behavior.
@@ -151,14 +271,14 @@ Instructions:
    - `Blocked` -> wait and poll for human unblock action; do not code or change the repo.
    - `Done` -> do nothing and shut down.
 4. Query GitHub for an existing PR only when at least one reuse signal exists:
-   - current branch is not `main`;
+   - current branch is not the configured base branch from `.symphony-base-branch`;
    - the issue already references a PR in links, attachments, or comments;
    - the current state is `In Progress`, `In Review`, `Rework`, or `Merging`.
-   - For fresh `Todo` or `Planning` runs on `main` with no PR signal, skip branch PR lookup and do not log placeholder notes.
+   - For fresh `Todo` or `Planning` runs on the configured base branch with no PR signal, skip branch PR lookup and do not log placeholder notes.
 5. Minimal recovery for straightforward `In Progress` runs:
    - if `.workpad-id` exists and the issue is already in `In Progress`, read only the current state, the issue-description task-spec, the live workpad, the current branch/HEAD, and the PR link or attachment if present;
    - reread full comment/history context only for missing workpad, state/content mismatch, `Rework`, missing PR context, or real ambiguity.
-6. If the existing branch PR is already closed or merged, do not reuse that branch. Create a fresh branch from `origin/main` and continue as a new attempt.
+6. If the existing branch PR is already closed or merged, do not reuse that branch. Create a fresh branch from `origin/<configured base branch>` and continue as a new attempt.
 
 ## Step 1: Planning phase (Todo or Planning -> Plan Review)
 
@@ -174,6 +294,8 @@ Instructions:
    - ignore resolved comments;
    - persist the comment ID in `.workpad-id`.
 4. `Planning` is analysis-only:
+   - if `.symphony-base-branch-error` exists, copy the exact message into `Заметки`, sync the workpad once, move the issue to `Blocked`, and stop;
+   - if `.symphony-base-branch-note` exists, copy it into `Заметки` once before continuing;
    - do not edit product code, commit, or push;
    - read the issue body, only the relevant comments and PR context, and inspect the codebase;
    - capture a reproduction or investigation signal only when it materially sharpens the plan.
@@ -235,7 +357,7 @@ Use this only when completion is blocked by missing required tools or missing au
 
 1. On entry to `In Progress`, first create the separate top-level comment `Начал выполнение задачи: <DD.MM.YYYY HH:MM MSK>` before any repo-changing command or the first live workpad sync of that stage.
 2. Recover from the existing task-spec description and workpad using the minimal-recovery rules unless the issue requires a full reread.
-3. Run the `pull` skill before code edits, then record the result in `Заметки` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
+3. Run the `pull` skill against the configured base branch from `.symphony-base-branch` before code edits, then record the result in `Заметки` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
 4. Use the issue description as the canonical task contract and local `workpad.md` as the implementation plan and detailed execution log.
 5. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before final handoff.
 6. Run the required validation for the scope:
@@ -247,7 +369,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - if app-touching, capture runtime evidence and upload it to Linear.
 7. Before every `git push`, rerun the required validation and confirm it passes.
 8. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
-9. Merge latest `origin/main` into the branch before final handoff, resolve conflicts, and rerun required validation.
+9. Merge latest `origin/<configured base branch>` into the branch before final handoff, resolve conflicts, and rerun required validation.
 10. Before moving to `In Review`, use the compact PR/check flow:
    - run the PR feedback and checks protocol above;
    - if checks are green and no actionable feedback remains, first rewrite every final checklist item so it is already true before the state transition (for example, `PR checks зелёные; задача готова к переводу в In Review` instead of `задача переведена в In Review`), then close all satisfied parent and child checkboxes, finalize local `workpad.md`, sync the live workpad once, update the task-spec description once if the task contract changed, and only then move the issue to `In Review`;
@@ -270,7 +392,7 @@ Use this only when completion is blocked by missing required tools or missing au
 3. Re-read the issue body task-spec, human comments, and PR feedback; explicitly identify what changes this attempt.
 4. Close the existing PR tied to the issue.
 5. Remove the existing `## Рабочий журнал Codex` comment.
-6. Create a fresh branch from `origin/main`.
+6. Create a fresh branch from `origin/<configured base branch>`.
 7. Create a new bootstrap `## Рабочий журнал Codex` comment.
 8. Refresh the task-spec description if the task contract changed for the new attempt, then rewrite the new workpad in Russian.
 9. Execute the normal flow again and return the issue to `In Review`.

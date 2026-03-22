@@ -14,7 +14,12 @@ Projects:
 
 Notes:
 
-- These files keep the current LetterL workflow unchanged.
+- `izvlechenie-zadach.WORKFLOW.md` now supports an experimental per-issue base-branch override from the Linear issue description:
+  - add a `## Symphony` section;
+  - add one line `Base branch: feature/...`;
+  - if the line is missing, the worker stays unattended and falls back to the repo default branch;
+  - if the line is invalid or the branch does not exist, the task moves into the blocker path instead of silently picking another branch.
+- The other two workflow files keep the previous LetterL behavior and do not read `Base branch:` from the issue description.
 - PR handoff uses `In Review` instead of `Human Review`.
 - Auth and permission blockers move the issue to `Blocked`.
 - Each Symphony process must use its own workspace root, logs root, and dashboard port.

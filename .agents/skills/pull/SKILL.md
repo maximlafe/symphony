@@ -1,7 +1,7 @@
 ---
 name: pull
 description:
-  Pull latest origin/main into the current local branch and resolve merge
+  Pull latest configured base branch into the current local branch and resolve
   conflicts (aka update-branch). Use when Codex needs to sync a feature branch
   with origin, perform a merge-based update (not rebase), and guide conflict
   resolution best practices.
@@ -20,20 +20,39 @@ description:
    - Ensure the current branch is the one to receive the merge.
 4. Fetch latest refs:
    - `git fetch origin`
-5. Sync the remote feature branch first:
+5. Resolve the base branch:
+   - If `.symphony-base-branch` exists, use its contents.
+   - Otherwise resolve the remote default branch from `origin/HEAD`.
+   - If that still fails, fall back to `main`.
+6. Sync the remote feature branch first:
    - `git pull --ff-only origin $(git branch --show-current)`
    - This pulls branch updates made remotely (for example, a GitHub auto-commit)
-     before merging `origin/main`.
-6. Merge in order:
-   - Prefer `git -c merge.conflictstyle=zdiff3 merge origin/main` for clearer
+     before merging `origin/$base_branch`.
+7. Merge in order:
+   - Prefer `git -c merge.conflictstyle=zdiff3 merge "origin/$base_branch"` for clearer
      conflict context.
-7. If conflicts appear, resolve them (see conflict guidance below), then:
+8. If conflicts appear, resolve them (see conflict guidance below), then:
    - `git add <files>`
    - `git commit` (or `git merge --continue` if the merge is paused)
-8. Verify with project checks (follow repo policy in `AGENTS.md`).
-9. Summarize the merge:
+9. Verify with project checks (follow repo policy in `AGENTS.md`).
+10. Summarize the merge:
    - Call out the most challenging conflicts/files and how they were resolved.
    - Note any assumptions or follow-ups.
+
+## Commands
+
+```sh
+branch=$(git branch --show-current)
+base_branch=$(cat .symphony-base-branch 2>/dev/null || true)
+if [ -z "$base_branch" ]; then
+  base_branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+fi
+[ -n "$base_branch" ] || base_branch=main
+
+git fetch origin
+git pull --ff-only origin "$branch"
+git -c merge.conflictstyle=zdiff3 merge "origin/$base_branch"
+```
 
 ## Conflict Resolution Guidance (Best Practices)
 
