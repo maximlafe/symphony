@@ -546,8 +546,13 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     send(pid, {:DOWN, ref, :process, self(), :normal})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        not Map.has_key?(state.running, issue_id) and
+          MapSet.member?(state.completed, issue_id) and
+          is_map(state.retry_attempts[issue_id])
+      end)
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
@@ -589,8 +594,11 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        match?(%{attempt: 3}, state.retry_attempts[issue_id])
+      end)
 
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
@@ -628,8 +636,11 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        match?(%{attempt: 1}, state.retry_attempts[issue_id])
+      end)
 
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
@@ -667,14 +678,102 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     send(pid, {:retry_issue, issue_id, stale_retry_token})
-    Process.sleep(50)
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        match?(%{retry_token: ^current_retry_token}, state.retry_attempts[issue_id])
+      end)
 
     assert %{
              attempt: 2,
              retry_token: ^current_retry_token,
              identifier: "MT-561",
              error: "agent exited: :boom"
-           } = :sys.get_state(pid).retry_attempts[issue_id]
+           } = state.retry_attempts[issue_id]
+  end
+
+  test "retry dispatch preserves trace_id from retry metadata" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-retry-trace-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-retry-trace"
+    issue_identifier = "MT-562"
+    trace_id = "trace-retry-preserved"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: issue_id,
+          identifier: issue_identifier,
+          title: "Retry trace preservation",
+          description: "Keep the same trace_id across retry dispatch",
+          state: "In Progress",
+          url: "https://example.org/issues/#{issue_identifier}",
+          labels: []
+        }
+      ])
+
+      orchestrator_name = Module.concat(__MODULE__, :RetryTraceOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      retry_token = make_ref()
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:codex_accounts, %{
+          "primary" => %{id: "primary", codex_home: System.tmp_dir!(), healthy: true}
+        })
+        |> Map.put(:active_codex_account_id, "primary")
+        |> Map.put(:retry_attempts, %{
+          issue_id => %{
+            attempt: 1,
+            timer_ref: nil,
+            retry_token: retry_token,
+            due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+            identifier: issue_identifier,
+            trace_id: trace_id,
+            error: "agent exited: :boom"
+          }
+        })
+      end)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{trace_id: ^trace_id}, Map.get(state.running, issue_id))
+        end)
+
+      assert %{identifier: ^issue_identifier, trace_id: ^trace_id, pid: worker_pid} =
+               state.running[issue_id]
+
+      Process.exit(worker_pid, :kill)
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      File.rm_rf(test_root)
+    end
   end
 
   test "manual refresh coalesces repeated requests and ignores superseded ticks" do
@@ -1120,18 +1219,21 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       test_pid = self()
+      trace_id = "trace-live-updates"
 
       assert :ok =
                AgentRunner.run(
                  issue,
                  test_pid,
-                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 trace_id: trace_id
                )
 
       assert_receive {:codex_worker_update, "issue-live-updates",
                       %{
                         event: :session_started,
                         timestamp: %DateTime{},
+                        trace_id: ^trace_id,
                         session_id: session_id
                       }},
                      500
@@ -1724,4 +1826,25 @@ defmodule SymphonyElixir.CoreTest do
       File.rm_rf(test_root)
     end
   end
+
+  defp wait_for_orchestrator_state(pid, predicate, attempts \\ 40)
+
+  defp wait_for_orchestrator_state(pid, predicate, attempts)
+       when is_pid(pid) and is_function(predicate, 1) and attempts > 0 do
+    state =
+      try do
+        :sys.get_state(pid)
+      catch
+        :exit, _reason -> nil
+      end
+
+    if is_map(state) and predicate.(state) do
+      state
+    else
+      Process.sleep(25)
+      wait_for_orchestrator_state(pid, predicate, attempts - 1)
+    end
+  end
+
+  defp wait_for_orchestrator_state(pid, _predicate, 0), do: :sys.get_state(pid)
 end

@@ -149,10 +149,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       }
 
       assert {:ok, workspace} = Workspace.create_for_issue(initial_issue)
+
       assert File.read!(Path.join(workspace, "issue-description.txt")) ==
                "## Symphony\nBase branch: feature/tg-source\n"
 
       assert :ok = Workspace.run_before_run_hook(workspace, initial_issue)
+
       assert File.read!(Path.join(workspace, "issue-env.txt")) ==
                """
                id=LET-188
@@ -160,10 +162,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                """
 
       assert {:ok, ^workspace} = Workspace.create_for_issue(updated_issue)
+
       assert File.read!(Path.join(workspace, "issue-description.txt")) ==
                "## Symphony\nBase branch: feature/tg-source\n"
 
       assert :ok = Workspace.run_before_run_hook(workspace, updated_issue)
+
       assert File.read!(Path.join(workspace, "issue-env.txt")) ==
                """
                id=LET-188
@@ -748,6 +752,39 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert :ok = Workspace.remove_issue_workspaces("MT-HOOKS")
       assert File.read!(before_remove_marker) == "before_remove\n"
       refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace before_run and after_run hooks receive SYMPHONY_TRACE_ID" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hook-trace-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      before_run_trace = Path.join(test_root, "before_run.trace")
+      after_run_trace = Path.join(test_root, "after_run.trace")
+      trace_id = "trace-hook-123"
+
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_run: "printf '%s' \"$SYMPHONY_TRACE_ID\" > \"#{before_run_trace}\"",
+        hook_after_run: "printf '%s' \"$SYMPHONY_TRACE_ID\" > \"#{after_run_trace}\""
+      )
+
+      issue = %Issue{id: "issue-hook-trace", identifier: "MT-HOOK-TRACE"}
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      assert :ok = Workspace.run_before_run_hook(workspace, issue, trace_id: trace_id)
+      assert :ok = Workspace.run_after_run_hook(workspace, issue, trace_id: trace_id)
+      assert File.read!(before_run_trace) == trace_id
+      assert File.read!(after_run_trace) == trace_id
     after
       File.rm_rf(test_root)
     end

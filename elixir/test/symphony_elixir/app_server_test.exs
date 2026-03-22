@@ -621,13 +621,18 @@ defmodule SymphonyElixir.AppServerTest do
       }
 
       on_message = fn message -> send(self(), {:app_server_message, message}) end
+      trace_id = "trace-tool-user-input-required"
 
       assert {:ok, _result} =
-               AppServer.run(workspace, "Handle generic tool input", issue, on_message: on_message)
+               AppServer.run(workspace, "Handle generic tool input", issue,
+                 on_message: on_message,
+                 trace_id: trace_id
+               )
 
       assert_received {:app_server_message,
                        %{
                          event: :tool_input_auto_answered,
+                         trace_id: ^trace_id,
                          answer: "This is a non-interactive session. Operator input is unavailable."
                        }}
     after

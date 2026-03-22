@@ -83,9 +83,9 @@ defmodule SymphonyElixir.Workspace do
     :ok
   end
 
-  @spec run_before_run_hook(Path.t(), map() | String.t() | nil) :: :ok | {:error, term()}
-  def run_before_run_hook(workspace, issue_or_identifier) when is_binary(workspace) do
-    issue_context = issue_context(issue_or_identifier)
+  @spec run_before_run_hook(Path.t(), map() | String.t() | nil, keyword()) :: :ok | {:error, term()}
+  def run_before_run_hook(workspace, issue_or_identifier, opts \\ []) when is_binary(workspace) do
+    issue_context = issue_context(issue_or_identifier, opts)
     hooks = Config.settings!().hooks
 
     case hooks.before_run do
@@ -97,9 +97,9 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  @spec run_after_run_hook(Path.t(), map() | String.t() | nil) :: :ok
-  def run_after_run_hook(workspace, issue_or_identifier) when is_binary(workspace) do
-    issue_context = issue_context(issue_or_identifier)
+  @spec run_after_run_hook(Path.t(), map() | String.t() | nil, keyword()) :: :ok
+  def run_after_run_hook(workspace, issue_or_identifier, opts \\ []) when is_binary(workspace) do
+    issue_context = issue_context(issue_or_identifier, opts)
     hooks = Config.settings!().hooks
 
     case hooks.after_run do
@@ -159,7 +159,7 @@ defmodule SymphonyElixir.Workspace do
             run_hook(
               command,
               workspace,
-              %{issue_id: nil, issue_identifier: Path.basename(workspace)},
+              %{issue_id: nil, issue_identifier: Path.basename(workspace), trace_id: nil},
               "before_remove"
             )
             |> ignore_hook_failure()
@@ -175,16 +175,13 @@ defmodule SymphonyElixir.Workspace do
 
   defp run_hook(command, workspace, issue_context, hook_name) do
     timeout_ms = Config.settings!().hooks.timeout_ms
+    env = hook_env(issue_context)
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace}")
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command],
-          cd: workspace,
-          env: hook_env(issue_context),
-          stderr_to_stdout: true
-        )
+        System.cmd("sh", ["-lc", command], cd: workspace, env: env, stderr_to_stdout: true)
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -252,19 +249,22 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp issue_context(%{} = issue) do
+  defp issue_context(issue_or_identifier, opts \\ [])
+
+  defp issue_context(%{id: issue_id, identifier: identifier} = issue, opts) do
     %{
-      issue_id: Map.get(issue, :id),
-      issue_identifier: Map.get(issue, :identifier) || "issue",
+      issue_id: issue_id,
+      issue_identifier: identifier || "issue",
       issue_title: Map.get(issue, :title),
       issue_description: Map.get(issue, :description),
       issue_state: Map.get(issue, :state),
       issue_branch_name: Map.get(issue, :branch_name),
-      issue_url: Map.get(issue, :url)
+      issue_url: Map.get(issue, :url),
+      trace_id: Keyword.get(opts, :trace_id) || issue_trace_id(issue)
     }
   end
 
-  defp issue_context(identifier) when is_binary(identifier) do
+  defp issue_context(identifier, opts) when is_binary(identifier) do
     %{
       issue_id: nil,
       issue_identifier: identifier,
@@ -272,11 +272,12 @@ defmodule SymphonyElixir.Workspace do
       issue_description: nil,
       issue_state: nil,
       issue_branch_name: nil,
-      issue_url: nil
+      issue_url: nil,
+      trace_id: Keyword.get(opts, :trace_id)
     }
   end
 
-  defp issue_context(_identifier) do
+  defp issue_context(_identifier, opts) do
     %{
       issue_id: nil,
       issue_identifier: "issue",
@@ -284,12 +285,13 @@ defmodule SymphonyElixir.Workspace do
       issue_description: nil,
       issue_state: nil,
       issue_branch_name: nil,
-      issue_url: nil
+      issue_url: nil,
+      trace_id: Keyword.get(opts, :trace_id)
     }
   end
 
-  defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do
-    "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"
+  defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier, trace_id: trace_id}) do
+    "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"} trace_id=#{trace_id || "n/a"}"
   end
 
   defp hook_env(issue_context) when is_map(issue_context) do
@@ -300,11 +302,13 @@ defmodule SymphonyElixir.Workspace do
       {"SYMPHONY_ISSUE_DESCRIPTION", env_value(Map.get(issue_context, :issue_description))},
       {"SYMPHONY_ISSUE_STATE", env_value(Map.get(issue_context, :issue_state))},
       {"SYMPHONY_ISSUE_BRANCH_NAME", env_value(Map.get(issue_context, :issue_branch_name))},
-      {"SYMPHONY_ISSUE_URL", env_value(Map.get(issue_context, :issue_url))}
+      {"SYMPHONY_ISSUE_URL", env_value(Map.get(issue_context, :issue_url))},
+      {"SYMPHONY_TRACE_ID", env_value(Map.get(issue_context, :trace_id))}
     ]
   end
 
-  defp hook_env(_issue_context), do: []
+  defp issue_trace_id(%{trace_id: trace_id}) when is_binary(trace_id) and trace_id != "", do: trace_id
+  defp issue_trace_id(_issue), do: nil
 
   defp env_value(nil), do: ""
   defp env_value(value) when is_binary(value), do: value

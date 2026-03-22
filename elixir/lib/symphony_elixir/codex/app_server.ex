@@ -33,7 +33,11 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   @spec run(Path.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(workspace, prompt, issue, opts \\ []) do
-    with {:ok, session} <- start_session(workspace, opts) do
+    with {:ok, session} <-
+           start_session(
+             workspace,
+             Keyword.merge(opts, issue: issue, trace_id: trace_id_from(issue, opts))
+           ) do
       try do
         run_turn(session, prompt, issue, opts)
       after
@@ -47,20 +51,24 @@ defmodule SymphonyElixir.Codex.AppServer do
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace),
          {:ok, port} <- start_port(expanded_workspace, Keyword.get(opts, :command_env, [])) do
       account_id = Keyword.get(opts, :account_id)
-      metadata = port_metadata(port) |> maybe_put_account_id(account_id)
+
+      metadata =
+        port
+        |> session_metadata(opts)
+        |> maybe_put_account_id(account_id)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace),
            {:ok, thread_id} <- do_start_session(port, expanded_workspace, session_policies) do
         {:ok,
          %{
-            port: port,
-            metadata: metadata,
-            account_id: account_id,
-            approval_policy: session_policies.approval_policy,
-            auto_approve_requests: session_policies.approval_policy == "never",
-            thread_sandbox: session_policies.thread_sandbox,
-            turn_sandbox_policy: session_policies.turn_sandbox_policy,
-            thread_id: thread_id,
+           port: port,
+           metadata: metadata,
+           account_id: account_id,
+           approval_policy: session_policies.approval_policy,
+           auto_approve_requests: session_policies.approval_policy == "never",
+           thread_sandbox: session_policies.thread_sandbox,
+           turn_sandbox_policy: session_policies.turn_sandbox_policy,
+           thread_id: thread_id,
            workspace: expanded_workspace
          }}
       else
@@ -130,60 +138,32 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     tool_executor =
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
-        DynamicTool.execute(tool, arguments, workspace: workspace)
+        DynamicTool.execute(tool, arguments, dynamic_tool_opts(workspace, metadata))
       end)
 
-    case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
-      {:ok, turn_id} ->
-        session_id = "#{thread_id}-#{turn_id}"
-        Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
+    with_logger_metadata(metadata, fn ->
+      case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
+        {:ok, turn_id} ->
+          handle_started_turn(
+            %{
+              port: port,
+              on_message: on_message,
+              issue: issue,
+              metadata: metadata,
+              account_id: account_id,
+              tool_executor: tool_executor,
+              auto_approve_requests: auto_approve_requests,
+              thread_id: thread_id
+            },
+            turn_id
+          )
 
-        emit_message(
-          on_message,
-          :session_started,
-          %{
-            session_id: session_id,
-            thread_id: thread_id,
-            turn_id: turn_id
-          },
-          metadata
-        )
-
-        base_metadata = metadata |> maybe_put_account_id(account_id)
-
-        case await_turn_completion(port, on_message, tool_executor, auto_approve_requests, base_metadata) do
-          {:ok, result} ->
-            Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
-
-            {:ok,
-             %{
-               result: result,
-               session_id: session_id,
-               thread_id: thread_id,
-               turn_id: turn_id
-             }}
-
-          {:error, reason} ->
-            Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{inspect(reason)}")
-
-            emit_message(
-              on_message,
-              :turn_ended_with_error,
-              %{
-                session_id: session_id,
-                reason: reason
-              },
-              metadata
-            )
-
-            {:error, reason}
-        end
-
-      {:error, reason} ->
-        Logger.error("Codex session failed for #{issue_context(issue)}: #{inspect(reason)}")
-        emit_message(on_message, :startup_failed, %{reason: reason}, metadata)
-        {:error, reason}
-    end
+        {:error, reason} ->
+          Logger.error("Codex session failed for #{issue_context(issue)}: #{inspect(reason)}")
+          emit_message(on_message, :startup_failed, %{reason: reason}, metadata)
+          {:error, reason}
+      end
+    end)
   end
 
   @spec stop_session(session()) :: :ok
@@ -251,6 +231,16 @@ defmodule SymphonyElixir.Codex.AppServer do
       _ ->
         %{}
     end
+  end
+
+  defp session_metadata(port, opts) when is_list(opts) do
+    issue = Keyword.get(opts, :issue, %{})
+    trace_id = Keyword.get(opts, :trace_id)
+
+    port_metadata(port)
+    |> maybe_put_metadata(:trace_id, trace_id)
+    |> maybe_put_metadata(:issue_id, Map.get(issue, :id))
+    |> maybe_put_metadata(:issue_identifier, Map.get(issue, :identifier))
   end
 
   defp send_initialize(port) do
@@ -349,11 +339,84 @@ defmodule SymphonyElixir.Codex.AppServer do
     )
   end
 
+  defp handle_started_turn(
+         %{
+           port: port,
+           on_message: on_message,
+           issue: issue,
+           metadata: metadata,
+           account_id: account_id,
+           tool_executor: tool_executor,
+           auto_approve_requests: auto_approve_requests,
+           thread_id: thread_id
+         },
+         turn_id
+       ) do
+    session_id = "#{thread_id}-#{turn_id}"
+    Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
+
+    emit_message(
+      on_message,
+      :session_started,
+      %{
+        session_id: session_id,
+        thread_id: thread_id,
+        turn_id: turn_id
+      },
+      metadata
+    )
+
+    base_metadata = maybe_put_account_id(metadata, account_id)
+
+    case await_turn_completion(
+           port,
+           on_message,
+           tool_executor,
+           auto_approve_requests,
+           base_metadata
+         ) do
+      {:ok, result} ->
+        Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
+
+        {:ok,
+         %{
+           result: result,
+           session_id: session_id,
+           thread_id: thread_id,
+           turn_id: turn_id
+         }}
+
+      {:error, reason} ->
+        Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{inspect(reason)}")
+
+        emit_message(
+          on_message,
+          :turn_ended_with_error,
+          %{
+            session_id: session_id,
+            reason: reason
+          },
+          metadata
+        )
+
+        {:error, reason}
+    end
+  end
+
   defp receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests, base_metadata) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
-        handle_incoming(port, on_message, complete_line, timeout_ms, tool_executor, auto_approve_requests, base_metadata)
+
+        handle_incoming(
+          port,
+          on_message,
+          complete_line,
+          timeout_ms,
+          tool_executor,
+          auto_approve_requests,
+          base_metadata
+        )
 
       {^port, {:data, {:noeol, chunk}}} ->
         receive_loop(
@@ -411,15 +474,17 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:ok, %{"method" => method} = payload}
       when is_binary(method) ->
         handle_turn_method(
-          port,
-          on_message,
+          %{
+            port: port,
+            on_message: on_message,
+            timeout_ms: timeout_ms,
+            tool_executor: tool_executor,
+            auto_approve_requests: auto_approve_requests,
+            base_metadata: base_metadata
+          },
           payload,
           payload_string,
-          method,
-          timeout_ms,
-          tool_executor,
-          auto_approve_requests,
-          base_metadata
+          method
         )
 
       {:ok, payload} ->
@@ -466,15 +531,17 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp handle_turn_method(
-         port,
-         on_message,
+         %{
+           port: port,
+           on_message: on_message,
+           timeout_ms: timeout_ms,
+           tool_executor: tool_executor,
+           auto_approve_requests: auto_approve_requests,
+           base_metadata: base_metadata
+         },
          payload,
          payload_string,
-         method,
-         timeout_ms,
-         tool_executor,
-         auto_approve_requests,
-         base_metadata
+         method
        ) do
     metadata = metadata_from_message(port, payload, base_metadata)
 
@@ -996,7 +1063,48 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp maybe_set_usage(metadata, _payload), do: metadata
 
+  defp dynamic_tool_opts(workspace, metadata) when is_map(metadata) do
+    [workspace: workspace]
+    |> maybe_put_dynamic_tool_opt(:trace_id, Map.get(metadata, :trace_id))
+  end
+
+  defp dynamic_tool_opts(workspace, _metadata), do: [workspace: workspace]
+
+  defp maybe_put_dynamic_tool_opt(opts, _key, value) when value in [nil, ""], do: opts
+  defp maybe_put_dynamic_tool_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
   defp default_on_message(_message), do: :ok
+
+  defp with_logger_metadata(metadata, fun) when is_map(metadata) and is_function(fun, 0) do
+    previous_metadata = Logger.metadata()
+
+    logger_metadata =
+      []
+      |> maybe_put_logger_metadata(:issue_id, Map.get(metadata, :issue_id))
+      |> maybe_put_logger_metadata(:issue_identifier, Map.get(metadata, :issue_identifier))
+      |> maybe_put_logger_metadata(:trace_id, Map.get(metadata, :trace_id))
+
+    if logger_metadata != [] do
+      Logger.metadata(logger_metadata)
+    end
+
+    try do
+      fun.()
+    after
+      Logger.reset_metadata(previous_metadata)
+    end
+  end
+
+  defp with_logger_metadata(_metadata, fun) when is_function(fun, 0), do: fun.()
+
+  defp trace_id_from(issue, opts) when is_list(opts) do
+    Keyword.get(opts, :trace_id) || Map.get(issue, :trace_id)
+  end
+
+  defp maybe_put_logger_metadata(metadata, _key, value) when value in [nil, ""], do: metadata
+  defp maybe_put_logger_metadata(metadata, key, value), do: Keyword.put(metadata, key, value)
+  defp maybe_put_metadata(metadata, _key, value) when value in [nil, ""], do: metadata
+  defp maybe_put_metadata(metadata, key, value), do: Map.put(metadata, key, value)
 
   defp maybe_put_account_id(metadata, nil), do: metadata
 

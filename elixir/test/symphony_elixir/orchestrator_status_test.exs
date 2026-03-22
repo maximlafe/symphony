@@ -23,6 +23,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator snapshot reflects last codex update and session id" do
     issue_id = "issue-snapshot"
+    trace_id = "trace-snapshot"
 
     issue = %Issue{
       id: issue_id,
@@ -72,6 +73,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       {:codex_worker_update, issue_id,
        %{
          event: :session_started,
+         trace_id: trace_id,
          session_id: "thread-live-turn-live",
          timestamp: now
        }}
@@ -90,6 +92,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.issue_id == issue_id
+    assert snapshot_entry.trace_id == trace_id
     assert snapshot_entry.session_id == "thread-live-turn-live"
     assert snapshot_entry.turn_count == 1
     assert snapshot_entry.last_codex_timestamp == now
@@ -762,25 +765,24 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     now_ms = System.monotonic_time(:millisecond)
+    initial_state = :sys.get_state(pid)
+
+    if is_reference(initial_state.tick_timer_ref) do
+      Process.cancel_timer(initial_state.tick_timer_ref)
+    end
 
     :sys.replace_state(pid, fn state ->
       %{
         state
         | poll_interval_ms: 30_000,
+          tick_timer_ref: nil,
+          tick_token: nil,
           next_poll_due_at_ms: now_ms + 4_000,
           poll_check_in_progress: false
       }
     end)
 
-    snapshot =
-      wait_for_snapshot(pid, fn
-        %{polling: %{checking?: false, poll_interval_ms: 30_000, next_poll_in_ms: due_in_ms}}
-        when is_integer(due_in_ms) and due_in_ms <= 4_000 ->
-          true
-
-        _ ->
-          false
-      end)
+    snapshot = GenServer.call(pid, :snapshot)
 
     assert %{
              polling: %{
@@ -798,11 +800,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       %{state | poll_check_in_progress: true, next_poll_due_at_ms: nil}
     end)
 
-    snapshot =
-      wait_for_snapshot(pid, fn
-        %{polling: %{checking?: true, next_poll_in_ms: nil}} -> true
-        _ -> false
-      end)
+    snapshot = GenServer.call(pid, :snapshot)
 
     assert %{polling: %{checking?: true, next_poll_in_ms: nil}} = snapshot
   end
@@ -818,45 +816,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
+        :erlang.trace(pid, false, [:receive])
         Process.exit(pid, :normal)
       end
     end)
 
-    assert %{polling: %{checking?: true}} =
-             wait_for_snapshot(
-               pid,
-               fn
-                 %{polling: %{checking?: true}} ->
-                   true
-
-                 _ ->
-                   false
-               end,
-               500
-             )
-
-    assert %{
-             polling: %{
-               checking?: false,
-               next_poll_in_ms: next_poll_in_ms,
-               poll_interval_ms: 5_000
-             }
-           } =
-             wait_for_snapshot(
-               pid,
-               fn
-                 %{polling: %{checking?: false, next_poll_in_ms: due_in_ms}}
-                 when is_integer(due_in_ms) and due_in_ms <= 5_000 ->
-                   true
-
-                 _ ->
-                   false
-               end,
-               500
-             )
-
-    assert is_integer(next_poll_in_ms)
-    assert next_poll_in_ms >= 0
+    assert :erlang.trace(pid, true, [:receive]) in [1, :ok]
+    assert_receive {:trace, ^pid, :receive, :run_poll_cycle}, 500
   end
 
   test "orchestrator poll cycle resets next refresh countdown after a check" do
@@ -939,6 +905,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       ref: make_ref(),
       identifier: "MT-STALL",
       issue: %Issue{id: issue_id, identifier: "MT-STALL", state: "In Progress"},
+      trace_id: "trace-stall",
       session_id: "thread-stall-turn-stall",
       last_codex_message: nil,
       last_codex_timestamp: stale_activity_at,
@@ -953,8 +920,21 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     send(pid, :tick)
-    Process.sleep(100)
-    state = :sys.get_state(pid)
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        not Process.alive?(worker_pid) and
+          not Map.has_key?(state.running, issue_id) and
+          match?(
+            %{
+              attempt: 1,
+              identifier: "MT-STALL",
+              trace_id: "trace-stall",
+              error: "stalled for " <> _
+            },
+            state.retry_attempts[issue_id]
+          )
+      end)
 
     refute Process.alive?(worker_pid)
     refute Map.has_key?(state.running, issue_id)
@@ -963,6 +943,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              attempt: 1,
              due_at_ms: due_at_ms,
              identifier: "MT-STALL",
+             trace_id: "trace-stall",
              error: "stalled for " <> _
            } = state.retry_attempts[issue_id]
 
@@ -1275,6 +1256,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   test "application configures a rotating file logger handler" do
     assert {:ok, handler_config} = :logger.get_handler_config(:symphony_disk_log)
     assert handler_config.module == :logger_disk_log_h
+    assert handler_config.formatter == {SymphonyElixir.JsonFormatter, %{}}
 
     disk_config = handler_config.config
     assert disk_config.type == :wrap
@@ -1722,6 +1704,27 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       else
         Process.sleep(5)
         do_wait_for_snapshot(pid, predicate, deadline_ms)
+      end
+    end
+  end
+
+  defp wait_for_orchestrator_state(pid, predicate, timeout_ms \\ 1_000)
+       when is_function(predicate, 1) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
+  end
+
+  defp do_wait_for_orchestrator_state(pid, predicate, deadline_ms) do
+    state = :sys.get_state(pid)
+
+    if predicate.(state) do
+      state
+    else
+      if System.monotonic_time(:millisecond) >= deadline_ms do
+        flunk("timed out waiting for orchestrator runtime state: #{inspect(state)}")
+      else
+        Process.sleep(10)
+        do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
       end
     end
   end
