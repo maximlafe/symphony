@@ -51,6 +51,9 @@ defmodule SymphonyElixir.Config.Schema do
       field(:project_slug, :string)
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
+
+      field(:manual_intervention_state, :string, default: "Blocked")
+
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
 
@@ -59,9 +62,20 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :assignee,
+          :active_states,
+          :manual_intervention_state,
+          :terminal_states
+        ],
         empty_values: []
       )
+      |> update_change(:manual_intervention_state, &String.trim/1)
+      |> validate_length(:manual_intervention_state, min: 1)
     end
   end
 

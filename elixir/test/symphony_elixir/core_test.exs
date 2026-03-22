@@ -14,6 +14,7 @@ defmodule SymphonyElixir.CoreTest do
     config = Config.settings!()
     assert config.polling.interval_ms == 30_000
     assert config.tracker.active_states == ["Todo", "In Progress"]
+    assert config.tracker.manual_intervention_state == "Blocked"
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
@@ -101,6 +102,7 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.get(tracker, "kind") == "linear"
     assert is_binary(Map.get(tracker, "project_slug"))
     assert is_list(Map.get(tracker, "active_states"))
+    assert Map.get(tracker, "manual_intervention_state") == "Blocked"
     assert is_list(Map.get(tracker, "terminal_states"))
 
     hooks = Map.get(config, "hooks", %{})
@@ -557,10 +559,98 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
-    assert is_integer(due_at_ms)
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-    assert remaining_ms >= -1_500
-    assert remaining_ms <= 1_100
+    assert_due_in_range(due_at_ms, 2_000, 5_500)
+  end
+
+  test "normal worker exit resets continuation backoff after failure-driven retry" do
+    issue_id = "issue-resume-after-failure"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :ContinuationResetOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-558A",
+      retry_attempt: 3,
+      retry_delay_type: nil,
+      issue: %Issue{id: issue_id, identifier: "MT-558A", state: "In Progress"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        match?(%{attempt: 1}, state.retry_attempts[issue_id])
+      end)
+
+    assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
+    assert_due_in_range(due_at_ms, 2_000, 5_500)
+  end
+
+  test "failure after continuation retry starts failure backoff from attempt 1" do
+    issue_id = "issue-continuation-crash"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :ContinuationCrashOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-558B",
+      retry_attempt: 2,
+      retry_delay_type: :continuation,
+      issue: %Issue{id: issue_id, identifier: "MT-558B", state: "In Progress"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :boom})
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        match?(%{attempt: 1}, state.retry_attempts[issue_id])
+      end)
+
+    assert %{
+             attempt: 1,
+             due_at_ms: due_at_ms,
+             identifier: "MT-558B",
+             error: "agent exited: :boom",
+             error_class: "transient"
+           } = state.retry_attempts[issue_id]
+
+    assert_due_in_range(due_at_ms, 7_000, 10_500)
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
@@ -600,8 +690,13 @@ defmodule SymphonyElixir.CoreTest do
         match?(%{attempt: 3}, state.retry_attempts[issue_id])
       end)
 
-    assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
-             state.retry_attempts[issue_id]
+    assert %{
+             attempt: 3,
+             due_at_ms: due_at_ms,
+             identifier: "MT-559",
+             error: "agent exited: :boom",
+             error_class: "transient"
+           } = state.retry_attempts[issue_id]
 
     assert_due_in_range(due_at_ms, 37_000, 40_500)
   end
@@ -642,10 +737,149 @@ defmodule SymphonyElixir.CoreTest do
         match?(%{attempt: 1}, state.retry_attempts[issue_id])
       end)
 
-    assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
-             state.retry_attempts[issue_id]
+    assert %{
+             attempt: 1,
+             due_at_ms: due_at_ms,
+             identifier: "MT-560",
+             error: "agent exited: :boom",
+             error_class: "transient"
+           } = state.retry_attempts[issue_id]
 
     assert_due_in_range(due_at_ms, 7_000, 10_500)
+  end
+
+  test "permanent worker failure moves issue to Blocked without retrying" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-compile"
+    ref = make_ref()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      orchestrator_name = Module.concat(__MODULE__, :PermanentFailureOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: ref,
+        identifier: "MT-562",
+        issue: %Issue{id: issue_id, identifier: "MT-562", state: "In Progress"},
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(
+        pid,
+        {:DOWN, ref, :process, self(), {:agent_run_failed, {:workspace_hook_failed, "before_run", 1, "CompileError: undefined function"}}}
+      )
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "error_class: `permanent`"
+      assert blocker_body =~ "CompileError"
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          not MapSet.member?(state.claimed, issue_id) and not Map.has_key?(state.retry_attempts, issue_id)
+        end)
+
+      refute Map.has_key?(state.retry_attempts, issue_id)
+      refute MapSet.member?(state.claimed, issue_id)
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+    end
+  end
+
+  test "semi-permanent failures retry up to the configured limit then escalate" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-semi"
+    ref = make_ref()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      orchestrator_name = Module.concat(__MODULE__, :SemiPermanentFailureOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: ref,
+        identifier: "MT-563",
+        retry_attempt: 1,
+        issue: %Issue{id: issue_id, identifier: "MT-563", state: "In Progress"},
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 2, error_class: "semi_permanent"}, state.retry_attempts[issue_id])
+        end)
+
+      assert %{attempt: 2, error_class: "semi_permanent"} = state.retry_attempts[issue_id]
+
+      retry_ref = make_ref()
+
+      :sys.replace_state(pid, fn current_state ->
+        current_running_entry = %{running_entry | ref: retry_ref, retry_attempt: 3}
+
+        current_state
+        |> Map.put(:running, %{issue_id => current_running_entry})
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+      end)
+
+      send(pid, {:DOWN, retry_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "error_class: `semi_permanent`"
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+
+      final_state =
+        wait_for_orchestrator_state(pid, fn state ->
+          not MapSet.member?(state.claimed, issue_id) and not Map.has_key?(state.retry_attempts, issue_id)
+        end)
+
+      refute Map.has_key?(final_state.retry_attempts, issue_id)
+      refute MapSet.member?(final_state.claimed, issue_id)
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+    end
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
@@ -1153,6 +1387,47 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner raises RunError with classified metadata on hook failure" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-error-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_run: "echo 'CompileError: undefined function' >&2; exit 1"
+      )
+
+      issue = %Issue{
+        id: "issue-run-error",
+        identifier: "MT-ERR",
+        title: "Raise classified error",
+        description: "before_run fails",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-ERR",
+        labels: []
+      }
+
+      error =
+        assert_raise AgentRunner.RunError, fn ->
+          AgentRunner.run(issue)
+        end
+
+      assert error.issue_id == "issue-run-error"
+      assert error.issue_identifier == "MT-ERR"
+      assert error.error_class == :permanent
+      assert error.reason == {:workspace_hook_failed, "before_run", 1, "CompileError: undefined function\n"}
+      assert error.message =~ "error_class=permanent"
+      assert error.message =~ "MT-ERR"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner forwards timestamped codex updates to recipient" do
     test_root =
       Path.join(
@@ -1369,6 +1644,113 @@ defmodule SymphonyElixir.CoreTest do
       refute Enum.at(turn_texts, 1) =~ "You are an agent for this repository."
       assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
       assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner stops after consecutive empty turns and backs off between them" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-empty-turns-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-empty"}}}'
+            ;;
+          *)
+            turn_number=$((count - 3))
+            printf '{"id":3,"result":{"turn":{"id":"turn-empty-%s"}}}\\n' "$turn_number"
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server",
+        max_turns: 6
+      )
+
+      parent = self()
+
+      state_fetcher = fn [_issue_id] ->
+        attempt = Process.get(:agent_empty_turn_fetch_count, 0) + 1
+        Process.put(:agent_empty_turn_fetch_count, attempt)
+        send(parent, {:issue_state_fetch_empty, attempt})
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-empty-turns",
+             identifier: "MT-249",
+             title: "Break empty turn loop",
+             description: "Still active",
+             state: "In Progress"
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-empty-turns",
+        identifier: "MT-249",
+        title: "Break empty turn loop",
+        description: "Still active",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-249",
+        labels: []
+      }
+
+      started_at = System.monotonic_time(:millisecond)
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+      assert_receive {:issue_state_fetch_empty, 1}
+      assert_receive {:issue_state_fetch_empty, 2}
+      assert_receive {:issue_state_fetch_empty, 3}
+
+      trace = File.read!(trace_file)
+      assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 3
+      assert elapsed_ms >= 5_500
+      assert elapsed_ms < 15_000
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)

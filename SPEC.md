@@ -625,9 +625,9 @@ Important nuance:
 - The first turn should use the full rendered task prompt.
 - Continuation turns should send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.
-- Once the worker exits normally, the orchestrator still schedules a short continuation retry
-  (about 1 second) so it can re-check whether the issue remains active and needs another worker
-  session.
+- Once the worker exits normally, the orchestrator still schedules a continuation retry with
+  bounded exponential backoff so it can re-check whether the issue remains active and needs another
+  worker session without creating a tight empty-turn loop.
 
 ### 7.2 Run Attempt Lifecycle
 
@@ -664,7 +664,8 @@ Distinct terminal reasons are important because retry logic and logs differ.
 - `Worker Exit (abnormal)`
   - Remove running entry.
   - Update aggregate runtime totals.
-  - Schedule exponential-backoff retry.
+  - Classify the failure (`transient`, `semi_permanent`, `permanent`) and choose retry or manual
+    review policy from that class.
 
 - `Codex Update Event`
   - Update live session fields, token counters, and rate limits.
@@ -744,13 +745,22 @@ The runtime counts issues by their current tracked state in the `running` map.
 Retry entry creation:
 
 - Cancel any existing retry timer for the same issue.
-- Store `attempt`, `identifier`, `error`, `due_at_ms`, and new timer handle.
+- Store `attempt`, `identifier`, `error`, optional `error_class`, `due_at_ms`, and new timer
+  handle.
 
 Backoff formula:
 
-- Normal continuation retries after a clean worker exit use a short fixed delay of `1000` ms.
+- Normal continuation retries after a clean worker exit use exponential backoff capped at
+  `300000` ms.
 - Failure-driven retries use `delay = min(10000 * 2^(attempt - 1), agent.max_retry_backoff_ms)`.
 - Power is capped by the configured max retry backoff (default `300000` / 5m).
+
+Failure classification:
+
+- `transient` failures retry without a fixed limit.
+- `semi_permanent` failures retry only a small bounded number of times before escalation.
+- `permanent` failures do not retry and should move the issue into a manual-review state with an
+  explanatory tracker comment.
 
 Retry handling behavior:
 
@@ -2022,10 +2032,12 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Non-active state stops running agent without workspace cleanup
 - Terminal state stops running agent and cleans workspace
 - Reconciliation with no running issues is a no-op
-- Normal worker exit schedules a short continuation retry (attempt 1)
+- Normal worker exit schedules continuation retry with bounded backoff
 - Abnormal worker exit increments retries with 10s-based exponential backoff
+- Abnormal worker exit classification drives whether the issue retries or is escalated for manual
+  review
 - Retry backoff cap uses configured `agent.max_retry_backoff_ms`
-- Retry queue entries include attempt, due time, identifier, and error
+- Retry queue entries include attempt, due time, identifier, error, and optional `error_class`
 - Stall detection kills stalled sessions and schedules retry
 - Slot exhaustion requeues retries with explicit error reason
 - If a snapshot API is implemented, it returns running rows, retry rows, token totals, and rate

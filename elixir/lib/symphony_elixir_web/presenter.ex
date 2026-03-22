@@ -128,7 +128,8 @@ defmodule SymphonyElixirWeb.Presenter do
       trace_id: Map.get(entry, :trace_id),
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
-      error: entry.error
+      error: entry.error,
+      error_class: Map.get(entry, :error_class)
     }
   end
 
@@ -156,7 +157,8 @@ defmodule SymphonyElixirWeb.Presenter do
       trace_id: Map.get(retry, :trace_id),
       attempt: retry.attempt,
       due_at: due_at_iso8601(retry.due_in_ms),
-      error: retry.error
+      error: retry.error,
+      error_class: Map.get(retry, :error_class)
     }
   end
 

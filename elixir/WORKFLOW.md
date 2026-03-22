@@ -7,6 +7,7 @@ tracker:
     - In Progress
     - Merging
     - Rework
+  manual_intervention_state: Blocked
   terminal_states:
     - Closed
     - Cancelled

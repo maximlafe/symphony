@@ -7,11 +7,12 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, ErrorClassifier, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Codex.{AccountProbe, Accounts}
   alias SymphonyElixir.Linear.Issue
 
-  @continuation_retry_delay_ms 1_000
+  @continuation_base_delay_ms 5_000
+  @continuation_max_delay_ms 300_000
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
@@ -466,14 +467,15 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
       end)
 
-      next_attempt = next_retry_attempt_from_running(running_entry)
+      next_attempt = next_failure_attempt_from_running(running_entry)
 
       state
       |> terminate_running_issue(issue_id, false)
       |> schedule_issue_retry(issue_id, next_attempt, %{
         identifier: identifier,
         trace_id: trace_id,
-        error: "stalled for #{elapsed_ms}ms without codex activity"
+        error: "stalled for #{elapsed_ms}ms without codex activity",
+        error_class: ErrorClassifier.to_string(:transient)
       })
     else
       state
@@ -650,10 +652,10 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, trace_id \\ nil) do
+  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, trace_id \\ nil, retry_delay_type \\ nil) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, trace_id)
+        do_dispatch_issue(state, refreshed_issue, attempt, trace_id, retry_delay_type)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -670,7 +672,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, trace_id) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, trace_id, retry_delay_type) do
     case active_codex_account(state) do
       nil ->
         state
@@ -681,7 +683,8 @@ defmodule SymphonyElixir.Orchestrator do
           issue,
           attempt,
           codex_account,
-          dispatch_trace_id(issue, trace_id)
+          dispatch_trace_id(issue, trace_id),
+          retry_delay_type
         )
     end
   end
@@ -715,16 +718,16 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
-       when is_binary(issue_id) and is_map(metadata) do
+       when is_binary(issue_id) and is_integer(attempt) and attempt > 0 and is_map(metadata) do
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
-    next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
-    delay_ms = retry_delay(next_attempt, metadata)
+    delay_ms = retry_delay(attempt, metadata)
     old_timer = Map.get(previous_retry, :timer_ref)
     retry_token = make_ref()
     due_at_ms = System.monotonic_time(:millisecond) + delay_ms
     identifier = pick_retry_identifier(issue_id, previous_retry, metadata)
     trace_id = pick_retry_trace_id(previous_retry, metadata)
     error = pick_retry_error(previous_retry, metadata)
+    error_class = pick_retry_error_class(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -733,22 +736,25 @@ defmodule SymphonyElixir.Orchestrator do
     timer_ref = Process.send_after(self(), {:retry_issue, issue_id, retry_token}, delay_ms)
 
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
+    error_class_suffix = if is_binary(error_class), do: " error_class=#{error_class}", else: ""
 
     with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
-      Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{next_attempt})#{error_suffix}")
+      Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{attempt})#{error_class_suffix}#{error_suffix}")
     end)
 
     %{
       state
       | retry_attempts:
           Map.put(state.retry_attempts, issue_id, %{
-            attempt: next_attempt,
+            attempt: attempt,
             timer_ref: timer_ref,
             retry_token: retry_token,
             due_at_ms: due_at_ms,
             identifier: identifier,
             trace_id: trace_id,
-            error: error
+            error: error,
+            error_class: error_class,
+            delay_type: metadata[:delay_type]
           })
     }
   end
@@ -759,7 +765,9 @@ defmodule SymphonyElixir.Orchestrator do
         metadata = %{
           identifier: Map.get(retry_entry, :identifier),
           trace_id: Map.get(retry_entry, :trace_id),
-          error: Map.get(retry_entry, :error)
+          error: Map.get(retry_entry, :error),
+          error_class: Map.get(retry_entry, :error_class),
+          delay_type: Map.get(retry_entry, :delay_type)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -788,8 +796,12 @@ defmodule SymphonyElixir.Orchestrator do
          schedule_issue_retry(
            state,
            issue_id,
-           attempt + 1,
-           Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
+           next_failure_retry_attempt(attempt, metadata[:delay_type]),
+           Map.merge(metadata, %{
+             error: "retry poll failed: #{inspect(reason)}",
+             error_class: ErrorClassifier.to_string(:transient),
+             delay_type: nil
+           })
          )}
     end
   end
@@ -835,17 +847,19 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_agent_exit_reason(
          state,
          issue_id,
-         _running_entry,
+         running_entry,
          identifier,
          session_id,
          trace_id,
          :normal
        ) do
-    Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+    continuation_attempt = next_continuation_attempt(running_entry)
+
+    Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check (attempt #{continuation_attempt})")
 
     state
     |> complete_issue(issue_id)
-    |> schedule_issue_retry(issue_id, 1, %{
+    |> schedule_issue_retry(issue_id, continuation_attempt, %{
       identifier: identifier,
       trace_id: trace_id,
       delay_type: :continuation
@@ -861,15 +875,27 @@ defmodule SymphonyElixir.Orchestrator do
          trace_id,
          reason
        ) do
-    Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
+    failure_attempt =
+      case next_failure_attempt_from_running(running_entry) do
+        attempt when is_integer(attempt) and attempt > 0 -> attempt
+        _ -> 1
+      end
 
-    next_attempt = next_retry_attempt_from_running(running_entry)
+    error_class = ErrorClassifier.classify(reason)
+    error_class_label = ErrorClassifier.to_string(error_class)
 
-    schedule_issue_retry(state, issue_id, next_attempt, %{
-      identifier: identifier,
-      trace_id: trace_id,
-      error: "agent exited: #{inspect(reason)}"
-    })
+    Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)} error_class=#{error_class_label} next_retry_attempt=#{failure_attempt}")
+
+    handle_worker_failure(
+      state,
+      Map.get(running_entry, :issue),
+      issue_id,
+      identifier,
+      trace_id,
+      reason,
+      error_class,
+      failure_attempt
+    )
   end
 
   defp dispatch_issue_with_account(
@@ -877,7 +903,8 @@ defmodule SymphonyElixir.Orchestrator do
          %Issue{} = issue,
          attempt,
          codex_account,
-         trace_id
+         trace_id,
+         retry_delay_type
        ) do
     recipient = self()
 
@@ -918,6 +945,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
+            retry_delay_type: retry_delay_type,
             started_at: DateTime.utc_now()
           })
 
@@ -933,12 +961,13 @@ defmodule SymphonyElixir.Orchestrator do
           Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         end)
 
-        next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
+        next_attempt = next_failure_retry_attempt(attempt, retry_delay_type)
 
         schedule_issue_retry(state, issue.id, next_attempt, %{
           identifier: issue.identifier,
           trace_id: trace_id,
-          error: "failed to spawn agent: #{inspect(reason)}"
+          error: "failed to spawn agent: #{inspect(reason)}",
+          error_class: ErrorClassifier.to_string(:transient)
         })
     end
   end
@@ -967,7 +996,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_active_retry(state, issue, attempt, metadata) do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:trace_id])}
+      {:noreply, dispatch_issue(state, issue, attempt, metadata[:trace_id], metadata[:delay_type])}
     else
       with_log_metadata(issue_log_metadata(issue.id, issue.identifier, nil, metadata[:trace_id]), fn ->
         Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
@@ -977,26 +1006,133 @@ defmodule SymphonyElixir.Orchestrator do
        schedule_issue_retry(
          state,
          issue.id,
-         attempt + 1,
+         next_failure_retry_attempt(attempt, metadata[:delay_type]),
          Map.merge(metadata, %{
            identifier: issue.identifier,
-           error: "no available orchestrator slots"
+           error: "no available orchestrator slots",
+           error_class: ErrorClassifier.to_string(:transient),
+           delay_type: nil
          })
        )}
     end
+  end
+
+  defp handle_worker_failure(state, issue, issue_id, identifier, trace_id, reason, error_class, failure_attempt) do
+    error_class_label = ErrorClassifier.to_string(error_class)
+
+    if ErrorClassifier.retry_allowed?(error_class, failure_attempt) do
+      schedule_issue_retry(state, issue_id, failure_attempt, %{
+        identifier: identifier,
+        trace_id: trace_id,
+        error: "agent exited: #{ErrorClassifier.summarize_reason(reason)}",
+        error_class: error_class_label
+      })
+    else
+      escalate_issue_for_manual_intervention(
+        state,
+        issue,
+        issue_id,
+        identifier,
+        trace_id,
+        reason,
+        error_class_label,
+        failure_attempt
+      )
+    end
+  end
+
+  defp escalate_issue_for_manual_intervention(
+         state,
+         %Issue{id: tracker_issue_id},
+         issue_id,
+         identifier,
+         trace_id,
+         reason,
+         error_class,
+         failure_attempt
+       )
+       when is_binary(tracker_issue_id) do
+    blocker_comment = blocker_comment_body(identifier, trace_id, reason, error_class, failure_attempt)
+    intervention_state = manual_intervention_state()
+
+    with :ok <- Tracker.create_comment(tracker_issue_id, blocker_comment),
+         :ok <- Tracker.update_issue_state(tracker_issue_id, intervention_state) do
+      with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
+        Logger.warning("Escalated issue_id=#{issue_id} issue_identifier=#{identifier} to #{intervention_state} after #{error_class} failure (attempt #{failure_attempt})")
+      end)
+
+      state
+      |> complete_issue(issue_id)
+      |> release_issue_claim(issue_id)
+    else
+      {:error, tracker_reason} ->
+        with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
+          Logger.error("Failed to escalate issue_id=#{issue_id} issue_identifier=#{identifier} to #{intervention_state}: #{inspect(tracker_reason)}")
+        end)
+
+        schedule_issue_retry(state, issue_id, failure_attempt, %{
+          identifier: identifier,
+          trace_id: trace_id,
+          error: "failed to escalate #{identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
+          error_class: ErrorClassifier.to_string(:transient)
+        })
+    end
+  end
+
+  defp escalate_issue_for_manual_intervention(
+         state,
+         issue,
+         issue_id,
+         identifier,
+         trace_id,
+         _reason,
+         _error_class,
+         failure_attempt
+       ) do
+    with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
+      Logger.error("Failed to escalate issue_id=#{issue_id} issue_identifier=#{identifier} to #{manual_intervention_state()}: missing issue id in #{inspect(issue)}")
+    end)
+
+    schedule_issue_retry(state, issue_id, failure_attempt, %{
+      identifier: identifier,
+      trace_id: trace_id,
+      error: "failed to escalate #{identifier} to #{manual_intervention_state()}: missing issue id",
+      error_class: ErrorClassifier.to_string(:transient)
+    })
+  end
+
+  defp blocker_comment_body(identifier, trace_id, reason, error_class, failure_attempt) do
+    trace_id_line =
+      if is_binary(trace_id) and trace_id != "" do
+        "- trace_id: `#{trace_id}`\n"
+      else
+        ""
+      end
+
+    """
+    ### Blocker (auto-classified)
+
+    - error_class: `#{error_class}`
+    - failed_attempt: `#{failure_attempt}`
+    - issue: `#{identifier}`
+    #{trace_id_line}- reason: `#{ErrorClassifier.summarize_reason(reason)}`
+    """
   end
 
   defp release_issue_claim(%State{} = state, issue_id) do
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
   end
 
-  defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
-    if metadata[:delay_type] == :continuation and attempt == 1 do
-      @continuation_retry_delay_ms
-    else
-      failure_retry_delay(attempt)
-    end
+  defp manual_intervention_state do
+    Config.settings!().tracker.manual_intervention_state
   end
+
+  defp retry_delay(attempt, %{delay_type: :continuation})
+       when is_integer(attempt) and attempt > 0,
+       do: min(@continuation_base_delay_ms * (1 <<< min(attempt - 1, 6)), @continuation_max_delay_ms)
+
+  defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata),
+    do: failure_retry_delay(attempt)
 
   defp failure_retry_delay(attempt) do
     max_delay_power = min(attempt - 1, 10)
@@ -1006,12 +1142,28 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
   defp normalize_retry_attempt(_attempt), do: 0
 
-  defp next_retry_attempt_from_running(running_entry) do
+  defp next_continuation_attempt(%{retry_delay_type: :continuation, retry_attempt: attempt})
+       when is_integer(attempt) and attempt > 0,
+       do: attempt + 1
+
+  defp next_continuation_attempt(_running_entry), do: 1
+
+  defp next_failure_attempt_from_running(%{retry_delay_type: :continuation}), do: 1
+
+  defp next_failure_attempt_from_running(running_entry) do
     case Map.get(running_entry, :retry_attempt) do
       attempt when is_integer(attempt) and attempt > 0 -> attempt + 1
-      _ -> nil
+      _ -> 1
     end
   end
+
+  defp next_failure_retry_attempt(_attempt, :continuation), do: 1
+
+  defp next_failure_retry_attempt(attempt, _retry_delay_type)
+       when is_integer(attempt) and attempt > 0,
+       do: attempt + 1
+
+  defp next_failure_retry_attempt(_attempt, _retry_delay_type), do: 1
 
   defp pick_retry_identifier(issue_id, previous_retry, metadata) do
     metadata[:identifier] || Map.get(previous_retry, :identifier) || issue_id
@@ -1023,6 +1175,20 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pick_retry_error(previous_retry, metadata) do
     metadata[:error] || Map.get(previous_retry, :error)
+  end
+
+  defp pick_retry_error_class(previous_retry, metadata) do
+    case metadata[:error_class] || Map.get(previous_retry, :error_class) do
+      value when is_binary(value) and value != "" ->
+        value
+
+      _ ->
+        if metadata[:delay_type] == :continuation do
+          nil
+        else
+          ErrorClassifier.to_string(:transient)
+        end
+    end
   end
 
   defp find_issue_by_id(issues, issue_id) when is_binary(issue_id) do
@@ -1131,7 +1297,8 @@ defmodule SymphonyElixir.Orchestrator do
           due_in_ms: max(0, due_at_ms - now_ms),
           identifier: Map.get(retry, :identifier),
           trace_id: Map.get(retry, :trace_id),
-          error: Map.get(retry, :error)
+          error: Map.get(retry, :error),
+          error_class: Map.get(retry, :error_class)
         }
       end)
 

@@ -29,6 +29,7 @@ Structured runtime logs are emitted as JSON lines. Put correlation fields in log
 - Use explicit `key=value` pairs in message text for high-signal fields when they materially help local debugging.
 - Prefer deterministic wording for recurring lifecycle events.
 - Include the action outcome (`completed`, `failed`, `retrying`) and the reason/error when available.
+- When retry policy depends on classification, include `error_class` in the message text or metadata.
 - Avoid logging large payloads unless required for debugging.
 
 ## Scope Guidance
