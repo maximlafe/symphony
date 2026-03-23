@@ -6,6 +6,39 @@ defmodule SymphonyElixir.ErrorClassifier do
   @typedoc "Retry strategy class for a failed agent attempt."
   @type error_class :: :transient | :permanent | :semi_permanent
 
+  @typedoc "Detailed runtime failure category used for account-aware handling."
+  @type failure_class ::
+          :approval_required
+          | :auth_failure
+          | :invalid_workspace
+          | :process_error
+          | :quota_exhausted
+          | :semi_permanent_failure
+          | :transient_worker_failure
+          | :turn_input_required
+          | :workspace_hook_failed
+
+  @typedoc "How the runtime should react after a classified worker failure."
+  @type retry_action :: :retry_same_account | :switch_account | :stop
+
+  @typedoc "Runtime health override for the Codex account that produced the failure."
+  @type account_state :: :ready | :cooldown | :broken
+
+  defmodule FailureDetails do
+    @moduledoc false
+
+    @enforce_keys [:error_class, :failure_class, :retry_action, :account_state, :summary]
+    defstruct [:error_class, :failure_class, :retry_action, :account_state, :summary]
+
+    @type t :: %__MODULE__{
+            error_class: SymphonyElixir.ErrorClassifier.error_class(),
+            failure_class: SymphonyElixir.ErrorClassifier.failure_class(),
+            retry_action: SymphonyElixir.ErrorClassifier.retry_action(),
+            account_state: SymphonyElixir.ErrorClassifier.account_state(),
+            summary: String.t()
+          }
+  end
+
   @semi_permanent_retry_limit 3
 
   @permanent_patterns [
@@ -33,6 +66,27 @@ defmodule SymphonyElixir.ErrorClassifier do
     "missing required auth",
     "missing required permissions",
     "missing required tools"
+  ]
+
+  @quota_patterns [
+    "quota exhausted",
+    "quota exceeded",
+    "resource_exhausted",
+    "resource exhausted",
+    "requests per day limit reached",
+    "usage limit",
+    "rate limit exhausted"
+  ]
+
+  @auth_patterns [
+    "not logged in",
+    "login required",
+    "unauthorized",
+    "authentication failed",
+    "authentication required",
+    "invalid api key",
+    "token expired",
+    "token has expired"
   ]
 
   @semi_permanent_patterns [
@@ -72,38 +126,113 @@ defmodule SymphonyElixir.ErrorClassifier do
   ]
 
   @spec classify(term()) :: error_class()
-  def classify({:agent_run_failed, nested_reason}), do: classify(nested_reason)
-  def classify({:turn_input_required, _payload}), do: :permanent
-  def classify({:approval_required, _payload}), do: :permanent
-  def classify({:invalid_workspace_cwd, _reason, _path}), do: :permanent
-  def classify({:invalid_workspace_cwd, _reason, _path, _root}), do: :permanent
-  def classify({:workspace_equals_root, _workspace, _root}), do: :permanent
-  def classify({:workspace_symlink_escape, _workspace, _root}), do: :permanent
-  def classify({:workspace_outside_root, _workspace, _root}), do: :permanent
-  def classify({:workspace_path_unreadable, _path, _reason}), do: :permanent
-  def classify({:workspace_hook_failed, _hook_name, _status, output}) when is_binary(output), do: output |> normalize_reason_text() |> classify_by_text()
-  def classify({:workspace_hook_timeout, _hook_name, _timeout_ms}), do: :transient
-  def classify({:issue_state_refresh_failed, _reason}), do: :transient
-  def classify({:turn_timeout}), do: :transient
-  def classify({:turn_timeout, _payload}), do: :transient
-  def classify({:turn_cancelled, _payload}), do: :transient
-  def classify({:turn_failed, _payload}), do: :transient
-  def classify({:response_timeout}), do: :transient
-  def classify({:port_exit, _status}), do: :transient
+  def classify(reason), do: reason |> classify_details() |> Map.fetch!(:error_class)
 
-  def classify({reason, _stacktrace}) when is_map(reason) do
-    classify(reason)
+  @spec classify_details(term()) :: FailureDetails.t()
+  def classify_details({:agent_run_failed, nested_reason}), do: classify_details(nested_reason)
+
+  def classify_details({:turn_input_required, payload}) do
+    failure_details(:permanent, :turn_input_required, :stop, :ready, summarize_reason(payload))
   end
 
-  def classify(%{error_class: error_class})
+  def classify_details({:approval_required, payload}) do
+    failure_details(:permanent, :approval_required, :stop, :ready, summarize_reason(payload))
+  end
+
+  def classify_details({:invalid_workspace_cwd, _reason, _path}) do
+    failure_details(:permanent, :invalid_workspace, :stop, :ready, "invalid workspace cwd")
+  end
+
+  def classify_details({:invalid_workspace_cwd, _reason, _path, _root}) do
+    failure_details(:permanent, :invalid_workspace, :stop, :ready, "invalid workspace cwd")
+  end
+
+  def classify_details({:workspace_equals_root, _workspace, _root}) do
+    failure_details(:permanent, :invalid_workspace, :stop, :ready, "workspace equals root")
+  end
+
+  def classify_details({:workspace_symlink_escape, _workspace, _root}) do
+    failure_details(:permanent, :invalid_workspace, :stop, :ready, "workspace symlink escape")
+  end
+
+  def classify_details({:workspace_outside_root, _workspace, _root}) do
+    failure_details(:permanent, :invalid_workspace, :stop, :ready, "workspace outside root")
+  end
+
+  def classify_details({:workspace_path_unreadable, _path, _reason}) do
+    failure_details(:permanent, :invalid_workspace, :stop, :ready, "workspace path unreadable")
+  end
+
+  def classify_details({:workspace_hook_failed, _hook_name, _status, output}) when is_binary(output) do
+    classify_workspace_hook_output(output)
+  end
+
+  def classify_details({:workspace_hook_timeout, _hook_name, _timeout_ms}) do
+    failure_details(:transient, :transient_worker_failure, :retry_same_account, :ready, "workspace hook timed out")
+  end
+
+  def classify_details({:issue_state_refresh_failed, _reason}) do
+    failure_details(:transient, :transient_worker_failure, :retry_same_account, :ready, "issue state refresh failed")
+  end
+
+  def classify_details({:turn_timeout}) do
+    failure_details(:transient, :transient_worker_failure, :retry_same_account, :ready, "turn timed out")
+  end
+
+  def classify_details({:turn_timeout, payload}) do
+    failure_details(:transient, :transient_worker_failure, :retry_same_account, :ready, summarize_reason(payload))
+  end
+
+  def classify_details({:turn_cancelled, payload}) do
+    failure_details(:transient, :transient_worker_failure, :retry_same_account, :ready, summarize_reason(payload))
+  end
+
+  def classify_details({:turn_failed, payload}) do
+    payload
+    |> classify_text_failure(summarize_reason(payload))
+    |> fallback_failure_class(:transient_worker_failure)
+  end
+
+  def classify_details({:response_timeout}) do
+    failure_details(:transient, :transient_worker_failure, :retry_same_account, :ready, "response timed out")
+  end
+
+  def classify_details({:port_exit, status}) do
+    failure_details(
+      :transient,
+      :transient_worker_failure,
+      :retry_same_account,
+      :ready,
+      summarize_reason({:port_exit, status})
+    )
+  end
+
+  def classify_details({reason, _stacktrace}) when is_map(reason) do
+    classify_details(reason)
+  end
+
+  def classify_details(%{reason: nested_reason} = reason) when not is_nil(nested_reason) do
+    nested_reason
+    |> classify_details()
+    |> maybe_override_error_class(Map.get(reason, :error_class) || Map.get(reason, "error_class"))
+  end
+
+  def classify_details(%{error_class: error_class} = reason)
       when error_class in [:transient, :permanent, :semi_permanent] do
-    error_class
+    reason
+    |> summarize_reason()
+    |> failure_details(
+      error_class,
+      fallback_failure_class_for(error_class),
+      retry_action_for(error_class),
+      account_state_for(error_class)
+    )
   end
 
-  def classify(reason) do
+  def classify_details(reason) do
     reason
-    |> normalize_reason_text()
-    |> classify_by_text()
+    |> classify_text_failure(summarize_reason(reason))
+    |> fallback_failure_class(:transient_worker_failure)
   end
 
   @spec retry_allowed?(error_class(), integer()) :: boolean()
@@ -125,6 +254,18 @@ defmodule SymphonyElixir.ErrorClassifier do
   def to_string(:semi_permanent), do: "semi_permanent"
   def to_string(_), do: "transient"
 
+  @spec failure_class_to_string(failure_class() | nil) :: String.t()
+  def failure_class_to_string(:approval_required), do: "approval_required"
+  def failure_class_to_string(:auth_failure), do: "auth_failure"
+  def failure_class_to_string(:invalid_workspace), do: "invalid_workspace"
+  def failure_class_to_string(:process_error), do: "process_error"
+  def failure_class_to_string(:quota_exhausted), do: "quota_exhausted"
+  def failure_class_to_string(:semi_permanent_failure), do: "semi_permanent_failure"
+  def failure_class_to_string(:transient_worker_failure), do: "transient_worker_failure"
+  def failure_class_to_string(:turn_input_required), do: "turn_input_required"
+  def failure_class_to_string(:workspace_hook_failed), do: "workspace_hook_failed"
+  def failure_class_to_string(_), do: "transient_worker_failure"
+
   @spec summarize_reason(term(), integer()) :: String.t()
   def summarize_reason(reason, max_chars \\ 280) when is_integer(max_chars) and max_chars > 0 do
     reason
@@ -134,19 +275,35 @@ defmodule SymphonyElixir.ErrorClassifier do
     |> truncate(max_chars)
   end
 
-  defp classify_by_text(text) when is_binary(text) do
+  defp classify_workspace_hook_output(output) when is_binary(output) do
+    output
+    |> classify_text_failure(summarize_reason(output))
+    |> then(fn failure ->
+      failure_details(failure.error_class, :workspace_hook_failed, :stop, :ready, failure.summary)
+    end)
+  end
+
+  defp classify_text_failure(reason, summary) do
+    text = normalize_reason_text(reason)
+
     cond do
+      matches_any_pattern?(text, @auth_patterns) ->
+        failure_details(:semi_permanent, :auth_failure, :switch_account, :broken, summary)
+
+      matches_any_pattern?(text, @quota_patterns) ->
+        failure_details(:semi_permanent, :quota_exhausted, :switch_account, :cooldown, summary)
+
       matches_any_pattern?(text, @permanent_patterns) ->
-        :permanent
+        failure_details(:permanent, :process_error, :stop, :ready, summary)
 
       matches_any_pattern?(text, @semi_permanent_patterns) ->
-        :semi_permanent
+        failure_details(:semi_permanent, :semi_permanent_failure, :retry_same_account, :ready, summary)
 
       matches_any_pattern?(text, @transient_patterns) ->
-        :transient
+        failure_details(:transient, :transient_worker_failure, :retry_same_account, :ready, summary)
 
       true ->
-        :transient
+        failure_details(:transient, :transient_worker_failure, :retry_same_account, :ready, summary)
     end
   end
 
@@ -164,6 +321,51 @@ defmodule SymphonyElixir.ErrorClassifier do
 
   defp matches_any_pattern?(text, patterns) do
     Enum.any?(patterns, &String.contains?(text, &1))
+  end
+
+  defp fallback_failure_class(%FailureDetails{} = failure, _default_failure_class), do: failure
+
+  defp maybe_override_error_class(%FailureDetails{} = details, error_class) do
+    case normalize_error_class(error_class) do
+      nil ->
+        details
+
+      normalized ->
+        %{details | error_class: normalized}
+    end
+  end
+
+  defp normalize_error_class(value) when value in [:transient, :permanent, :semi_permanent], do: value
+  defp normalize_error_class("transient"), do: :transient
+  defp normalize_error_class("permanent"), do: :permanent
+  defp normalize_error_class("semi_permanent"), do: :semi_permanent
+  defp normalize_error_class(_value), do: nil
+
+  defp fallback_failure_class_for(:permanent), do: :process_error
+  defp fallback_failure_class_for(:semi_permanent), do: :semi_permanent_failure
+  defp fallback_failure_class_for(_error_class), do: :transient_worker_failure
+
+  defp retry_action_for(:permanent), do: :stop
+  defp retry_action_for(:semi_permanent), do: :retry_same_account
+  defp retry_action_for(_error_class), do: :retry_same_account
+
+  defp account_state_for(:permanent), do: :ready
+  defp account_state_for(:semi_permanent), do: :ready
+  defp account_state_for(_error_class), do: :ready
+
+  defp failure_details(summary, error_class, failure_class, retry_action, account_state)
+       when is_binary(summary) do
+    failure_details(error_class, failure_class, retry_action, account_state, summary)
+  end
+
+  defp failure_details(error_class, failure_class, retry_action, account_state, summary) do
+    %FailureDetails{
+      error_class: error_class,
+      failure_class: failure_class,
+      retry_action: retry_action,
+      account_state: account_state,
+      summary: summary
+    }
   end
 
   defp truncate(text, max_chars) when is_binary(text) and is_integer(max_chars) and max_chars > 0 do

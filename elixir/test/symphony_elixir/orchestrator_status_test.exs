@@ -1887,7 +1887,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   defp do_wait_for_orchestrator_state(pid, predicate, deadline_ms) do
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 15_000)
 
     if predicate.(state) do
       state

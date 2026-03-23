@@ -27,14 +27,80 @@ defmodule SymphonyElixir.ErrorClassifierTest do
              :permanent
   end
 
+  test "preserves retry class for workspace hook output" do
+    assert ErrorClassifier.classify({:workspace_hook_failed, "before_run", 1, "git push rejected (non-fast-forward)"}) ==
+             :semi_permanent
+
+    assert ErrorClassifier.classify({:workspace_hook_failed, "before_run", 1, "request timed out while installing deps"}) ==
+             :transient
+  end
+
+  test "classifies auth failures as semi-permanent account switch blockers" do
+    failure = ErrorClassifier.classify_details({:turn_failed, %{"message" => "Login required for this account"}})
+
+    assert failure.error_class == :semi_permanent
+    assert failure.failure_class == :auth_failure
+    assert failure.retry_action == :switch_account
+    assert failure.account_state == :broken
+  end
+
   test "classifies test and git push failures as semi_permanent" do
     assert ErrorClassifier.classify("mix test failed") == :semi_permanent
     assert ErrorClassifier.classify("git push rejected (non-fast-forward)") == :semi_permanent
     assert ErrorClassifier.classify({%{message: "tests failed in CI"}, []}) == :semi_permanent
   end
 
-  test "classifies rate limits and timeouts as transient" do
-    assert ErrorClassifier.classify("HTTP 429 rate limit exhausted") == :transient
+  test "classifies quota exhaustion separately from transient throttling" do
+    quota = ErrorClassifier.classify_details("RESOURCE_EXHAUSTED: requests per day limit reached")
+    assert quota.error_class == :semi_permanent
+    assert quota.failure_class == :quota_exhausted
+    assert quota.retry_action == :switch_account
+    assert quota.account_state == :cooldown
+
+    assert ErrorClassifier.classify("HTTP 429 rate limit exhausted") == :semi_permanent
+    assert ErrorClassifier.classify("HTTP 429 rate limit hit, retry again in 10 seconds") == :transient
+  end
+
+  test "overrides nested reason error class when explicit metadata is present" do
+    assert ErrorClassifier.classify_details(%{
+             reason: %{message: "request timed out"},
+             error_class: "semi_permanent"
+           }).error_class == :semi_permanent
+
+    assert ErrorClassifier.classify_details(%{
+             reason: %{message: "request timed out"},
+             error_class: "transient"
+           }).error_class == :transient
+
+    assert ErrorClassifier.classify_details(%{
+             reason: %{message: "request timed out"},
+             error_class: "permanent"
+           }).error_class == :permanent
+
+    assert ErrorClassifier.classify_details(%{
+             reason: %{message: "request timed out"},
+             error_class: :semi_permanent
+           }).error_class == :semi_permanent
+
+    assert ErrorClassifier.classify_details(%{
+             reason: %{message: "request timed out"},
+             error_class: "unknown"
+           }).error_class == :transient
+  end
+
+  test "derives fallback metadata from explicit error classes" do
+    semi_permanent = ErrorClassifier.classify_details(%{error_class: :semi_permanent})
+    assert semi_permanent.failure_class == :semi_permanent_failure
+    assert semi_permanent.retry_action == :retry_same_account
+    assert semi_permanent.account_state == :ready
+
+    transient = ErrorClassifier.classify_details(%{error_class: :transient})
+    assert transient.failure_class == :transient_worker_failure
+    assert transient.retry_action == :retry_same_account
+    assert transient.account_state == :ready
+  end
+
+  test "classifies timeouts and transport failures as transient" do
     assert ErrorClassifier.classify({:workspace_hook_timeout, "before_run", 5_000}) == :transient
     assert ErrorClassifier.classify({:issue_state_refresh_failed, :timeout}) == :transient
     assert ErrorClassifier.classify({:turn_timeout}) == :transient
@@ -59,6 +125,12 @@ defmodule SymphonyElixir.ErrorClassifierTest do
     assert ErrorClassifier.to_string(:permanent) == "permanent"
     assert ErrorClassifier.to_string(:semi_permanent) == "semi_permanent"
     assert ErrorClassifier.to_string(nil) == "transient"
+    assert ErrorClassifier.failure_class_to_string(:approval_required) == "approval_required"
+    assert ErrorClassifier.failure_class_to_string(:auth_failure) == "auth_failure"
+    assert ErrorClassifier.failure_class_to_string(:invalid_workspace) == "invalid_workspace"
+    assert ErrorClassifier.failure_class_to_string(:process_error) == "process_error"
+    assert ErrorClassifier.failure_class_to_string(:turn_input_required) == "turn_input_required"
+    assert ErrorClassifier.failure_class_to_string(nil) == "transient_worker_failure"
 
     assert ErrorClassifier.classify(%{error_class: :permanent}) == :permanent
     assert ErrorClassifier.classify("some completely novel failure") == :transient

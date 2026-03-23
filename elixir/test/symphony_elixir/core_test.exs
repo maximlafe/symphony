@@ -882,6 +882,283 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "quota exhaustion cools down the failing account and switches future retries to another healthy account" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-quota-account-switch"
+    ref = make_ref()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        codex_accounts: [
+          %{id: "primary", codex_home: "/tmp/codex-primary"},
+          %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+        ]
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      orchestrator_name = Module.concat(__MODULE__, :QuotaSwitchOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: ref,
+        identifier: "MT-564",
+        issue: %Issue{id: issue_id, identifier: "MT-564", state: "In Progress"},
+        trace_id: "trace-quota-switch",
+        codex_account_id: "primary",
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+        |> Map.put(:codex_accounts, %{
+          "primary" => %{
+            id: "primary",
+            explicit?: true,
+            healthy: true,
+            probe_healthy: true,
+            probe_health_reason: nil,
+            health_reason: nil,
+            auth_mode: "chatgpt",
+            requires_openai_auth: false,
+            missing_windows_mins: [],
+            insufficient_windows_mins: [],
+            rate_limits: %{"limitId" => "codex"}
+          },
+          "secondary" => %{
+            id: "secondary",
+            explicit?: true,
+            healthy: true,
+            probe_healthy: true,
+            probe_health_reason: nil,
+            health_reason: nil,
+            auth_mode: "chatgpt",
+            requires_openai_auth: false,
+            missing_windows_mins: [],
+            insufficient_windows_mins: [],
+            rate_limits: %{"limitId" => "codex"}
+          }
+        })
+        |> Map.put(:active_codex_account_id, "primary")
+      end)
+
+      send(
+        pid,
+        {:DOWN, ref, :process, self(), {:agent_run_failed, "RESOURCE_EXHAUSTED: requests per day limit reached for this account"}}
+      )
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          primary = Map.get(state.codex_accounts, "primary")
+
+          match?(%{attempt: 1, error_class: "semi_permanent"}, state.retry_attempts[issue_id]) and
+            state.active_codex_account_id == "secondary" and
+            is_map(primary) and primary.runtime_state == :cooldown and primary.healthy == false
+        end)
+
+      assert %{attempt: 1, error_class: "semi_permanent"} = state.retry_attempts[issue_id]
+      assert state.active_codex_account_id == "secondary"
+
+      assert %{
+               runtime_state: :cooldown,
+               healthy: false,
+               runtime_health_reason: runtime_health_reason,
+               runtime_cooldown_until: %DateTime{}
+             } = state.codex_accounts["primary"]
+
+      assert runtime_health_reason =~ "quota_exhausted"
+      refute_received {:memory_tracker_comment, ^issue_id, _body}
+      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+    end
+  end
+
+  test "quota exhaustion on the last account stays queued until an account becomes healthy again" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-quota-single-account"
+    ref = make_ref()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        codex_accounts: [%{id: "primary", codex_home: "/tmp/codex-primary"}]
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      orchestrator_name = Module.concat(__MODULE__, :QuotaSingleAccountOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: ref,
+        identifier: "MT-564A",
+        issue: %Issue{id: issue_id, identifier: "MT-564A", state: "In Progress"},
+        trace_id: "trace-quota-single-account",
+        codex_account_id: "primary",
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+        |> Map.put(:codex_accounts, %{
+          "primary" => %{
+            id: "primary",
+            explicit?: true,
+            healthy: true,
+            probe_healthy: true,
+            probe_health_reason: nil,
+            health_reason: nil,
+            auth_mode: "chatgpt",
+            requires_openai_auth: false,
+            missing_windows_mins: [],
+            insufficient_windows_mins: [],
+            rate_limits: %{"limitId" => "codex"}
+          }
+        })
+        |> Map.put(:active_codex_account_id, "primary")
+      end)
+
+      send(
+        pid,
+        {:DOWN, ref, :process, self(), {:agent_run_failed, "RESOURCE_EXHAUSTED: requests per day limit reached for this account"}}
+      )
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          primary = Map.get(state.codex_accounts, "primary")
+          retry = Map.get(state.retry_attempts, issue_id)
+
+          match?(%{attempt: 1, error_class: "semi_permanent"}, retry) and
+            MapSet.member?(state.claimed, issue_id) and
+            state.active_codex_account_id == nil and
+            is_map(primary) and primary.runtime_state == :cooldown and primary.healthy == false
+        end)
+
+      assert %{attempt: 1, error_class: "semi_permanent"} = state.retry_attempts[issue_id]
+      assert MapSet.member?(state.claimed, issue_id)
+      assert state.active_codex_account_id == nil
+      refute_received {:memory_tracker_comment, ^issue_id, _body}
+      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+    end
+  end
+
+  test "auth failure blocks the issue when it leaves no healthy codex accounts" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-auth-account-blocked"
+    ref = make_ref()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        codex_accounts: [%{id: "primary", codex_home: "/tmp/codex-primary"}]
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      orchestrator_name = Module.concat(__MODULE__, :AuthBlockedOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: ref,
+        identifier: "MT-565",
+        issue: %Issue{id: issue_id, identifier: "MT-565", state: "In Progress"},
+        trace_id: "trace-auth-blocked",
+        codex_account_id: "primary",
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+        |> Map.put(:codex_accounts, %{
+          "primary" => %{
+            id: "primary",
+            explicit?: true,
+            healthy: true,
+            probe_healthy: true,
+            probe_health_reason: nil,
+            health_reason: nil,
+            auth_mode: "chatgpt",
+            requires_openai_auth: false,
+            missing_windows_mins: [],
+            insufficient_windows_mins: [],
+            rate_limits: %{"limitId" => "codex"}
+          }
+        })
+        |> Map.put(:active_codex_account_id, "primary")
+      end)
+
+      send(pid, {:DOWN, ref, :process, self(), {:agent_run_failed, "invalid api key for this account"}})
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "error_class: `semi_permanent`"
+      assert blocker_body =~ "failure_class: `auth_failure`"
+      assert blocker_body =~ "codex_account_id: `primary`"
+      assert blocker_body =~ "retry_action: `switch_account`"
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          primary = Map.get(state.codex_accounts, "primary")
+
+          not MapSet.member?(state.claimed, issue_id) and
+            not Map.has_key?(state.retry_attempts, issue_id) and
+            state.active_codex_account_id == nil and
+            is_map(primary) and primary.runtime_state == :broken and primary.healthy == false
+        end)
+
+      assert %{runtime_state: :broken, healthy: false} = state.codex_accounts["primary"]
+      assert state.active_codex_account_id == nil
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+    end
+  end
+
   test "stale retry timer messages do not consume newer retry entries" do
     issue_id = "issue-stale-retry"
     orchestrator_name = Module.concat(__MODULE__, :StaleRetryOrchestrator)
@@ -1780,7 +2057,7 @@ defmodule SymphonyElixir.CoreTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      trace_file="#{trace_file}"
       printf 'RUN\\n' >> "$trace_file"
       count=0
 
@@ -1809,9 +2086,6 @@ defmodule SymphonyElixir.CoreTest do
       """)
 
       File.chmod!(codex_binary, 0o755)
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
-
-      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1845,11 +2119,10 @@ defmodule SymphonyElixir.CoreTest do
 
       assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
 
-      trace = File.read!(trace_file)
-      assert length(String.split(trace, "RUN", trim: true)) == 1
-      assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 2
+      lines = File.read!(trace_file) |> String.split("\n", trim: true)
+      assert length(Enum.filter(lines, &(&1 == "RUN"))) == 1
+      assert length(Enum.filter(lines, &String.contains?(&1, "\"method\":\"turn/start\""))) == 2
     after
-      System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
     end
   end
@@ -1866,22 +2139,11 @@ defmodule SymphonyElixir.CoreTest do
       workspace = Path.join(workspace_root, "MT-77")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-args.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODex_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODex_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-args.trace}"
+      trace_file="#{trace_file}"
       count=0
       printf 'ARGV:%s\\n' \"$*\" >> \"$trace_file\"
       printf 'CWD:%s\\n' \"$PWD\" >> \"$trace_file\"
@@ -2012,22 +2274,11 @@ defmodule SymphonyElixir.CoreTest do
       workspace = Path.join(workspace_root, "MT-88")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-custom-args.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODex_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODex_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-custom-args.trace}"
+      trace_file="#{trace_file}"
       count=0
       printf 'ARGV:%s\\n' \"$*\" >> \"$trace_file\"
 
@@ -2097,22 +2348,11 @@ defmodule SymphonyElixir.CoreTest do
       workspace = Path.join(workspace_root, "MT-99")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-policy-overrides.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODex_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODex_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-policy-overrides.trace}"
+      trace_file="#{trace_file}"
       count=0
 
       while IFS= read -r line; do

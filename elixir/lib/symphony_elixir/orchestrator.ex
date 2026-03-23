@@ -693,13 +693,24 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, trace_id \\ nil, retry_delay_type \\ nil) do
-    case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
+  defp dispatch_issue(
+         %State{} = state,
+         issue,
+         attempt \\ nil,
+         trace_id \\ nil,
+         retry_delay_type \\ nil
+       ) do
+    case revalidate_issue_for_dispatch(
+           issue,
+           &Tracker.fetch_issue_states_by_ids/1,
+           terminal_state_set()
+         ) do
       {:ok, %Issue{} = refreshed_issue} ->
         do_dispatch_issue(state, refreshed_issue, attempt, trace_id, retry_delay_type)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
+
         state
 
       {:skip, %Issue{} = refreshed_issue} ->
@@ -709,6 +720,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.warning("Skipping dispatch; issue refresh failed for #{issue_context(issue)}: #{inspect(reason)}")
+
         state
     end
   end
@@ -800,7 +812,8 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
-  defp pop_retry_attempt_state(%State{} = state, issue_id, retry_token) when is_reference(retry_token) do
+  defp pop_retry_attempt_state(%State{} = state, issue_id, retry_token)
+       when is_reference(retry_token) do
     case Map.get(state.retry_attempts, issue_id) do
       %{attempt: attempt, retry_token: ^retry_token} = retry_entry ->
         metadata = %{
@@ -852,9 +865,12 @@ defmodule SymphonyElixir.Orchestrator do
 
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
-        with_log_metadata(issue_log_metadata(issue_id, issue.identifier, nil, metadata[:trace_id]), fn ->
-          Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; releasing claim")
-        end)
+        with_log_metadata(
+          issue_log_metadata(issue_id, issue.identifier, nil, metadata[:trace_id]),
+          fn ->
+            Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; releasing claim")
+          end
+        )
 
         {:noreply, release_issue_claim(state, issue_id)}
 
@@ -862,18 +878,24 @@ defmodule SymphonyElixir.Orchestrator do
         handle_active_retry(state, issue, attempt, metadata)
 
       true ->
-        with_log_metadata(issue_log_metadata(issue_id, issue.identifier, nil, metadata[:trace_id]), fn ->
-          Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
-        end)
+        with_log_metadata(
+          issue_log_metadata(issue_id, issue.identifier, nil, metadata[:trace_id]),
+          fn ->
+            Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
+          end
+        )
 
         {:noreply, release_issue_claim(state, issue_id)}
     end
   end
 
   defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, metadata) do
-    with_log_metadata(issue_log_metadata(issue_id, metadata[:identifier] || issue_id, nil, metadata[:trace_id]), fn ->
-      Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
-    end)
+    with_log_metadata(
+      issue_log_metadata(issue_id, metadata[:identifier] || issue_id, nil, metadata[:trace_id]),
+      fn ->
+        Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
+      end
+    )
 
     {:noreply, release_issue_claim(state, issue_id)}
   end
@@ -921,20 +943,26 @@ defmodule SymphonyElixir.Orchestrator do
         _ -> 1
       end
 
-    error_class = ErrorClassifier.classify(reason)
-    error_class_label = ErrorClassifier.to_string(error_class)
+    failure = ErrorClassifier.classify_details(reason)
+    error_class_label = ErrorClassifier.to_string(failure.error_class)
+    failure_class_label = ErrorClassifier.failure_class_to_string(failure.failure_class)
 
-    Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)} error_class=#{error_class_label} next_retry_attempt=#{failure_attempt}")
+    Logger.warning(
+      "Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)} error_class=#{error_class_label} failure_class=#{failure_class_label} next_retry_attempt=#{failure_attempt}"
+    )
 
     handle_worker_failure(
       state,
       Map.get(running_entry, :issue),
-      issue_id,
-      identifier,
-      trace_id,
       reason,
-      error_class,
-      failure_attempt
+      failure,
+      failure_attempt,
+      %{
+        issue_id: issue_id,
+        identifier: identifier,
+        trace_id: trace_id,
+        codex_account_id: Map.get(running_entry, :codex_account_id)
+      }
     )
   end
 
@@ -1129,12 +1157,14 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.warning("Failed to compute workspace disk usage source=#{source}: #{inspect(reason)}")
+
         state
     end
   end
 
   defp usage_exceeds_threshold?(usage_bytes, warning_threshold_bytes)
-       when is_integer(usage_bytes) and is_integer(warning_threshold_bytes) and warning_threshold_bytes > 0 do
+       when is_integer(usage_bytes) and is_integer(warning_threshold_bytes) and
+              warning_threshold_bytes > 0 do
     usage_bytes > warning_threshold_bytes
   end
 
@@ -1200,86 +1230,192 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do
-    if retry_candidate_issue?(issue, terminal_state_set()) and
-         dispatch_slots_available?(issue, state) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:trace_id], metadata[:delay_type])}
-    else
-      with_log_metadata(issue_log_metadata(issue.id, issue.identifier, nil, metadata[:trace_id]), fn ->
-        Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
-      end)
+    cond do
+      not active_codex_account_available?(state) ->
+        with_log_metadata(
+          issue_log_metadata(issue.id, issue.identifier, nil, metadata[:trace_id]),
+          fn ->
+            Logger.debug("No healthy codex account for retrying #{issue_context(issue)}; keeping retry queued")
+          end
+        )
 
-      {:noreply,
-       schedule_issue_retry(
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue.id,
+           attempt,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "no healthy codex account available",
+             error_class: metadata[:error_class] || ErrorClassifier.to_string(:transient),
+             delay_type: nil
+           })
+         )}
+
+      retry_candidate_issue?(issue, terminal_state_set()) and
+          dispatch_slots_available?(issue, state) ->
+        {:noreply, dispatch_issue(state, issue, attempt, metadata[:trace_id], metadata[:delay_type])}
+
+      true ->
+        with_log_metadata(
+          issue_log_metadata(issue.id, issue.identifier, nil, metadata[:trace_id]),
+          fn ->
+            Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+          end
+        )
+
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue.id,
+           next_failure_retry_attempt(attempt, metadata[:delay_type]),
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "no available orchestrator slots",
+             error_class: ErrorClassifier.to_string(:transient),
+             delay_type: nil
+           })
+         )}
+    end
+  end
+
+  defp handle_worker_failure(
          state,
-         issue.id,
-         next_failure_retry_attempt(attempt, metadata[:delay_type]),
-         Map.merge(metadata, %{
-           identifier: issue.identifier,
-           error: "no available orchestrator slots",
-           error_class: ErrorClassifier.to_string(:transient),
-           delay_type: nil
-         })
-       )}
+         issue,
+         reason,
+         failure,
+         failure_attempt,
+         context
+       ) do
+    issue_id = context.issue_id
+    identifier = context.identifier
+    trace_id = context.trace_id
+    codex_account_id = context.codex_account_id
+
+    state = maybe_apply_account_runtime_failure(state, codex_account_id, failure, failure_attempt)
+    error_class_label = ErrorClassifier.to_string(failure.error_class)
+    failure_class_label = ErrorClassifier.failure_class_to_string(failure.failure_class)
+
+    cond do
+      failure.retry_action == :switch_account and
+        failure.account_state == :cooldown and
+          not active_codex_account_available?(state) ->
+        schedule_issue_retry(state, issue_id, failure_attempt, %{
+          identifier: identifier,
+          trace_id: trace_id,
+          error: "agent exited: #{failure.summary}",
+          error_class: error_class_label
+        })
+
+      failure.retry_action == :switch_account and not active_codex_account_available?(state) ->
+        escalate_issue_for_manual_intervention(
+          state,
+          issue,
+          reason,
+          failure_attempt,
+          Map.merge(context, %{
+            error_class: error_class_label,
+            failure_class: failure_class_label,
+            retry_action: failure.retry_action
+          })
+        )
+
+      ErrorClassifier.retry_allowed?(failure.error_class, failure_attempt) ->
+        schedule_issue_retry(state, issue_id, failure_attempt, %{
+          identifier: identifier,
+          trace_id: trace_id,
+          error: "agent exited: #{failure.summary}",
+          error_class: error_class_label
+        })
+
+      true ->
+        escalate_issue_for_manual_intervention(
+          state,
+          issue,
+          reason,
+          failure_attempt,
+          Map.merge(context, %{
+            error_class: error_class_label,
+            failure_class: failure_class_label,
+            retry_action: failure.retry_action
+          })
+        )
     end
   end
 
-  defp handle_worker_failure(state, issue, issue_id, identifier, trace_id, reason, error_class, failure_attempt) do
-    error_class_label = ErrorClassifier.to_string(error_class)
+  defp maybe_apply_account_runtime_failure(
+         %State{} = state,
+         codex_account_id,
+         %{retry_action: :switch_account, account_state: account_state} = failure,
+         failure_attempt
+       )
+       when is_binary(codex_account_id) and account_state in [:cooldown, :broken] do
+    cooldown_ms =
+      if account_state == :cooldown do
+        failure_retry_delay(max(failure_attempt, 1))
+      end
 
-    if ErrorClassifier.retry_allowed?(error_class, failure_attempt) do
-      schedule_issue_retry(state, issue_id, failure_attempt, %{
-        identifier: identifier,
-        trace_id: trace_id,
-        error: "agent exited: #{ErrorClassifier.summarize_reason(reason)}",
-        error_class: error_class_label
-      })
-    else
-      escalate_issue_for_manual_intervention(
-        state,
-        issue,
-        issue_id,
-        identifier,
-        trace_id,
-        reason,
-        error_class_label,
-        failure_attempt
-      )
-    end
+    update_codex_account_runtime_state(
+      state,
+      codex_account_id,
+      account_state,
+      "#{ErrorClassifier.failure_class_to_string(failure.failure_class)}: #{failure.summary}",
+      cooldown_ms
+    )
   end
+
+  defp maybe_apply_account_runtime_failure(state, _codex_account_id, _failure, _failure_attempt),
+    do: state
 
   defp escalate_issue_for_manual_intervention(
          state,
          %Issue{id: tracker_issue_id},
-         issue_id,
-         identifier,
-         trace_id,
          reason,
-         error_class,
-         failure_attempt
+         failure_attempt,
+         context
        )
        when is_binary(tracker_issue_id) do
-    blocker_comment = blocker_comment_body(identifier, trace_id, reason, error_class, failure_attempt)
+    blocker_comment =
+      blocker_comment_body(
+        context.identifier,
+        context.trace_id,
+        reason,
+        context.error_class,
+        context.failure_class,
+        failure_attempt,
+        context.codex_account_id,
+        context.retry_action
+      )
+
     intervention_state = manual_intervention_state()
 
     with :ok <- Tracker.create_comment(tracker_issue_id, blocker_comment),
          :ok <- Tracker.update_issue_state(tracker_issue_id, intervention_state) do
-      with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
-        Logger.warning("Escalated issue_id=#{issue_id} issue_identifier=#{identifier} to #{intervention_state} after #{error_class} failure (attempt #{failure_attempt})")
-      end)
+      with_log_metadata(
+        issue_log_metadata(context.issue_id, context.identifier, nil, context.trace_id),
+        fn ->
+          Logger.warning(
+            "Escalated issue_id=#{context.issue_id} issue_identifier=#{context.identifier} to #{intervention_state} after #{context.error_class}/#{context.failure_class} failure (attempt #{failure_attempt})"
+          )
+        end
+      )
 
       state
-      |> complete_issue(issue_id)
-      |> release_issue_claim(issue_id)
+      |> complete_issue(context.issue_id)
+      |> release_issue_claim(context.issue_id)
     else
       {:error, tracker_reason} ->
-        with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
-          Logger.error("Failed to escalate issue_id=#{issue_id} issue_identifier=#{identifier} to #{intervention_state}: #{inspect(tracker_reason)}")
-        end)
+        with_log_metadata(
+          issue_log_metadata(context.issue_id, context.identifier, nil, context.trace_id),
+          fn ->
+            Logger.error("Failed to escalate issue_id=#{context.issue_id} issue_identifier=#{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}")
+          end
+        )
 
-        schedule_issue_retry(state, issue_id, failure_attempt, %{
-          identifier: identifier,
-          trace_id: trace_id,
-          error: "failed to escalate #{identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
+        schedule_issue_retry(state, context.issue_id, failure_attempt, %{
+          identifier: context.identifier,
+          trace_id: context.trace_id,
+          error: "failed to escalate #{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
           error_class: ErrorClassifier.to_string(:transient)
         })
     end
@@ -1288,26 +1424,35 @@ defmodule SymphonyElixir.Orchestrator do
   defp escalate_issue_for_manual_intervention(
          state,
          issue,
-         issue_id,
-         identifier,
-         trace_id,
          _reason,
-         _error_class,
-         failure_attempt
+         failure_attempt,
+         context
        ) do
-    with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
-      Logger.error("Failed to escalate issue_id=#{issue_id} issue_identifier=#{identifier} to #{manual_intervention_state()}: missing issue id in #{inspect(issue)}")
-    end)
+    with_log_metadata(
+      issue_log_metadata(context.issue_id, context.identifier, nil, context.trace_id),
+      fn ->
+        Logger.error("Failed to escalate issue_id=#{context.issue_id} issue_identifier=#{context.identifier} to #{manual_intervention_state()}: missing issue id in #{inspect(issue)}")
+      end
+    )
 
-    schedule_issue_retry(state, issue_id, failure_attempt, %{
-      identifier: identifier,
-      trace_id: trace_id,
-      error: "failed to escalate #{identifier} to #{manual_intervention_state()}: missing issue id",
+    schedule_issue_retry(state, context.issue_id, failure_attempt, %{
+      identifier: context.identifier,
+      trace_id: context.trace_id,
+      error: "failed to escalate #{context.identifier} to #{manual_intervention_state()}: missing issue id",
       error_class: ErrorClassifier.to_string(:transient)
     })
   end
 
-  defp blocker_comment_body(identifier, trace_id, reason, error_class, failure_attempt) do
+  defp blocker_comment_body(
+         identifier,
+         trace_id,
+         reason,
+         error_class,
+         failure_class,
+         failure_attempt,
+         codex_account_id,
+         retry_action
+       ) do
     trace_id_line =
       if is_binary(trace_id) and trace_id != "" do
         "- trace_id: `#{trace_id}`\n"
@@ -1315,13 +1460,30 @@ defmodule SymphonyElixir.Orchestrator do
         ""
       end
 
+    account_line =
+      if is_binary(codex_account_id) and codex_account_id != "" do
+        "- codex_account_id: `#{codex_account_id}`\n"
+      else
+        ""
+      end
+
+    retry_action_line =
+      case retry_action do
+        action when action in [:retry_same_account, :switch_account, :stop] ->
+          "- retry_action: `#{action}`\n"
+
+        _ ->
+          ""
+      end
+
     """
     ### Blocker (auto-classified)
 
     - error_class: `#{error_class}`
+    - failure_class: `#{failure_class}`
     - failed_attempt: `#{failure_attempt}`
     - issue: `#{identifier}`
-    #{trace_id_line}- reason: `#{ErrorClassifier.summarize_reason(reason)}`
+    #{trace_id_line}#{account_line}#{retry_action_line}- reason: `#{ErrorClassifier.summarize_reason(reason)}`
     """
   end
 
@@ -1335,14 +1497,23 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retry_delay(attempt, %{delay_type: :continuation})
        when is_integer(attempt) and attempt > 0,
-       do: min(@continuation_base_delay_ms * (1 <<< min(attempt - 1, 6)), @continuation_max_delay_ms)
+       do:
+         min(
+           @continuation_base_delay_ms * (1 <<< min(attempt - 1, 6)),
+           @continuation_max_delay_ms
+         )
 
-  defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata),
-    do: failure_retry_delay(attempt)
+  defp retry_delay(attempt, metadata)
+       when is_integer(attempt) and attempt > 0 and is_map(metadata),
+       do: failure_retry_delay(attempt)
 
   defp failure_retry_delay(attempt) do
     max_delay_power = min(attempt - 1, 10)
-    min(@failure_retry_base_ms * (1 <<< max_delay_power), Config.settings!().agent.max_retry_backoff_ms)
+
+    min(
+      @failure_retry_base_ms * (1 <<< max_delay_power),
+      Config.settings!().agent.max_retry_backoff_ms
+    )
   end
 
   defp normalize_retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
@@ -1631,7 +1802,8 @@ defmodule SymphonyElixir.Orchestrator do
     Ecto.UUID.generate()
   end
 
-  defp dispatch_trace_id(_issue, trace_id) when is_binary(trace_id) and trace_id != "", do: trace_id
+  defp dispatch_trace_id(_issue, trace_id) when is_binary(trace_id) and trace_id != "",
+    do: trace_id
 
   defp dispatch_trace_id(issue, _trace_id) do
     case Map.get(issue, :trace_id) do
@@ -1671,7 +1843,9 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp maybe_put_logger_metadata(metadata, _key, value) when value in [nil, "", "n/a"], do: metadata
+  defp maybe_put_logger_metadata(metadata, _key, value) when value in [nil, "", "n/a"],
+    do: metadata
+
   defp maybe_put_logger_metadata(metadata, key, value), do: Keyword.put(metadata, key, value)
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
@@ -1749,8 +1923,19 @@ defmodule SymphonyElixir.Orchestrator do
     codex_accounts =
       probed_accounts
       |> Enum.map(fn account_status ->
-        existing = Map.get(state.codex_accounts, account_status.id, %{})
-        {account_status.id, Map.merge(existing, account_status)}
+        existing =
+          Map.get(
+            state.codex_accounts,
+            account_status.id,
+            default_codex_account_status(account_status.id)
+          )
+
+        incoming =
+          account_status
+          |> Map.put(:probe_healthy, Map.get(account_status, :healthy, false))
+          |> Map.put(:probe_health_reason, Map.get(account_status, :health_reason))
+
+        {account_status.id, merge_codex_account_status(existing, incoming, :probe)}
       end)
       |> Map.new()
 
@@ -1781,17 +1966,29 @@ defmodule SymphonyElixir.Orchestrator do
   defp apply_codex_rate_limits(%State{} = state, update, account_id) when is_map(update) do
     case extract_rate_limits(update) do
       %{} = rate_limits when is_binary(account_id) ->
-        existing = Map.get(state.codex_accounts, account_id, %{id: account_id})
-        health = Accounts.health(rate_limits, Config.codex_monitored_windows_mins(), Config.codex_minimum_remaining_percent())
+        existing =
+          Map.get(state.codex_accounts, account_id, default_codex_account_status(account_id))
+
+        health =
+          Accounts.health(
+            rate_limits,
+            Config.codex_monitored_windows_mins(),
+            Config.codex_minimum_remaining_percent()
+          )
 
         updated_account =
-          existing
-          |> Map.put(:rate_limits, rate_limits)
-          |> Map.put(:checked_at, DateTime.utc_now())
-          |> Map.put(:missing_windows_mins, health.missing_windows_mins)
-          |> Map.put(:insufficient_windows_mins, health.insufficient_windows_mins)
-          |> Map.put(:health_reason, health.reason)
-          |> Map.put(:healthy, existing_logged_in?(existing) and health.healthy?)
+          merge_codex_account_status(
+            existing,
+            %{
+              rate_limits: rate_limits,
+              checked_at: DateTime.utc_now(),
+              missing_windows_mins: health.missing_windows_mins,
+              insufficient_windows_mins: health.insufficient_windows_mins,
+              probe_health_reason: health.reason,
+              probe_healthy: existing_logged_in?(existing) and health.healthy?
+            },
+            :live_rate_limits
+          )
 
         state
         |> Map.put(:codex_accounts, Map.put(state.codex_accounts, account_id, updated_account))
@@ -1958,16 +2155,194 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp find_rate_limits_snapshot(_payload), do: nil
 
+  defp update_codex_account_runtime_state(
+         %State{} = state,
+         codex_account_id,
+         runtime_state,
+         runtime_health_reason,
+         cooldown_ms
+       )
+       when is_binary(codex_account_id) do
+    existing =
+      Map.get(
+        state.codex_accounts,
+        codex_account_id,
+        default_codex_account_status(codex_account_id)
+      )
+
+    now = DateTime.utc_now()
+
+    updated_account =
+      merge_codex_account_status(
+        existing,
+        %{
+          runtime_state: runtime_state,
+          runtime_health_reason: runtime_health_reason,
+          runtime_marked_at: now,
+          runtime_cooldown_until: runtime_cooldown_until(runtime_state, now, cooldown_ms)
+        },
+        :runtime_override,
+        now
+      )
+
+    state
+    |> Map.put(:codex_accounts, Map.put(state.codex_accounts, codex_account_id, updated_account))
+    |> reselect_active_codex_account()
+  end
+
+  defp runtime_cooldown_until(:cooldown, %DateTime{} = now, cooldown_ms)
+       when is_integer(cooldown_ms) and cooldown_ms > 0 do
+    DateTime.add(now, cooldown_ms, :millisecond)
+  end
+
+  defp runtime_cooldown_until(_runtime_state, _now, _cooldown_ms), do: nil
+
+  defp merge_codex_account_status(existing, attrs, source, now \\ DateTime.utc_now())
+
+  defp merge_codex_account_status(existing, attrs, source, now)
+       when is_map(existing) and is_map(attrs) do
+    probe_healthy =
+      Map.get(
+        attrs,
+        :probe_healthy,
+        Map.get(existing, :probe_healthy, Map.get(existing, :healthy, false))
+      )
+
+    probe_health_reason =
+      Map.get(
+        attrs,
+        :probe_health_reason,
+        Map.get(existing, :probe_health_reason, Map.get(existing, :health_reason))
+      )
+
+    account =
+      existing
+      |> Map.merge(attrs)
+      |> Map.put(:probe_healthy, probe_healthy)
+      |> Map.put(:probe_health_reason, probe_health_reason)
+      |> reconcile_account_runtime_state(source, now)
+
+    runtime_ready? = runtime_account_ready?(account, now)
+
+    account
+    |> Map.put(:healthy, probe_healthy and runtime_ready?)
+    |> Map.put(:health_reason, final_account_health_reason(account, runtime_ready?))
+  end
+
+  defp merge_codex_account_status(existing, _attrs, _source, _now), do: existing
+
+  defp reconcile_account_runtime_state(account, source, now) when is_map(account) do
+    account = clear_expired_runtime_state(account, now)
+
+    case {source, Map.get(account, :runtime_state)} do
+      {:probe, :broken} ->
+        if existing_logged_in?(account) do
+          clear_account_runtime_state(account)
+        else
+          account
+        end
+
+      {source_name, :cooldown} when source_name in [:probe, :live_rate_limits] ->
+        if Map.get(account, :probe_healthy) == true do
+          clear_account_runtime_state(account)
+        else
+          account
+        end
+
+      _ ->
+        account
+    end
+  end
+
+  defp clear_expired_runtime_state(account, now) when is_map(account) do
+    case {Map.get(account, :runtime_state), Map.get(account, :runtime_cooldown_until)} do
+      {:cooldown, %DateTime{} = until_at} ->
+        if DateTime.compare(until_at, now) == :gt do
+          account
+        else
+          clear_account_runtime_state(account)
+        end
+
+      _ ->
+        account
+    end
+  end
+
+  defp clear_account_runtime_state(account) when is_map(account) do
+    account
+    |> Map.put(:runtime_state, nil)
+    |> Map.put(:runtime_health_reason, nil)
+    |> Map.put(:runtime_marked_at, nil)
+    |> Map.put(:runtime_cooldown_until, nil)
+  end
+
+  defp runtime_account_ready?(account, now) when is_map(account) do
+    case Map.get(account, :runtime_state) do
+      :broken ->
+        false
+
+      :cooldown ->
+        case Map.get(account, :runtime_cooldown_until) do
+          %DateTime{} = until_at -> DateTime.compare(until_at, now) != :gt
+          _ -> false
+        end
+
+      _ ->
+        true
+    end
+  end
+
+  defp final_account_health_reason(account, true) when is_map(account) do
+    Map.get(account, :probe_health_reason)
+  end
+
+  defp final_account_health_reason(account, false) when is_map(account) do
+    Map.get(account, :runtime_health_reason) || Map.get(account, :probe_health_reason)
+  end
+
+  defp default_codex_account_status(account_id) when is_binary(account_id) do
+    account_definition =
+      Enum.find(Config.codex_accounts(), fn account ->
+        account.id == account_id
+      end)
+
+    %{
+      id: account_id,
+      explicit?: if(is_map(account_definition), do: account_definition.explicit?, else: true),
+      healthy: false,
+      probe_healthy: false,
+      probe_health_reason: "not yet probed",
+      health_reason: "not yet probed",
+      auth_mode: "unknown",
+      email: nil,
+      plan_type: nil,
+      requires_openai_auth: false,
+      rate_limits: nil,
+      account: nil,
+      runtime_state: nil,
+      runtime_health_reason: nil,
+      runtime_marked_at: nil,
+      runtime_cooldown_until: nil
+    }
+  end
+
+  defp default_codex_account_status(_account_id), do: default_codex_account_status("unknown")
+
   defp existing_logged_in?(existing) when is_map(existing) do
     Map.get(existing, :requires_openai_auth) != true
   end
 
   defp existing_logged_in?(_existing), do: true
 
-  defp active_codex_account_available?(%State{active_codex_account_id: account_id}) when is_binary(account_id), do: true
+  defp active_codex_account_available?(%State{active_codex_account_id: account_id})
+       when is_binary(account_id), do: true
+
   defp active_codex_account_available?(_state), do: false
 
-  defp active_codex_account(%State{active_codex_account_id: account_id, codex_accounts: codex_accounts})
+  defp active_codex_account(%State{
+         active_codex_account_id: account_id,
+         codex_accounts: codex_accounts
+       })
        when is_binary(account_id) do
     Map.get(codex_accounts, account_id)
   end
@@ -1984,18 +2359,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp snapshot_codex_accounts(%State{} = state) do
     Config.codex_accounts()
     |> Enum.map(fn account ->
-      Map.get(state.codex_accounts, account.id, %{
-        id: account.id,
-        explicit?: account.explicit?,
-        healthy: false,
-        health_reason: "not yet probed",
-        auth_mode: "unknown",
-        email: nil,
-        plan_type: nil,
-        requires_openai_auth: false,
-        rate_limits: nil,
-        account: nil
-      })
+      Map.get(state.codex_accounts, account.id, default_codex_account_status(account.id))
     end)
   end
 
