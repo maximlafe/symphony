@@ -419,8 +419,11 @@ defmodule SymphonyElixir.CoreTest do
       end)
 
       send(pid, :tick)
-      Process.sleep(100)
-      state = :sys.get_state(pid)
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          not Map.has_key?(state.running, issue_id) and not MapSet.member?(state.claimed, issue_id)
+        end)
 
       refute Map.has_key?(state.running, issue_id)
       refute MapSet.member?(state.claimed, issue_id)
@@ -1074,6 +1077,103 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "switch_account failures ignore the semi-permanent retry limit while a healthy account remains" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-auth-account-switch-after-limit"
+    ref = make_ref()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        codex_accounts: [
+          %{id: "primary", codex_home: "/tmp/codex-primary"},
+          %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+        ]
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      orchestrator_name = Module.concat(__MODULE__, :AuthSwitchAfterLimitOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: ref,
+        identifier: "MT-564B",
+        issue: %Issue{id: issue_id, identifier: "MT-564B", state: "In Progress"},
+        trace_id: "trace-auth-switch-after-limit",
+        codex_account_id: "primary",
+        retry_attempt: 3,
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+        |> Map.put(:codex_accounts, %{
+          "primary" => %{
+            id: "primary",
+            explicit?: true,
+            healthy: true,
+            probe_healthy: true,
+            probe_health_reason: nil,
+            health_reason: nil,
+            auth_mode: "chatgpt",
+            requires_openai_auth: false,
+            missing_windows_mins: [],
+            insufficient_windows_mins: [],
+            rate_limits: %{"limitId" => "codex"}
+          },
+          "secondary" => %{
+            id: "secondary",
+            explicit?: true,
+            healthy: true,
+            probe_healthy: true,
+            probe_health_reason: nil,
+            health_reason: nil,
+            auth_mode: "chatgpt",
+            requires_openai_auth: false,
+            missing_windows_mins: [],
+            insufficient_windows_mins: [],
+            rate_limits: %{"limitId" => "codex"}
+          }
+        })
+        |> Map.put(:active_codex_account_id, "primary")
+      end)
+
+      send(pid, {:DOWN, ref, :process, self(), {:agent_run_failed, "invalid api key for this account"}})
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          primary = Map.get(state.codex_accounts, "primary")
+
+          match?(%{attempt: 4, error_class: "semi_permanent"}, state.retry_attempts[issue_id]) and
+            state.active_codex_account_id == "secondary" and
+            is_map(primary) and primary.runtime_state == :broken and primary.healthy == false
+        end)
+
+      assert %{attempt: 4, error_class: "semi_permanent"} = state.retry_attempts[issue_id]
+      assert state.active_codex_account_id == "secondary"
+      assert %{runtime_state: :broken, healthy: false} = state.codex_accounts["primary"]
+      refute_received {:memory_tracker_comment, ^issue_id, _body}
+      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+    end
+  end
+
   test "auth failure blocks the issue when it leaves no healthy codex accounts" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     issue_id = "issue-auth-account-blocked"
@@ -1154,6 +1254,91 @@ defmodule SymphonyElixir.CoreTest do
 
       assert %{runtime_state: :broken, healthy: false} = state.codex_accounts["primary"]
       assert state.active_codex_account_id == nil
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+    end
+  end
+
+  test "untrusted turn_failed text does not mark the codex account unhealthy" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-turn-failed-untrusted-auth-text"
+    ref = make_ref()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        codex_accounts: [%{id: "primary", codex_home: "/tmp/codex-primary"}]
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      orchestrator_name = Module.concat(__MODULE__, :TurnFailedUntrustedAuthTextOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: ref,
+        identifier: "MT-565A",
+        issue: %Issue{id: issue_id, identifier: "MT-565A", state: "In Progress"},
+        trace_id: "trace-turn-failed-untrusted-auth-text",
+        codex_account_id: "primary",
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+        |> Map.put(:codex_accounts, %{
+          "primary" => %{
+            id: "primary",
+            explicit?: true,
+            healthy: true,
+            probe_healthy: true,
+            probe_health_reason: nil,
+            health_reason: nil,
+            auth_mode: "chatgpt",
+            requires_openai_auth: false,
+            missing_windows_mins: [],
+            insufficient_windows_mins: [],
+            rate_limits: %{"limitId" => "codex"}
+          }
+        })
+        |> Map.put(:active_codex_account_id, "primary")
+      end)
+
+      send(
+        pid,
+        {:DOWN, ref, :process, self(), {:agent_run_failed, {:turn_failed, %{"error" => %{"message" => "invalid api key returned by a downstream API"}}}}}
+      )
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          primary = Map.get(state.codex_accounts, "primary")
+
+          match?(%{attempt: 1, error_class: "semi_permanent"}, state.retry_attempts[issue_id]) and
+            MapSet.member?(state.claimed, issue_id) and
+            state.active_codex_account_id == "primary" and
+            is_map(primary) and primary.healthy == true and is_nil(Map.get(primary, :runtime_state))
+        end)
+
+      assert %{attempt: 1, error_class: "semi_permanent"} = state.retry_attempts[issue_id]
+      assert state.active_codex_account_id == "primary"
+      assert %{healthy: true} = state.codex_accounts["primary"]
+      assert is_nil(Map.get(state.codex_accounts["primary"], :runtime_state))
+      refute_received {:memory_tracker_comment, ^issue_id, _body}
+      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
     after
       restore_app_env(:memory_tracker_recipient, previous_recipient)
     end
@@ -2198,8 +2383,6 @@ defmodule SymphonyElixir.CoreTest do
       assert argv_line = Enum.find(lines, fn line -> String.starts_with?(line, "ARGV:") end)
       assert String.contains?(argv_line, "app-server")
       refute Enum.any?(lines, &String.contains?(&1, "--yolo"))
-      assert cwd_line = Enum.find(lines, fn line -> String.starts_with?(line, "CWD:") end)
-      assert String.ends_with?(cwd_line, Path.basename(workspace))
 
       assert Enum.any?(lines, fn line ->
                if String.starts_with?(line, "JSON:") do

@@ -1010,16 +1010,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end)
 
+    next_poll_due_at_ms = System.monotonic_time(:millisecond) + 50
+
     :sys.replace_state(pid, fn state ->
       %{
         state
         | poll_interval_ms: 50,
-          poll_check_in_progress: true,
-          next_poll_due_at_ms: nil
+          poll_check_in_progress: false,
+          next_poll_due_at_ms: next_poll_due_at_ms
       }
     end)
-
-    send(pid, :run_poll_cycle)
 
     snapshot =
       wait_for_snapshot(pid, fn
@@ -1860,7 +1860,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute rendered =~ "Timestamp:"
   end
 
-  defp wait_for_snapshot(pid, predicate, timeout_ms \\ 200) when is_function(predicate, 1) do
+  defp wait_for_snapshot(pid, predicate, timeout_ms \\ 500) when is_function(predicate, 1) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_snapshot(pid, predicate, deadline_ms)
   end

@@ -125,6 +125,33 @@ defmodule SymphonyElixir.ErrorClassifier do
     "issue_state_refresh_failed"
   ]
 
+  @failure_class_lookup %{
+    "approval_required" => :approval_required,
+    "auth_failure" => :auth_failure,
+    "invalid_workspace" => :invalid_workspace,
+    "process_error" => :process_error,
+    "quota_exhausted" => :quota_exhausted,
+    "semi_permanent_failure" => :semi_permanent_failure,
+    "transient_worker_failure" => :transient_worker_failure,
+    "turn_input_required" => :turn_input_required,
+    "workspace_hook_failed" => :workspace_hook_failed
+  }
+  @failure_class_values Map.values(@failure_class_lookup)
+
+  @retry_action_lookup %{
+    "retry_same_account" => :retry_same_account,
+    "switch_account" => :switch_account,
+    "stop" => :stop
+  }
+  @retry_action_values Map.values(@retry_action_lookup)
+
+  @account_state_lookup %{
+    "ready" => :ready,
+    "cooldown" => :cooldown,
+    "broken" => :broken
+  }
+  @account_state_values Map.values(@account_state_lookup)
+
   @spec classify(term()) :: error_class()
   def classify(reason), do: reason |> classify_details() |> Map.fetch!(:error_class)
 
@@ -189,7 +216,7 @@ defmodule SymphonyElixir.ErrorClassifier do
 
   def classify_details({:turn_failed, payload}) do
     payload
-    |> classify_text_failure(summarize_reason(payload))
+    |> classify_turn_failed_payload()
     |> fallback_failure_class(:transient_worker_failure)
   end
 
@@ -283,6 +310,21 @@ defmodule SymphonyElixir.ErrorClassifier do
     end)
   end
 
+  defp classify_turn_failed_payload(payload) do
+    case structured_failure_details(payload) do
+      %FailureDetails{} = failure ->
+        failure
+
+      nil ->
+        summary_source = turn_failed_summary_source(payload)
+
+        payload
+        |> turn_failed_text_source()
+        |> classify_text_failure(summarize_reason(summary_source))
+        |> demote_untrusted_account_failure()
+    end
+  end
+
   defp classify_text_failure(reason, summary) do
     text = normalize_reason_text(reason)
 
@@ -325,6 +367,38 @@ defmodule SymphonyElixir.ErrorClassifier do
 
   defp fallback_failure_class(%FailureDetails{} = failure, _default_failure_class), do: failure
 
+  defp structured_failure_details(payload) when is_map(payload) do
+    with error_class when not is_nil(error_class) <-
+           normalize_error_class(payload_field(payload, :error_class)),
+         failure_class when not is_nil(failure_class) <-
+           normalize_failure_class(payload_field(payload, :failure_class)),
+         retry_action when not is_nil(retry_action) <-
+           normalize_retry_action(payload_field(payload, :retry_action)),
+         account_state when not is_nil(account_state) <-
+           normalize_account_state(payload_field(payload, :account_state)) do
+      summary = summarize_reason(payload_field(payload, :summary) || turn_failed_summary_source(payload))
+
+      failure_details(error_class, failure_class, retry_action, account_state, summary)
+    else
+      _ -> nil
+    end
+  end
+
+  defp structured_failure_details(_payload), do: nil
+
+  defp demote_untrusted_account_failure(%FailureDetails{failure_class: failure_class} = failure)
+       when failure_class in [:auth_failure, :quota_exhausted] do
+    failure_details(
+      failure.error_class,
+      fallback_failure_class_for(failure.error_class),
+      retry_action_for(failure.error_class),
+      account_state_for(failure.error_class),
+      failure.summary
+    )
+  end
+
+  defp demote_untrusted_account_failure(%FailureDetails{} = failure), do: failure
+
   defp maybe_override_error_class(%FailureDetails{} = details, error_class) do
     case normalize_error_class(error_class) do
       nil ->
@@ -341,6 +415,18 @@ defmodule SymphonyElixir.ErrorClassifier do
   defp normalize_error_class("semi_permanent"), do: :semi_permanent
   defp normalize_error_class(_value), do: nil
 
+  defp normalize_failure_class(value) when value in @failure_class_values, do: value
+  defp normalize_failure_class(value) when is_binary(value), do: Map.get(@failure_class_lookup, value)
+  defp normalize_failure_class(_value), do: nil
+
+  defp normalize_retry_action(value) when value in @retry_action_values, do: value
+  defp normalize_retry_action(value) when is_binary(value), do: Map.get(@retry_action_lookup, value)
+  defp normalize_retry_action(_value), do: nil
+
+  defp normalize_account_state(value) when value in @account_state_values, do: value
+  defp normalize_account_state(value) when is_binary(value), do: Map.get(@account_state_lookup, value)
+  defp normalize_account_state(_value), do: nil
+
   defp fallback_failure_class_for(:permanent), do: :process_error
   defp fallback_failure_class_for(:semi_permanent), do: :semi_permanent_failure
   defp fallback_failure_class_for(_error_class), do: :transient_worker_failure
@@ -352,6 +438,32 @@ defmodule SymphonyElixir.ErrorClassifier do
   defp account_state_for(:permanent), do: :ready
   defp account_state_for(:semi_permanent), do: :ready
   defp account_state_for(_error_class), do: :ready
+
+  defp payload_field(payload, key) when is_map(payload) and is_atom(key) do
+    Map.get(payload, key) || Map.get(payload, Atom.to_string(key))
+  end
+
+  defp payload_field(_payload, _key), do: nil
+
+  defp turn_failed_text_source(payload) do
+    cond do
+      is_map(payload) and is_binary(get_in(payload, ["error", "message"])) ->
+        get_in(payload, ["error", "message"])
+
+      is_map(payload) and is_binary(get_in(payload, [:error, :message])) ->
+        get_in(payload, [:error, :message])
+
+      is_binary(payload_field(payload, :message)) ->
+        payload_field(payload, :message)
+
+      true ->
+        payload
+    end
+  end
+
+  defp turn_failed_summary_source(payload) do
+    payload_field(payload, :summary) || turn_failed_text_source(payload)
+  end
 
   defp failure_details(summary, error_class, failure_class, retry_action, account_state)
        when is_binary(summary) do

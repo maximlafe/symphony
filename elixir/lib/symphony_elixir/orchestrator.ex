@@ -1320,6 +1320,14 @@ defmodule SymphonyElixir.Orchestrator do
           })
         )
 
+      failure.retry_action == :switch_account ->
+        schedule_issue_retry(state, issue_id, failure_attempt, %{
+          identifier: identifier,
+          trace_id: trace_id,
+          error: "agent exited: #{failure.summary}",
+          error_class: error_class_label
+        })
+
       ErrorClassifier.retry_allowed?(failure.error_class, failure_attempt) ->
         schedule_issue_retry(state, issue_id, failure_attempt, %{
           identifier: identifier,

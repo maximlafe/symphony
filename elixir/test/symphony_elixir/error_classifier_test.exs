@@ -35,13 +35,76 @@ defmodule SymphonyElixir.ErrorClassifierTest do
              :transient
   end
 
-  test "classifies auth failures as semi-permanent account switch blockers" do
-    failure = ErrorClassifier.classify_details({:turn_failed, %{"message" => "Login required for this account"}})
+  test "classifies explicit turn_failed account metadata as an account switch blocker" do
+    failure =
+      ErrorClassifier.classify_details(
+        {:turn_failed,
+         %{
+           "error" => %{"message" => "Login required for this account"},
+           "error_class" => "semi_permanent",
+           "failure_class" => "auth_failure",
+           "retry_action" => "switch_account",
+           "account_state" => "broken"
+         }}
+      )
 
     assert failure.error_class == :semi_permanent
     assert failure.failure_class == :auth_failure
     assert failure.retry_action == :switch_account
     assert failure.account_state == :broken
+
+    atom_failure =
+      ErrorClassifier.classify_details(
+        {:turn_failed,
+         %{
+           error: %{message: "RESOURCE_EXHAUSTED: requests per day limit reached"},
+           error_class: :semi_permanent,
+           failure_class: :quota_exhausted,
+           retry_action: :switch_account,
+           account_state: :cooldown,
+           summary: "quota exhausted"
+         }}
+      )
+
+    assert atom_failure.failure_class == :quota_exhausted
+    assert atom_failure.retry_action == :switch_account
+    assert atom_failure.account_state == :cooldown
+  end
+
+  test "does not apply account health actions to untrusted turn_failed text" do
+    failure =
+      ErrorClassifier.classify_details({:turn_failed, %{"error" => %{"message" => "invalid api key returned by a downstream API"}}})
+
+    assert failure.error_class == :semi_permanent
+    assert failure.failure_class == :semi_permanent_failure
+    assert failure.retry_action == :retry_same_account
+    assert failure.account_state == :ready
+  end
+
+  test "falls back when explicit turn_failed metadata is incomplete or invalid" do
+    assert ErrorClassifier.classify({:turn_failed, %{message: "request timed out", error_class: :semi_permanent, failure_class: 123}}) ==
+             :transient
+
+    assert ErrorClassifier.classify(
+             {:turn_failed,
+              %{
+                message: "request timed out",
+                error_class: :semi_permanent,
+                failure_class: :auth_failure,
+                retry_action: 123
+              }}
+           ) == :transient
+
+    assert ErrorClassifier.classify(
+             {:turn_failed,
+              %{
+                message: "request timed out",
+                error_class: :semi_permanent,
+                failure_class: :auth_failure,
+                retry_action: :switch_account,
+                account_state: %{}
+              }}
+           ) == :transient
   end
 
   test "classifies test and git push failures as semi_permanent" do
@@ -106,7 +169,9 @@ defmodule SymphonyElixir.ErrorClassifierTest do
     assert ErrorClassifier.classify({:turn_timeout}) == :transient
     assert ErrorClassifier.classify({:turn_timeout, %{}}) == :transient
     assert ErrorClassifier.classify({:turn_cancelled, %{message: "cancelled"}}) == :transient
+    assert ErrorClassifier.classify({:turn_failed, %{error: %{message: "request timed out"}}}) == :transient
     assert ErrorClassifier.classify({:turn_failed, %{message: "request timed out"}}) == :transient
+    assert ErrorClassifier.classify({:turn_failed, :timeout}) == :transient
     assert ErrorClassifier.classify({:response_timeout}) == :transient
     assert ErrorClassifier.classify({:port_exit, 143}) == :transient
   end
