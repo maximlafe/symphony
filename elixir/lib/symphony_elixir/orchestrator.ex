@@ -2241,7 +2241,7 @@ defmodule SymphonyElixir.Orchestrator do
         end
 
       {source_name, :cooldown} when source_name in [:probe, :live_rate_limits] ->
-        if Map.get(account, :probe_healthy) == true do
+        if cooldown_recovery_confirmed?(account) do
           clear_account_runtime_state(account)
         else
           account
@@ -2272,6 +2272,13 @@ defmodule SymphonyElixir.Orchestrator do
     |> Map.put(:runtime_health_reason, nil)
     |> Map.put(:runtime_marked_at, nil)
     |> Map.put(:runtime_cooldown_until, nil)
+  end
+
+  # Preserve active cooldowns until their deadline expires. The probe/live-rate-limit
+  # path may only clear legacy cooldown states that predate runtime_cooldown_until.
+  defp cooldown_recovery_confirmed?(account) when is_map(account) do
+    Map.get(account, :probe_healthy) == true and
+      not match?(%DateTime{}, Map.get(account, :runtime_cooldown_until))
   end
 
   defp runtime_account_ready?(account, now) when is_map(account) do

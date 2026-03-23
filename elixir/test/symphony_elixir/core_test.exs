@@ -1447,6 +1447,114 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "healthy probe does not clear an active runtime cooldown before its deadline" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-cooldown-probe-regression-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      codex_binary = Path.join(test_root, "fake-codex")
+      codex_home = Path.join(test_root, "primary-home")
+      workspace_root = Path.join(test_root, "workspaces")
+      cooldown_until = DateTime.add(DateTime.utc_now(), 60, :second)
+
+      File.mkdir_p!(codex_home)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":1001,"result":{"account":{"type":"chatgpt","email":"primary@example.com","planType":"pro"},"requiresOpenaiAuth":false}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":1002,"result":{"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"windowDurationMins":300,"usedPercent":20},"secondary":{"windowDurationMins":10080,"usedPercent":35},"credits":{"hasCredits":false,"unlimited":false,"balance":null}}}}}'
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_accounts: [%{id: "primary", codex_home: codex_home}]
+      )
+
+      state = %Orchestrator.State{
+        poll_interval_ms: 30_000,
+        max_concurrent_agents: 1,
+        next_poll_due_at_ms: nil,
+        poll_check_in_progress: false,
+        tick_timer_ref: nil,
+        tick_token: nil,
+        workspace_usage_bytes: 0,
+        workspace_cleanup_ref: nil,
+        workspace_usage_refresh_ref: nil,
+        workspace_threshold_exceeded?: false,
+        running: %{},
+        completed: MapSet.new(),
+        claimed: MapSet.new(),
+        retry_attempts: %{},
+        codex_accounts: %{
+          "primary" => %{
+            id: "primary",
+            explicit?: true,
+            healthy: false,
+            probe_healthy: false,
+            probe_health_reason: "quota exhausted",
+            health_reason: "quota_exhausted: requests per day limit reached",
+            auth_mode: "chatgpt",
+            requires_openai_auth: false,
+            missing_windows_mins: [],
+            insufficient_windows_mins: [],
+            rate_limits: %{"limitId" => "codex"},
+            account: nil,
+            runtime_state: :cooldown,
+            runtime_health_reason: "quota_exhausted: requests per day limit reached",
+            runtime_marked_at: DateTime.utc_now(),
+            runtime_cooldown_until: cooldown_until
+          }
+        },
+        active_codex_account_id: nil,
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        codex_rate_limits: nil,
+        codex_dispatch_reason: nil
+      }
+
+      assert {:noreply, updated_state} = Orchestrator.handle_info(:run_poll_cycle, state)
+
+      assert %{
+               runtime_state: :cooldown,
+               healthy: false,
+               probe_healthy: true,
+               auth_mode: "chatgpt",
+               email: "primary@example.com",
+               plan_type: "pro",
+               runtime_health_reason: "quota_exhausted: requests per day limit reached",
+               runtime_cooldown_until: ^cooldown_until
+             } = updated_state.codex_accounts["primary"]
+
+      assert updated_state.active_codex_account_id == nil
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "stale retry timer messages do not consume newer retry entries" do
     issue_id = "issue-stale-retry"
     orchestrator_name = Module.concat(__MODULE__, :StaleRetryOrchestrator)
