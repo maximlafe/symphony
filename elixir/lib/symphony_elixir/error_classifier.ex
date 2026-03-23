@@ -74,8 +74,7 @@ defmodule SymphonyElixir.ErrorClassifier do
     "resource_exhausted",
     "resource exhausted",
     "requests per day limit reached",
-    "usage limit",
-    "rate limit exhausted"
+    "usage limit"
   ]
 
   @auth_patterns [

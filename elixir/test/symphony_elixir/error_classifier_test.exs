@@ -120,7 +120,12 @@ defmodule SymphonyElixir.ErrorClassifierTest do
     assert quota.retry_action == :switch_account
     assert quota.account_state == :cooldown
 
-    assert ErrorClassifier.classify("HTTP 429 rate limit exhausted") == :semi_permanent
+    throttled = ErrorClassifier.classify_details("HTTP 429 rate limit exhausted")
+    assert throttled.error_class == :transient
+    assert throttled.failure_class == :transient_worker_failure
+    assert throttled.retry_action == :retry_same_account
+    assert throttled.account_state == :ready
+
     assert ErrorClassifier.classify("HTTP 429 rate limit hit, retry again in 10 seconds") == :transient
   end
 

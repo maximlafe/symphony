@@ -1297,16 +1297,6 @@ defmodule SymphonyElixir.Orchestrator do
     failure_class_label = ErrorClassifier.failure_class_to_string(failure.failure_class)
 
     cond do
-      failure.retry_action == :switch_account and
-        failure.account_state == :cooldown and
-          not active_codex_account_available?(state) ->
-        schedule_issue_retry(state, issue_id, failure_attempt, %{
-          identifier: identifier,
-          trace_id: trace_id,
-          error: "agent exited: #{failure.summary}",
-          error_class: error_class_label
-        })
-
       failure.retry_action == :switch_account and not active_codex_account_available?(state) ->
         escalate_issue_for_manual_intervention(
           state,

@@ -992,7 +992,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "quota exhaustion on the last account stays queued until an account becomes healthy again" do
+  test "quota exhaustion on the last account blocks the issue instead of waiting in the internal retry queue" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     issue_id = "issue-quota-single-account"
     ref = make_ref()
@@ -1056,22 +1056,26 @@ defmodule SymphonyElixir.CoreTest do
         {:DOWN, ref, :process, self(), {:agent_run_failed, "RESOURCE_EXHAUSTED: requests per day limit reached for this account"}}
       )
 
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "error_class: `semi_permanent`"
+      assert blocker_body =~ "failure_class: `quota_exhausted`"
+      assert blocker_body =~ "codex_account_id: `primary`"
+      assert blocker_body =~ "retry_action: `switch_account`"
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+
       state =
         wait_for_orchestrator_state(pid, fn state ->
           primary = Map.get(state.codex_accounts, "primary")
-          retry = Map.get(state.retry_attempts, issue_id)
 
-          match?(%{attempt: 1, error_class: "semi_permanent"}, retry) and
-            MapSet.member?(state.claimed, issue_id) and
+          not MapSet.member?(state.claimed, issue_id) and
+            not Map.has_key?(state.retry_attempts, issue_id) and
             state.active_codex_account_id == nil and
             is_map(primary) and primary.runtime_state == :cooldown and primary.healthy == false
         end)
 
-      assert %{attempt: 1, error_class: "semi_permanent"} = state.retry_attempts[issue_id]
-      assert MapSet.member?(state.claimed, issue_id)
+      refute Map.has_key?(state.retry_attempts, issue_id)
+      refute MapSet.member?(state.claimed, issue_id)
       assert state.active_codex_account_id == nil
-      refute_received {:memory_tracker_comment, ^issue_id, _body}
-      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
     after
       restore_app_env(:memory_tracker_recipient, previous_recipient)
     end
