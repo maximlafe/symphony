@@ -1276,13 +1276,21 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Current status: In Progress"
     assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
     assert prompt =~ "This is an unattended orchestration session."
-    assert prompt =~ "Only stop early for a true blocker"
+    assert prompt =~ "Only stop early for a true blocker or an explicitly classified handoff"
     assert prompt =~ "Do not include \"next steps for user\""
     assert prompt =~ "use the `land` skill and do not call `gh pr merge` directly"
     assert prompt =~ "`github_pr_snapshot`"
     assert prompt =~ "`github_wait_for_checks`"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
+    assert prompt =~ "making a classified `decision`/`human-action` handoff"
+    assert prompt =~ "`checkpoint_type`"
+    assert prompt =~ "`risk_level`"
+    assert prompt =~ "`human-verify`"
+    assert prompt =~ "`decision`"
+    assert prompt =~ "`human-action`"
+    assert prompt =~ "`low-context`"
+    assert prompt =~ "Limit yourself to 2 auto-fix attempts"
   end
 
   test "prompt builder adds continuation guidance for retries" do

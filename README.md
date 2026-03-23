@@ -26,6 +26,7 @@ The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatt
 - **Correct sandbox** — the workflow is git + GitHub PR centric. Upstream's default sandbox blocks `.git/` writes, which silently breaks the entire flow. Fixed.
 - **Media uploads via Linear** — upstream references a GitHub media upload skill that doesn't ship. The workflow and Linear skill now use Linear's native `fileUpload` mutation for screenshots and recordings
 - **Multi-account Codex failover** — Symphony can rotate between multiple pre-authenticated `CODEX_HOME` directories and stop starting new work on an account when its 5-hour or weekly Codex budget is nearly exhausted
+- **Classified workflow handoffs** — the default contract requires `checkpoint_type`/`risk_level`, low-context discipline, and a hard cap on speculative auto-fix loops so agents escalate cleanly instead of spinning
 - **Setup skill** — auto-detects your repo, installs worker skills, creates Linear workflow states, and verifies everything before launch
 
 ## Manual setup
