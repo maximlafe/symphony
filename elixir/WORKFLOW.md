@@ -60,7 +60,7 @@ Continuation context:
 - Treat every retry as a context-budgeted continuation: prefer the current diff, `workpad.md`, and compact tool summaries over rereading full history.
 - If available context is already low (`low-context`), finish at most one atomic action, sync the workpad, and prepare a classified checkpoint instead of starting a broad new investigation.
 - Do not spend the remaining context budget restating prior work or retrying the same failing path without a materially new signal.
-- Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets.
+- Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets or are making a classified `decision`/`human-action` handoff because further autonomous progress is no longer justified.
   {% endif %}
 
 Issue context:
@@ -80,7 +80,7 @@ No description provided.
 Instructions:
 
 1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.
-2. Only stop early for a true blocker (missing required auth/permissions/secrets). If blocked, record it in the workpad and move the issue according to workflow.
+2. Only stop early for a true blocker or an explicitly classified handoff that the workflow allows (`decision` or `human-action`). If you stop, record it in the workpad and move the issue according to workflow.
 3. Final message must report completed actions and blockers only. Do not include "next steps for user".
 4. Work only in the provided repository copy. Do not touch any other path.
 5. Use the compact runtime tools when available:

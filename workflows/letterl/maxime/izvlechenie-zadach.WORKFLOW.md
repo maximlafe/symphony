@@ -200,7 +200,7 @@ Continuation context:
 - Treat every retry as a context-budgeted continuation: prefer the current diff, `workpad.md`, and compact tool summaries over rereading full history.
 - If available context is already low (`low-context`), finish at most one atomic action, sync the workpad, and prepare a classified checkpoint instead of starting a broad new investigation.
 - Do not spend the remaining context budget restating prior work or retrying the same failing path without a materially new signal.
-- Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets.
+- Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets or are making a classified `decision`/`human-action` handoff because further autonomous progress is no longer justified.
   {% endif %}
 
 Issue context:
@@ -220,7 +220,7 @@ No description provided.
 Instructions:
 
 1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.
-2. Only stop early for a true blocker (missing required auth/permissions/secrets). If blocked, record it in the workpad and move the issue according to workflow.
+2. Only stop early for a true blocker or an explicitly classified handoff that the workflow allows (`decision` or `human-action`). If you stop, record it in the workpad and move the issue according to workflow.
 3. Final message must report completed actions and blockers only. Do not include "next steps for user".
 4. Work only in the provided repository copy. Do not touch any other path.
 5. Everything written to Linear must be in Russian.
@@ -240,7 +240,7 @@ Instructions:
 - Before each automated stage (`Planning`, `In Progress`, `Rework`, `Merging`), post one separate top-level stage-start comment before the first live workpad sync of that stage.
 - Before any Git sync or branch decision, treat `.symphony-base-branch` as the authoritative base branch for the current workspace when the file exists.
 - If `.symphony-base-branch-note` exists, mirror it into `Заметки` once and continue without asking a human.
-- If `.symphony-base-branch-error` exists, treat it as a configuration blocker: record it in the workpad, move the issue to `Blocked`, and stop.
+- If `.symphony-base-branch-error` exists, treat it as a configuration blocker: record it in the workpad with `checkpoint_type: human-action`, a justified `risk_level`, and a short `summary`, then move the issue to `Blocked` and stop.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.
 - Run `make symphony-preflight` before treating auth/env/tooling gaps as blockers, and use the validation matrix below instead of ad-hoc test selection.
 - Do not reread skill bodies in straightforward runs unless the workflow does not cover the needed behavior.
@@ -298,7 +298,7 @@ Instructions:
    - ignore resolved comments;
    - persist the comment ID in `.workpad-id`.
 4. `Planning` is analysis-only:
-   - if `.symphony-base-branch-error` exists, copy the exact message into `Заметки`, sync the workpad once, move the issue to `Blocked`, and stop;
+   - if `.symphony-base-branch-error` exists, copy the exact message into `Заметки`, fill `Checkpoint` with `checkpoint_type: human-action`, a justified `risk_level`, and a short `summary`, sync the workpad once, move the issue to `Blocked`, and stop;
    - if `.symphony-base-branch-note` exists, copy it into `Заметки` once before continuing;
    - do not edit product code, commit, or push;
    - read the issue body, only the relevant comments and PR context, and inspect the codebase;
