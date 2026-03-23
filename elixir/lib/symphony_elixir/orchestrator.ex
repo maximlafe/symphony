@@ -2234,7 +2234,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     case {source, Map.get(account, :runtime_state)} do
       {:probe, :broken} ->
-        if existing_logged_in?(account) do
+        if probe_confirms_broken_recovery?(account) do
           clear_account_runtime_state(account)
         else
           account
@@ -2331,6 +2331,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp existing_logged_in?(_existing), do: true
+
+  defp probe_confirms_broken_recovery?(account) when is_map(account) do
+    Map.get(account, :requires_openai_auth) == false and is_map(Map.get(account, :rate_limits))
+  end
 
   defp active_codex_account_available?(%State{active_codex_account_id: account_id})
        when is_binary(account_id), do: true

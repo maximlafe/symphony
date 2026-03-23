@@ -962,7 +962,14 @@ defmodule SymphonyElixir.CoreTest do
 
       send(
         pid,
-        {:DOWN, ref, :process, self(), {:agent_run_failed, "RESOURCE_EXHAUSTED: requests per day limit reached for this account"}}
+        {:DOWN, ref, :process, self(),
+         {:agent_run_failed,
+          {:turn_failed,
+           %{
+             "error" => %{
+               "message" => "RESOURCE_EXHAUSTED: requests per day limit reached for this account"
+             }
+           }}}}
       )
 
       state =
@@ -1053,7 +1060,14 @@ defmodule SymphonyElixir.CoreTest do
 
       send(
         pid,
-        {:DOWN, ref, :process, self(), {:agent_run_failed, "RESOURCE_EXHAUSTED: requests per day limit reached for this account"}}
+        {:DOWN, ref, :process, self(),
+         {:agent_run_failed,
+          {:turn_failed,
+           %{
+             "error" => %{
+               "message" => "RESOURCE_EXHAUSTED: requests per day limit reached for this account"
+             }
+           }}}}
       )
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
@@ -1345,6 +1359,91 @@ defmodule SymphonyElixir.CoreTest do
       refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
     after
       restore_app_env(:memory_tracker_recipient, previous_recipient)
+    end
+  end
+
+  test "probe failure does not clear broken runtime state without a successful auth check" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-broken-probe-failure-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      codex_binary = Path.join(test_root, "fake-codex")
+      codex_home = Path.join(test_root, "primary-home")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      File.mkdir_p!(codex_home)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      exit 1
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_accounts: [%{id: "primary", codex_home: codex_home}]
+      )
+
+      state = %Orchestrator.State{
+        poll_interval_ms: 30_000,
+        max_concurrent_agents: 1,
+        next_poll_due_at_ms: nil,
+        poll_check_in_progress: false,
+        tick_timer_ref: nil,
+        tick_token: nil,
+        workspace_usage_bytes: 0,
+        workspace_cleanup_ref: nil,
+        workspace_usage_refresh_ref: nil,
+        workspace_threshold_exceeded?: false,
+        running: %{},
+        completed: MapSet.new(),
+        claimed: MapSet.new(),
+        retry_attempts: %{},
+        codex_accounts: %{
+          "primary" => %{
+            id: "primary",
+            explicit?: true,
+            healthy: false,
+            probe_healthy: false,
+            probe_health_reason: "auth failure",
+            health_reason: "auth_failure: invalid api key",
+            auth_mode: "chatgpt",
+            requires_openai_auth: false,
+            missing_windows_mins: [],
+            insufficient_windows_mins: [],
+            rate_limits: %{"limitId" => "codex"},
+            account: nil,
+            runtime_state: :broken,
+            runtime_health_reason: "auth_failure: invalid api key",
+            runtime_marked_at: DateTime.utc_now(),
+            runtime_cooldown_until: nil
+          }
+        },
+        active_codex_account_id: nil,
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        codex_rate_limits: nil,
+        codex_dispatch_reason: nil
+      }
+
+      assert {:noreply, updated_state} = Orchestrator.handle_info(:run_poll_cycle, state)
+
+      assert %{
+               runtime_state: :broken,
+               healthy: false,
+               runtime_health_reason: "auth_failure: invalid api key",
+               health_reason: "auth_failure: invalid api key",
+               probe_health_reason: probe_health_reason
+             } = updated_state.codex_accounts["primary"]
+
+      assert probe_health_reason =~ "startup failed"
+    after
+      File.rm_rf(test_root)
     end
   end
 

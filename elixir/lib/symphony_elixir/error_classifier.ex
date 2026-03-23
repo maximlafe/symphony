@@ -385,8 +385,9 @@ defmodule SymphonyElixir.ErrorClassifier do
 
   defp structured_failure_details(_payload), do: nil
 
-  defp demote_untrusted_account_failure(%FailureDetails{failure_class: failure_class} = failure)
-       when failure_class in [:auth_failure, :quota_exhausted] do
+  # Quota exhaustion at the turn boundary is emitted by Codex itself; auth-looking text can still
+  # come from downstream commands, so only auth failures are demoted without explicit metadata.
+  defp demote_untrusted_account_failure(%FailureDetails{failure_class: :auth_failure} = failure) do
     failure_details(
       failure.error_class,
       fallback_failure_class_for(failure.error_class),

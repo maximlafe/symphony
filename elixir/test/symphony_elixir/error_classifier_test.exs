@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.ErrorClassifierTest do
   use ExUnit.Case
 
-  alias SymphonyElixir.ErrorClassifier
+  alias SymphonyElixir.{AgentRunner, ErrorClassifier}
 
   test "classifies compile errors as permanent" do
     reason = {:agent_run_failed, {:workspace_hook_failed, "before_run", 1, "CompileError: undefined function"}}
@@ -79,6 +79,26 @@ defmodule SymphonyElixir.ErrorClassifierTest do
     assert failure.failure_class == :semi_permanent_failure
     assert failure.retry_action == :retry_same_account
     assert failure.account_state == :ready
+  end
+
+  test "preserves quota account actions through RunError turn_failed payloads" do
+    failure =
+      ErrorClassifier.classify_details(
+        {%AgentRunner.RunError{
+           reason:
+             {:turn_failed,
+              %{
+                "error" => %{
+                  "message" => "RESOURCE_EXHAUSTED: requests per day limit reached"
+                }
+              }}
+         }, []}
+      )
+
+    assert failure.error_class == :semi_permanent
+    assert failure.failure_class == :quota_exhausted
+    assert failure.retry_action == :switch_account
+    assert failure.account_state == :cooldown
   end
 
   test "falls back when explicit turn_failed metadata is incomplete or invalid" do
