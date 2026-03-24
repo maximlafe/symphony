@@ -45,7 +45,7 @@ The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatt
 
 ## Manual setup
 
-1. Build: `git clone https://github.com/odysseus0/symphony && cd symphony/elixir && mise trust && mise install && mise exec -- mix setup && mise exec -- mix build`
+1. Build: `git clone https://github.com/odysseus0/symphony && cd symphony && make symphony-bootstrap && cd elixir && mise exec -- mix build`
 2. Install skills: `npx skills add odysseus0/symphony -a codex -s linear land commit push pull debug --copy -y` and copy `elixir/WORKFLOW.md` to your repo
 3. In `WORKFLOW.md`, set exactly one Linear polling scope: `tracker.project_slug` or `tracker.team_key`, plus `hooks.after_create` (clone your repo + setup commands). Hooks also receive issue metadata in env vars like `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_DESCRIPTION`, `SYMPHONY_ISSUE_BRANCH_NAME`, `SYMPHONY_ISSUE_PROJECT_SLUG`, and `SYMPHONY_ISSUE_LABELS` if you need structured per-issue bootstrap behavior.
 4. Add **Rework**, **Human Review**, **Merging** as custom states in Linear (Team Settings → Workflow)
@@ -59,6 +59,11 @@ make symphony-bootstrap
 make symphony-validate
 cd elixir && mise exec -- ./bin/symphony ./WORKFLOW.md --port 4101
 ```
+
+`make symphony-bootstrap` is the unattended repo-root bootstrap contract Symphony workers use in a
+fresh clone. In this repo it configures git credentials through `gh`, prepares the pinned Elixir
+toolchain through `mise`, and keeps the bootstrap path repo-owned instead of buried in shell
+history.
 
 **[Getting Started with OpenAI Symphony](https://x.com/odysseus0z/status/2031850264240800131)** — full walkthrough with context on why these defaults matter.
 

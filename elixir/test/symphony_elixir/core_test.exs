@@ -148,6 +148,25 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.workflow_prompt() == prompt
   end
 
+  test "repository root exposes the symphony-bootstrap contract" do
+    repo_root = Path.expand("../../..", __DIR__)
+    makefile_path = Path.join(repo_root, "Makefile")
+
+    assert File.exists?(makefile_path)
+
+    makefile = File.read!(makefile_path)
+
+    assert makefile =~ ".PHONY: help symphony-bootstrap symphony-live-e2e symphony-preflight symphony-validate"
+    assert makefile =~ "symphony-preflight:"
+    assert makefile =~ "symphony-bootstrap:"
+    assert makefile =~ "symphony-validate:"
+    assert makefile =~ "symphony-live-e2e:"
+    assert makefile =~ "gh auth setup-git"
+    assert makefile =~ "$(MISE) install"
+    assert makefile =~ "$(MISE) exec -- mix setup"
+    assert makefile =~ "$(MISE) exec -- $(MAKE) all"
+  end
+
   test "linear api token resolves from LINEAR_API_KEY env var" do
     previous_linear_api_key = System.get_env("LINEAR_API_KEY")
     env_api_key = "test-linear-api-key"

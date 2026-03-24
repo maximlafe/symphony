@@ -74,13 +74,16 @@ mise exec -- elixir --version
 
 ```bash
 git clone https://github.com/openai/symphony
-cd symphony/elixir
-mise trust
-mise install
-mise exec -- mix setup
+cd symphony
+make symphony-bootstrap
+cd elixir
 mise exec -- mix build
 mise exec -- ./bin/symphony ./WORKFLOW.md
 ```
+
+`make symphony-bootstrap` is the repo-root unattended bootstrap contract for this repository. It is
+safe to rerun in a fresh or already-prepared workspace and should not leave tracked changes behind
+after a successful run.
 
 ## Configuration
 
@@ -147,7 +150,8 @@ Notes:
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there, along with any other setup commands you need.
+  `git clone ... .` there, then call the repo-owned bootstrap entrypoint such as
+  `make symphony-bootstrap`.
 - `workspace.cleanup_keep_recent` controls how many of the most recent terminal issue workspaces
   Symphony keeps on disk before retention cleanup removes older ones. Default: `5`.
 - `workspace.warning_threshold_bytes` sets the workspace-root disk-usage threshold that triggers a
