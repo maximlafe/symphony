@@ -1,11 +1,11 @@
 name: symphony
 
 services:
-  symphony-task-extract:
+  symphony-let:
     build:
       context: ../../..
       dockerfile: elixir/deploy/docker/Dockerfile
-    container_name: symphony-task-extract
+    container_name: symphony-let
     restart: unless-stopped
     init: true
     env_file:
@@ -17,16 +17,16 @@ services:
       POETRY_VIRTUALENVS_IN_PROJECT: "true"
       WORKFLOW_PATH: /srv/symphony/workflows/let.WORKFLOW.md
       SYMPHONY_PORT: "4101"
-      SYMPHONY_WORKSPACE_ROOT: /srv/symphony/workspaces/task-extract
-      SYMPHONY_LOGS_ROOT: /srv/symphony/logs/task-extract
+      SYMPHONY_WORKSPACE_ROOT: /srv/symphony/workspaces/let
+      SYMPHONY_LOGS_ROOT: /srv/symphony/logs/let
     volumes:
       - /root/.codex:/root/.codex
       - /root/.codex-furrow:/root/.codex-furrow
       - /root/.codex-rebecca:/root/.codex-rebecca
       - /root/.codex-deborah:/root/.codex-deborah
       - /srv/symphony/app/workflows/letterl/maxime:/srv/symphony/workflows:ro
-      - /srv/symphony/workspaces/task-extract:/srv/symphony/workspaces/task-extract
-      - /srv/symphony/logs/task-extract:/srv/symphony/logs/task-extract
+      - /srv/symphony/workspaces/let:/srv/symphony/workspaces/let
+      - /srv/symphony/logs/let:/srv/symphony/logs/let
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

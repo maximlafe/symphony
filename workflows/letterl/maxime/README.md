@@ -55,7 +55,7 @@ Suggested preflight before launch:
 
 Suggested port:
 
-- `4101` -> `let.WORKFLOW.md`
+- `4101` -> `symphony-let` (`let.WORKFLOW.md`)
 
 Launch template:
 
@@ -64,12 +64,12 @@ export LINEAR_API_KEY=...
 export GH_TOKEN=...
 export OPENAI_API_KEY=...
 export DATABASE_URL=postgresql://...
-export SYMPHONY_WORKSPACE_ROOT=/srv/symphony/workspaces/izvlechenie-zadach-maxime
+export SYMPHONY_WORKSPACE_ROOT=/srv/symphony/workspaces/let
 
 cd /path/to/symphony/elixir
 mise exec -- ./bin/symphony /path/to/repo/workflows/letterl/maxime/let.WORKFLOW.md \
   --port 4101 \
-  --logs-root /var/log/symphony/izvlechenie-zadach-maxime \
+  --logs-root /var/log/symphony/let \
   --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
