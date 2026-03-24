@@ -24,6 +24,8 @@ services:
       - /root/.codex-furrow:/root/.codex-furrow
       - /root/.codex-rebecca:/root/.codex-rebecca
       - /root/.codex-deborah:/root/.codex-deborah
+      - /root/.codex-kjfdn41739:/root/.codex-kjfdn41739
+      - /root/.codex-xvnza54743:/root/.codex-xvnza54743
       - /srv/symphony/app/workflows/letterl/maxime:/srv/symphony/workflows:ro
       - /srv/symphony/workspaces/let:/srv/symphony/workspaces/let
       - /srv/symphony/logs/let:/srv/symphony/logs/let

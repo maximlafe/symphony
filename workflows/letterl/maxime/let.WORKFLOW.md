@@ -400,6 +400,10 @@ codex:
       codex_home: /root/.codex-rebecca
     - id: Deborah
       codex_home: /root/.codex-deborah
+    - id: "kjfdn41739@outlook.com"
+      codex_home: /root/.codex-kjfdn41739
+    - id: "xvnza54743@outlook.com"
+      codex_home: /root/.codex-xvnza54743
   minimum_remaining_percent: 5
   monitored_windows_mins: [300, 10080]
 server:
