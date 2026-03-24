@@ -47,6 +47,20 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    - Orchestrator failure escalation uses `tracker.manual_intervention_state` (default: `Blocked`).
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
+## This Repository's Target-Repo Contract
+
+`maximlafe/symphony` can run as its own Symphony target repo. The dedicated LetterL project slug is
+`symphony-bd5bc5b51675`, the repo-local worker skills live in `../.agents/skills/`, and the repo
+root exposes the worker contract:
+
+- `make symphony-preflight`
+- `make symphony-bootstrap`
+- `make symphony-validate`
+- `make symphony-live-e2e`
+
+Use those root targets instead of ad-hoc shell history when validating a fresh clone or a new
+runtime host.
+
 ## Prerequisites
 
 We recommend using [mise](https://mise.jdx.dev/) to manage Elixir/Erlang versions.
@@ -142,6 +156,8 @@ Notes:
   `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_TITLE`, `SYMPHONY_ISSUE_DESCRIPTION`,
   `SYMPHONY_ISSUE_PROJECT_SLUG`, `SYMPHONY_ISSUE_PROJECT_NAME`, `SYMPHONY_ISSUE_LABELS`,
   `SYMPHONY_ISSUE_STATE`, `SYMPHONY_ISSUE_BRANCH_NAME`, and `SYMPHONY_ISSUE_URL`.
+- In this repository, `hooks.after_create` intentionally ends with `make symphony-bootstrap` so a
+  clean workspace clone picks up the same git auth and `mise` bootstrap path every time.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.

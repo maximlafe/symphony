@@ -128,17 +128,18 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    assert Map.get(tracker, "project_slug") == "symphony-bd5bc5b51675"
     assert is_list(Map.get(tracker, "active_states"))
     assert Map.get(tracker, "manual_intervention_state") == "Blocked"
     assert is_list(Map.get(tracker, "terminal_states"))
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/"
-    assert Map.get(hooks, "after_create") =~ "/symphony ."
-    assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
-    assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
+    assert Map.get(hooks, "after_create") =~ "export GIT_TERMINAL_PROMPT=0"
+    assert Map.get(hooks, "after_create") =~ "git clone --depth 1"
+    assert Map.get(hooks, "after_create") =~ "SYMPHONY_SOURCE_REPO_URL"
+    assert Map.get(hooks, "after_create") =~ "https://github.com/maximlafe/symphony.git"
+    assert Map.get(hooks, "after_create") =~ "make symphony-bootstrap"
     assert Map.get(hooks, "before_remove") =~ "gh pr list --head \"$branch\" --state open --json number"
     assert Map.get(hooks, "before_remove") =~ "gh pr close \"$pr\" --comment"
 
