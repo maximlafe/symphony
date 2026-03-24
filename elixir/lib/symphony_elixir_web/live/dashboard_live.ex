@@ -15,7 +15,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
-      |> assign(:project_slug, project_slug())
+      |> assign(:tracking_scope, tracking_scope())
       |> assign(:service_name, service_name())
       |> assign(:server_port, Config.server_port())
 
@@ -38,7 +38,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:payload, load_payload())
-     |> assign(:now, DateTime.utc_now())}
+     |> assign(:now, DateTime.utc_now())
+     |> assign(:tracking_scope, tracking_scope())
+     |> assign(:service_name, service_name())
+     |> assign(:server_port, Config.server_port())}
   end
 
   @impl true
@@ -59,7 +62,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </p>
             <div class="meta-row">
               <span class="meta-chip">
-                Project: <span class="mono"><%= @project_slug %></span>
+                <%= @tracking_scope.label %>: <span class="mono"><%= @tracking_scope.value %></span>
               </span>
               <span class="meta-chip">
                 Port: <span class="mono"><%= @server_port %></span>
@@ -445,15 +448,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
   end
 
-  defp project_slug do
-    Config.settings!().tracker.project_slug || "unknown-project"
+  defp tracking_scope do
+    case Config.linear_polling_scope() do
+      {:project, project_slug} -> %{label: "Project", value: project_slug}
+      {:team, team_key} -> %{label: "Team", value: team_key}
+      nil -> %{label: "Scope", value: "unknown-scope"}
+    end
   end
 
   defp service_name do
-    project_slug()
+    tracking_scope().value
     |> String.replace(~r/-[0-9a-f]{8,}$/i, "")
     |> case do
       "" -> "operations-dashboard"
+      "unknown-scope" -> "operations-dashboard"
       name -> name
     end
   end

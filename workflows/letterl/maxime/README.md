@@ -1,29 +1,41 @@
-# LetterL Maxime Workflows
+# LetterL Maxime Workflow
 
-These workflows route Symphony only to Maxime's tickets in the selected LetterL projects.
+This workflow routes Symphony only to Maxime's tickets in LetterL. `let.WORKFLOW.md` is the single team-scoped runner and resolves the target repository from structured Linear metadata instead of a `Repository:` line in the issue description.
 
 Linear assignee id:
 
 - `4eb8c4a3-8050-4af2-aa2b-da38d903c941`
 
-Projects:
+Project routing:
 
-- `izvlechenie-zadach-8209c2018e76` -> `izvlechenie-zadach.WORKFLOW.md`
-- `platforma-i-integraciya-448570ee6438` -> `platforma-i-integraciya.WORKFLOW.md`
-- `master-komand-dfbe2b1b972e` -> `master-komand.WORKFLOW.md`
+- `izvlechenie-zadach-8209c2018e76` -> `maximlafe/lead_status`
+- `master-komand-dfbe2b1b972e` -> `maximlafe/lead_status`
+- `telegram-full-export-v2-a6212aeb565c` -> `maximlafe/tg_live_export`
+- `platforma-i-integraciya-448570ee6438` -> requires one explicit repo label on the Linear issue:
+  - `repo:lead_status`
+  - `repo:symphony`
+  - `repo:tg_live_export`
 
 Notes:
 
-- `izvlechenie-zadach.WORKFLOW.md` now supports an experimental per-issue base-branch override from the Linear issue description:
+- `let.WORKFLOW.md` polls LetterL by `tracker.team_key: LET` and routes workspaces by Linear project metadata:
+  - fixed project mapping:
+    - `Извлечение задач` -> `maximlafe/lead_status`
+    - `Мастер команд` -> `maximlafe/lead_status`
+    - `Telegram Full Export v2` -> `maximlafe/tg_live_export`
+  - ambiguous project:
+    - `Платформа и интеграция` requires exactly one repo label on the issue: `repo:lead_status`, `repo:symphony`, or `repo:tg_live_export`;
+  - conflicting fixed-project mapping and repo label move the task into the blocker path;
+  - unknown projects also move the task into the blocker path.
+- `let.WORKFLOW.md` still supports per-issue base-branch routing from the Linear issue description:
   - add a `## Symphony` section;
   - add one line `Base branch: feature/...`;
-  - if the line is missing, the worker stays unattended and falls back to the repo default branch;
-  - if the line is invalid or the branch does not exist, the task moves into the blocker path instead of silently picking another branch.
-- The other two workflow files keep the previous LetterL behavior and do not read `Base branch:` from the issue description.
+  - if `Base branch:` is missing, the worker stays unattended and falls back to that repository's default branch;
+  - if `Base branch:` is invalid, the task moves into the blocker path instead of silently picking another branch.
 - PR handoff uses `In Review` instead of `Human Review`.
 - Auth and permission blockers move the issue to `Blocked`.
 - Each Symphony process must use its own workspace root, logs root, and dashboard port.
-- Worker bootstrap now runs `make symphony-bootstrap` inside the cloned `lead_status` repo, so the repo must expose that target on the branch Symphony clones.
+- Worker bootstrap now runs `make symphony-bootstrap` inside the selected allowlisted repo, so each supported repo must expose that target on the branch Symphony clones.
 - Docker on the VPS should mount `/srv/symphony/app/workflows/letterl/maxime` directly into `/srv/symphony/workflows`, so the active worker rules stay aligned with the checked-out repo.
 
 Required `/etc/symphony/symphony.env` contract for these workers:
@@ -35,16 +47,15 @@ Required `/etc/symphony/symphony.env` contract for these workers:
 Suggested preflight before launch:
 
 - `gh auth status`
-- verify `git clone`/`git ls-remote` for the configured `SOURCE_REPO_URL` work without prompts
+- verify `git clone`/`git ls-remote` for all three allowlisted GitHub repos work without prompts
+- verify Linear triage can apply the `repo:*` labels for `Платформа и интеграция`
 - confirm `DATABASE_URL` points to reachable PostgreSQL
 - confirm Node/npm are installed in the container image
 - confirm Playwright browser bootstrap can run in a fresh workspace
 
-Suggested ports:
+Suggested port:
 
-- `4101` -> `izvlechenie-zadach.WORKFLOW.md`
-- `4102` -> `platforma-i-integraciya.WORKFLOW.md`
-- `4103` -> `master-komand.WORKFLOW.md`
+- `4101` -> `let.WORKFLOW.md`
 
 Launch template:
 
@@ -56,10 +67,27 @@ export DATABASE_URL=postgresql://...
 export SYMPHONY_WORKSPACE_ROOT=/srv/symphony/workspaces/izvlechenie-zadach-maxime
 
 cd /path/to/symphony/elixir
-mise exec -- ./bin/symphony /path/to/repo/workflows/letterl/maxime/izvlechenie-zadach.WORKFLOW.md \
+mise exec -- ./bin/symphony /path/to/repo/workflows/letterl/maxime/let.WORKFLOW.md \
   --port 4101 \
   --logs-root /var/log/symphony/izvlechenie-zadach-maxime \
   --i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
-Repeat with a different `SYMPHONY_WORKSPACE_ROOT`, `--port`, `--logs-root`, and workflow path for the other two projects.
+Issue examples:
+
+```md
+## Symphony
+Base branch: feature/task-routing
+```
+
+Use that when the issue belongs to `Извлечение задач`, `Мастер команд`, or `Telegram Full Export v2` and the project mapping is sufficient.
+
+```md
+Labels:
+- repo:symphony
+
+## Symphony
+Base branch: main
+```
+
+Use that for `Платформа и интеграция`, where the project itself is intentionally ambiguous and the repo label is required.

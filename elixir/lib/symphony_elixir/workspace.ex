@@ -373,6 +373,9 @@ defmodule SymphonyElixir.Workspace do
       issue_identifier: identifier || "issue",
       issue_title: Map.get(issue, :title),
       issue_description: Map.get(issue, :description),
+      issue_project_slug: Map.get(issue, :project_slug),
+      issue_project_name: Map.get(issue, :project_name),
+      issue_labels: Map.get(issue, :labels) || [],
       issue_state: Map.get(issue, :state),
       issue_branch_name: Map.get(issue, :branch_name),
       issue_url: Map.get(issue, :url),
@@ -386,6 +389,9 @@ defmodule SymphonyElixir.Workspace do
       issue_identifier: identifier,
       issue_title: nil,
       issue_description: nil,
+      issue_project_slug: nil,
+      issue_project_name: nil,
+      issue_labels: [],
       issue_state: nil,
       issue_branch_name: nil,
       issue_url: nil,
@@ -399,6 +405,9 @@ defmodule SymphonyElixir.Workspace do
       issue_identifier: "issue",
       issue_title: nil,
       issue_description: nil,
+      issue_project_slug: nil,
+      issue_project_name: nil,
+      issue_labels: [],
       issue_state: nil,
       issue_branch_name: nil,
       issue_url: nil,
@@ -416,6 +425,9 @@ defmodule SymphonyElixir.Workspace do
       {"SYMPHONY_ISSUE_IDENTIFIER", env_value(Map.get(issue_context, :issue_identifier))},
       {"SYMPHONY_ISSUE_TITLE", env_value(Map.get(issue_context, :issue_title))},
       {"SYMPHONY_ISSUE_DESCRIPTION", env_value(Map.get(issue_context, :issue_description))},
+      {"SYMPHONY_ISSUE_PROJECT_SLUG", env_value(Map.get(issue_context, :issue_project_slug))},
+      {"SYMPHONY_ISSUE_PROJECT_NAME", env_value(Map.get(issue_context, :issue_project_name))},
+      {"SYMPHONY_ISSUE_LABELS", issue_labels_env(Map.get(issue_context, :issue_labels))},
       {"SYMPHONY_ISSUE_STATE", env_value(Map.get(issue_context, :issue_state))},
       {"SYMPHONY_ISSUE_BRANCH_NAME", env_value(Map.get(issue_context, :issue_branch_name))},
       {"SYMPHONY_ISSUE_URL", env_value(Map.get(issue_context, :issue_url))},
@@ -425,6 +437,15 @@ defmodule SymphonyElixir.Workspace do
 
   defp issue_trace_id(%{trace_id: trace_id}) when is_binary(trace_id) and trace_id != "", do: trace_id
   defp issue_trace_id(_issue), do: nil
+
+  defp issue_labels_env(labels) when is_list(labels) do
+    Enum.map_join(labels, "\n", fn
+      label when is_binary(label) -> label
+      other -> to_string(other)
+    end)
+  end
+
+  defp issue_labels_env(_labels), do: ""
 
   defp env_value(nil), do: ""
   defp env_value(value) when is_binary(value), do: value

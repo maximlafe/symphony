@@ -32,6 +32,8 @@ defmodule SymphonyElixir.Config do
           explicit?: boolean()
         }
 
+  @type linear_polling_scope :: {:project, String.t()} | {:team, String.t()} | nil
+
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     case Workflow.current() do
@@ -94,6 +96,25 @@ defmodule SymphonyElixir.Config do
     case Application.get_env(:symphony_elixir, :server_port_override) do
       port when is_integer(port) and port >= 0 -> port
       _ -> settings!().server.port
+    end
+  end
+
+  @spec linear_polling_scope() :: linear_polling_scope()
+  def linear_polling_scope do
+    linear_polling_scope(settings!())
+  end
+
+  @spec linear_polling_scope(Schema.t()) :: linear_polling_scope()
+  def linear_polling_scope(%Schema{} = settings) do
+    cond do
+      is_binary(settings.tracker.project_slug) and settings.tracker.project_slug != "" ->
+        {:project, settings.tracker.project_slug}
+
+      is_binary(settings.tracker.team_key) and settings.tracker.team_key != "" ->
+        {:team, settings.tracker.team_key}
+
+      true ->
+        nil
     end
   end
 
@@ -174,8 +195,8 @@ defmodule SymphonyElixir.Config do
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
         {:error, :missing_linear_api_token}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
+      settings.tracker.kind == "linear" and is_nil(linear_polling_scope(settings)) ->
+        {:error, :missing_linear_polling_scope}
 
       true ->
         :ok
@@ -195,6 +216,9 @@ defmodule SymphonyElixir.Config do
 
       :workflow_front_matter_not_a_map ->
         "Failed to parse WORKFLOW.md: workflow front matter must decode to a map"
+
+      :missing_linear_polling_scope ->
+        "Invalid WORKFLOW.md config: tracker.project_slug or tracker.team_key is required when tracker.kind=linear"
 
       other ->
         "Invalid WORKFLOW.md config: #{inspect(other)}"

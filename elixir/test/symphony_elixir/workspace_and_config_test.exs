@@ -73,11 +73,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         {
           printf 'id=%s\\n' "$SYMPHONY_ISSUE_IDENTIFIER"
           printf 'title=%s\\n' "$SYMPHONY_ISSUE_TITLE"
+          printf 'project_slug=%s\\n' "$SYMPHONY_ISSUE_PROJECT_SLUG"
+          printf 'project_name=%s\\n' "$SYMPHONY_ISSUE_PROJECT_NAME"
           printf 'branch=%s\\n' "$SYMPHONY_ISSUE_BRANCH_NAME"
           printf 'state=%s\\n' "$SYMPHONY_ISSUE_STATE"
           printf 'url=%s\\n' "$SYMPHONY_ISSUE_URL"
         } > issue-env.txt
         printf '%s' "$SYMPHONY_ISSUE_DESCRIPTION" > issue-description.txt
+        printf '%s' "$SYMPHONY_ISSUE_LABELS" > issue-labels.txt
         """
       )
 
@@ -86,9 +89,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         identifier: "LET-188",
         title: "Branch marker test",
         description: "## Symphony\nBase branch: feature/tg-source\n",
+        project_slug: "izvlechenie-zadach-8209c2018e76",
+        project_name: "Извлечение задач",
         state: "Todo",
         branch_name: "feature/worker-head",
-        url: "https://linear.example/LET-188"
+        url: "https://linear.example/LET-188",
+        labels: ["repo:lead_status", "backend"]
       }
 
       assert {:ok, workspace} = Workspace.create_for_issue(issue)
@@ -97,6 +103,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                """
                id=LET-188
                title=Branch marker test
+               project_slug=izvlechenie-zadach-8209c2018e76
+               project_name=Извлечение задач
                branch=feature/worker-head
                state=Todo
                url=https://linear.example/LET-188
@@ -104,6 +112,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert File.read!(Path.join(workspace, "issue-description.txt")) ==
                "## Symphony\nBase branch: feature/tg-source\n"
+
+      assert File.read!(Path.join(workspace, "issue-labels.txt")) ==
+               "repo:lead_status\nbackend"
     after
       File.rm_rf(test_root)
     end
@@ -237,6 +248,266 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert File.dir?(workspace)
     after
       File.rm_rf(workspace_root)
+    end
+  end
+
+  test "repository routing script can bootstrap a fixed repository from project slug" do
+    previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
+    previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
+    previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("TEST_LEAD_STATUS_REPO_URL", previous_lead_status_repo)
+      restore_env("TEST_SYMPHONY_REPO_URL", previous_symphony_repo)
+      restore_env("TEST_TG_LIVE_EXPORT_REPO_URL", previous_tg_live_export_repo)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-repository-marker-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      lead_status_repo = Path.join(test_root, "lead_status")
+      symphony_repo = Path.join(test_root, "symphony")
+      tg_live_export_repo = Path.join(test_root, "tg_live_export")
+      workspace = Path.join(test_root, "workspace")
+
+      create_bootstrap_repo!(lead_status_repo, "lead_status")
+      create_bootstrap_repo!(symphony_repo, "symphony")
+      create_bootstrap_repo!(tg_live_export_repo, "tg_live_export")
+      File.mkdir_p!(workspace)
+
+      System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
+      System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
+      System.put_env("TEST_TG_LIVE_EXPORT_REPO_URL", tg_live_export_repo)
+
+      assert {_output, 0} =
+               System.cmd("sh", ["-lc", repository_routing_hook()],
+                 cd: workspace,
+                 env: [
+                   {"SYMPHONY_ISSUE_PROJECT_SLUG", "telegram-full-export-v2-a6212aeb565c"},
+                   {"SYMPHONY_ISSUE_PROJECT_NAME", "Telegram Full Export v2"},
+                   {"SYMPHONY_ISSUE_LABELS", ""}
+                 ]
+               )
+
+      assert File.read!(Path.join(workspace, "BOOTSTRAP_REPO.txt")) == "tg_live_export\n"
+      assert File.read!(Path.join(workspace, ".symphony-source-repository")) == "maximlafe/tg_live_export\n"
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "repository routing script uses repo label for ambiguous platform project" do
+    previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
+    previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
+    previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("TEST_LEAD_STATUS_REPO_URL", previous_lead_status_repo)
+      restore_env("TEST_SYMPHONY_REPO_URL", previous_symphony_repo)
+      restore_env("TEST_TG_LIVE_EXPORT_REPO_URL", previous_tg_live_export_repo)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-repository-blocker-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      lead_status_repo = Path.join(test_root, "lead_status")
+      symphony_repo = Path.join(test_root, "symphony")
+      tg_live_export_repo = Path.join(test_root, "tg_live_export")
+      workspace = Path.join(test_root, "workspace")
+
+      create_bootstrap_repo!(lead_status_repo, "lead_status")
+      create_bootstrap_repo!(symphony_repo, "symphony")
+      create_bootstrap_repo!(tg_live_export_repo, "tg_live_export")
+      File.mkdir_p!(workspace)
+
+      System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
+      System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
+      System.put_env("TEST_TG_LIVE_EXPORT_REPO_URL", tg_live_export_repo)
+
+      assert {_output, 0} =
+               System.cmd("sh", ["-lc", repository_routing_hook()],
+                 cd: workspace,
+                 env: [
+                   {"SYMPHONY_ISSUE_PROJECT_SLUG", "platforma-i-integraciya-448570ee6438"},
+                   {"SYMPHONY_ISSUE_PROJECT_NAME", "Платформа и интеграция"},
+                   {"SYMPHONY_ISSUE_LABELS", "repo:symphony"}
+                 ]
+               )
+
+      assert File.read!(Path.join(workspace, "BOOTSTRAP_REPO.txt")) == "symphony\n"
+      assert File.read!(Path.join(workspace, ".symphony-source-repository")) == "maximlafe/symphony\n"
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "repository routing script writes blocker file when ambiguous platform project has no repo label" do
+    previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
+    previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
+    previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("TEST_LEAD_STATUS_REPO_URL", previous_lead_status_repo)
+      restore_env("TEST_SYMPHONY_REPO_URL", previous_symphony_repo)
+      restore_env("TEST_TG_LIVE_EXPORT_REPO_URL", previous_tg_live_export_repo)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-repository-blocker-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      lead_status_repo = Path.join(test_root, "lead_status")
+      symphony_repo = Path.join(test_root, "symphony")
+      tg_live_export_repo = Path.join(test_root, "tg_live_export")
+      workspace = Path.join(test_root, "workspace")
+
+      create_bootstrap_repo!(lead_status_repo, "lead_status")
+      create_bootstrap_repo!(symphony_repo, "symphony")
+      create_bootstrap_repo!(tg_live_export_repo, "tg_live_export")
+      File.mkdir_p!(workspace)
+
+      System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
+      System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
+      System.put_env("TEST_TG_LIVE_EXPORT_REPO_URL", tg_live_export_repo)
+
+      assert {_output, 0} =
+               System.cmd("sh", ["-lc", repository_routing_hook()],
+                 cd: workspace,
+                 env: [
+                   {"SYMPHONY_ISSUE_PROJECT_SLUG", "platforma-i-integraciya-448570ee6438"},
+                   {"SYMPHONY_ISSUE_PROJECT_NAME", "Платформа и интеграция"},
+                   {"SYMPHONY_ISSUE_LABELS", ""}
+                 ]
+               )
+
+      assert File.read!(Path.join(workspace, ".symphony-base-branch-error")) ==
+               "Project 'Платформа и интеграция' requires one repo label: repo:lead_status, repo:symphony, or repo:tg_live_export.\n"
+
+      refute File.exists?(Path.join(workspace, ".git"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "repository retry script reuses the stored repository when ambiguous project has no repo label" do
+    previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
+    previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
+    previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("TEST_LEAD_STATUS_REPO_URL", previous_lead_status_repo)
+      restore_env("TEST_SYMPHONY_REPO_URL", previous_symphony_repo)
+      restore_env("TEST_TG_LIVE_EXPORT_REPO_URL", previous_tg_live_export_repo)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-repository-retry-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      lead_status_repo = Path.join(test_root, "lead_status")
+      symphony_repo = Path.join(test_root, "symphony")
+      tg_live_export_repo = Path.join(test_root, "tg_live_export")
+      workspace = Path.join(test_root, "workspace")
+
+      create_bootstrap_repo!(lead_status_repo, "lead_status")
+      create_bootstrap_repo!(symphony_repo, "symphony")
+      create_bootstrap_repo!(tg_live_export_repo, "tg_live_export")
+
+      System.cmd("git", ["clone", "--depth", "1", symphony_repo, workspace])
+      File.write!(Path.join(workspace, ".symphony-source-repository"), "maximlafe/symphony\n")
+      File.write!(Path.join(workspace, ".symphony-base-branch"), "main\n")
+
+      System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
+      System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
+      System.put_env("TEST_TG_LIVE_EXPORT_REPO_URL", tg_live_export_repo)
+
+      assert {_output, 0} =
+               System.cmd("sh", ["-lc", repository_retry_hook()],
+                 cd: workspace,
+                 env: [
+                   {"SYMPHONY_ISSUE_DESCRIPTION", ""},
+                   {"SYMPHONY_ISSUE_PROJECT_SLUG", "platforma-i-integraciya-448570ee6438"},
+                   {"SYMPHONY_ISSUE_PROJECT_NAME", "Платформа и интеграция"},
+                   {"SYMPHONY_ISSUE_LABELS", ""}
+                 ]
+               )
+
+      assert File.read!(Path.join(workspace, ".symphony-source-repository")) == "maximlafe/symphony\n"
+      assert File.read!(Path.join(workspace, ".symphony-base-branch")) == "main\n"
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "repository retry script preserves the stored base branch when Base branch marker is absent" do
+    previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
+    previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
+    previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("TEST_LEAD_STATUS_REPO_URL", previous_lead_status_repo)
+      restore_env("TEST_SYMPHONY_REPO_URL", previous_symphony_repo)
+      restore_env("TEST_TG_LIVE_EXPORT_REPO_URL", previous_tg_live_export_repo)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-base-branch-retry-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      lead_status_repo = Path.join(test_root, "lead_status")
+      symphony_repo = Path.join(test_root, "symphony")
+      tg_live_export_repo = Path.join(test_root, "tg_live_export")
+      workspace = Path.join(test_root, "workspace")
+
+      create_bootstrap_repo!(lead_status_repo, "lead_status")
+      create_bootstrap_repo!(symphony_repo, "symphony")
+      create_bootstrap_repo!(tg_live_export_repo, "tg_live_export")
+
+      System.cmd("git", ["clone", "--depth", "1", lead_status_repo, workspace])
+      File.write!(Path.join(workspace, ".symphony-source-repository"), "maximlafe/lead_status\n")
+      File.write!(Path.join(workspace, ".symphony-base-branch"), "release/42\n")
+
+      System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
+      System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
+      System.put_env("TEST_TG_LIVE_EXPORT_REPO_URL", tg_live_export_repo)
+
+      assert {_output, 0} =
+               System.cmd("sh", ["-lc", repository_retry_hook()],
+                 cd: workspace,
+                 env: [
+                   {"SYMPHONY_ISSUE_DESCRIPTION", ""},
+                   {"SYMPHONY_ISSUE_PROJECT_SLUG", "master-komand-dfbe2b1b972e"},
+                   {"SYMPHONY_ISSUE_PROJECT_NAME", "Мастер команд"},
+                   {"SYMPHONY_ISSUE_LABELS", ""}
+                 ]
+               )
+
+      assert File.read!(Path.join(workspace, ".symphony-source-repository")) == "maximlafe/lead_status\n"
+      assert File.read!(Path.join(workspace, ".symphony-base-branch")) == "release/42\n"
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch-note"))
+    after
+      File.rm_rf(test_root)
     end
   end
 
@@ -506,6 +777,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "assignee" => %{
         "id" => "user-1"
       },
+      "project" => %{"slugId" => "master-komand-dfbe2b1b972e", "name" => "Мастер команд"},
       "labels" => %{"nodes" => [%{"name" => "Backend"}]},
       "inverseRelations" => %{
         "nodes" => [
@@ -536,6 +808,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.blocked_by == [%{id: "issue-2", identifier: "MT-2", state: "In Progress"}]
     assert issue.labels == ["backend"]
     assert issue.priority == 2
+    assert issue.project_slug == "master-komand-dfbe2b1b972e"
+    assert issue.project_name == "Мастер команд"
     assert issue.state == "Todo"
     assert issue.assignee_id == "user-1"
     assert issue.assigned_to_worker
@@ -555,6 +829,53 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     issue = Client.normalize_issue_for_test(raw_issue, "user-1")
 
     refute issue.assigned_to_worker
+  end
+
+  test "linear client queries Linear team scope when tracker.team_key is configured" do
+    graphql_fun = fn query, variables ->
+      send(self(), {:linear_team_scope_query, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issues" => %{
+             "nodes" => [
+               %{
+                 "id" => "issue-team-1",
+                 "identifier" => "LET-1",
+                 "title" => "Team scoped task",
+                 "description" => "Scoped by team key",
+                 "project" => %{"slugId" => "izvlechenie-zadach-8209c2018e76", "name" => "Извлечение задач"},
+                 "state" => %{"name" => "Todo"},
+                 "labels" => %{"nodes" => []},
+                 "inverseRelations" => %{"nodes" => []},
+                 "createdAt" => "2026-01-01T00:00:00Z",
+                 "updatedAt" => "2026-01-02T00:00:00Z"
+               }
+             ],
+             "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+           }
+         }
+       }}
+    end
+
+    assert {:ok, [issue]} = Client.fetch_issues_by_states_for_test({:team, "LET"}, ["Todo"], graphql_fun)
+    assert issue.identifier == "LET-1"
+    assert issue.project_slug == "izvlechenie-zadach-8209c2018e76"
+    assert issue.project_name == "Извлечение задач"
+
+    expected_variables = %{
+      teamKey: "LET",
+      stateNames: ["Todo"],
+      first: 50,
+      relationFirst: 50,
+      after: nil
+    }
+
+    assert_receive {:linear_team_scope_query, query, ^expected_variables}
+
+    assert query =~ "SymphonyLinearTeamPoll"
+    assert query =~ "team: {key: {eq: $teamKey}}"
   end
 
   test "linear client pagination merge helper preserves issue ordering" do
@@ -953,13 +1274,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       codex_read_timeout_ms: nil,
       codex_stall_timeout_ms: nil,
       tracker_api_token: nil,
-      tracker_project_slug: nil
+      tracker_project_slug: nil,
+      tracker_team_key: nil
     )
 
     config = Config.settings!()
     assert config.tracker.endpoint == "https://api.linear.app/graphql"
     assert config.tracker.api_key == nil
     assert config.tracker.project_slug == nil
+    assert config.tracker.team_key == nil
     assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert config.agent.max_concurrent_agents == 10
     assert config.codex.command == "codex app-server"
@@ -1484,5 +1807,283 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert {:error, {:invalid_workflow_config, missing_message}} = Config.settings()
     assert missing_message =~ "codex.accounts.0.codex_home"
     assert missing_message =~ "env-backed path is missing"
+  end
+
+  defp create_bootstrap_repo!(repo_path, repo_name) do
+    File.mkdir_p!(repo_path)
+    File.write!(Path.join(repo_path, "README.md"), "#{repo_name}\n")
+
+    File.write!(
+      Path.join(repo_path, "Makefile"),
+      "symphony-bootstrap:\n\tprintf '%s\\n' '#{repo_name}' > BOOTSTRAP_REPO.txt\n"
+    )
+
+    System.cmd("git", ["-C", repo_path, "init", "-b", "main"])
+    System.cmd("git", ["-C", repo_path, "config", "user.name", "Test User"])
+    System.cmd("git", ["-C", repo_path, "config", "user.email", "test@example.com"])
+    System.cmd("git", ["-C", repo_path, "add", "README.md", "Makefile"])
+    System.cmd("git", ["-C", repo_path, "commit", "-m", "initial"])
+  end
+
+  defp repository_routing_hook do
+    ~S"""
+    resolve_repo_url() {
+      case "$1" in
+        maximlafe/lead_status) printf '%s\n' "${TEST_LEAD_STATUS_REPO_URL:?}" ;;
+        maximlafe/symphony) printf '%s\n' "${TEST_SYMPHONY_REPO_URL:?}" ;;
+        maximlafe/tg_live_export) printf '%s\n' "${TEST_TG_LIVE_EXPORT_REPO_URL:?}" ;;
+        *) return 1 ;;
+      esac
+    }
+    resolve_repo_labels() {
+      printf '%s\n' "${SYMPHONY_ISSUE_LABELS:-}" | awk '
+        {
+          label = tolower($0)
+          if (label == "repo:lead_status") {
+            print "maximlafe/lead_status"
+          } else if (label == "repo:symphony") {
+            print "maximlafe/symphony"
+          } else if (label == "repo:tg_live_export") {
+            print "maximlafe/tg_live_export"
+          }
+        }
+      '
+    }
+    resolve_project_repository() {
+      case "$1" in
+        telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export" ;;
+        master-komand-dfbe2b1b972e|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status" ;;
+        platforma-i-integraciya-448570ee6438) return 2 ;;
+        *) return 1 ;;
+      esac
+    }
+    issue_project_slug=${SYMPHONY_ISSUE_PROJECT_SLUG:-}
+    issue_project_name=${SYMPHONY_ISSUE_PROJECT_NAME:-}
+    if [ -n "$issue_project_name" ]; then
+      project_display=$issue_project_name
+    elif [ -n "$issue_project_slug" ]; then
+      project_display=$issue_project_slug
+    else
+      project_display=unknown-project
+    fi
+    repo_labels=$(resolve_repo_labels)
+    repo_label_count=$(printf '%s\n' "$repo_labels" | sed '/^$/d' | wc -l | tr -d ' ')
+    repo_override=
+    resolved_project_repository=
+    rm -f .symphony-base-branch-error
+    if [ "$repo_label_count" -gt 1 ]; then
+      printf '%s\n' "Multiple repo:* labels found on the Linear issue." > .symphony-base-branch-error
+      exit 0
+    fi
+    if [ "$repo_label_count" -eq 1 ]; then
+      repo_override=$repo_labels
+    fi
+    resolved_project_repository=$(resolve_project_repository "$issue_project_slug")
+    project_resolution_status=$?
+    case "$project_resolution_status" in
+      0)
+        repository=$resolved_project_repository
+        if [ -n "$repo_override" ] && [ "$repo_override" != "$repository" ]; then
+          printf "Project '%s' routes to '%s'; repo label points to '%s'.\n" "$project_display" "$repository" "$repo_override" > .symphony-base-branch-error
+          exit 0
+        fi
+        ;;
+      2)
+        if [ -n "$repo_override" ]; then
+          repository=$repo_override
+        else
+          printf "Project '%s' requires one repo label: repo:lead_status, repo:symphony, or repo:tg_live_export.\n" "$project_display" > .symphony-base-branch-error
+          exit 0
+        fi
+        ;;
+      *)
+        printf "Project '%s' is not mapped to a repository for this workflow.\n" "$project_display" > .symphony-base-branch-error
+        exit 0
+        ;;
+    esac
+    source_repo_url=$(resolve_repo_url "$repository") || {
+      printf "Repository '%s' is not in the allowlist.\n" "$repository" > .symphony-base-branch-error
+      exit 0
+    }
+    git clone --depth 1 "$source_repo_url" .
+    printf '%s\n' "$repository" > .symphony-source-repository
+    make symphony-bootstrap
+    """
+  end
+
+  defp repository_retry_hook do
+    ~S"""
+    extract_symphony_marker() {
+      marker_name=$1
+      printf '%s\n' "${SYMPHONY_ISSUE_DESCRIPTION:-}" | awk -v marker="$marker_name" '
+        BEGIN { in_section = 0 }
+        /^[[:space:]]*##[[:space:]]+Symphony[[:space:]]*$/ {
+          in_section = 1
+          next
+        }
+        in_section && /^[[:space:]]*##[[:space:]]+/ { exit }
+        in_section {
+          prefix = "^[[:space:]]*" marker ":[[:space:]]*"
+          if ($0 ~ prefix) {
+            line = $0
+            sub(prefix, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            if (length(line) == 0) {
+              print "__EMPTY__"
+            } else {
+              print line
+            }
+          }
+        }
+      '
+    }
+    resolve_repo_url() {
+      case "$1" in
+        maximlafe/lead_status) printf '%s\n' "${TEST_LEAD_STATUS_REPO_URL:?}" ;;
+        maximlafe/symphony) printf '%s\n' "${TEST_SYMPHONY_REPO_URL:?}" ;;
+        maximlafe/tg_live_export) printf '%s\n' "${TEST_TG_LIVE_EXPORT_REPO_URL:?}" ;;
+        *) return 1 ;;
+      esac
+    }
+    resolve_repo_labels() {
+      printf '%s\n' "${SYMPHONY_ISSUE_LABELS:-}" | awk '
+        {
+          label = tolower($0)
+          if (label == "repo:lead_status") {
+            print "maximlafe/lead_status"
+          } else if (label == "repo:symphony") {
+            print "maximlafe/symphony"
+          } else if (label == "repo:tg_live_export") {
+            print "maximlafe/tg_live_export"
+          }
+        }
+      '
+    }
+    resolve_project_repository() {
+      case "$1" in
+        telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export" ;;
+        master-komand-dfbe2b1b972e|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status" ;;
+        platforma-i-integraciya-448570ee6438) return 2 ;;
+        *) return 1 ;;
+      esac
+    }
+    detect_repo_default_branch() {
+      branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+      if [ -z "$branch" ]; then
+        branch=main
+      fi
+      printf '%s\n' "$branch"
+    }
+    resolve_current_repository() {
+      previous_repository=$(cat .symphony-source-repository 2>/dev/null || true)
+      if [ -n "$previous_repository" ]; then
+        printf '%s\n' "$previous_repository"
+        return 0
+      fi
+      git remote get-url origin 2>/dev/null | sed -E \
+        -e 's#^git@github.com:##' \
+        -e 's#^ssh://git@github.com/##' \
+        -e 's#^https?://([^@/]+@)?github.com/##' \
+        -e 's#\.git$##'
+    }
+    append_note() {
+      if [ -z "${setup_note:-}" ]; then
+        setup_note=$1
+      else
+        setup_note=$(printf '%s\n%s' "$setup_note" "$1")
+      fi
+    }
+    issue_project_slug=${SYMPHONY_ISSUE_PROJECT_SLUG:-}
+    issue_project_name=${SYMPHONY_ISSUE_PROJECT_NAME:-}
+    if [ -n "$issue_project_name" ]; then
+      project_display=$issue_project_name
+    elif [ -n "$issue_project_slug" ]; then
+      project_display=$issue_project_slug
+    else
+      project_display=unknown-project
+    fi
+    repo_labels=$(resolve_repo_labels)
+    repo_label_count=$(printf '%s\n' "$repo_labels" | sed '/^$/d' | wc -l | tr -d ' ')
+    requested_base_branches=$(extract_symphony_marker "Base branch")
+    base_branch_marker_count=$(printf '%s\n' "$requested_base_branches" | sed '/^$/d' | wc -l | tr -d ' ')
+    repo_override=
+    resolved_project_repository=
+    source_repository=
+    source_repo_url=
+    requested_base_branch=
+    previous_base_branch=
+    base_branch=
+    base_branch_error=
+    current_repository=
+    setup_note=
+    rm -f .symphony-base-branch-error .symphony-base-branch-note
+    current_repository=$(resolve_current_repository)
+    previous_base_branch=$(cat .symphony-base-branch 2>/dev/null || true)
+    if [ "$repo_label_count" -gt 1 ]; then
+      base_branch_error="Multiple repo:* labels found on the Linear issue."
+    elif [ "$repo_label_count" -eq 1 ]; then
+      repo_override=$repo_labels
+    fi
+    if [ -z "$base_branch_error" ]; then
+      resolved_project_repository=$(resolve_project_repository "$issue_project_slug")
+      project_resolution_status=$?
+      case "$project_resolution_status" in
+        0)
+          source_repository=$resolved_project_repository
+          if [ -n "$repo_override" ] && [ "$repo_override" != "$source_repository" ]; then
+            base_branch_error="Project '$project_display' routes to '$source_repository'; repo label points to '$repo_override'."
+          fi
+          ;;
+        2)
+          if [ -n "$repo_override" ]; then
+            source_repository=$repo_override
+          elif [ -n "$current_repository" ]; then
+            source_repository=$current_repository
+            append_note "Repo label is missing; reusing the bound repository $current_repository."
+          else
+            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, or repo:tg_live_export."
+          fi
+          ;;
+        *)
+          base_branch_error="Project '$project_display' is not mapped to a repository for this workflow."
+          ;;
+      esac
+    fi
+    if [ -z "$base_branch_error" ] && [ -n "$current_repository" ] && [ "$current_repository" != "$source_repository" ]; then
+      base_branch_error="Workspace is already bound to '$current_repository' but the ticket routes to '$source_repository'. A fresh workspace is required."
+    fi
+    if [ -z "$base_branch_error" ]; then
+      source_repo_url=$(resolve_repo_url "$source_repository") || {
+        base_branch_error="Repository '$source_repository' is not in the allowlist."
+      }
+    fi
+    if [ -z "$base_branch_error" ] && [ "$base_branch_marker_count" -gt 1 ]; then
+      base_branch_error="Multiple Base branch: lines found in ## Symphony."
+    elif [ -z "$base_branch_error" ] && [ "$base_branch_marker_count" -eq 1 ]; then
+      requested_base_branch=$requested_base_branches
+      if [ "$requested_base_branch" = "__EMPTY__" ] || printf '%s' "$requested_base_branch" | grep -Eq '[[:space:]]'; then
+        base_branch_error="Base branch: in ## Symphony is empty or contains whitespace."
+      elif git ls-remote --exit-code --heads origin "$requested_base_branch" >/dev/null 2>&1; then
+        base_branch=$requested_base_branch
+      else
+        base_branch_error="Branch '$requested_base_branch' from Base branch: was not found in origin for $source_repository."
+      fi
+    elif [ -n "$previous_base_branch" ]; then
+      base_branch=$previous_base_branch
+    fi
+    if [ -n "$base_branch_error" ]; then
+      printf '%s\n' "$base_branch_error" > .symphony-base-branch-error
+      exit 0
+    fi
+    if [ -z "$base_branch" ]; then
+      base_branch=$(detect_repo_default_branch)
+      append_note "Base branch marker is missing; using the repository default branch $base_branch."
+    fi
+    printf '%s\n' "$source_repository" > .symphony-source-repository
+    printf '%s\n' "$base_branch" > .symphony-base-branch
+    if [ -n "$setup_note" ]; then
+      printf '%s\n' "$setup_note" > .symphony-base-branch-note
+    fi
+    """
   end
 end

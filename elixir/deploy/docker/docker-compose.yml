@@ -15,7 +15,7 @@ services:
       SYMPHONY_REQUIRED_ENV_VARS: LINEAR_API_KEY GH_TOKEN OPENAI_API_KEY DATABASE_URL
       SOURCE_REPO_URL: https://github.com/maximlafe/lead_status.git
       POETRY_VIRTUALENVS_IN_PROJECT: "true"
-      WORKFLOW_PATH: /srv/symphony/workflows/izvlechenie-zadach.WORKFLOW.md
+      WORKFLOW_PATH: /srv/symphony/workflows/let.WORKFLOW.md
       SYMPHONY_PORT: "4101"
       SYMPHONY_WORKSPACE_ROOT: /srv/symphony/workspaces/task-extract
       SYMPHONY_LOGS_ROOT: /srv/symphony/logs/task-extract
@@ -33,80 +33,6 @@ services:
       - "4101:4101"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4101/api/v1/state >/dev/null || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 40s
-
-  symphony-team-master:
-    build:
-      context: ../../..
-      dockerfile: elixir/deploy/docker/Dockerfile
-    container_name: symphony-team-master
-    restart: unless-stopped
-    init: true
-    env_file:
-      - /etc/symphony/symphony.env
-    environment:
-      CODEX_HOME: /root/.codex
-      SYMPHONY_REQUIRED_ENV_VARS: LINEAR_API_KEY GH_TOKEN OPENAI_API_KEY DATABASE_URL
-      SOURCE_REPO_URL: https://github.com/maximlafe/lead_status.git
-      POETRY_VIRTUALENVS_IN_PROJECT: "true"
-      WORKFLOW_PATH: /srv/symphony/workflows/master-komand.WORKFLOW.md
-      SYMPHONY_PORT: "4102"
-      SYMPHONY_WORKSPACE_ROOT: /srv/symphony/workspaces/team-master
-      SYMPHONY_LOGS_ROOT: /srv/symphony/logs/team-master
-    volumes:
-      - /root/.codex:/root/.codex
-      - /root/.codex-furrow:/root/.codex-furrow
-      - /root/.codex-rebecca:/root/.codex-rebecca
-      - /root/.codex-deborah:/root/.codex-deborah
-      - /srv/symphony/app/workflows/letterl/maxime:/srv/symphony/workflows:ro
-      - /srv/symphony/workspaces/team-master:/srv/symphony/workspaces/team-master
-      - /srv/symphony/logs/team-master:/srv/symphony/logs/team-master
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "4102:4102"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4102/api/v1/state >/dev/null || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 40s
-
-  symphony-platform:
-    build:
-      context: ../../..
-      dockerfile: elixir/deploy/docker/Dockerfile
-    container_name: symphony-platform
-    restart: unless-stopped
-    init: true
-    env_file:
-      - /etc/symphony/symphony.env
-    environment:
-      CODEX_HOME: /root/.codex
-      SYMPHONY_REQUIRED_ENV_VARS: LINEAR_API_KEY GH_TOKEN OPENAI_API_KEY DATABASE_URL
-      SOURCE_REPO_URL: https://github.com/maximlafe/lead_status.git
-      POETRY_VIRTUALENVS_IN_PROJECT: "true"
-      WORKFLOW_PATH: /srv/symphony/workflows/platforma-i-integraciya.WORKFLOW.md
-      SYMPHONY_PORT: "4103"
-      SYMPHONY_WORKSPACE_ROOT: /srv/symphony/workspaces/platform
-      SYMPHONY_LOGS_ROOT: /srv/symphony/logs/platform
-    volumes:
-      - /root/.codex:/root/.codex
-      - /root/.codex-furrow:/root/.codex-furrow
-      - /root/.codex-rebecca:/root/.codex-rebecca
-      - /root/.codex-deborah:/root/.codex-deborah
-      - /srv/symphony/app/workflows/letterl/maxime:/srv/symphony/workflows:ro
-      - /srv/symphony/workspaces/platform:/srv/symphony/workspaces/platform
-      - /srv/symphony/logs/platform:/srv/symphony/logs/platform
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "4103:4103"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4103/api/v1/state >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
