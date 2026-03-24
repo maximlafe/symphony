@@ -137,14 +137,27 @@ defmodule SymphonyElixir.CoreTest do
     assert is_map(hooks)
     assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/"
     assert Map.get(hooks, "after_create") =~ "/symphony ."
-    assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
-    assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
+    assert Map.get(hooks, "after_create") =~ "make symphony-bootstrap"
     assert Map.get(hooks, "before_remove") =~ "gh pr list --head \"$branch\" --state open --json number"
     assert Map.get(hooks, "before_remove") =~ "gh pr close \"$pr\" --comment"
 
     assert String.trim(prompt) != ""
     assert is_binary(Config.workflow_prompt())
     assert Config.workflow_prompt() == prompt
+  end
+
+  test "repository root exposes the symphony-bootstrap contract" do
+    repo_root = Path.expand("../../..", __DIR__)
+    makefile_path = Path.join(repo_root, "Makefile")
+
+    assert File.exists?(makefile_path)
+
+    makefile = File.read!(makefile_path)
+
+    assert makefile =~ ".PHONY: help symphony-bootstrap"
+    assert makefile =~ "symphony-bootstrap:"
+    assert makefile =~ "mise install"
+    assert makefile =~ "$(MAKE) -C \"$(ELIXIR_APP_DIR)\" setup"
   end
 
   test "linear api token resolves from LINEAR_API_KEY env var" do

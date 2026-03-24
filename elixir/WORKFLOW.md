@@ -24,9 +24,7 @@ workspace:
 hooks:
   after_create: |
     git clone --depth 1 https://github.com/maximlafe/symphony .
-    if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
-    fi
+    make symphony-bootstrap
   before_remove: |
     branch=$(git branch --show-current 2>/dev/null)
     if [ -n "$branch" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
