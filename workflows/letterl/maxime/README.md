@@ -48,6 +48,7 @@ Suggested preflight before launch:
 
 - `gh auth status`
 - verify `git clone`/`git ls-remote` for all three allowlisted GitHub repos work without prompts
+- run `make symphony-bootstrap` in a fresh clone of each allowlisted repo and confirm reruns stay unattended and leave no tracked changes
 - verify Linear triage can apply the `repo:*` labels for `Платформа и интеграция`
 - confirm `DATABASE_URL` points to reachable PostgreSQL
 - confirm Node/npm are installed in the container image
