@@ -17,6 +17,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.manual_intervention_state == "Blocked"
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
+    assert config.tracker.team_key == nil
     assert config.agent.max_turns == 20
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -44,13 +45,40 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "token",
-      tracker_project_slug: nil
+      tracker_project_slug: nil,
+      tracker_team_key: nil
     )
 
-    assert {:error, :missing_linear_project_slug} = Config.validate!()
+    assert {:error, :missing_linear_polling_scope} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_team_key: "LET"
+    )
+
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.team_key == "LET"
+    assert Config.linear_polling_scope() == {:team, "LET"}
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: "   ",
+      tracker_team_key: "   "
+    )
+
+    assert {:error, :missing_linear_polling_scope} = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: "project",
+      tracker_team_key: "LET"
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "tracker.team_key"
+    assert message =~ "Linear polling scope"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: "project",
+      tracker_team_key: nil,
       codex_command: ""
     )
 

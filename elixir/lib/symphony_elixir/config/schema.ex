@@ -49,6 +49,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:endpoint, :string, default: "https://api.linear.app/graphql")
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:team_key, :string)
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
 
@@ -67,6 +68,7 @@ defmodule SymphonyElixir.Config.Schema do
           :endpoint,
           :api_key,
           :project_slug,
+          :team_key,
           :assignee,
           :active_states,
           :manual_intervention_state,
@@ -74,8 +76,33 @@ defmodule SymphonyElixir.Config.Schema do
         ],
         empty_values: []
       )
+      |> update_change(:project_slug, &normalize_optional_string/1)
+      |> update_change(:team_key, &normalize_optional_string/1)
       |> update_change(:manual_intervention_state, &String.trim/1)
       |> validate_length(:manual_intervention_state, min: 1)
+      |> validate_linear_polling_scope()
+    end
+
+    defp validate_linear_polling_scope(changeset) do
+      project_slug = get_field(changeset, :project_slug)
+      team_key = get_field(changeset, :team_key)
+
+      if is_binary(project_slug) and is_binary(team_key) do
+        add_error(
+          changeset,
+          :team_key,
+          "must not be set when tracker.project_slug is configured; choose exactly one Linear polling scope"
+        )
+      else
+        changeset
+      end
+    end
+
+    defp normalize_optional_string(value) when is_binary(value) do
+      case String.trim(value) do
+        "" -> nil
+        normalized -> normalized
+      end
     end
   end
 

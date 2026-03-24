@@ -16,7 +16,7 @@ Then ask your agent to set up Symphony for your repo.
 
 ## How it works
 
-Symphony polls a Linear project for active tickets. Each ticket gets an isolated workspace clone and a Codex agent. The agent reads the ticket, writes a plan, implements, validates, and opens a PR. You review PRs and move tickets through states — the agents handle the rest.
+Symphony polls a Linear project or team for active tickets. Each ticket gets an isolated workspace clone and a Codex agent. The agent reads the ticket, writes a plan, implements, validates, and opens a PR. You review PRs and move tickets through states — the agents handle the rest.
 
 The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatter for config and a prompt body that defines agent behavior. Hot-reloads in under a second, no restart needed.
 
@@ -33,7 +33,7 @@ The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatt
 
 1. Build: `git clone https://github.com/odysseus0/symphony && cd symphony/elixir && mise trust && mise install && mise exec -- mix setup && mise exec -- mix build`
 2. Install skills: `npx skills add odysseus0/symphony -a codex -s linear land commit push pull debug --copy -y` and copy `elixir/WORKFLOW.md` to your repo
-3. In WORKFLOW.md, set `tracker.project_slug` and `hooks.after_create` (clone your repo + setup commands). Hooks also receive issue metadata in env vars like `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_DESCRIPTION`, and `SYMPHONY_ISSUE_BRANCH_NAME` if you need per-issue bootstrap behavior.
+3. In `WORKFLOW.md`, set exactly one Linear polling scope: `tracker.project_slug` or `tracker.team_key`, plus `hooks.after_create` (clone your repo + setup commands). Hooks also receive issue metadata in env vars like `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_DESCRIPTION`, `SYMPHONY_ISSUE_BRANCH_NAME`, `SYMPHONY_ISSUE_PROJECT_SLUG`, and `SYMPHONY_ISSUE_LABELS` if you need structured per-issue bootstrap behavior.
 4. Add **Rework**, **Human Review**, **Merging** as custom states in Linear (Team Settings → Workflow)
 5. Commit, push, then: `mise exec -- ./bin/symphony /path/to/your-repo/WORKFLOW.md`
 

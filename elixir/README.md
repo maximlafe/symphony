@@ -37,6 +37,8 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
      operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
+   - Set exactly one Linear polling scope: `tracker.project_slug` for project-scoped polling or
+     `tracker.team_key` for team-scoped polling.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
@@ -90,6 +92,7 @@ Minimal example:
 ---
 tracker:
   kind: linear
+  # Set exactly one of project_slug or team_key.
   project_slug: "..."
 workspace:
   root: ~/code/workspaces
@@ -113,6 +116,8 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
+- Linear polling scope is mutually exclusive: configure exactly one of `tracker.project_slug` or
+  `tracker.team_key`.
 - The prompt body is the workflow contract. In production, make handoffs explicit with `checkpoint_type` and `risk_level`, define low-context behavior, and cap repeated auto-fix loops so the agent escalates instead of spinning.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
@@ -135,6 +140,7 @@ Notes:
   runtime warning and dashboard highlight. Default: `10737418240` bytes (`10 GiB`).
 - Workspace hooks receive issue metadata in environment variables such as
   `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_TITLE`, `SYMPHONY_ISSUE_DESCRIPTION`,
+  `SYMPHONY_ISSUE_PROJECT_SLUG`, `SYMPHONY_ISSUE_PROJECT_NAME`, `SYMPHONY_ISSUE_LABELS`,
   `SYMPHONY_ISSUE_STATE`, `SYMPHONY_ISSUE_BRANCH_NAME`, and `SYMPHONY_ISSUE_URL`.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.

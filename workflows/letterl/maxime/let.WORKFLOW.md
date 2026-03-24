@@ -1,7 +1,7 @@
 ---
 tracker:
   kind: linear
-  project_slug: "izvlechenie-zadach-8209c2018e76"
+  team_key: "LET"
   assignee: "4eb8c4a3-8050-4af2-aa2b-da38d903c941"
   active_states:
     - Todo
@@ -24,26 +24,59 @@ hooks:
   timeout_ms: 600000
   after_create: |
     export GIT_TERMINAL_PROMPT=0
-    export SOURCE_REPO_URL="${SOURCE_REPO_URL:-https://github.com/maximlafe/lead_status.git}"
-    extract_requested_base_branch() {
-      printf '%s\n' "${SYMPHONY_ISSUE_DESCRIPTION:-}" | awk '
+    extract_symphony_marker() {
+      marker_name=$1
+      printf '%s\n' "${SYMPHONY_ISSUE_DESCRIPTION:-}" | awk -v marker="$marker_name" '
         BEGIN { in_section = 0 }
         /^[[:space:]]*##[[:space:]]+Symphony[[:space:]]*$/ {
           in_section = 1
           next
         }
         in_section && /^[[:space:]]*##[[:space:]]+/ { exit }
-        in_section && /^[[:space:]]*Base branch:[[:space:]]*/ {
-          line = $0
-          sub(/^[[:space:]]*Base branch:[[:space:]]*/, "", line)
-          sub(/[[:space:]]+$/, "", line)
-          if (length(line) == 0) {
-            print "__EMPTY__"
-          } else {
-            print line
+        in_section {
+          prefix = "^[[:space:]]*" marker ":[[:space:]]*"
+          if ($0 ~ prefix) {
+            line = $0
+            sub(prefix, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            if (length(line) == 0) {
+              print "__EMPTY__"
+            } else {
+              print line
+            }
           }
         }
       '
+    }
+    resolve_repo_url() {
+      case "$1" in
+        maximlafe/lead_status) printf '%s\n' "https://github.com/maximlafe/lead_status.git" ;;
+        maximlafe/symphony) printf '%s\n' "https://github.com/maximlafe/symphony.git" ;;
+        maximlafe/tg_live_export) printf '%s\n' "https://github.com/maximlafe/tg_live_export.git" ;;
+        *) return 1 ;;
+      esac
+    }
+    resolve_repo_labels() {
+      printf '%s\n' "${SYMPHONY_ISSUE_LABELS:-}" | awk '
+        {
+          label = tolower($0)
+          if (label == "repo:lead_status") {
+            print "maximlafe/lead_status"
+          } else if (label == "repo:symphony") {
+            print "maximlafe/symphony"
+          } else if (label == "repo:tg_live_export") {
+            print "maximlafe/tg_live_export"
+          }
+        }
+      '
+    }
+    resolve_project_repository() {
+      case "$1" in
+        telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export" ;;
+        master-komand-dfbe2b1b972e|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status" ;;
+        platforma-i-integraciya-448570ee6438) return 2 ;;
+        *) return 1 ;;
+      esac
     }
     detect_repo_default_branch() {
       branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
@@ -55,12 +88,19 @@ hooks:
       fi
       printf '%s\n' "$branch"
     }
+    append_note() {
+      if [ -z "${setup_note:-}" ]; then
+        setup_note=$1
+      else
+        setup_note=$(printf '%s\n%s' "$setup_note" "$1")
+      fi
+    }
     if [ -z "${GH_TOKEN:-}" ]; then
-      echo "GH_TOKEN is required for unattended lead_status clone/push access." >&2
+      echo "GH_TOKEN is required for unattended GitHub clone/push access." >&2
       exit 1
     fi
     if ! command -v gh >/dev/null 2>&1; then
-      echo "`gh` is required for unattended lead_status clone/push access." >&2
+      echo "`gh` is required for unattended GitHub clone/push access." >&2
       exit 1
     fi
     gh auth status >/dev/null 2>&1 || {
@@ -71,56 +111,148 @@ hooks:
       echo "Failed to configure git credentials via gh auth setup-git." >&2
       exit 1
     }
-    requested_markers=$(extract_requested_base_branch)
-    marker_count=$(printf '%s\n' "$requested_markers" | sed '/^$/d' | wc -l | tr -d ' ')
+    issue_project_slug=${SYMPHONY_ISSUE_PROJECT_SLUG:-}
+    issue_project_name=${SYMPHONY_ISSUE_PROJECT_NAME:-}
+    if [ -n "$issue_project_name" ]; then
+      project_display=$issue_project_name
+    elif [ -n "$issue_project_slug" ]; then
+      project_display=$issue_project_slug
+    else
+      project_display=unknown-project
+    fi
+    repo_labels=$(resolve_repo_labels)
+    repo_label_count=$(printf '%s\n' "$repo_labels" | sed '/^$/d' | wc -l | tr -d ' ')
+    requested_base_branches=$(extract_symphony_marker "Base branch")
+    base_branch_marker_count=$(printf '%s\n' "$requested_base_branches" | sed '/^$/d' | wc -l | tr -d ' ')
+    repo_override=
+    resolved_project_repository=
+    source_repository=
+    source_repo_url=
     requested_base_branch=
     base_branch=
     base_branch_error=
-    if [ "$marker_count" -gt 1 ]; then
-      base_branch_error="В секции ## Symphony найдено несколько строк Base branch:."
-    elif [ "$marker_count" -eq 1 ]; then
-      requested_base_branch=$requested_markers
+    setup_note=
+    rm -f .symphony-base-branch-error .symphony-base-branch-note .symphony-source-repository
+    if [ "$repo_label_count" -gt 1 ]; then
+      base_branch_error="Multiple repo:* labels found on the Linear issue."
+    elif [ "$repo_label_count" -eq 1 ]; then
+      repo_override=$repo_labels
+    fi
+    if [ -z "$base_branch_error" ]; then
+      resolved_project_repository=$(resolve_project_repository "$issue_project_slug")
+      project_resolution_status=$?
+
+      case "$project_resolution_status" in
+        0)
+          if [ -n "$repo_override" ] && [ "$repo_override" != "$resolved_project_repository" ]; then
+            base_branch_error="Project '$project_display' routes to '$resolved_project_repository'; repo label points to '$repo_override'."
+          else
+            source_repository=$resolved_project_repository
+          fi
+          ;;
+        2)
+          if [ -n "$repo_override" ]; then
+            source_repository=$repo_override
+          else
+            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, or repo:tg_live_export."
+          fi
+          ;;
+        *)
+          base_branch_error="Project '$project_display' is not mapped to a repository for this workflow."
+          ;;
+      esac
+    fi
+    if [ -z "$base_branch_error" ]; then
+      source_repo_url=$(resolve_repo_url "$source_repository") || {
+        base_branch_error="Repository '$source_repository' is not in the allowlist."
+      }
+    fi
+    if [ -z "$base_branch_error" ] && [ "$base_branch_marker_count" -gt 1 ]; then
+      base_branch_error="Multiple Base branch: lines found in ## Symphony."
+    elif [ -z "$base_branch_error" ] && [ "$base_branch_marker_count" -eq 1 ]; then
+      requested_base_branch=$requested_base_branches
       if [ "$requested_base_branch" = "__EMPTY__" ] || printf '%s' "$requested_base_branch" | grep -Eq '[[:space:]]'; then
-        base_branch_error="Строка Base branch: в секции ## Symphony пуста или содержит пробелы."
-      elif git ls-remote --exit-code --heads "$SOURCE_REPO_URL" "$requested_base_branch" >/dev/null 2>&1; then
-        git clone --depth 1 --single-branch --branch "$requested_base_branch" "$SOURCE_REPO_URL" .
+        base_branch_error="Base branch: in ## Symphony is empty or contains whitespace."
+      fi
+    fi
+    if [ -n "$base_branch_error" ]; then
+      printf '%s\n' "$base_branch_error" > .symphony-base-branch-error
+      exit 0
+    fi
+    if [ -n "$requested_base_branch" ]; then
+      if git ls-remote --exit-code --heads "$source_repo_url" "$requested_base_branch" >/dev/null 2>&1; then
+        git clone --depth 1 --single-branch --branch "$requested_base_branch" "$source_repo_url" .
         base_branch=$requested_base_branch
       else
-        base_branch_error="Ветка '$requested_base_branch' из Base branch: не найдена в origin."
+        printf "Branch '%s' from Base branch: was not found in origin for %s.\n" "$requested_base_branch" "$source_repository" > .symphony-base-branch-error
+        exit 0
       fi
     fi
     if [ -z "$base_branch" ]; then
-      git clone --depth 1 "$SOURCE_REPO_URL" .
+      git clone --depth 1 "$source_repo_url" .
       base_branch=$(detect_repo_default_branch)
+      append_note "Base branch marker is missing; using the repository default branch $base_branch."
     fi
+    printf '%s\n' "$source_repository" > .symphony-source-repository
     printf '%s\n' "$base_branch" > .symphony-base-branch
-    if [ -n "$base_branch_error" ]; then
-      printf '%s\n' "$base_branch_error" > .symphony-base-branch-error
-    elif [ -z "$requested_base_branch" ]; then
-      printf 'Маркер Base branch не задан; использую дефолтную ветку репозитория %s.\n' "$base_branch" > .symphony-base-branch-note
+    if [ -n "$setup_note" ]; then
+      printf '%s\n' "$setup_note" > .symphony-base-branch-note
     fi
     make symphony-bootstrap
   before_run: |
-    export SOURCE_REPO_URL="${SOURCE_REPO_URL:-https://github.com/maximlafe/lead_status.git}"
-    extract_requested_base_branch() {
-      printf '%s\n' "${SYMPHONY_ISSUE_DESCRIPTION:-}" | awk '
+    extract_symphony_marker() {
+      marker_name=$1
+      printf '%s\n' "${SYMPHONY_ISSUE_DESCRIPTION:-}" | awk -v marker="$marker_name" '
         BEGIN { in_section = 0 }
         /^[[:space:]]*##[[:space:]]+Symphony[[:space:]]*$/ {
           in_section = 1
           next
         }
         in_section && /^[[:space:]]*##[[:space:]]+/ { exit }
-        in_section && /^[[:space:]]*Base branch:[[:space:]]*/ {
-          line = $0
-          sub(/^[[:space:]]*Base branch:[[:space:]]*/, "", line)
-          sub(/[[:space:]]+$/, "", line)
-          if (length(line) == 0) {
-            print "__EMPTY__"
-          } else {
-            print line
+        in_section {
+          prefix = "^[[:space:]]*" marker ":[[:space:]]*"
+          if ($0 ~ prefix) {
+            line = $0
+            sub(prefix, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            if (length(line) == 0) {
+              print "__EMPTY__"
+            } else {
+              print line
+            }
           }
         }
       '
+    }
+    resolve_repo_url() {
+      case "$1" in
+        maximlafe/lead_status) printf '%s\n' "https://github.com/maximlafe/lead_status.git" ;;
+        maximlafe/symphony) printf '%s\n' "https://github.com/maximlafe/symphony.git" ;;
+        maximlafe/tg_live_export) printf '%s\n' "https://github.com/maximlafe/tg_live_export.git" ;;
+        *) return 1 ;;
+      esac
+    }
+    resolve_repo_labels() {
+      printf '%s\n' "${SYMPHONY_ISSUE_LABELS:-}" | awk '
+        {
+          label = tolower($0)
+          if (label == "repo:lead_status") {
+            print "maximlafe/lead_status"
+          } else if (label == "repo:symphony") {
+            print "maximlafe/symphony"
+          } else if (label == "repo:tg_live_export") {
+            print "maximlafe/tg_live_export"
+          }
+        }
+      '
+    }
+    resolve_project_repository() {
+      case "$1" in
+        telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export" ;;
+        master-komand-dfbe2b1b972e|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status" ;;
+        platforma-i-integraciya-448570ee6438) return 2 ;;
+        *) return 1 ;;
+      esac
     }
     detect_repo_default_branch() {
       previous_base_branch=$(cat .symphony-base-branch 2>/dev/null || true)
@@ -133,32 +265,117 @@ hooks:
       fi
       printf '%s\n' "$branch"
     }
-    requested_markers=$(extract_requested_base_branch)
-    marker_count=$(printf '%s\n' "$requested_markers" | sed '/^$/d' | wc -l | tr -d ' ')
+    resolve_current_repository() {
+      previous_repository=$(cat .symphony-source-repository 2>/dev/null || true)
+      if [ -n "$previous_repository" ]; then
+        printf '%s\n' "$previous_repository"
+        return 0
+      fi
+      git remote get-url origin 2>/dev/null | sed -E \
+        -e 's#^git@github.com:##' \
+        -e 's#^ssh://git@github.com/##' \
+        -e 's#^https?://([^@/]+@)?github.com/##' \
+        -e 's#\.git$##'
+    }
+    append_note() {
+      if [ -z "${setup_note:-}" ]; then
+        setup_note=$1
+      else
+        setup_note=$(printf '%s\n%s' "$setup_note" "$1")
+      fi
+    }
+    issue_project_slug=${SYMPHONY_ISSUE_PROJECT_SLUG:-}
+    issue_project_name=${SYMPHONY_ISSUE_PROJECT_NAME:-}
+    if [ -n "$issue_project_name" ]; then
+      project_display=$issue_project_name
+    elif [ -n "$issue_project_slug" ]; then
+      project_display=$issue_project_slug
+    else
+      project_display=unknown-project
+    fi
+    repo_labels=$(resolve_repo_labels)
+    repo_label_count=$(printf '%s\n' "$repo_labels" | sed '/^$/d' | wc -l | tr -d ' ')
+    requested_base_branches=$(extract_symphony_marker "Base branch")
+    base_branch_marker_count=$(printf '%s\n' "$requested_base_branches" | sed '/^$/d' | wc -l | tr -d ' ')
+    repo_override=
+    resolved_project_repository=
+    source_repository=
+    source_repo_url=
     requested_base_branch=
+    previous_base_branch=
     base_branch=
     base_branch_error=
+    current_repository=
+    setup_note=
     rm -f .symphony-base-branch-error .symphony-base-branch-note
-    if [ "$marker_count" -gt 1 ]; then
-      base_branch_error="В секции ## Symphony найдено несколько строк Base branch:."
-    elif [ "$marker_count" -eq 1 ]; then
-      requested_base_branch=$requested_markers
+    current_repository=$(resolve_current_repository)
+    previous_base_branch=$(cat .symphony-base-branch 2>/dev/null || true)
+    if [ "$repo_label_count" -gt 1 ]; then
+      base_branch_error="Multiple repo:* labels found on the Linear issue."
+    elif [ "$repo_label_count" -eq 1 ]; then
+      repo_override=$repo_labels
+    fi
+    if [ -z "$base_branch_error" ]; then
+      resolved_project_repository=$(resolve_project_repository "$issue_project_slug")
+      project_resolution_status=$?
+
+      case "$project_resolution_status" in
+        0)
+          if [ -n "$repo_override" ] && [ "$repo_override" != "$resolved_project_repository" ]; then
+            base_branch_error="Project '$project_display' routes to '$resolved_project_repository'; repo label points to '$repo_override'."
+          else
+            source_repository=$resolved_project_repository
+          fi
+          ;;
+        2)
+          if [ -n "$repo_override" ]; then
+            source_repository=$repo_override
+          elif [ -n "$current_repository" ]; then
+            source_repository=$current_repository
+            append_note "Repo label is missing; reusing the bound repository $current_repository."
+          else
+            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, or repo:tg_live_export."
+          fi
+          ;;
+        *)
+          base_branch_error="Project '$project_display' is not mapped to a repository for this workflow."
+          ;;
+      esac
+    fi
+    if [ -z "$base_branch_error" ] && [ -n "$current_repository" ] && [ "$current_repository" != "$source_repository" ]; then
+      base_branch_error="Workspace is already bound to '$current_repository' but the ticket routes to '$source_repository'. A fresh workspace is required."
+    fi
+    if [ -z "$base_branch_error" ]; then
+      source_repo_url=$(resolve_repo_url "$source_repository") || {
+        base_branch_error="Repository '$source_repository' is not in the allowlist."
+      }
+    fi
+    if [ -z "$base_branch_error" ] && [ "$base_branch_marker_count" -gt 1 ]; then
+      base_branch_error="Multiple Base branch: lines found in ## Symphony."
+    elif [ -z "$base_branch_error" ] && [ "$base_branch_marker_count" -eq 1 ]; then
+      requested_base_branch=$requested_base_branches
       if [ "$requested_base_branch" = "__EMPTY__" ] || printf '%s' "$requested_base_branch" | grep -Eq '[[:space:]]'; then
-        base_branch_error="Строка Base branch: в секции ## Symphony пуста или содержит пробелы."
+        base_branch_error="Base branch: in ## Symphony is empty or contains whitespace."
       elif git ls-remote --exit-code --heads origin "$requested_base_branch" >/dev/null 2>&1; then
         base_branch=$requested_base_branch
       else
-        base_branch_error="Ветка '$requested_base_branch' из Base branch: не найдена в origin."
+        base_branch_error="Branch '$requested_base_branch' from Base branch: was not found in origin for $source_repository."
       fi
+    elif [ -n "$previous_base_branch" ]; then
+      base_branch=$previous_base_branch
+    fi
+    if [ -n "$base_branch_error" ]; then
+      printf '%s\n' "$base_branch_error" > .symphony-base-branch-error
+      exit 0
     fi
     if [ -z "$base_branch" ]; then
       base_branch=$(detect_repo_default_branch)
+      append_note "Base branch marker is missing; using the repository default branch $base_branch."
     fi
+    printf '%s\n' "$source_repository" > .symphony-source-repository
     printf '%s\n' "$base_branch" > .symphony-base-branch
-    if [ -n "$base_branch_error" ]; then
-      printf '%s\n' "$base_branch_error" > .symphony-base-branch-error
-    elif [ -z "$requested_base_branch" ]; then
-      printf 'Маркер Base branch не задан; использую дефолтную ветку репозитория %s.\n' "$base_branch" > .symphony-base-branch-note
+    if [ -n "$setup_note" ]; then
+      printf '%s\n' "$setup_note" > .symphony-base-branch-note
     fi
   before_remove: |
     branch=$(git branch --show-current 2>/dev/null)
@@ -238,9 +455,9 @@ Instructions:
 - Keep the issue description as the canonical task-spec and exactly one persistent workpad comment as the implementation plan and execution log.
 - Use local `workpad.md` as the working copy and sync the live workpad only at bootstrap, meaningful milestones, and final handoff.
 - Before each automated stage (`Planning`, `In Progress`, `Rework`, `Merging`), post one separate top-level stage-start comment before the first live workpad sync of that stage.
-- Before any Git sync or branch decision, treat `.symphony-base-branch` as the authoritative base branch for the current workspace when the file exists.
-- If `.symphony-base-branch-note` exists, mirror it into `Заметки` once and continue without asking a human.
-- If `.symphony-base-branch-error` exists, treat it as a configuration blocker: record it in the workpad with `checkpoint_type: human-action`, a justified `risk_level`, and a short `summary`, then move the issue to `Blocked` and stop.
+- Before any Git sync or branch decision, treat `.symphony-source-repository` and `.symphony-base-branch` as the authoritative workspace routing metadata when those files exist.
+- If `.symphony-base-branch-note` exists, translate it into Russian in `Заметки` once and continue without asking a human; the note may describe repo-label fallback for an already bound workspace or default base-branch fallback chosen for this ticket.
+- If `.symphony-base-branch-error` exists, treat it as a routing/configuration blocker: translate the message into Russian in the workpad, fill `Checkpoint` with `checkpoint_type: human-action`, a justified `risk_level`, and a short `summary`, then move the issue to `Blocked` and stop.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.
 - Run `make symphony-preflight` before treating auth/env/tooling gaps as blockers, and use the validation matrix below instead of ad-hoc test selection.
 - Do not reread skill bodies in straightforward runs unless the workflow does not cover the needed behavior.
@@ -298,8 +515,8 @@ Instructions:
    - ignore resolved comments;
    - persist the comment ID in `.workpad-id`.
 4. `Planning` is analysis-only:
-   - if `.symphony-base-branch-error` exists, copy the exact message into `Заметки`, fill `Checkpoint` with `checkpoint_type: human-action`, a justified `risk_level`, and a short `summary`, sync the workpad once, move the issue to `Blocked`, and stop;
-   - if `.symphony-base-branch-note` exists, copy it into `Заметки` once before continuing;
+   - if `.symphony-base-branch-error` exists, translate its message into Russian in `Заметки`, fill `Checkpoint` with `checkpoint_type: human-action`, a justified `risk_level`, and a short `summary`, sync the workpad once, move the issue to `Blocked`, and stop;
+   - if `.symphony-base-branch-note` exists, translate it into Russian in `Заметки` once before continuing;
    - do not edit product code, commit, or push;
    - read the issue body, only the relevant comments and PR context, and inspect the codebase;
    - capture a reproduction or investigation signal only when it materially sharpens the plan.
