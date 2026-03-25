@@ -1438,23 +1438,28 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "status dashboard renders last codex message in EVENT column" do
+    terminal_columns = 140
+
     row =
-      StatusDashboard.format_running_summary_for_test(%{
-        identifier: "MT-233",
-        state: "running",
-        session_id: "thread-1234567890",
-        codex_app_server_pid: "4242",
-        codex_total_tokens: 12,
-        runtime_seconds: 15,
-        last_codex_event: :notification,
-        last_codex_message: %{
-          event: :notification,
-          message: %{
-            "method" => "turn/completed",
-            "params" => %{"turn" => %{"status" => "completed"}}
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-233",
+          state: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_message: %{
+            event: :notification,
+            message: %{
+              "method" => "turn/completed",
+              "params" => %{"turn" => %{"status" => "completed"}}
+            }
           }
-        }
-      })
+        },
+        terminal_columns
+      )
 
     plain = Regex.replace(~r/\e\[[\\d;]*m/, row, "")
 
@@ -1464,6 +1469,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "status dashboard strips ANSI and control bytes from last codex message" do
+    terminal_columns = 140
+
     payload =
       "cmd: " <>
         <<27>> <>
@@ -1474,16 +1481,19 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         " after\nline"
 
     row =
-      StatusDashboard.format_running_summary_for_test(%{
-        identifier: "MT-898",
-        state: "running",
-        session_id: "thread-1234567890",
-        codex_app_server_pid: "4242",
-        codex_total_tokens: 12,
-        runtime_seconds: 15,
-        last_codex_event: :notification,
-        last_codex_message: payload
-      })
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-898",
+          state: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_message: payload
+        },
+        terminal_columns
+      )
 
     plain = Regex.replace(~r/\e\[[0-9;]*m/, row, "")
 
@@ -1707,6 +1717,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert StatusDashboard.humanize_codex_message(fallback_reasoning) == "reasoning update"
   end
 
+  @tag :dashboard
   test "orchestrator switches active codex accounts on live rate-limit exhaustion and recovery" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,

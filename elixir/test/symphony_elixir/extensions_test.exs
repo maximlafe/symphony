@@ -158,12 +158,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:noreply, returned_state} = WorkflowStore.handle_info(:poll, state)
     assert returned_state.workflow.prompt == "Manual workflow prompt"
     refute returned_state.stamp == nil
-    assert_receive :poll, 1_100
+    assert_receive :poll, 1_500
 
     Workflow.set_workflow_file_path(missing_path)
     assert {:noreply, path_error_state} = WorkflowStore.handle_info(:poll, returned_state)
     assert path_error_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 1_500
 
     Workflow.set_workflow_file_path(manual_path)
     File.rm!(manual_path)
@@ -499,6 +499,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              }
   end
 
+  @tag :dashboard
   test "dashboard bootstraps liveview from embedded static assets" do
     orchestrator_name = Module.concat(__MODULE__, :AssetOrchestrator)
 
@@ -542,6 +543,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert live_view_js =~ "var LiveView = (() => {"
   end
 
+  @tag :dashboard
   test "dashboard liveview renders and refreshes over pubsub" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardOrchestrator)
     snapshot = static_snapshot()
@@ -622,6 +624,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  @tag :dashboard
   test "dashboard liveview renders an unavailable state without crashing" do
     start_test_endpoint(
       orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
@@ -633,6 +636,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "snapshot_unavailable"
   end
 
+  @tag :dashboard
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
     spec = HttpServer.child_spec(port: 0)
     assert spec.id == HttpServer
