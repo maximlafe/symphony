@@ -7,6 +7,8 @@ defmodule SymphonyElixir.Workspace do
   alias SymphonyElixir.{Config, PathSafety}
 
   @excluded_entries MapSet.new([".elixir_ls", "tmp"])
+  @fresh_attempt_states MapSet.new(["Rework"])
+  @stale_bootstrap_markers [".symphony-base-branch-error"]
 
   @spec create_for_issue(map() | String.t() | nil) :: {:ok, Path.t()} | {:error, term()}
   def create_for_issue(issue_or_identifier) do
@@ -17,7 +19,7 @@ defmodule SymphonyElixir.Workspace do
 
       with {:ok, workspace} <- workspace_path_for_issue(safe_id),
            :ok <- validate_workspace_path(workspace),
-           {:ok, created?} <- ensure_workspace(workspace),
+           {:ok, created?} <- ensure_workspace(workspace, issue_context),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?) do
         {:ok, workspace}
       end
@@ -28,8 +30,11 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp ensure_workspace(workspace) do
+  defp ensure_workspace(workspace, issue_context) do
     cond do
+      File.dir?(workspace) and recreate_workspace?(workspace, issue_context) ->
+        create_workspace(workspace)
+
       File.dir?(workspace) ->
         clean_tmp_artifacts(workspace)
         {:ok, false}
@@ -47,6 +52,24 @@ defmodule SymphonyElixir.Workspace do
     File.rm_rf!(workspace)
     File.mkdir_p!(workspace)
     {:ok, true}
+  end
+
+  defp recreate_workspace?(workspace, issue_context) do
+    fresh_attempt_state?(Map.get(issue_context, :issue_state)) or stale_failed_bootstrap?(workspace)
+  end
+
+  defp fresh_attempt_state?(state) when is_atom(state), do: fresh_attempt_state?(Atom.to_string(state))
+
+  defp fresh_attempt_state?(state) when is_binary(state) do
+    MapSet.member?(@fresh_attempt_states, String.trim(state))
+  end
+
+  defp fresh_attempt_state?(_state), do: false
+
+  defp stale_failed_bootstrap?(workspace) do
+    Enum.any?(@stale_bootstrap_markers, fn marker ->
+      File.exists?(Path.join(workspace, marker))
+    end) and not File.dir?(Path.join(workspace, ".git"))
   end
 
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}

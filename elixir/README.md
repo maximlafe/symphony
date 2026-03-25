@@ -33,12 +33,17 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
 2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
    set it as the `LINEAR_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
+4. Copy any repo-local worker skills your workflow depends on to `.agents/skills/`.
+   - Symphony bundles the generic `commit`, `push`, `pull`, `land`, `linear`, and `debug` skills,
+     and syncs them into every configured `codex.accounts[*].codex_home` on startup.
    - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
      operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
    - Set exactly one Linear polling scope: `tracker.project_slug` for project-scoped polling or
      `tracker.team_key` for team-scoped polling.
+   - `tracker.assignee` is optional and narrows dispatch to issues assigned to a specific Linear
+     user (or `me` via `LINEAR_ASSIGNEE`). Use it when a team-scoped worker must ignore work owned
+     by other runners.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
@@ -60,6 +65,10 @@ root exposes the worker contract:
 
 Use those root targets instead of ad-hoc shell history when validating a fresh clone or a new
 runtime host.
+
+For isolated smoke tickets in the dedicated `Symphony` project, keep the Linear assignee empty
+unless you intentionally route the run through an assignee-filtered worker. This avoids accidental
+pickup by a separate team-scoped worker that is filtering on `tracker.assignee`.
 
 ## Prerequisites
 
@@ -135,6 +144,9 @@ Notes:
 - If a value is missing, defaults are used.
 - Linear polling scope is mutually exclusive: configure exactly one of `tracker.project_slug` or
   `tracker.team_key`.
+- `tracker.assignee` is independent from polling scope. When set, Symphony dispatches only issues
+  assigned to that Linear user (or the current viewer for `me`), and unassigned issues are skipped
+  by that worker.
 - The prompt body is the workflow contract. In production, make handoffs explicit with `checkpoint_type` and `risk_level`, define low-context behavior, and cap repeated auto-fix loops so the agent escalates instead of spinning.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
