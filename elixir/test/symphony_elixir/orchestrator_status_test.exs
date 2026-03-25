@@ -1850,6 +1850,162 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot.rate_limits == healthy_rate_limits
   end
 
+  test "manual codex account selection prefers the chosen healthy account and falls back on degradation" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"},
+        %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+      ],
+      codex_minimum_remaining_percent: 5,
+      codex_monitored_windows_mins: [300, 10_080]
+    )
+
+    issue_id = "issue-manual-account-selection"
+    issue = %Issue{id: issue_id, identifier: "MT-SELECT", state: "In Progress"}
+    orchestrator_name = Module.concat(__MODULE__, :ManualAccountSelectionOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    healthy_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 20},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30}
+    }
+
+    exhausted_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 20},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 98}
+    }
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-account-turn-2",
+      codex_account_id: "secondary",
+      codex_app_server_pid: nil,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | running: %{issue_id => running_entry},
+          claimed: MapSet.put(state.claimed, issue_id),
+          codex_accounts: %{
+            "primary" => %{
+              id: "primary",
+              explicit?: true,
+              healthy: true,
+              health_reason: nil,
+              auth_mode: "chatgpt",
+              requires_openai_auth: false,
+              missing_windows_mins: [],
+              insufficient_windows_mins: [],
+              rate_limits: healthy_rate_limits
+            },
+            "secondary" => %{
+              id: "secondary",
+              explicit?: true,
+              healthy: true,
+              health_reason: nil,
+              auth_mode: "chatgpt",
+              requires_openai_auth: false,
+              missing_windows_mins: [],
+              insufficient_windows_mins: [],
+              rate_limits: healthy_rate_limits
+            }
+          },
+          active_codex_account_id: "primary",
+          codex_rate_limits: healthy_rate_limits
+      }
+    end)
+
+    assert {:ok, "secondary"} = Orchestrator.select_active_codex_account(orchestrator_name, "secondary")
+
+    assert_eventually(fn ->
+      match?(
+        %{active_codex_account_id: "secondary", rate_limits: ^healthy_rate_limits},
+        Orchestrator.snapshot(orchestrator_name, 5_000)
+      )
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         codex_account_id: "secondary",
+         payload: %{
+           "method" => "codex/event/token_count",
+           "params" => %{
+             "msg" => %{
+               "type" => "event_msg",
+               "payload" => %{
+                 "type" => "token_count",
+                 "rate_limits" => exhausted_rate_limits
+               }
+             }
+           }
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    assert_eventually(fn ->
+      match?(
+        %{active_codex_account_id: "primary", rate_limits: ^healthy_rate_limits},
+        Orchestrator.snapshot(orchestrator_name, 5_000)
+      )
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         codex_account_id: "secondary",
+         payload: %{
+           "method" => "codex/event/token_count",
+           "params" => %{
+             "msg" => %{
+               "type" => "event_msg",
+               "payload" => %{
+                 "type" => "token_count",
+                 "rate_limits" => healthy_rate_limits
+               }
+             }
+           }
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    assert_eventually(fn ->
+      match?(
+        %{active_codex_account_id: "secondary", rate_limits: ^healthy_rate_limits},
+        Orchestrator.snapshot(orchestrator_name, 5_000)
+      )
+    end)
+  end
+
   test "application stop renders offline status" do
     rendered =
       ExUnit.CaptureIO.capture_io(fn ->
