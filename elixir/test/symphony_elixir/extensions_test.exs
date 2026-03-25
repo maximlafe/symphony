@@ -524,6 +524,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
     refute html =~ "/assets/app.js"
     refute html =~ "<style>"
+    refute html =~ "?.getAttribute"
+    assert html =~ "var csrfTokenMeta = document.querySelector(\"meta[name='csrf-token']\");"
+    assert html =~ "csrfTokenMeta ? csrfTokenMeta.getAttribute(\"content\") : null"
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"

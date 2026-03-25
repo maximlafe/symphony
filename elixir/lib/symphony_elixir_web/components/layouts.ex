@@ -31,9 +31,8 @@ defmodule SymphonyElixirWeb.Layouts do
             var liveSocket;
             var liveViewObserver;
             var connectPoll;
-            var csrfToken = document
-              .querySelector("meta[name='csrf-token']")
-              ?.getAttribute("content");
+            var csrfTokenMeta = document.querySelector("meta[name='csrf-token']");
+            var csrfToken = csrfTokenMeta ? csrfTokenMeta.getAttribute("content") : null;
 
             var resolveStatusNode = function (id) {
               return document.getElementById(id);
