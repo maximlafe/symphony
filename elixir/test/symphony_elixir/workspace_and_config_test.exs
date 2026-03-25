@@ -228,6 +228,85 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "Rework recreates the issue workspace as a fresh attempt" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-rework-refresh-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "printf '%s' \"$SYMPHONY_ISSUE_STATE\" > bootstrap-state.txt"
+      )
+
+      issue = %Issue{
+        id: "issue-rework",
+        identifier: "MT-REWORK",
+        title: "Rework fresh attempt",
+        description: "## Symphony\nBase branch: main\n",
+        state: "In Progress",
+        branch_name: "feature/old-attempt"
+      }
+
+      rework_issue = %{issue | state: "Rework", branch_name: "feature/new-attempt"}
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      assert File.read!(Path.join(workspace, "bootstrap-state.txt")) == "In Progress"
+
+      File.write!(Path.join(workspace, "local-progress.txt"), "stale local state\n")
+
+      assert {:ok, ^workspace} = Workspace.create_for_issue(rework_issue)
+      assert File.read!(Path.join(workspace, "bootstrap-state.txt")) == "Rework"
+      refute File.exists?(Path.join(workspace, "local-progress.txt"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace recreates stale failed bootstrap directories before rerunning after_create" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-bootstrap-recovery-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "printf '%s' \"$SYMPHONY_ISSUE_STATE\" > bootstrap-state.txt"
+      )
+
+      issue = %Issue{
+        id: "issue-bootstrap-recovery",
+        identifier: "MT-BOOTSTRAP-RECOVERY",
+        title: "Bootstrap recovery",
+        description: "## Symphony\nBase branch: main\n",
+        state: "In Progress",
+        branch_name: "feature/bootstrap-recovery"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+
+      File.write!(Path.join(workspace, ".symphony-base-branch-error"), "old bootstrap blocker\n")
+      File.write!(Path.join(workspace, "local-progress.txt"), "stale bootstrap residue\n")
+
+      assert {:ok, ^workspace} = Workspace.create_for_issue(issue)
+      assert File.read!(Path.join(workspace, "bootstrap-state.txt")) == "In Progress"
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
+      refute File.exists?(Path.join(workspace, "local-progress.txt"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace replaces stale non-directory paths" do
     workspace_root =
       Path.join(
