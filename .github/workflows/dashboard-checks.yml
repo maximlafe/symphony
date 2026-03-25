@@ -35,5 +35,8 @@ jobs:
             ${{ runner.os }}-dashboard-
             ${{ runner.os }}-mix-
 
+      - name: Install dashboard test deps
+        run: make setup
+
       - name: Verify dashboard checks
         run: make dashboard
