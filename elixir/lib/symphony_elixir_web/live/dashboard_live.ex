@@ -652,8 +652,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp rate_limit_window_label(_bucket), do: nil
-
   defp rate_limit_bucket_summary(bucket) when is_map(bucket) do
     remaining = integer_like(map_value(bucket, ["remaining", :remaining]))
     limit = integer_like(map_value(bucket, ["limit", :limit]))
@@ -668,14 +666,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp rate_limit_bucket_summary(_bucket), do: nil
-
   defp map_value(map, [key | rest]) when is_map(map) do
     Map.get(map, key) || map_value(map, rest)
   end
 
   defp map_value(_map, []), do: nil
-  defp map_value(_map, _keys), do: nil
 
   defp integer_like(value) when is_integer(value) and value >= 0, do: value
 
@@ -704,7 +699,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp active_account_selection_error(:invalid_account), do: "Selected account is no longer configured."
   defp active_account_selection_error(:unhealthy_account), do: "Only healthy accounts can be made active."
   defp active_account_selection_error(:unavailable), do: "Orchestrator is unavailable."
-  defp active_account_selection_error(_reason), do: "Failed to update the active account."
 
   defp pretty_value(nil), do: "n/a"
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
