@@ -80,6 +80,7 @@ hooks:
         448570ee6438|platforma-i-integraciya-448570ee6438) return 2 ;;
       esac
       case "$project_name" in
+        "Symphony") printf '%s\n' "maximlafe/symphony" ;;
         "Telegram Full Export v2") printf '%s\n' "maximlafe/tg_live_export" ;;
         "Мастер команд"|"Извлечение задач") printf '%s\n' "maximlafe/lead_status" ;;
         "Платформа и интеграция") return 2 ;;
@@ -264,6 +265,7 @@ hooks:
         448570ee6438|platforma-i-integraciya-448570ee6438) return 2 ;;
       esac
       case "$project_name" in
+        "Symphony") printf '%s\n' "maximlafe/symphony" ;;
         "Telegram Full Export v2") printf '%s\n' "maximlafe/tg_live_export" ;;
         "Мастер команд"|"Извлечение задач") printf '%s\n' "maximlafe/lead_status" ;;
         "Платформа и интеграция") return 2 ;;
