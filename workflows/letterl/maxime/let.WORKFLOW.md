@@ -495,7 +495,7 @@ Instructions:
 - `In Review` -> `checkpoint_type: human-verify`; PR приложен и провалидирован, ждём человеческий тест/ревью.
 - `Merging` -> одобрено человеком; используй `land` skill и не вызывай `gh pr merge` напрямую.
 - `Rework` -> новый заход после review feedback с новой веткой и новым PR.
-- `Blocked` -> `checkpoint_type: decision` или `human-action`; автономный прогресс упёрся во внешний выбор или ручное действие.
+- `Blocked` -> `checkpoint_type: decision` или `human-action`; автономный прогресс упёрся во внешний выбор или ручное действие, а resume происходит только после ручного перевода issue обратно в `In Progress`.
 - `Done` -> терминальное состояние.
 
 ## Step 0: Determine current ticket state and route
@@ -511,7 +511,7 @@ Instructions:
    - `In Review` -> wait and poll for review decisions.
    - `Merging` -> post the `Merging` start comment, then use the `land` skill.
    - `Rework` -> run the rework flow.
-   - `Blocked` -> wait and poll for human unblock action; do not code or change the repo.
+   - `Blocked` -> remain stopped until a human resolves the gate and manually moves the issue back to `In Progress`; do not code or change the repo while it stays `Blocked`.
    - `Done` -> do nothing and shut down.
 4. Query GitHub for an existing PR only when at least one reuse signal exists:
    - current branch is not the configured base branch from `.symphony-base-branch`;
@@ -620,7 +620,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - run the PR feedback and checks protocol above;
    - if checks are green and no actionable feedback remains, first rewrite every final checklist item so it is already true before the state transition (for example, `PR checks зелёные; задача готова к переводу в In Review` instead of `задача переведена в In Review`), затем заполни `Checkpoint` с `checkpoint_type: human-verify`, обоснованным `risk_level` и однострочным `summary`, закрой все выполненные parent/child checkboxes, финализируй local `workpad.md`, один раз синхронизируй live workpad, при необходимости один раз обнови task-spec description и только потом переводи issue в `In Review`;
    - do not repeat label or attachment checks in the same run unless the PR changed.
-11. If PR publication or handoff is blocked by missing required non-GitHub tools/auth/permissions after all fallbacks, заполни `Checkpoint` с `checkpoint_type: human-action`, подходящим `risk_level` и blocker summary, затем переводи issue в `Blocked` с blocker brief и явным unblock action.
+11. If PR publication or handoff is blocked by missing required non-GitHub tools/auth/permissions after all fallbacks, заполни `Checkpoint` с `checkpoint_type: human-action`, подходящим `risk_level` и blocker summary, затем переводи issue в `Blocked` с blocker brief и явным unblock action; после выполнения unblock action человек должен вручную вернуть issue в `In Progress`.
 
 ## Step 3: In Review and merge handling
 
@@ -672,6 +672,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - `Plan Review` сюда не относится: это отдельный planning-only human gate без `Checkpoint`.
 
 - Перед финальным `sync_workpad` добавь компактный checkpoint в локальный `workpad.md`.
+- Для handoff в `Blocked` комментарий человека сам по себе не резюмирует задачу; канонический unblock signal — ручной перевод issue обратно в `In Progress` после решения или выполнения требуемого действия.
 - В checkpoint обязательно укажи:
   - `checkpoint_type`: ровно один из `human-verify`, `decision`, `human-action`
   - `risk_level`: ровно один из `low`, `medium`, `high`
@@ -682,11 +683,13 @@ Use this only when completion is blocked by missing required tools or missing au
 - `decision`:
   - используй, когда дальше нужен продуктовый/технический выбор, конфликтуют требования, или после повторных попыток остаётся несколько правдоподобных направлений;
   - зафиксируй варианты, свою рекомендацию и цену неверного выбора;
-  - переводи задачу в `Blocked`, а не в обычный `In Review`.
+  - переводи задачу в `Blocked`, а не в обычный `In Review`;
+  - после явного человеческого выбора человек вручную переводит issue обратно в `In Progress`, и только это считается сигналом на resume.
 - `human-action`:
   - используй, когда нужен внешний ручной шаг: доступ, секрет, рестарт сервиса, deploy gate, правка внешнего состояния или недостающий ввод;
   - зафиксируй точное действие и почему агент не может выполнить его сам;
-  - переводи задачу в `Blocked`.
+  - переводи задачу в `Blocked`;
+  - после выполнения нужного действия человек вручную переводит issue обратно в `In Progress`.
 - Классифицируй риск консервативно:
   - `low` для локального обратимого изменения с сильным набором доказательств;
   - `medium` для изменений в нескольких местах или неполной верификации;

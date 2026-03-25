@@ -1293,6 +1293,31 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Orchestrator.should_dispatch_issue_for_test(issue, state)
   end
 
+  test "blocked issue resumes only after manual move back to in progress" do
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    blocked_issue = %Issue{
+      id: "blocked-manual-resume-1",
+      identifier: "MT-1008",
+      title: "Waiting on human decision",
+      state: "Blocked"
+    }
+
+    resumed_issue = %Issue{
+      blocked_issue
+      | state: "In Progress"
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(blocked_issue, state)
+    assert Orchestrator.should_dispatch_issue_for_test(resumed_issue, state)
+  end
+
   test "dispatch revalidation skips stale todo issue once a non-terminal blocker appears" do
     stale_issue = %Issue{
       id: "blocked-2",
