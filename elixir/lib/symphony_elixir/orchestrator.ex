@@ -44,6 +44,7 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_accounts: %{},
+      preferred_codex_account_id: nil,
       active_codex_account_id: nil,
       codex_totals: nil,
       codex_rate_limits: nil,
@@ -74,6 +75,7 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_usage_refresh_ref: nil,
       workspace_threshold_exceeded?: false,
       codex_accounts: %{},
+      preferred_codex_account_id: nil,
       active_codex_account_id: nil,
       codex_totals: @empty_codex_totals,
       codex_rate_limits: nil,
@@ -1638,6 +1640,22 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @spec select_active_codex_account(String.t()) ::
+          {:ok, String.t() | nil} | {:error, :invalid_account | :unhealthy_account | :unavailable}
+  def select_active_codex_account(account_id) when is_binary(account_id) do
+    select_active_codex_account(__MODULE__, account_id)
+  end
+
+  @spec select_active_codex_account(GenServer.server(), String.t()) ::
+          {:ok, String.t() | nil} | {:error, :invalid_account | :unhealthy_account | :unavailable}
+  def select_active_codex_account(server, account_id) when is_binary(account_id) do
+    if Process.whereis(server) do
+      GenServer.call(server, {:select_active_codex_account, account_id})
+    else
+      {:error, :unavailable}
+    end
+  end
+
   @impl true
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
@@ -1711,6 +1729,26 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  def handle_call({:select_active_codex_account, account_id}, _from, state)
+      when is_binary(account_id) do
+    case Map.get(state.codex_accounts, account_id) do
+      %{healthy: true} ->
+        state =
+          state
+          |> Map.put(:preferred_codex_account_id, account_id)
+          |> reselect_active_codex_account()
+
+        notify_dashboard()
+        {:reply, {:ok, state.active_codex_account_id}, state}
+
+      %{} ->
+        {:reply, {:error, :unhealthy_account}, state}
+
+      _ ->
+        {:reply, {:error, :invalid_account}, state}
+    end
   end
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
@@ -2378,13 +2416,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp reselect_active_codex_account(%State{} = state) do
     active_codex_account_id =
-      Config.codex_accounts()
-      |> Enum.find_value(fn account ->
-        case Map.get(state.codex_accounts, account.id) do
-          %{healthy: true} -> account.id
-          _ -> nil
-        end
-      end)
+      preferred_active_codex_account_id(state) ||
+        first_healthy_codex_account_id(state)
 
     %{
       state
@@ -2397,6 +2430,34 @@ defmodule SymphonyElixir.Orchestrator do
         codex_dispatch_reason: if(is_binary(active_codex_account_id), do: nil, else: "no healthy codex account")
     }
   end
+
+  defp preferred_active_codex_account_id(%State{} = state) do
+    preferred_id = state.preferred_codex_account_id
+
+    if is_binary(preferred_id) and healthy_codex_account?(state, preferred_id) do
+      preferred_id
+    end
+  end
+
+  defp first_healthy_codex_account_id(%State{} = state) do
+    config_ordered_id =
+      Config.codex_accounts()
+      |> Enum.find_value(fn account ->
+        if healthy_codex_account?(state, account.id), do: account.id
+      end)
+
+    config_ordered_id ||
+      Enum.find_value(state.codex_accounts, fn
+        {account_id, %{healthy: true}} -> account_id
+        _entry -> nil
+      end)
+  end
+
+  defp healthy_codex_account?(%State{} = state, account_id) when is_binary(account_id) do
+    match?(%{healthy: true}, Map.get(state.codex_accounts, account_id))
+  end
+
+  defp healthy_codex_account?(_state, _account_id), do: false
 
   defp explicit_map_at_paths(payload, paths) when is_map(payload) and is_list(paths) do
     Enum.find_value(paths, fn path ->

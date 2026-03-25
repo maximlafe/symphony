@@ -109,6 +109,17 @@ button.secondary:hover {
   color: var(--ink);
 }
 
+.subtle-button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.subtle-button:disabled:hover {
+  background: rgba(255, 255, 255, 0.72);
+  border-color: var(--line-strong);
+  color: var(--muted);
+}
+
 pre {
   margin: 0;
   white-space: pre-wrap;
@@ -301,10 +312,21 @@ html.liveview-connected .status-badge-liveview-offline,
   letter-spacing: -0.03em;
 }
 
+.metric-value-break {
+  font-size: clamp(1.2rem, 2vw, 1.85rem);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .metric-detail {
   margin: 0.45rem 0 0;
   color: var(--muted);
   font-size: 0.88rem;
+}
+
+.metric-detail-block {
+  display: block;
+  margin-top: 0.28rem;
 }
 
 .section-card {
@@ -333,6 +355,42 @@ html.liveview-connected .status-badge-liveview-offline,
   font-size: 0.94rem;
 }
 
+.section-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-left: auto;
+}
+
+.section-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.section-feedback {
+  margin: 1rem 0 0;
+  padding: 0.72rem 0.85rem;
+  border-radius: 16px;
+  background: rgba(16, 163, 127, 0.08);
+  border: 1px solid rgba(16, 163, 127, 0.18);
+  color: var(--accent-ink);
+  font-size: 0.9rem;
+}
+
+.section-feedback-error {
+  background: var(--danger-soft);
+  border-color: #f6d3cf;
+  color: var(--danger);
+}
+
+.collapsed-summary {
+  margin: 1rem 0 0;
+  color: var(--muted);
+}
+
 .table-wrap {
   overflow-x: auto;
   margin-top: 1rem;
@@ -347,6 +405,10 @@ html.liveview-connected .status-badge-liveview-offline,
 .data-table-running {
   table-layout: fixed;
   min-width: 980px;
+}
+
+.data-table-codex-accounts {
+  min-width: 1120px;
 }
 
 .data-table th {
@@ -369,10 +431,36 @@ html.liveview-connected .status-badge-liveview-offline,
 .issue-stack,
 .session-stack,
 .detail-stack,
-.token-stack {
+.token-stack,
+.account-action-stack {
   display: grid;
   gap: 0.24rem;
   min-width: 0;
+}
+
+.cell-break {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.limit-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.limit-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.8rem;
+  padding: 0.24rem 0.56rem;
+  border-radius: 999px;
+  background: rgba(16, 163, 127, 0.08);
+  border: 1px solid rgba(16, 163, 127, 0.14);
+  color: var(--accent-ink);
+  font-size: 0.78rem;
+  line-height: 1.2;
 }
 
 .event-text {

@@ -528,6 +528,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
     assert dashboard_css =~ ".status-badge-liveview-live"
+    assert dashboard_css =~ ".metric-value-break"
+    assert dashboard_css =~ ".limit-chip"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-liveview-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-liveview-offline"
 
