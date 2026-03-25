@@ -30,9 +30,32 @@ defmodule SymphonyElixirWeb.Layouts do
             var root = document.documentElement;
             var liveSocket;
             var liveViewObserver;
+            var localResetObserver;
             var connectPoll;
             var csrfTokenMeta = document.querySelector("meta[name='csrf-token']");
             var csrfToken = csrfTokenMeta ? csrfTokenMeta.getAttribute("content") : null;
+            var localResetTimeFormatter = window.Intl && window.Intl.DateTimeFormat
+              ? new window.Intl.DateTimeFormat("ru-RU", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hour12: false
+                })
+              : null;
+            var localResetDateFormatter = window.Intl && window.Intl.DateTimeFormat
+              ? new window.Intl.DateTimeFormat("ru-RU", {
+                  day: "numeric",
+                  month: "long"
+                })
+              : null;
+            var localResetTitleFormatter = window.Intl && window.Intl.DateTimeFormat
+              ? new window.Intl.DateTimeFormat("ru-RU", {
+                  day: "numeric",
+                  month: "long",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hour12: false
+                })
+              : null;
 
             var resolveStatusNode = function (id) {
               return document.getElementById(id);
@@ -54,12 +77,52 @@ defmodule SymphonyElixirWeb.Layouts do
               setBadgeVisibility(resolveStatusNode("liveview-status-offline"), !connected);
             };
 
+            var formatLocalResetText = function (value, style) {
+              var parsed = value ? new Date(value) : null;
+
+              if (!parsed || Number.isNaN(parsed.getTime())) return null;
+
+              if (style === "date" && localResetDateFormatter) {
+                return "· " + localResetDateFormatter.format(parsed);
+              }
+
+              if (style === "time" && localResetTimeFormatter) {
+                return "· в " + localResetTimeFormatter.format(parsed);
+              }
+
+              return null;
+            };
+
+            var syncLocalResetLabels = function () {
+              if (!localResetTitleFormatter) return;
+
+              document.querySelectorAll("[data-local-reset-at]").forEach(function (node) {
+                var value = node.getAttribute("data-local-reset-at");
+                var style = node.getAttribute("data-local-reset-style");
+                var parsed = value ? new Date(value) : null;
+                var text = formatLocalResetText(value, style);
+
+                if (!parsed || Number.isNaN(parsed.getTime()) || !text) return;
+                if (node.textContent !== text) node.textContent = text;
+
+                var title = localResetTitleFormatter.format(parsed);
+                if (node.getAttribute("title") !== title) node.setAttribute("title", title);
+              });
+            };
+
+            var queueLocalResetSync = function () {
+              window.requestAnimationFrame(syncLocalResetLabels);
+              window.setTimeout(syncLocalResetLabels, 50);
+              window.setTimeout(syncLocalResetLabels, 250);
+            };
+
             var liveViewRootConnected = function () {
               var liveViewRoot = document.querySelector("[data-phx-main]");
               return Boolean(liveViewRoot && liveViewRoot.classList.contains("phx-connected"));
             };
 
             setLiveViewStatus(false);
+            queueLocalResetSync();
 
             if (!window.Phoenix || !window.LiveView) return;
 
@@ -93,13 +156,38 @@ defmodule SymphonyElixirWeb.Layouts do
               });
             };
 
+            var observeLocalResetNodes = function () {
+              var liveViewRoot = document.querySelector("[data-phx-main]");
+
+              if (!liveViewRoot) return;
+
+              if (localResetObserver) {
+                localResetObserver.disconnect();
+              }
+
+              localResetObserver = new MutationObserver(function () {
+                window.requestAnimationFrame(syncLocalResetLabels);
+              });
+
+              localResetObserver.observe(liveViewRoot, {
+                attributes: true,
+                characterData: true,
+                childList: true,
+                subtree: true
+              });
+
+              queueLocalResetSync();
+            };
+
             liveSocket.socket.onOpen(syncLiveViewStatus);
             liveSocket.socket.onClose(syncLiveViewStatus);
             liveSocket.socket.onError(syncLiveViewStatus);
 
             observeLiveViewRoot();
+            observeLocalResetNodes();
             liveSocket.connect();
             syncLiveViewStatus();
+            queueLocalResetSync();
             window.liveSocket = liveSocket;
 
             connectPoll = window.setInterval(syncLiveViewStatus, 500);
@@ -112,14 +200,19 @@ defmodule SymphonyElixirWeb.Layouts do
 
             window.addEventListener("pageshow", function () {
               observeLiveViewRoot();
+              observeLocalResetNodes();
               if (liveSocket.isConnected && !liveSocket.isConnected()) {
                 liveSocket.connect();
               }
               syncLiveViewStatus();
+              queueLocalResetSync();
             });
 
             document.addEventListener("visibilitychange", function () {
-              if (!document.hidden) syncLiveViewStatus();
+              if (!document.hidden) {
+                syncLiveViewStatus();
+                queueLocalResetSync();
+              }
             });
           });
         </script>

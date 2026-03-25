@@ -8,6 +8,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixir.{Config, Orchestrator}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
+  @russian_month_names ~w(января февраля марта апреля мая июня июля августа сентября октября ноября декабря)
 
   @impl true
   def mount(_params, _session, socket) do
@@ -387,8 +388,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td class="mono cell-break"><%= account.email || "n/a" %></td>
                     <td>
                       <div class="limit-stack">
-                        <span :for={item <- account_rate_limit_items(account.rate_limits)} class="limit-chip mono">
-                          <%= item %>
+                        <span :for={item <- account_rate_limit_items(account.rate_limits, @now)} class="limit-chip mono">
+                          <span><%= item.text %></span>
+                          <span
+                            :if={item.reset_fallback}
+                            class="limit-chip-reset"
+                            data-local-reset-at={item.reset_at}
+                            data-local-reset-style={item.reset_style}
+                          >
+                            · <%= item.reset_fallback %>
+                          </span>
                         </span>
                       </div>
                     </td>
@@ -606,37 +615,46 @@ defmodule SymphonyElixirWeb.DashboardLive do
     "#{length(accounts)} total · #{healthy_count} healthy · active #{active_id}"
   end
 
-  defp account_rate_limit_items(rate_limits) when is_map(rate_limits) do
+  defp account_rate_limit_items(rate_limits, now) when is_map(rate_limits) do
     items =
       [
-        rate_limit_bucket_item("Primary", map_value(rate_limits, ["primary", :primary])),
-        rate_limit_bucket_item("Secondary", map_value(rate_limits, ["secondary", :secondary])),
+        rate_limit_bucket_item("Primary", map_value(rate_limits, ["primary", :primary]), now),
+        rate_limit_bucket_item("Secondary", map_value(rate_limits, ["secondary", :secondary]), now),
         credits_rate_limit_item(map_value(rate_limits, ["credits", :credits]))
       ]
       |> Enum.reject(&is_nil/1)
 
-    if items == [], do: ["n/a"], else: items
+    if items == [], do: [limit_chip("n/a")], else: items
   end
 
-  defp account_rate_limit_items(_rate_limits), do: ["n/a"]
+  defp account_rate_limit_items(_rate_limits, _now), do: [limit_chip("n/a")]
 
-  defp rate_limit_bucket_item(default_label, bucket) when is_map(bucket) do
+  defp rate_limit_bucket_item(default_label, bucket, now) when is_map(bucket) do
     label = rate_limit_window_label(bucket) || default_label
     summary = rate_limit_bucket_summary(bucket)
 
-    if is_binary(summary), do: "#{label}: #{summary}"
+    if is_binary(summary) do
+      reset_meta = rate_limit_bucket_reset_meta(bucket, now)
+
+      limit_chip(
+        "#{label}: #{summary}",
+        reset_meta && Map.get(reset_meta, :at),
+        reset_meta && Map.get(reset_meta, :style),
+        reset_meta && Map.get(reset_meta, :fallback)
+      )
+    end
   end
 
-  defp rate_limit_bucket_item(_default_label, _bucket), do: nil
+  defp rate_limit_bucket_item(_default_label, _bucket, _now), do: nil
 
   defp credits_rate_limit_item(bucket) when is_map(bucket) do
     balance = integer_like(map_value(bucket, ["balance", :balance]))
 
     cond do
-      map_value(bucket, ["unlimited", :unlimited]) == true -> "Credits: unlimited"
-      is_integer(balance) -> "Credits: #{format_int(balance)}"
-      map_value(bucket, ["hasCredits", :hasCredits]) == true -> "Credits: available"
-      map_value(bucket, ["hasCredits", :hasCredits]) == false -> "Credits: unavailable"
+      map_value(bucket, ["unlimited", :unlimited]) == true -> limit_chip("Credits: unlimited")
+      is_integer(balance) -> limit_chip("Credits: #{format_int(balance)}")
+      map_value(bucket, ["hasCredits", :hasCredits]) == true -> limit_chip("Credits: available")
+      map_value(bucket, ["hasCredits", :hasCredits]) == false -> limit_chip("Credits: unavailable")
       true -> nil
     end
   end
@@ -644,7 +662,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp credits_rate_limit_item(_bucket), do: nil
 
   defp rate_limit_window_label(bucket) when is_map(bucket) do
-    case integer_like(map_value(bucket, ["windowDurationMins", :windowDurationMins])) do
+    case rate_limit_bucket_window_mins(bucket) do
       mins when is_integer(mins) and mins >= 1_440 and rem(mins, 1_440) == 0 -> "#{div(mins, 1_440)}d"
       mins when is_integer(mins) and mins >= 60 and rem(mins, 60) == 0 -> "#{div(mins, 60)}h"
       mins when is_integer(mins) -> "#{mins}m"
@@ -664,6 +682,158 @@ defmodule SymphonyElixirWeb.DashboardLive do
       is_number(used_percent) -> "#{format_percent(used_percent)} used"
       true -> nil
     end
+  end
+
+  defp rate_limit_bucket_reset_meta(bucket, now) when is_map(bucket) and is_struct(now, DateTime) do
+    with %DateTime{} = reset_at <- rate_limit_bucket_reset_at(bucket, now) do
+      style = rate_limit_bucket_reset_style(bucket)
+
+      %{
+        at: reset_at |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+        style: style,
+        fallback: rate_limit_bucket_reset_fallback(reset_at, style)
+      }
+    end
+  end
+
+  defp rate_limit_bucket_reset_meta(_bucket, _now), do: nil
+
+  defp rate_limit_bucket_reset_style(bucket) when is_map(bucket) do
+    case rate_limit_bucket_window_mins(bucket) do
+      mins when is_integer(mins) and mins >= 1_440 -> "date"
+      mins when is_integer(mins) and mins > 0 -> "time"
+      _ -> "time"
+    end
+  end
+
+  defp rate_limit_bucket_reset_at(bucket, now) when is_map(bucket) and is_struct(now, DateTime) do
+    case rate_limit_bucket_reset_in_seconds(bucket) do
+      seconds when is_integer(seconds) ->
+        now
+        |> DateTime.add(seconds, :second)
+        |> DateTime.truncate(:second)
+
+      _ ->
+        bucket
+        |> rate_limit_bucket_absolute_reset_value()
+        |> parse_rate_limit_absolute_reset()
+    end
+  end
+
+  defp rate_limit_bucket_reset_at(_bucket, _now), do: nil
+
+  defp rate_limit_bucket_reset_in_seconds(bucket) when is_map(bucket) do
+    integer_like(
+      map_value(bucket, [
+        "reset_in_seconds",
+        :reset_in_seconds,
+        "resetInSeconds",
+        :resetInSeconds
+      ])
+    )
+  end
+
+  defp rate_limit_bucket_reset_in_seconds(_bucket), do: nil
+
+  defp rate_limit_bucket_absolute_reset_value(bucket) when is_map(bucket) do
+    map_value(bucket, [
+      "reset_at",
+      :reset_at,
+      "resetAt",
+      :resetAt,
+      "resets_at",
+      :resets_at,
+      "resetsAt",
+      :resetsAt
+    ])
+  end
+
+  defp rate_limit_bucket_absolute_reset_value(_bucket), do: nil
+
+  defp parse_rate_limit_absolute_reset(%DateTime{} = value), do: DateTime.truncate(value, :second)
+
+  defp parse_rate_limit_absolute_reset(%NaiveDateTime{} = value) do
+    value
+    |> NaiveDateTime.truncate(:second)
+    |> DateTime.from_naive!("Etc/UTC")
+  end
+
+  defp parse_rate_limit_absolute_reset(value) when is_integer(value) and value >= 0 do
+    unix_unit =
+      cond do
+        value >= 1_000_000_000_000 -> :millisecond
+        value >= 1_000_000_000 -> :second
+        true -> nil
+      end
+
+    case unix_unit && DateTime.from_unix(value, unix_unit) do
+      {:ok, datetime} -> DateTime.truncate(datetime, :second)
+      _ -> nil
+    end
+  end
+
+  defp parse_rate_limit_absolute_reset(value) when is_float(value) and value >= 0 do
+    value
+    |> trunc()
+    |> parse_rate_limit_absolute_reset()
+  end
+
+  defp parse_rate_limit_absolute_reset(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    case DateTime.from_iso8601(trimmed) do
+      {:ok, datetime, _offset} ->
+        DateTime.truncate(datetime, :second)
+
+      _ ->
+        case NaiveDateTime.from_iso8601(trimmed) do
+          {:ok, datetime} ->
+            parse_rate_limit_absolute_reset(datetime)
+
+          _ ->
+            case Integer.parse(trimmed) do
+              {integer, ""} when integer >= 0 -> parse_rate_limit_absolute_reset(integer)
+              _ -> nil
+            end
+        end
+    end
+  end
+
+  defp parse_rate_limit_absolute_reset(_value), do: nil
+
+  defp rate_limit_bucket_reset_fallback(reset_at, "time") do
+    "в #{Calendar.strftime(reset_at, "%H:%M")} UTC"
+  end
+
+  defp rate_limit_bucket_reset_fallback(reset_at, "date") do
+    date = DateTime.to_date(reset_at)
+    "#{date.day} #{Enum.at(@russian_month_names, date.month - 1)} UTC"
+  end
+
+  defp rate_limit_bucket_reset_fallback(_reset_at, _style), do: nil
+
+  defp rate_limit_bucket_window_mins(bucket) when is_map(bucket) do
+    integer_like(
+      map_value(bucket, [
+        "windowDurationMins",
+        :windowDurationMins,
+        "window_minutes",
+        :window_minutes,
+        "windowMinutes",
+        :windowMinutes
+      ])
+    )
+  end
+
+  defp rate_limit_bucket_window_mins(_bucket), do: nil
+
+  defp limit_chip(text, reset_at \\ nil, reset_style \\ nil, reset_fallback \\ nil) do
+    %{
+      text: text,
+      reset_at: reset_at,
+      reset_style: reset_style,
+      reset_fallback: reset_fallback
+    }
   end
 
   defp map_value(map, [key | rest]) when is_map(map) do

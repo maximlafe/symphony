@@ -58,7 +58,17 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert html =~ "ID primary"
     assert html =~ "enterprise"
     assert html =~ "5h: 18/100 left"
+    assert html =~ "· в 22:00 UTC"
+    assert html =~ "data-local-reset-at=\"2026-03-25T22:00:00Z\""
+    assert html =~ "data-local-reset-style=\"time\""
     assert html =~ "7d: 12% used"
+    assert html =~ "· 31 марта UTC"
+    assert html =~ "data-local-reset-at=\"2026-03-31T00:00:00Z\""
+    assert html =~ "data-local-reset-style=\"date\""
+    assert html =~ "· в 23:30 UTC"
+    assert html =~ "data-local-reset-at=\"2026-03-25T23:30:00Z\""
+    assert html =~ "· 1 апреля UTC"
+    assert html =~ "data-local-reset-at=\"2026-04-01T00:00:00Z\""
     assert html =~ "Credits: unlimited"
     assert html =~ "Make active"
 
@@ -103,6 +113,35 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert updated_snapshot.active_codex_account_id == "secondary"
   end
 
+  test "render computes local reset metadata from relative resetInSeconds values" do
+    fixed_now = ~U[2026-03-25 21:30:00Z]
+
+    snapshot =
+      multi_account_snapshot()
+      |> put_in(
+        [
+          :codex_accounts,
+          Access.at(0),
+          :rate_limits,
+          "primary"
+        ],
+        %{
+          "windowDurationMins" => 300,
+          "remaining" => 18,
+          "limit" => 100,
+          "resetInSeconds" => 1_800
+        }
+      )
+
+    payload = payload_from_snapshot(snapshot)
+    html = render_dashboard(%{payload: payload, now: fixed_now}, codex_accounts_expanded: true)
+
+    assert html =~ "5h: 18/100 left"
+    assert html =~ "· в 22:00 UTC"
+    assert html =~ "data-local-reset-at=\"2026-03-25T22:00:00Z\""
+    assert html =~ "data-local-reset-style=\"time\""
+  end
+
   test "http server renders the prioritized dashboard and exposes the updated account payload" do
     snapshot = multi_account_snapshot()
     orchestrator_name = unique_orchestrator_name(:HttpOrchestrator)
@@ -126,16 +165,35 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert retry_queue_offset < codex_accounts_offset
     assert dashboard_body =~ "very.long.primary.email.address+alerts@example.com"
     assert dashboard_body =~ "5h: 18/100 left"
+    assert dashboard_body =~ "· в 22:00 UTC"
+    assert dashboard_body =~ "· 31 марта UTC"
+    assert dashboard_body =~ "· в 23:30 UTC"
+    assert dashboard_body =~ "· 1 апреля UTC"
     assert dashboard_body =~ "Make active"
 
     api_response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert api_response.status == 200
     assert api_response.body["active_codex_account_id"] == "primary"
 
-    assert Enum.any?(
-             api_response.body["codex_accounts"],
-             &(&1["email"] == "very.long.primary.email.address+alerts@example.com")
-           )
+    primary_account =
+      Enum.find(
+        api_response.body["codex_accounts"],
+        &(&1["email"] == "very.long.primary.email.address+alerts@example.com")
+      )
+
+    assert primary_account
+    assert get_in(primary_account, ["rate_limits", "primary", "resetAt"]) == "2026-03-25T22:00:00Z"
+    assert get_in(primary_account, ["rate_limits", "secondary", "resetsAt"]) == "2026-03-31T00:00:00Z"
+
+    secondary_account =
+      Enum.find(
+        api_response.body["codex_accounts"],
+        &(&1["email"] == "standby.healthy@example.com")
+      )
+
+    assert secondary_account
+    assert get_in(secondary_account, ["rate_limits", "primary", "reset_at"]) == "2026-03-25T23:30:00Z"
+    assert get_in(secondary_account, ["rate_limits", "secondary", "resets_at"]) == "2026-04-01T00:00:00Z"
   end
 
   defp configure_endpoint(overrides) do
@@ -216,8 +274,17 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
           missing_windows_mins: [],
           insufficient_windows_mins: [],
           rate_limits: %{
-            "primary" => %{"windowDurationMins" => 300, "remaining" => 18, "limit" => 100},
-            "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 12},
+            "primary" => %{
+              "windowDurationMins" => 300,
+              "remaining" => 18,
+              "limit" => 100,
+              "resetAt" => "2026-03-25T22:00:00Z"
+            },
+            "secondary" => %{
+              "windowDurationMins" => 10_080,
+              "usedPercent" => 12,
+              "resetsAt" => "2026-03-31T00:00:00Z"
+            },
             "credits" => %{"unlimited" => true}
           }
         },
@@ -233,8 +300,17 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
           missing_windows_mins: [],
           insufficient_windows_mins: [],
           rate_limits: %{
-            "primary" => %{"windowDurationMins" => 300, "remaining" => 76, "limit" => 100},
-            "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 4},
+            "primary" => %{
+              "windowDurationMins" => 300,
+              "remaining" => 76,
+              "limit" => 100,
+              "reset_at" => "2026-03-25T23:30:00Z"
+            },
+            "secondary" => %{
+              "windowDurationMins" => 10_080,
+              "usedPercent" => 4,
+              "resets_at" => "2026-04-01T00:00:00Z"
+            },
             "credits" => %{"hasCredits" => true}
           }
         }
