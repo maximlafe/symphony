@@ -94,6 +94,7 @@ Instructions:
 - Determine the current state first and follow the matching flow.
 - Keep exactly one persistent workpad comment (`## Codex Workpad`) and use local `workpad.md` as the working copy for the implementation checklist and execution log.
 - Treat the issue description as the tracker/task statement; do not turn it into a workpad, checklist, or marker-delimited plan block unless a repo-specific workflow explicitly requires a separate task-spec contract.
+- Treat user-uploaded files, screenshots, and inline media in the issue description as canonical task input; never delete, rewrite away, or relocate them when updating issue text. If a description edit would drop an existing upload or embed, leave the description unchanged and keep the extra structure in the workpad instead.
 - Sync the live workpad only at bootstrap, meaningful milestones, and final handoff.
 - Reproduce or capture the current signal before code changes when it materially improves confidence.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.

@@ -551,6 +551,7 @@ Instructions:
    - use canonical Russian headings `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`;
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
    - preserve all material user facts, constraints, and acceptance intent, but allow full reformatting into the canonical sections;
+   - preserve user-uploaded files, screenshots, and inline media verbatim; if the current description contains uploads or embeds that would be dropped by normalization, do not rewrite the description and keep the extra structure in the workpad instead;
    - do not write checklists, managed markers, or workpad-style progress notes into the description.
 7. Maintain the Russian workpad with a compact environment stamp, hierarchical plan, `Критерии приемки`, `Проверка`, and `Заметки`.
 8. Before moving to `Plan Review`, do one final planning handoff:
@@ -705,6 +706,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - If issue state is `Backlog`, do not modify it.
 - If state is terminal (`Done`), do nothing and shut down.
 - Preserve all material user-authored facts and constraints when normalizing the issue description; full reformatting into canonical sections is allowed.
+- Preserve user-uploaded files, screenshots, and inline media in the issue description; never let task-spec normalization remove or relocate them.
 - Никогда не делай unclassified execution handoff: для переходов в `In Review` или `Blocked` всегда указывай и `checkpoint_type`, и `risk_level`.
 - Use exactly one persistent workpad comment and sync it via `sync_workpad` whenever available.
 - Pass the absolute path to local `workpad.md` when calling `sync_workpad`.

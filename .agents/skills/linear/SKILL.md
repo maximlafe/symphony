@@ -91,6 +91,19 @@ query($id: String!) {
 }
 ```
 
+## Editing issue descriptions
+
+Before any `issueUpdate` that changes `description`, fetch the current issue
+body plus attachments first.
+
+- Treat user-uploaded files, screenshots, and inline media in the description
+  as canonical task input, not formatting noise.
+- Never delete, relocate, or rewrite away an existing upload or embed while
+  normalizing the issue description.
+- If the description contains uploads or embeds that cannot be preserved
+  verbatim in the rewritten body, do not mutate `description`; keep the added
+  structure in the workpad or a separate comment instead.
+
 ## State transitions
 
 Fetch team states first, then move with the exact `stateId`:

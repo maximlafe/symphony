@@ -2000,6 +2000,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Only stop early for a true blocker or an explicitly classified handoff"
     assert prompt =~ "Do not include \"next steps for user\""
     assert prompt =~ "use the `land` skill and do not call `gh pr merge` directly"
+    assert prompt =~ "never delete, rewrite away, or relocate them when updating issue text"
     assert prompt =~ "`github_pr_snapshot`"
     assert prompt =~ "`github_wait_for_checks`"
     assert prompt =~ "Continuation context:"
