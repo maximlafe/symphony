@@ -28,6 +28,8 @@ defmodule SymphonyElixir.ErrorClassifierTest do
 
     assert ErrorClassifier.classify({:workspace_hook_failed, "after_create", 1, "`mise` is required for repo bootstrap."}) ==
              :permanent
+
+    assert ErrorClassifier.classify({:workspace_hook_failed, "after_create", 2, "Cloning into '.'...\nmake: *** No rule to make target 'symphony-bootstrap'. Stop.\n"}) == :permanent
   end
 
   test "preserves retry class for workspace hook output" do
