@@ -26,6 +26,7 @@ services:
       - /root/.codex-deborah:/root/.codex-deborah
       - /root/.codex-kjfdn41739:/root/.codex-kjfdn41739
       - /root/.codex-xvnza54743:/root/.codex-xvnza54743
+      - /root/.codex-tatonkasperski8844:/root/.codex-tatonkasperski8844
       - /srv/symphony/app/workflows/letterl/maxime:/srv/symphony/workflows:ro
       - /srv/symphony/workspaces/let:/srv/symphony/workspaces/let
       - /srv/symphony/logs/let:/srv/symphony/logs/let

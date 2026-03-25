@@ -37,9 +37,11 @@ Notes:
 - PR handoff uses `In Review` instead of `Human Review`.
 - Auth and permission blockers move the issue to `Blocked`.
 - `Blocked` is a manual gate: after a `decision` or `human-action` handoff is resolved, resume only when a human moves the issue back to `In Progress`; comments alone do not resume work.
+- Live LetterL workflows are expected to run with `agent.max_concurrent_agents: 10`; dropping to `1` is only a temporary debugging override and should not remain in VPS runtime files.
 - Each Symphony process must use its own workspace root, logs root, and dashboard port.
 - Worker bootstrap now runs `make symphony-bootstrap` inside the selected allowlisted repo, so each supported repo must expose that target on the branch Symphony clones.
 - Docker on the VPS should mount `/srv/symphony/app/workflows/letterl/maxime` directly into `/srv/symphony/workflows`, so the active worker rules stay aligned with the checked-out repo.
+- Supported production shape is a single Docker-based `symphony-let` runner using `let.WORKFLOW.md`; legacy `symphony-task-extract`, `symphony-team-master`, and `symphony-platform` `systemd` units should stay retired so host-side `.WORKFLOW.md` copies cannot drift from the repo checkout.
 
 Required `/etc/symphony/symphony.env` contract for these workers:
 

@@ -422,6 +422,8 @@ codex:
       codex_home: /root/.codex-kjfdn41739
     - id: "xvnza54743@outlook.com"
       codex_home: /root/.codex-xvnza54743
+    - id: "tatonkasperski8844"
+      codex_home: /root/.codex-tatonkasperski8844
   minimum_remaining_percent: 5
   monitored_windows_mins: [300, 10080]
 server:
