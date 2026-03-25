@@ -25,6 +25,9 @@ defmodule SymphonyElixir.ErrorClassifierTest do
 
     assert ErrorClassifier.classify({:workspace_hook_failed, "after_create", 1, "GitHub auth is unavailable. Export GH_TOKEN in /etc/symphony/symphony.env."}) ==
              :permanent
+
+    assert ErrorClassifier.classify({:workspace_hook_failed, "after_create", 1, "`mise` is required for repo bootstrap."}) ==
+             :permanent
   end
 
   test "preserves retry class for workspace hook output" do

@@ -63,6 +63,8 @@ defmodule SymphonyElixir.ErrorClassifier do
     "is required for unattended",
     "github auth is unavailable",
     "failed to configure git credentials via gh auth setup-git",
+    "is required for repo bootstrap",
+    "repo bootstrap",
     "missing required auth",
     "missing required permissions",
     "missing required tools"
