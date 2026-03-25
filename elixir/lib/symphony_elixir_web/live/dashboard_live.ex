@@ -733,8 +733,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
     )
   end
 
-  defp rate_limit_bucket_reset_in_seconds(_bucket), do: nil
-
   defp rate_limit_bucket_absolute_reset_value(bucket) when is_map(bucket) do
     map_value(bucket, [
       "reset_at",
@@ -747,8 +745,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
       :resetsAt
     ])
   end
-
-  defp rate_limit_bucket_absolute_reset_value(_bucket), do: nil
 
   defp parse_rate_limit_absolute_reset(%DateTime{} = value), do: DateTime.truncate(value, :second)
 
@@ -836,8 +832,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
       ])
     )
   end
-
-  defp rate_limit_bucket_window_mins(_bucket), do: nil
 
   defp limit_chip(text, reset_at \\ nil, reset_style \\ nil, reset_fallback \\ nil) do
     %{
