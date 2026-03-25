@@ -8,6 +8,7 @@ Linear assignee id:
 
 Project routing:
 
+- `symphony-bd5bc5b51675` -> `maximlafe/symphony`
 - `izvlechenie-zadach-8209c2018e76` -> `maximlafe/lead_status`
 - `master-komand-dfbe2b1b972e` -> `maximlafe/lead_status`
 - `telegram-full-export-v2-a6212aeb565c` -> `maximlafe/tg_live_export`
@@ -20,6 +21,7 @@ Notes:
 
 - `let.WORKFLOW.md` polls LetterL by `tracker.team_key: LET` and routes workspaces by Linear project metadata:
   - fixed project mapping:
+    - `Symphony` -> `maximlafe/symphony`
     - `Извлечение задач` -> `maximlafe/lead_status`
     - `Мастер команд` -> `maximlafe/lead_status`
     - `Telegram Full Export v2` -> `maximlafe/tg_live_export`
