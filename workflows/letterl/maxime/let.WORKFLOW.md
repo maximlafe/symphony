@@ -74,6 +74,7 @@ hooks:
       project_slug=$1
       project_name=$2
       case "$project_slug" in
+        symphony-bd5bc5b51675) printf '%s\n' "maximlafe/symphony"; return 0 ;;
         a6212aeb565c|telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export"; return 0 ;;
         dfbe2b1b972e|master-komand-dfbe2b1b972e|8209c2018e76|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status"; return 0 ;;
         448570ee6438|platforma-i-integraciya-448570ee6438) return 2 ;;
@@ -257,6 +258,7 @@ hooks:
       project_slug=$1
       project_name=$2
       case "$project_slug" in
+        symphony-bd5bc5b51675) printf '%s\n' "maximlafe/symphony"; return 0 ;;
         a6212aeb565c|telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export"; return 0 ;;
         dfbe2b1b972e|master-komand-dfbe2b1b972e|8209c2018e76|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status"; return 0 ;;
         448570ee6438|platforma-i-integraciya-448570ee6438) return 2 ;;
