@@ -31,6 +31,7 @@ defmodule SymphonyElixirWeb.Layouts do
             var liveSocket;
             var liveViewObserver;
             var connectPoll;
+            var reconnectTimer;
             var csrfTokenMeta = document.querySelector("meta[name='csrf-token']");
             var csrfToken = csrfTokenMeta ? csrfTokenMeta.getAttribute("content") : null;
 
@@ -93,6 +94,35 @@ defmodule SymphonyElixirWeb.Layouts do
               });
             };
 
+            var scheduleReconnect = function (forceDisconnect) {
+              if (!liveSocket) return;
+
+              if (reconnectTimer) {
+                window.clearTimeout(reconnectTimer);
+              }
+
+              reconnectTimer = window.setTimeout(function () {
+                reconnectTimer = null;
+                observeLiveViewRoot();
+
+                if (forceDisconnect && liveSocket.disconnect) {
+                  liveSocket.disconnect();
+                }
+
+                if (
+                  !(
+                    liveSocket.isConnected &&
+                    liveSocket.isConnected() &&
+                    liveViewRootConnected()
+                  )
+                ) {
+                  liveSocket.connect();
+                }
+
+                syncLiveViewStatus();
+              }, 150);
+            };
+
             liveSocket.socket.onOpen(syncLiveViewStatus);
             liveSocket.socket.onClose(syncLiveViewStatus);
             liveSocket.socket.onError(syncLiveViewStatus);
@@ -110,16 +140,34 @@ defmodule SymphonyElixirWeb.Layouts do
               syncLiveViewStatus();
             }, 10000);
 
-            window.addEventListener("pageshow", function () {
-              observeLiveViewRoot();
-              if (liveSocket.isConnected && !liveSocket.isConnected()) {
-                liveSocket.connect();
+            window.addEventListener("pagehide", function (event) {
+              if (event.persisted && liveSocket.disconnect) {
+                liveSocket.disconnect();
               }
-              syncLiveViewStatus();
+            });
+
+            window.addEventListener("pageshow", function (event) {
+              scheduleReconnect(Boolean(event.persisted));
+            });
+
+            window.addEventListener("focus", function () {
+              if (!liveViewRootConnected()) {
+                scheduleReconnect(false);
+              }
+            });
+
+            window.addEventListener("online", function () {
+              scheduleReconnect(false);
             });
 
             document.addEventListener("visibilitychange", function () {
-              if (!document.hidden) syncLiveViewStatus();
+              if (!document.hidden) {
+                if (!liveViewRootConnected()) {
+                  scheduleReconnect(false);
+                }
+
+                syncLiveViewStatus();
+              }
             });
           });
         </script>
