@@ -64,6 +64,7 @@ defmodule SymphonyElixir.ErrorClassifier do
     "github auth is unavailable",
     "failed to configure git credentials via gh auth setup-git",
     "is required for repo bootstrap",
+    "no rule to make target 'symphony-bootstrap'",
     "repo bootstrap",
     "missing required auth",
     "missing required permissions",
