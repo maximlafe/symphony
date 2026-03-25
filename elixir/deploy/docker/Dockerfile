@@ -29,6 +29,9 @@ RUN python3 -m venv /opt/poetry-venv \
     && /opt/poetry-venv/bin/pip install "poetry==${POETRY_VERSION}" \
     && ln -s /opt/poetry-venv/bin/poetry /usr/local/bin/poetry
 
+RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh \
+    && mise --version
+
 WORKDIR /opt/symphony
 COPY . /opt/symphony
 
