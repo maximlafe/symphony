@@ -1,10 +1,10 @@
-.PHONY: help symphony-bootstrap symphony-live-e2e symphony-preflight symphony-validate
+.PHONY: help symphony-bootstrap symphony-dashboard-checks symphony-live-e2e symphony-preflight symphony-validate
 
 MISE ?= mise
 ELIXIR_DIR ?= elixir
 
 help:
-	@echo "Targets: symphony-preflight, symphony-bootstrap, symphony-validate, symphony-live-e2e"
+	@echo "Targets: symphony-preflight, symphony-bootstrap, symphony-dashboard-checks, symphony-validate, symphony-live-e2e"
 
 symphony-preflight:
 	@if ! command -v codex >/dev/null 2>&1; then \
@@ -52,6 +52,9 @@ symphony-bootstrap:
 		exit 1; \
 	fi
 	cd $(ELIXIR_DIR) && $(MISE) trust && $(MISE) install && $(MISE) exec -- mix setup
+
+symphony-dashboard-checks:
+	cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) dashboard
 
 symphony-validate:
 	cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) all

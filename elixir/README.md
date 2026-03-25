@@ -60,6 +60,7 @@ root exposes the worker contract:
 
 - `make symphony-preflight`
 - `make symphony-bootstrap`
+- `make symphony-dashboard-checks`
 - `make symphony-validate`
 - `make symphony-live-e2e`
 
@@ -272,6 +273,13 @@ The live test creates a temporary Linear project and issue, writes a temporary `
 runs a real agent turn, verifies the workspace side effect, requires Codex to comment on and close
 the Linear issue, then marks the project completed so the run remains visible in Linear.
 `make e2e` fails fast with a clear error if `LINEAR_API_KEY` is unset.
+
+For a deterministic dashboard-focused validation slice that does not depend on a real Codex turn,
+run:
+
+```bash
+make symphony-dashboard-checks
+```
 
 ## FAQ
 
