@@ -104,6 +104,37 @@ hooks:
         setup_note=$(printf '%s\n%s' "$setup_note" "$1")
       fi
     }
+    summarize_bootstrap_failure() {
+      failure_log=$1
+      awk '
+        NF {
+          last=$0
+          if ($0 !~ /^make: \*\*\* / && $0 !~ /^Makefile:[0-9]+: warning:/ && $0 !~ /^Cloning into /) {
+            preferred=$0
+          }
+        }
+        END {
+          if (preferred != "") {
+            print preferred
+          } else {
+            print last
+          }
+        }
+      ' "$failure_log"
+    }
+    write_bootstrap_blocker() {
+      failure_log=$1
+      failure_summary=$(summarize_bootstrap_failure "$failure_log")
+      if printf '%s' "$failure_summary" | grep -Fq "No rule to make target" &&
+         printf '%s' "$failure_summary" | grep -Fq "symphony-bootstrap"; then
+        printf "Base branch '%s' in %s does not define make symphony-bootstrap.\n" "$base_branch" "$source_repository" > .symphony-base-branch-error
+      else
+        if [ -z "$failure_summary" ]; then
+          failure_summary="unknown bootstrap failure"
+        fi
+        printf "Base branch '%s' in %s failed make symphony-bootstrap: %s\n" "$base_branch" "$source_repository" "$failure_summary" > .symphony-base-branch-error
+      fi
+    }
     if [ -z "${GH_TOKEN:-}" ]; then
       echo "GH_TOKEN is required for unattended GitHub clone/push access." >&2
       exit 1
@@ -207,7 +238,16 @@ hooks:
     if [ -n "$setup_note" ]; then
       printf '%s\n' "$setup_note" > .symphony-base-branch-note
     fi
-    make symphony-bootstrap
+    rm -f .symphony-bootstrap-error.log
+    if ! make -n symphony-bootstrap > .symphony-bootstrap-error.log 2>&1; then
+      write_bootstrap_blocker .symphony-bootstrap-error.log
+      exit 0
+    fi
+    if ! make symphony-bootstrap > .symphony-bootstrap-error.log 2>&1; then
+      write_bootstrap_blocker .symphony-bootstrap-error.log
+      exit 0
+    fi
+    rm -f .symphony-bootstrap-error.log
   before_run: |
     extract_symphony_marker() {
       marker_name=$1
