@@ -71,10 +71,17 @@ hooks:
       '
     }
     resolve_project_repository() {
-      case "$1" in
-        telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export" ;;
-        master-komand-dfbe2b1b972e|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status" ;;
-        platforma-i-integraciya-448570ee6438) return 2 ;;
+      project_slug=$1
+      project_name=$2
+      case "$project_slug" in
+        a6212aeb565c|telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export"; return 0 ;;
+        dfbe2b1b972e|master-komand-dfbe2b1b972e|8209c2018e76|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status"; return 0 ;;
+        448570ee6438|platforma-i-integraciya-448570ee6438) return 2 ;;
+      esac
+      case "$project_name" in
+        "Telegram Full Export v2") printf '%s\n' "maximlafe/tg_live_export" ;;
+        "Мастер команд"|"Извлечение задач") printf '%s\n' "maximlafe/lead_status" ;;
+        "Платформа и интеграция") return 2 ;;
         *) return 1 ;;
       esac
     }
@@ -139,7 +146,7 @@ hooks:
       repo_override=$repo_labels
     fi
     if [ -z "$base_branch_error" ]; then
-      resolved_project_repository=$(resolve_project_repository "$issue_project_slug")
+      resolved_project_repository=$(resolve_project_repository "$issue_project_slug" "$issue_project_name")
       project_resolution_status=$?
 
       case "$project_resolution_status" in
@@ -247,10 +254,17 @@ hooks:
       '
     }
     resolve_project_repository() {
-      case "$1" in
-        telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export" ;;
-        master-komand-dfbe2b1b972e|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status" ;;
-        platforma-i-integraciya-448570ee6438) return 2 ;;
+      project_slug=$1
+      project_name=$2
+      case "$project_slug" in
+        a6212aeb565c|telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export"; return 0 ;;
+        dfbe2b1b972e|master-komand-dfbe2b1b972e|8209c2018e76|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status"; return 0 ;;
+        448570ee6438|platforma-i-integraciya-448570ee6438) return 2 ;;
+      esac
+      case "$project_name" in
+        "Telegram Full Export v2") printf '%s\n' "maximlafe/tg_live_export" ;;
+        "Мастер команд"|"Извлечение задач") printf '%s\n' "maximlafe/lead_status" ;;
+        "Платформа и интеграция") return 2 ;;
         *) return 1 ;;
       esac
     }
@@ -316,7 +330,7 @@ hooks:
       repo_override=$repo_labels
     fi
     if [ -z "$base_branch_error" ]; then
-      resolved_project_repository=$(resolve_project_repository "$issue_project_slug")
+      resolved_project_repository=$(resolve_project_repository "$issue_project_slug" "$issue_project_name")
       project_resolution_status=$?
 
       case "$project_resolution_status" in
