@@ -18,10 +18,12 @@ defmodule SymphonyElixir.Application do
   """
 
   use Application
+  alias SymphonyElixir.Codex.SkillSync
 
   @impl true
   def start(_type, _args) do
     :ok = SymphonyElixir.LogFile.configure()
+    :ok = SkillSync.sync_configured_homes()
 
     children = [
       {Phoenix.PubSub, name: SymphonyElixir.PubSub},

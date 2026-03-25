@@ -14,6 +14,20 @@ npx skills add odysseus0/symphony -s symphony-setup -y
 
 Then ask your agent to set up Symphony for your repo.
 
+## This Repo As A Target Repo
+
+`maximlafe/symphony` is also configured as a standalone target repo for Symphony itself. The repo-local workflow lives at `elixir/WORKFLOW.md` and now points at the dedicated LetterL Linear project `Symphony` (`symphony-bd5bc5b51675`) instead of the shared platform bucket.
+
+Fresh worker clones use the contract that lives in this repo:
+
+- `.agents/skills/` contains the worker skills that workspace clones rely on.
+- `make symphony-preflight` checks `codex`, `mise`, `gh auth status`, `LINEAR_API_KEY`, and non-interactive git access for the repo remote.
+- `make symphony-bootstrap` configures GitHub git auth with `gh auth setup-git`, installs the pinned toolchain via `mise`, and runs `mix setup` in `elixir/`.
+- `make symphony-validate` runs the main quality gate for this repo (`make -C elixir all`).
+- `make symphony-live-e2e` runs the disposable live smoke test (`make -C elixir e2e`) when you explicitly want a real Linear/Codex end-to-end run.
+
+That means a clean Symphony workspace no longer depends on hidden setup from other repos: the workflow, worker skills, bootstrap, and validation path all live here.
+
 ## How it works
 
 Symphony polls a Linear project or team for active tickets. Each ticket gets an isolated workspace clone and a Codex agent. The agent reads the ticket, writes a plan, implements, validates, and opens a PR. You review PRs and move tickets through states — the agents handle the rest.
@@ -31,11 +45,25 @@ The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatt
 
 ## Manual setup
 
-1. Build: `git clone https://github.com/odysseus0/symphony && cd symphony/elixir && mise trust && mise install && mise exec -- mix setup && mise exec -- mix build`
+1. Build: `git clone https://github.com/odysseus0/symphony && cd symphony && make symphony-bootstrap && cd elixir && mise exec -- mix build`
 2. Install skills: `npx skills add odysseus0/symphony -a codex -s linear land commit push pull debug --copy -y` and copy `elixir/WORKFLOW.md` to your repo
 3. In `WORKFLOW.md`, set exactly one Linear polling scope: `tracker.project_slug` or `tracker.team_key`, plus `hooks.after_create` (clone your repo + setup commands). Hooks also receive issue metadata in env vars like `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_DESCRIPTION`, `SYMPHONY_ISSUE_BRANCH_NAME`, `SYMPHONY_ISSUE_PROJECT_SLUG`, and `SYMPHONY_ISSUE_LABELS` if you need structured per-issue bootstrap behavior.
 4. Add **Rework**, **Human Review**, **Merging** as custom states in Linear (Team Settings → Workflow)
 5. Commit, push, then: `mise exec -- ./bin/symphony /path/to/your-repo/WORKFLOW.md`
+
+For this repository's own self-hosted target flow, use the repo root targets first:
+
+```bash
+make symphony-preflight
+make symphony-bootstrap
+make symphony-validate
+cd elixir && mise exec -- ./bin/symphony ./WORKFLOW.md --port 4101
+```
+
+`make symphony-bootstrap` is the unattended repo-root bootstrap contract Symphony workers use in a
+fresh clone. In this repo it configures git credentials through `gh`, prepares the pinned Elixir
+toolchain through `mise`, and keeps the bootstrap path repo-owned instead of buried in shell
+history.
 
 **[Getting Started with OpenAI Symphony](https://x.com/odysseus0z/status/2031850264240800131)** — full walkthrough with context on why these defaults matter.
 

@@ -2,7 +2,7 @@
 tracker:
   kind: linear
   # Set exactly one of project_slug or team_key.
-  project_slug: "symphony-0c79b11b75ea"
+  project_slug: "symphony-bd5bc5b51675"
   active_states:
     - Todo
     - In Progress
@@ -23,10 +23,9 @@ workspace:
   warning_threshold_bytes: 10737418240
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/maximlafe/symphony .
-    if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
-    fi
+    export GIT_TERMINAL_PROMPT=0
+    git clone --depth 1 "${SYMPHONY_SOURCE_REPO_URL:-https://github.com/maximlafe/symphony.git}" .
+    make symphony-bootstrap
   before_remove: |
     branch=$(git branch --show-current 2>/dev/null)
     if [ -n "$branch" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
@@ -101,6 +100,14 @@ Instructions:
 - Do not reread skill bodies in straightforward runs unless the workflow does not cover the needed behavior.
 - Move state only when the matching quality bar is satisfied.
 
+## Repository contract
+
+- This workflow is reserved for the dedicated LetterL project `Symphony` (`symphony-bd5bc5b51675`). Do not retarget it to the shared platform project.
+- Fresh workspace bootstrap is `git clone` of `maximlafe/symphony` followed by `make symphony-bootstrap`.
+- Run `make symphony-preflight` once per run before treating auth or tooling gaps as blockers.
+- Default validation gate is `make symphony-validate`; run `make symphony-live-e2e` only for explicit smoke or end-to-end tasks that should exercise real Linear and Codex services.
+- Repo-local worker skills live in `.agents/skills/` and are part of the required target-repo contract.
+
 ## Status map
 
 - `Backlog` -> out of scope; do not modify.
@@ -148,6 +155,7 @@ Instructions:
 5. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before handoff.
    - track repeated fix loops for the same failing signal in the workpad and follow the auto-fix limit below;
 6. Run the required validation for the scope:
+   - run `make symphony-preflight` before concluding that auth or tooling is missing for the current task;
    - execute all ticket-provided validation/test-plan requirements when present;
    - prefer targeted proof for the changed behavior;
    - revert every temporary proof edit before commit or push;

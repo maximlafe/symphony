@@ -33,12 +33,17 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
 2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
    set it as the `LINEAR_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
+4. Copy any repo-local worker skills your workflow depends on to `.agents/skills/`.
+   - Symphony bundles the generic `commit`, `push`, `pull`, `land`, `linear`, and `debug` skills,
+     and syncs them into every configured `codex.accounts[*].codex_home` on startup.
    - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
      operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
    - Set exactly one Linear polling scope: `tracker.project_slug` for project-scoped polling or
      `tracker.team_key` for team-scoped polling.
+   - `tracker.assignee` is optional and narrows dispatch to issues assigned to a specific Linear
+     user (or `me` via `LINEAR_ASSIGNEE`). Use it when a team-scoped worker must ignore work owned
+     by other runners.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
@@ -46,6 +51,24 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
      Team Settings → Workflow in Linear.
    - Orchestrator failure escalation uses `tracker.manual_intervention_state` (default: `Blocked`).
 6. Follow the instructions below to install the required runtime dependencies and start the service.
+
+## This Repository's Target-Repo Contract
+
+`maximlafe/symphony` can run as its own Symphony target repo. The dedicated LetterL project slug is
+`symphony-bd5bc5b51675`, the repo-local worker skills live in `../.agents/skills/`, and the repo
+root exposes the worker contract:
+
+- `make symphony-preflight`
+- `make symphony-bootstrap`
+- `make symphony-validate`
+- `make symphony-live-e2e`
+
+Use those root targets instead of ad-hoc shell history when validating a fresh clone or a new
+runtime host.
+
+For isolated smoke tickets in the dedicated `Symphony` project, keep the Linear assignee empty
+unless you intentionally route the run through an assignee-filtered worker. This avoids accidental
+pickup by a separate team-scoped worker that is filtering on `tracker.assignee`.
 
 ## Prerequisites
 
@@ -60,13 +83,16 @@ mise exec -- elixir --version
 
 ```bash
 git clone https://github.com/openai/symphony
-cd symphony/elixir
-mise trust
-mise install
-mise exec -- mix setup
+cd symphony
+make symphony-bootstrap
+cd elixir
 mise exec -- mix build
 mise exec -- ./bin/symphony ./WORKFLOW.md
 ```
+
+`make symphony-bootstrap` is the repo-root unattended bootstrap contract for this repository. It is
+safe to rerun in a fresh or already-prepared workspace and should not leave tracked changes behind
+after a successful run.
 
 ## Configuration
 
@@ -118,6 +144,9 @@ Notes:
 - If a value is missing, defaults are used.
 - Linear polling scope is mutually exclusive: configure exactly one of `tracker.project_slug` or
   `tracker.team_key`.
+- `tracker.assignee` is independent from polling scope. When set, Symphony dispatches only issues
+  assigned to that Linear user (or the current viewer for `me`), and unassigned issues are skipped
+  by that worker.
 - The prompt body is the workflow contract. In production, make handoffs explicit with `checkpoint_type` and `risk_level`, define low-context behavior, and cap repeated auto-fix loops so the agent escalates instead of spinning.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
@@ -133,7 +162,8 @@ Notes:
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there, along with any other setup commands you need.
+  `git clone ... .` there, then call the repo-owned bootstrap entrypoint such as
+  `make symphony-bootstrap`.
 - `workspace.cleanup_keep_recent` controls how many of the most recent terminal issue workspaces
   Symphony keeps on disk before retention cleanup removes older ones. Default: `5`.
 - `workspace.warning_threshold_bytes` sets the workspace-root disk-usage threshold that triggers a
@@ -142,6 +172,8 @@ Notes:
   `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_TITLE`, `SYMPHONY_ISSUE_DESCRIPTION`,
   `SYMPHONY_ISSUE_PROJECT_SLUG`, `SYMPHONY_ISSUE_PROJECT_NAME`, `SYMPHONY_ISSUE_LABELS`,
   `SYMPHONY_ISSUE_STATE`, `SYMPHONY_ISSUE_BRANCH_NAME`, and `SYMPHONY_ISSUE_URL`.
+- In this repository, `hooks.after_create` intentionally ends with `make symphony-bootstrap` so a
+  clean workspace clone picks up the same git auth and `mise` bootstrap path every time.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
