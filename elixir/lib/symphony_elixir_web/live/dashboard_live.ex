@@ -779,27 +779,39 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp parse_rate_limit_absolute_reset(value) when is_binary(value) do
-    trimmed = String.trim(value)
-
-    case DateTime.from_iso8601(trimmed) do
-      {:ok, datetime, _offset} ->
-        DateTime.truncate(datetime, :second)
-
-      _ ->
-        case NaiveDateTime.from_iso8601(trimmed) do
-          {:ok, datetime} ->
-            parse_rate_limit_absolute_reset(datetime)
-
-          _ ->
-            case Integer.parse(trimmed) do
-              {integer, ""} when integer >= 0 -> parse_rate_limit_absolute_reset(integer)
-              _ -> nil
-            end
-        end
-    end
+    value
+    |> String.trim()
+    |> parse_rate_limit_absolute_reset_binary()
   end
 
   defp parse_rate_limit_absolute_reset(_value), do: nil
+
+  defp parse_rate_limit_absolute_reset_binary(value) do
+    parse_rate_limit_iso8601(value) ||
+      parse_rate_limit_naive_datetime(value) ||
+      parse_rate_limit_integer(value)
+  end
+
+  defp parse_rate_limit_iso8601(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> DateTime.truncate(datetime, :second)
+      _ -> nil
+    end
+  end
+
+  defp parse_rate_limit_naive_datetime(value) do
+    case NaiveDateTime.from_iso8601(value) do
+      {:ok, datetime} -> parse_rate_limit_absolute_reset(datetime)
+      _ -> nil
+    end
+  end
+
+  defp parse_rate_limit_integer(value) do
+    case Integer.parse(value) do
+      {integer, ""} when integer >= 0 -> parse_rate_limit_absolute_reset(integer)
+      _ -> nil
+    end
+  end
 
   defp rate_limit_bucket_reset_fallback(reset_at, "time") do
     "в #{Calendar.strftime(reset_at, "%H:%M")} UTC"
