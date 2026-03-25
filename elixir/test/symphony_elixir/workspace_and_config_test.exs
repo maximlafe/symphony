@@ -228,6 +228,85 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "Rework recreates the issue workspace as a fresh attempt" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-rework-refresh-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "printf '%s' \"$SYMPHONY_ISSUE_STATE\" > bootstrap-state.txt"
+      )
+
+      issue = %Issue{
+        id: "issue-rework",
+        identifier: "MT-REWORK",
+        title: "Rework fresh attempt",
+        description: "## Symphony\nBase branch: main\n",
+        state: "In Progress",
+        branch_name: "feature/old-attempt"
+      }
+
+      rework_issue = %{issue | state: "Rework", branch_name: "feature/new-attempt"}
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      assert File.read!(Path.join(workspace, "bootstrap-state.txt")) == "In Progress"
+
+      File.write!(Path.join(workspace, "local-progress.txt"), "stale local state\n")
+
+      assert {:ok, ^workspace} = Workspace.create_for_issue(rework_issue)
+      assert File.read!(Path.join(workspace, "bootstrap-state.txt")) == "Rework"
+      refute File.exists?(Path.join(workspace, "local-progress.txt"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace recreates stale failed bootstrap directories before rerunning after_create" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-bootstrap-recovery-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "printf '%s' \"$SYMPHONY_ISSUE_STATE\" > bootstrap-state.txt"
+      )
+
+      issue = %Issue{
+        id: "issue-bootstrap-recovery",
+        identifier: "MT-BOOTSTRAP-RECOVERY",
+        title: "Bootstrap recovery",
+        description: "## Symphony\nBase branch: main\n",
+        state: "In Progress",
+        branch_name: "feature/bootstrap-recovery"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+
+      File.write!(Path.join(workspace, ".symphony-base-branch-error"), "old bootstrap blocker\n")
+      File.write!(Path.join(workspace, "local-progress.txt"), "stale bootstrap residue\n")
+
+      assert {:ok, ^workspace} = Workspace.create_for_issue(issue)
+      assert File.read!(Path.join(workspace, "bootstrap-state.txt")) == "In Progress"
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
+      refute File.exists?(Path.join(workspace, "local-progress.txt"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace replaces stale non-directory paths" do
     workspace_root =
       Path.join(
@@ -288,6 +367,106 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                  cd: workspace,
                  env: [
                    {"SYMPHONY_ISSUE_PROJECT_SLUG", "telegram-full-export-v2-a6212aeb565c"},
+                   {"SYMPHONY_ISSUE_PROJECT_NAME", "Telegram Full Export v2"},
+                   {"SYMPHONY_ISSUE_LABELS", ""}
+                 ]
+               )
+
+      assert File.read!(Path.join(workspace, "BOOTSTRAP_REPO.txt")) == "tg_live_export\n"
+      assert File.read!(Path.join(workspace, ".symphony-source-repository")) == "maximlafe/tg_live_export\n"
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "repository routing script maps the Symphony project to the Symphony repository" do
+    previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
+    previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
+    previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("TEST_LEAD_STATUS_REPO_URL", previous_lead_status_repo)
+      restore_env("TEST_SYMPHONY_REPO_URL", previous_symphony_repo)
+      restore_env("TEST_TG_LIVE_EXPORT_REPO_URL", previous_tg_live_export_repo)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-symphony-project-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      lead_status_repo = Path.join(test_root, "lead_status")
+      symphony_repo = Path.join(test_root, "symphony")
+      tg_live_export_repo = Path.join(test_root, "tg_live_export")
+      workspace = Path.join(test_root, "workspace")
+
+      create_bootstrap_repo!(lead_status_repo, "lead_status")
+      create_bootstrap_repo!(symphony_repo, "symphony")
+      create_bootstrap_repo!(tg_live_export_repo, "tg_live_export")
+      File.mkdir_p!(workspace)
+
+      System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
+      System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
+      System.put_env("TEST_TG_LIVE_EXPORT_REPO_URL", tg_live_export_repo)
+
+      assert {_output, 0} =
+               System.cmd("sh", ["-lc", repository_routing_hook()],
+                 cd: workspace,
+                 env: [
+                   {"SYMPHONY_ISSUE_PROJECT_SLUG", "symphony-bd5bc5b51675"},
+                   {"SYMPHONY_ISSUE_PROJECT_NAME", "Symphony"},
+                   {"SYMPHONY_ISSUE_LABELS", ""}
+                 ]
+               )
+
+      assert File.read!(Path.join(workspace, "BOOTSTRAP_REPO.txt")) == "symphony\n"
+      assert File.read!(Path.join(workspace, ".symphony-source-repository")) == "maximlafe/symphony\n"
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "repository routing script can bootstrap a fixed repository from project name when slug format changes" do
+    previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
+    previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
+    previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("TEST_LEAD_STATUS_REPO_URL", previous_lead_status_repo)
+      restore_env("TEST_SYMPHONY_REPO_URL", previous_symphony_repo)
+      restore_env("TEST_TG_LIVE_EXPORT_REPO_URL", previous_tg_live_export_repo)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-repository-project-name-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      lead_status_repo = Path.join(test_root, "lead_status")
+      symphony_repo = Path.join(test_root, "symphony")
+      tg_live_export_repo = Path.join(test_root, "tg_live_export")
+      workspace = Path.join(test_root, "workspace")
+
+      create_bootstrap_repo!(lead_status_repo, "lead_status")
+      create_bootstrap_repo!(symphony_repo, "symphony")
+      create_bootstrap_repo!(tg_live_export_repo, "tg_live_export")
+      File.mkdir_p!(workspace)
+
+      System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
+      System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
+      System.put_env("TEST_TG_LIVE_EXPORT_REPO_URL", tg_live_export_repo)
+
+      assert {_output, 0} =
+               System.cmd("sh", ["-lc", repository_routing_hook()],
+                 cd: workspace,
+                 env: [
+                   {"SYMPHONY_ISSUE_PROJECT_SLUG", "a6212aeb565c"},
                    {"SYMPHONY_ISSUE_PROJECT_NAME", "Telegram Full Export v2"},
                    {"SYMPHONY_ISSUE_LABELS", ""}
                  ]
@@ -1850,10 +2029,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       '
     }
     resolve_project_repository() {
-      case "$1" in
-        telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export" ;;
-        master-komand-dfbe2b1b972e|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status" ;;
-        platforma-i-integraciya-448570ee6438) return 2 ;;
+      project_slug=$1
+      project_name=$2
+      case "$project_slug" in
+        symphony-bd5bc5b51675) printf '%s\n' "maximlafe/symphony"; return 0 ;;
+        a6212aeb565c|telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export"; return 0 ;;
+        dfbe2b1b972e|master-komand-dfbe2b1b972e|8209c2018e76|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status"; return 0 ;;
+        448570ee6438|platforma-i-integraciya-448570ee6438) return 2 ;;
+      esac
+      case "$project_name" in
+        "Telegram Full Export v2") printf '%s\n' "maximlafe/tg_live_export" ;;
+        "Мастер команд"|"Извлечение задач") printf '%s\n' "maximlafe/lead_status" ;;
+        "Платформа и интеграция") return 2 ;;
         *) return 1 ;;
       esac
     }
@@ -1878,7 +2065,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     if [ "$repo_label_count" -eq 1 ]; then
       repo_override=$repo_labels
     fi
-    resolved_project_repository=$(resolve_project_repository "$issue_project_slug")
+    resolved_project_repository=$(resolve_project_repository "$issue_project_slug" "$issue_project_name")
     project_resolution_status=$?
     case "$project_resolution_status" in
       0)
@@ -1960,10 +2147,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       '
     }
     resolve_project_repository() {
-      case "$1" in
-        telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export" ;;
-        master-komand-dfbe2b1b972e|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status" ;;
-        platforma-i-integraciya-448570ee6438) return 2 ;;
+      project_slug=$1
+      project_name=$2
+      case "$project_slug" in
+        symphony-bd5bc5b51675) printf '%s\n' "maximlafe/symphony"; return 0 ;;
+        a6212aeb565c|telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export"; return 0 ;;
+        dfbe2b1b972e|master-komand-dfbe2b1b972e|8209c2018e76|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status"; return 0 ;;
+        448570ee6438|platforma-i-integraciya-448570ee6438) return 2 ;;
+      esac
+      case "$project_name" in
+        "Telegram Full Export v2") printf '%s\n' "maximlafe/tg_live_export" ;;
+        "Мастер команд"|"Извлечение задач") printf '%s\n' "maximlafe/lead_status" ;;
+        "Платформа и интеграция") return 2 ;;
         *) return 1 ;;
       esac
     }
@@ -2025,7 +2220,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       repo_override=$repo_labels
     fi
     if [ -z "$base_branch_error" ]; then
-      resolved_project_repository=$(resolve_project_repository "$issue_project_slug")
+      resolved_project_repository=$(resolve_project_repository "$issue_project_slug" "$issue_project_name")
       project_resolution_status=$?
       case "$project_resolution_status" in
         0)
