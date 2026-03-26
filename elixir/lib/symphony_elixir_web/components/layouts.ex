@@ -35,21 +35,24 @@ defmodule SymphonyElixirWeb.Layouts do
             var reconnectTimer;
             var csrfTokenMeta = document.querySelector("meta[name='csrf-token']");
             var csrfToken = csrfTokenMeta ? csrfTokenMeta.getAttribute("content") : null;
+            var localResetLocale = window.navigator && window.navigator.languages && window.navigator.languages.length
+              ? window.navigator.languages
+              : undefined;
             var localResetTimeFormatter = window.Intl && window.Intl.DateTimeFormat
-              ? new window.Intl.DateTimeFormat("ru-RU", {
+              ? new window.Intl.DateTimeFormat(localResetLocale, {
                   hour: "2-digit",
                   minute: "2-digit",
                   hour12: false
                 })
               : null;
             var localResetDateFormatter = window.Intl && window.Intl.DateTimeFormat
-              ? new window.Intl.DateTimeFormat("ru-RU", {
+              ? new window.Intl.DateTimeFormat(localResetLocale, {
                   day: "numeric",
                   month: "long"
                 })
               : null;
             var localResetTitleFormatter = window.Intl && window.Intl.DateTimeFormat
-              ? new window.Intl.DateTimeFormat("ru-RU", {
+              ? new window.Intl.DateTimeFormat(localResetLocale, {
                   day: "numeric",
                   month: "long",
                   hour: "2-digit",
@@ -88,7 +91,7 @@ defmodule SymphonyElixirWeb.Layouts do
               }
 
               if (style === "time" && localResetTimeFormatter) {
-                return "· в " + localResetTimeFormatter.format(parsed);
+                return "· " + localResetTimeFormatter.format(parsed);
               }
 
               return null;

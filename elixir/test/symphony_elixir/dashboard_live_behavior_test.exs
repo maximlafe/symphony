@@ -58,16 +58,16 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert html =~ "ID primary"
     assert html =~ "enterprise"
     assert html =~ "5h: 18/100 left"
-    assert html =~ "· в 22:00 UTC"
+    assert html =~ "· at 22:00 UTC"
     assert html =~ "data-local-reset-at=\"2026-03-25T22:00:00Z\""
     assert html =~ "data-local-reset-style=\"time\""
     assert html =~ "7d: 12% used"
-    assert html =~ "· 31 марта UTC"
+    assert html =~ "· 31 Mar UTC"
     assert html =~ "data-local-reset-at=\"2026-03-31T00:00:00Z\""
     assert html =~ "data-local-reset-style=\"date\""
-    assert html =~ "· в 23:30 UTC"
+    assert html =~ "· at 23:30 UTC"
     assert html =~ "data-local-reset-at=\"2026-03-25T23:30:00Z\""
-    assert html =~ "· 1 апреля UTC"
+    assert html =~ "· 1 Apr UTC"
     assert html =~ "data-local-reset-at=\"2026-04-01T00:00:00Z\""
     assert html =~ "Credits: unlimited"
     assert html =~ "Make active"
@@ -99,14 +99,22 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
 
     html =
       render_dashboard(
+        %{payload: payload, now: ~U[2026-03-25 21:30:00Z]},
+        codex_accounts_expanded: true
+      )
+
+    rerendered_html =
+      render_dashboard(
         %{payload: payload, now: ~U[2026-03-25 21:40:00Z]},
         codex_accounts_expanded: true
       )
 
     assert html =~ "5h: 18/100 left"
-    assert html =~ "· в 22:00 UTC"
+    assert html =~ "· at 22:00 UTC"
     assert html =~ "data-local-reset-at=\"2026-03-25T22:00:00Z\""
-    refute html =~ "data-local-reset-at=\"2026-03-25T22:10:00Z\""
+    assert rerendered_html =~ "· at 22:00 UTC"
+    assert rerendered_html =~ "data-local-reset-at=\"2026-03-25T22:00:00Z\""
+    refute rerendered_html =~ "data-local-reset-at=\"2026-03-25T22:10:00Z\""
   end
 
   test "handle_event toggles the accounts section and switches the active healthy account" do
@@ -180,10 +188,10 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert retry_queue_offset < codex_accounts_offset
     assert dashboard_body =~ "very.long.primary.email.address+alerts@example.com"
     assert dashboard_body =~ "5h: 18/100 left"
-    assert dashboard_body =~ "· в 22:00 UTC"
-    assert dashboard_body =~ "· 31 марта UTC"
-    assert dashboard_body =~ "· в 23:30 UTC"
-    assert dashboard_body =~ "· 1 апреля UTC"
+    assert dashboard_body =~ "· at 22:00 UTC"
+    assert dashboard_body =~ "· 31 Mar UTC"
+    assert dashboard_body =~ "· at 23:30 UTC"
+    assert dashboard_body =~ "· 1 Apr UTC"
     assert dashboard_body =~ "Make active"
 
     api_response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")

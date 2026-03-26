@@ -8,8 +8,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixir.{Config, Orchestrator}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
-  @russian_month_names ~w(января февраля марта апреля мая июня июля августа сентября октября ноября декабря)
-
   @impl true
   def mount(_params, _session, socket) do
     socket =
@@ -866,12 +864,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp rate_limit_bucket_reset_fallback(reset_at, "time") do
-    "в #{Calendar.strftime(reset_at, "%H:%M")} UTC"
+    "at #{Calendar.strftime(reset_at, "%H:%M")} UTC"
   end
 
   defp rate_limit_bucket_reset_fallback(reset_at, "date") do
-    date = DateTime.to_date(reset_at)
-    "#{date.day} #{Enum.at(@russian_month_names, date.month - 1)} UTC"
+    "#{DateTime.to_date(reset_at).day} #{Calendar.strftime(reset_at, "%b")} UTC"
   end
 
   defp rate_limit_bucket_reset_fallback(_reset_at, _style), do: nil
