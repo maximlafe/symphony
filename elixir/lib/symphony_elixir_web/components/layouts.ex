@@ -35,31 +35,85 @@ defmodule SymphonyElixirWeb.Layouts do
             var reconnectTimer;
             var csrfTokenMeta = document.querySelector("meta[name='csrf-token']");
             var csrfToken = csrfTokenMeta ? csrfTokenMeta.getAttribute("content") : null;
-            var localResetLocale = window.navigator && window.navigator.languages && window.navigator.languages.length
-              ? window.navigator.languages
-              : undefined;
-            var localResetTimeFormatter = window.Intl && window.Intl.DateTimeFormat
-              ? new window.Intl.DateTimeFormat(localResetLocale, {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  hour12: false
-                })
-              : null;
-            var localResetDateFormatter = window.Intl && window.Intl.DateTimeFormat
-              ? new window.Intl.DateTimeFormat(localResetLocale, {
-                  day: "numeric",
-                  month: "long"
-                })
-              : null;
-            var localResetTitleFormatter = window.Intl && window.Intl.DateTimeFormat
-              ? new window.Intl.DateTimeFormat(localResetLocale, {
-                  day: "numeric",
-                  month: "long",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  hour12: false
-                })
-              : null;
+            var normalizeLocaleCandidate = function (value) {
+              if (typeof value !== "string") return null;
+
+              var trimmed = value.trim();
+
+              if (!trimmed || trimmed === "undefined" || trimmed === "null") return null;
+
+              return trimmed;
+            };
+
+            var appendCanonicalLocale = function (target, value) {
+              var normalized = normalizeLocaleCandidate(value);
+
+              if (!normalized) return;
+
+              if (window.Intl && window.Intl.getCanonicalLocales) {
+                try {
+                  var canonical = window.Intl.getCanonicalLocales([normalized]);
+
+                  if (canonical && canonical.length) {
+                    target.push(canonical[0]);
+                  }
+
+                  return;
+                } catch (_error) {
+                  return;
+                }
+              }
+
+              target.push(normalized);
+            };
+
+            var resolveLocalResetLocales = function () {
+              var locales = [];
+              var navigatorLanguages = window.navigator && window.navigator.languages;
+
+              if (navigatorLanguages && navigatorLanguages.length) {
+                Array.prototype.forEach.call(navigatorLanguages, function (value) {
+                  appendCanonicalLocale(locales, value);
+                });
+              } else if (window.navigator && window.navigator.language) {
+                appendCanonicalLocale(locales, window.navigator.language);
+              }
+
+              return locales.length ? locales : undefined;
+            };
+
+            var buildDateTimeFormatter = function (options) {
+              if (!window.Intl || !window.Intl.DateTimeFormat) return null;
+
+              var locales = resolveLocalResetLocales();
+
+              try {
+                return new window.Intl.DateTimeFormat(locales, options);
+              } catch (_error) {
+                try {
+                  return new window.Intl.DateTimeFormat(undefined, options);
+                } catch (_fallbackError) {
+                  return null;
+                }
+              }
+            };
+
+            var localResetTimeFormatter = buildDateTimeFormatter({
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false
+            });
+            var localResetDateFormatter = buildDateTimeFormatter({
+              day: "numeric",
+              month: "long"
+            });
+            var localResetTitleFormatter = buildDateTimeFormatter({
+              day: "numeric",
+              month: "long",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false
+            });
 
             var resolveStatusNode = function (id) {
               return document.getElementById(id);
