@@ -527,12 +527,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "?.getAttribute"
     assert html =~ "var csrfTokenMeta = document.querySelector(\"meta[name='csrf-token']\");"
     assert html =~ "csrfTokenMeta ? csrfTokenMeta.getAttribute(\"content\") : null"
+    assert html =~ "var liveSocketConnected = function () {"
+    assert html =~ "var needsLiveViewReconnect = function () {"
     assert html =~ "var reconnectTimer;"
-    assert html =~ "window.addEventListener(\"pagehide\", function (event) {"
     assert html =~ "window.addEventListener(\"pageshow\", function (event) {"
     assert html =~ "window.addEventListener(\"focus\", function () {"
     assert html =~ "window.addEventListener(\"online\", function () {"
-    assert html =~ "scheduleReconnect(Boolean(event.persisted));"
+    assert html =~ "if (event.persisted) {"
+    refute html =~ "window.addEventListener(\"pagehide\", function (event) {"
+    refute html =~ "liveSocket.disconnect();"
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"

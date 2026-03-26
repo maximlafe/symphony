@@ -60,6 +60,18 @@ defmodule SymphonyElixirWeb.Layouts do
               return Boolean(liveViewRoot && liveViewRoot.classList.contains("phx-connected"));
             };
 
+            var liveSocketConnected = function () {
+              return Boolean(liveSocket && liveSocket.isConnected && liveSocket.isConnected());
+            };
+
+            var liveViewReady = function () {
+              return liveSocketConnected() || liveViewRootConnected();
+            };
+
+            var needsLiveViewReconnect = function () {
+              return !liveSocketConnected() || !liveViewRootConnected();
+            };
+
             setLiveViewStatus(false);
 
             if (!window.Phoenix || !window.LiveView) return;
@@ -69,10 +81,9 @@ defmodule SymphonyElixirWeb.Layouts do
             });
 
             var syncLiveViewStatus = function () {
-              var socketConnected = Boolean(liveSocket.isConnected && liveSocket.isConnected());
-              setLiveViewStatus(socketConnected || liveViewRootConnected());
+              setLiveViewStatus(liveViewReady());
 
-              if ((socketConnected || liveViewRootConnected()) && connectPoll) {
+              if (liveViewReady() && connectPoll) {
                 window.clearInterval(connectPoll);
                 connectPoll = null;
               }
@@ -94,7 +105,7 @@ defmodule SymphonyElixirWeb.Layouts do
               });
             };
 
-            var scheduleReconnect = function (forceDisconnect) {
+            var scheduleReconnect = function () {
               if (!liveSocket) return;
 
               if (reconnectTimer) {
@@ -105,17 +116,7 @@ defmodule SymphonyElixirWeb.Layouts do
                 reconnectTimer = null;
                 observeLiveViewRoot();
 
-                if (forceDisconnect && liveSocket.disconnect) {
-                  liveSocket.disconnect();
-                }
-
-                if (
-                  !(
-                    liveSocket.isConnected &&
-                    liveSocket.isConnected() &&
-                    liveViewRootConnected()
-                  )
-                ) {
+                if (needsLiveViewReconnect()) {
                   liveSocket.connect();
                 }
 
@@ -140,33 +141,44 @@ defmodule SymphonyElixirWeb.Layouts do
               syncLiveViewStatus();
             }, 10000);
 
-            window.addEventListener("pagehide", function (event) {
-              if (event.persisted && liveSocket.disconnect) {
-                liveSocket.disconnect();
+            window.addEventListener("pageshow", function (event) {
+              observeLiveViewRoot();
+
+              if (event.persisted) {
+                syncLiveViewStatus();
+                return;
+              }
+
+              if (needsLiveViewReconnect()) {
+                scheduleReconnect();
+              } else {
+                syncLiveViewStatus();
               }
             });
 
-            window.addEventListener("pageshow", function (event) {
-              scheduleReconnect(Boolean(event.persisted));
-            });
-
             window.addEventListener("focus", function () {
-              if (!liveViewRootConnected()) {
-                scheduleReconnect(false);
+              if (needsLiveViewReconnect()) {
+                scheduleReconnect();
+              } else {
+                syncLiveViewStatus();
               }
             });
 
             window.addEventListener("online", function () {
-              scheduleReconnect(false);
+              if (needsLiveViewReconnect()) {
+                scheduleReconnect();
+              } else {
+                syncLiveViewStatus();
+              }
             });
 
             document.addEventListener("visibilitychange", function () {
               if (!document.hidden) {
-                if (!liveViewRootConnected()) {
-                  scheduleReconnect(false);
+                if (needsLiveViewReconnect()) {
+                  scheduleReconnect();
+                } else {
+                  syncLiveViewStatus();
                 }
-
-                syncLiveViewStatus();
               }
             });
           });
