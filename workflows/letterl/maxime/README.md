@@ -33,7 +33,7 @@ Notes:
   - add a `## Symphony` section;
   - add one line `Base branch: feature/...`;
   - if `Base branch:` is missing, the worker stays unattended and falls back to that repository's default branch;
-  - if `Base branch:` is invalid, the task moves into the blocker path instead of silently picking another branch.
+  - if `Base branch:` is invalid or that branch does not satisfy the `make symphony-bootstrap` contract, the task moves into the blocker path instead of silently picking another branch or failing inside the workspace hook.
 - PR handoff uses `In Review` instead of `Human Review`.
 - Auth and permission blockers move the issue to `Blocked`.
 - `Blocked` is a manual gate: after a `decision` or `human-action` handoff is resolved, resume only when a human moves the issue back to `In Progress`; comments alone do not resume work.
