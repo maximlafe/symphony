@@ -307,6 +307,50 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace recreates stale failed bootstrap clones before rerunning after_create" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-bootstrap-clone-recovery-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: """
+        mkdir -p .git
+        printf '%s' "$SYMPHONY_ISSUE_STATE" > bootstrap-state.txt
+        """
+      )
+
+      issue = %Issue{
+        id: "issue-bootstrap-clone-recovery",
+        identifier: "MT-BOOTSTRAP-CLONE-RECOVERY",
+        title: "Bootstrap clone recovery",
+        description: "## Symphony\nBase branch: main\n",
+        state: "In Progress",
+        branch_name: "feature/bootstrap-clone-recovery"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      assert File.dir?(Path.join(workspace, ".git"))
+
+      File.write!(Path.join(workspace, ".symphony-base-branch-error"), "old bootstrap blocker\n")
+      File.write!(Path.join(workspace, "local-progress.txt"), "stale bootstrap residue\n")
+
+      assert {:ok, ^workspace} = Workspace.create_for_issue(issue)
+      assert File.read!(Path.join(workspace, "bootstrap-state.txt")) == "In Progress"
+      assert File.dir?(Path.join(workspace, ".git"))
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
+      refute File.exists?(Path.join(workspace, "local-progress.txt"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace replaces stale non-directory paths" do
     workspace_root =
       Path.join(

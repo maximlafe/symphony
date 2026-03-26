@@ -69,7 +69,7 @@ defmodule SymphonyElixir.Workspace do
   defp stale_failed_bootstrap?(workspace) do
     Enum.any?(@stale_bootstrap_markers, fn marker ->
       File.exists?(Path.join(workspace, marker))
-    end) and not File.dir?(Path.join(workspace, ".git"))
+    end)
   end
 
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
