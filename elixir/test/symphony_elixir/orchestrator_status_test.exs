@@ -112,6 +112,211 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              message: %{method: "some-event"},
              timestamp: now
            }
+
+    assert snapshot_entry.run_phase == "editing"
+    assert snapshot_entry.activity_state == "alive"
+    assert snapshot_entry.current_command == nil
+  end
+
+  test "orchestrator snapshot tracks run phase, heartbeat status, and current command" do
+    issue_id = "issue-run-phase"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-PHASE",
+      title: "Run phase test",
+      description: "Track current execution phase",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-PHASE"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :RunPhaseOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    phase_timestamp = DateTime.utc_now()
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/exec_command_begin",
+           "params" => %{"msg" => %{"command" => "make symphony-validate"}}
+         },
+         timestamp: phase_timestamp
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.run_phase == "full validate"
+    assert snapshot_entry.phase_started_at == phase_timestamp
+    assert snapshot_entry.last_activity_at == phase_timestamp
+    assert snapshot_entry.activity_state == "alive"
+    assert snapshot_entry.current_command == "make symphony-validate"
+    assert snapshot_entry.current_step == "make symphony-validate"
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/exec_command_end",
+           "params" => %{"msg" => %{"exit_code" => 0}}
+         },
+         timestamp: DateTime.add(phase_timestamp, 1, :second)
+       }}
+    )
+
+    snapshot_after_end = GenServer.call(pid, :snapshot)
+    assert %{running: [ended_entry]} = snapshot_after_end
+    assert ended_entry.run_phase == "editing"
+    assert ended_entry.current_command == nil
+  end
+
+  test "orchestrator publishes reportable run phase transitions once per phase" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    on_exit(fn ->
+      if is_nil(previous_recipient) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_recipient, previous_recipient)
+      end
+
+      if is_nil(previous_issues) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_issues)
+      end
+    end)
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue_id = "issue-phase-comment"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-PHASE-COMMENT",
+      title: "Run phase comments",
+      description: "Emit compact phase comments",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-PHASE-COMMENT"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    orchestrator_name = Module.concat(__MODULE__, :RunPhaseCommentOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/exec_command_begin",
+           "params" => %{"msg" => %{"command" => "make symphony-validate"}}
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    assert_receive {:memory_tracker_comment, ^issue_id, first_comment}, 2_000
+    assert first_comment =~ "full validate"
+    assert first_comment =~ "make symphony-validate"
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/token_count",
+           "params" => %{"msg" => %{"type" => "token_count"}}
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    refute_receive {:memory_tracker_comment, ^issue_id, _duplicate_comment}, 200
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :tool_call_started,
+         payload: %{
+           "method" => "item/tool/call",
+           "params" => %{"tool" => "github_wait_for_checks"}
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    assert_receive {:memory_tracker_comment, ^issue_id, second_comment}, 3_000
+    assert second_comment =~ "waiting CI"
+    assert second_comment =~ "github_wait_for_checks"
   end
 
   test "orchestrator logs warning when workspace usage exceeds threshold" do
@@ -1579,6 +1784,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "status dashboard humanizes dynamic tool wrapper events" do
+    started = %{
+      event: :tool_call_started,
+      message: %{
+        payload: %{"method" => "item/tool/call", "params" => %{"name" => "github_wait_for_checks"}}
+      }
+    }
+
     completed = %{
       event: :tool_call_completed,
       message: %{
@@ -1602,6 +1814,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert StatusDashboard.humanize_codex_message(completed) =~
              "dynamic tool call completed (linear_graphql)"
+
+    assert StatusDashboard.humanize_codex_message(started) =~
+             "dynamic tool call started (github_wait_for_checks)"
 
     assert StatusDashboard.humanize_codex_message(failed) =~
              "dynamic tool call failed (linear_graphql)"

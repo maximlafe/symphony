@@ -201,8 +201,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <div class="table-wrap">
               <table class="data-table data-table-running">
                 <colgroup>
-                  <col style="width: 12rem;" />
+                  <col style="width: 11rem;" />
                   <col style="width: 8rem;" />
+                  <col style="width: 11rem;" />
+                  <col style="width: 11rem;" />
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
                   <col />
@@ -211,11 +213,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <thead>
                   <tr>
                     <th>Issue</th>
-                    <th>State</th>
+                    <th>Linear state</th>
+                    <th>Run phase</th>
+                    <th>Activity</th>
                     <th>Account</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
-                    <th>Codex update</th>
+                    <th>Current step</th>
                     <th>Tokens</th>
                   </tr>
                 </thead>
@@ -231,6 +235,35 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <span class={state_badge_class(entry.state)}>
                         <%= entry.state %>
                       </span>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span class={phase_badge_class(entry.run_phase)}>
+                          <%= entry.run_phase || "editing" %>
+                        </span>
+                        <span class="muted event-meta">
+                          started
+                          <span class="mono numeric"><%= entry.phase_started_at || "n/a" %></span>
+                        </span>
+                        <span :if={entry.operational_notice} class="muted cell-break">
+                          <%= entry.operational_notice %>
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span class={activity_badge_class(entry.activity_state)}>
+                          <%= entry.activity_state || "alive" %>
+                        </span>
+                        <span class="muted event-meta">
+                          last activity
+                          <span class="mono numeric"><%= entry.last_activity_at || "n/a" %></span>
+                        </span>
+                        <span class="muted event-meta">
+                          event
+                          <%= entry.last_event || "n/a" %>
+                        </span>
+                      </div>
                     </td>
                     <td class="mono"><%= entry.codex_account_id || "n/a" %></td>
                     <td>
@@ -253,15 +286,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
                     <td>
                       <div class="detail-stack">
-                        <span
-                          class="event-text"
-                          title={entry.last_message || to_string(entry.last_event || "n/a")}
-                        ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
+                        <span class="cell-break">
+                          <%= entry.current_step || "n/a" %>
+                        </span>
                         <span class="muted event-meta">
-                          <%= entry.last_event || "n/a" %>
-                          <%= if entry.last_event_at do %>
-                            · <span class="mono numeric"><%= entry.last_event_at %></span>
-                          <% end %>
+                          <%= entry.last_message || to_string(entry.last_event || "n/a") %>
+                        </span>
+                        <span :if={entry.last_event_at} class="muted event-meta">
+                          <span class="mono numeric"><%= entry.last_event_at %></span>
                         </span>
                       </div>
                     </td>
@@ -561,6 +593,32 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
       true ->
         base
+    end
+  end
+
+  defp phase_badge_class(phase) do
+    base = "state-badge"
+    normalized = phase |> to_string() |> String.downcase()
+
+    cond do
+      String.contains?(normalized, "waiting") ->
+        "#{base} state-badge-warning"
+
+      normalized in ["editing", "targeted tests", "runtime proof", "full validate", "publishing pr"] ->
+        "#{base} state-badge-active"
+
+      true ->
+        base
+    end
+  end
+
+  defp activity_badge_class(activity_state) do
+    base = "state-badge"
+
+    case activity_state do
+      "stalled" -> "#{base} state-badge-danger"
+      "slow" -> "#{base} state-badge-warning"
+      _ -> "#{base} state-badge-active"
     end
   end
 

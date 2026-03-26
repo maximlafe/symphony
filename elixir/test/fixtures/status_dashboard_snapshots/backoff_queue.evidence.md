@@ -11,9 +11,9 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                  
+│   ID       PHASE            PID      AGE / TURN   TOKENS     SESSION        DETAIL                               
 │   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│ ● MT-638   retrying       4242     20m 25s / 7      14,200 thre...567890  agent message streaming: waiting on ...
+│ ● MT-638   waiting CI       4242     20m 25s / 7      14,200 thre...567890  slow · github_wait_for_checks        
 │
 ├─ Backoff queue
 │

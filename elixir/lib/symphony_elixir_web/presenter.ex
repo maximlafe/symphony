@@ -83,7 +83,7 @@ defmodule SymphonyElixirWeb.Presenter do
       },
       recent_events: (running && recent_events_payload(running)) || [],
       last_error: retry && retry.error,
-      tracked: %{}
+      tracked: runtime_payload(running)
     }
   end
 
@@ -114,6 +114,16 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: summarize_message(entry.last_codex_message),
       started_at: iso8601(entry.started_at),
       last_event_at: iso8601(entry.last_codex_timestamp),
+      run_phase: Map.get(entry, :run_phase) || "editing",
+      phase_started_at: iso8601(Map.get(entry, :phase_started_at) || entry.started_at),
+      last_activity_at: iso8601(Map.get(entry, :last_activity_at) || entry.last_codex_timestamp || entry.started_at),
+      activity_state: Map.get(entry, :activity_state) || "alive",
+      current_command: Map.get(entry, :current_command),
+      external_step: Map.get(entry, :external_step),
+      current_step:
+        Map.get(entry, :current_step) || Map.get(entry, :current_command) ||
+          Map.get(entry, :external_step),
+      operational_notice: Map.get(entry, :operational_notice),
       tokens: %{
         input_tokens: entry.codex_input_tokens,
         output_tokens: entry.codex_output_tokens,
@@ -145,6 +155,16 @@ defmodule SymphonyElixirWeb.Presenter do
       last_event: running.last_codex_event,
       last_message: summarize_message(running.last_codex_message),
       last_event_at: iso8601(running.last_codex_timestamp),
+      run_phase: Map.get(running, :run_phase) || "editing",
+      phase_started_at: iso8601(Map.get(running, :phase_started_at) || running.started_at),
+      last_activity_at: iso8601(Map.get(running, :last_activity_at) || running.last_codex_timestamp || running.started_at),
+      activity_state: Map.get(running, :activity_state) || "alive",
+      current_command: Map.get(running, :current_command),
+      external_step: Map.get(running, :external_step),
+      current_step:
+        Map.get(running, :current_step) || Map.get(running, :current_command) ||
+          Map.get(running, :external_step),
+      operational_notice: Map.get(running, :operational_notice),
       tokens: %{
         input_tokens: running.codex_input_tokens,
         output_tokens: running.codex_output_tokens,
@@ -177,6 +197,23 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp runtime_payload(nil), do: %{}
+
+  defp runtime_payload(running) do
+    %{
+      run_phase: Map.get(running, :run_phase) || "editing",
+      phase_started_at: iso8601(Map.get(running, :phase_started_at) || running.started_at),
+      last_activity_at: iso8601(Map.get(running, :last_activity_at) || running.last_codex_timestamp || running.started_at),
+      activity_state: Map.get(running, :activity_state) || "alive",
+      current_command: Map.get(running, :current_command),
+      external_step: Map.get(running, :external_step),
+      current_step:
+        Map.get(running, :current_step) || Map.get(running, :current_command) ||
+          Map.get(running, :external_step),
+      operational_notice: Map.get(running, :operational_notice)
+    }
+  end
 
   defp account_payload(account) when is_map(account) do
     %{

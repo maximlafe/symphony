@@ -6,7 +6,7 @@ defmodule SymphonyElixir.StatusDashboard do
   use GenServer
   require Logger
 
-  alias SymphonyElixir.{Config, HttpServer}
+  alias SymphonyElixir.{Config, HttpServer, RunPhase}
   alias SymphonyElixir.Orchestrator
   alias SymphonyElixirWeb.ObservabilityPubSub
 
@@ -16,7 +16,7 @@ defmodule SymphonyElixir.StatusDashboard do
   @throughput_graph_columns 24
   @sparkline_blocks ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
   @running_id_width 8
-  @running_stage_width 14
+  @running_stage_width 16
   @running_pid_width 8
   @running_age_width 12
   @running_tokens_width 10
@@ -668,8 +668,8 @@ defmodule SymphonyElixir.StatusDashboard do
   # credo:disable-for-next-line
   defp format_running_summary(running_entry, running_event_width) do
     issue = format_cell(running_entry.identifier || "unknown", @running_id_width)
-    state = running_entry.state || "unknown"
-    state_display = format_cell(to_string(state), @running_stage_width)
+    phase = Map.get(running_entry, :run_phase) || "editing"
+    phase_display = format_cell(to_string(phase), @running_stage_width)
 
     session =
       running_entry
@@ -681,18 +681,21 @@ defmodule SymphonyElixir.StatusDashboard do
     runtime_seconds = running_entry.runtime_seconds || 0
     turn_count = Map.get(running_entry, :turn_count, 0)
     age = format_cell(format_runtime_and_turns(runtime_seconds, turn_count), @running_age_width)
-    event = running_entry.last_codex_event || "none"
-    event_label = format_cell(summarize_message(running_entry.last_codex_message), running_event_width)
+    activity_state = Map.get(running_entry, :activity_state, "alive")
+
+    event_label =
+      running_entry
+      |> running_detail_label()
+      |> prepend_activity_state(activity_state)
+      |> format_cell(running_event_width)
 
     tokens = format_count(total_tokens) |> format_cell(@running_tokens_width, :right)
 
     status_color =
-      case event do
-        :none -> @ansi_red
-        "codex/event/token_count" -> @ansi_yellow
-        "codex/event/task_started" -> @ansi_green
-        "turn_completed" -> @ansi_magenta
-        _ -> @ansi_blue
+      case activity_state do
+        "stalled" -> @ansi_red
+        "slow" -> @ansi_orange
+        _ -> @ansi_green
       end
 
     [
@@ -701,7 +704,7 @@ defmodule SymphonyElixir.StatusDashboard do
       " ",
       colorize(issue, @ansi_cyan),
       " ",
-      colorize(state_display, status_color),
+      colorize(phase_display, status_color),
       " ",
       colorize(pid, @ansi_yellow),
       " ",
@@ -720,6 +723,18 @@ defmodule SymphonyElixir.StatusDashboard do
   @spec format_running_summary_for_test(map(), integer() | nil) :: String.t()
   def format_running_summary_for_test(running_entry, terminal_columns \\ nil),
     do: format_running_summary(running_entry, running_event_width(terminal_columns))
+
+  defp running_detail_label(running_entry) when is_map(running_entry) do
+    RunPhase.current_step(running_entry) ||
+      Map.get(running_entry, :operational_notice) ||
+      summarize_message(Map.get(running_entry, :last_codex_message))
+  end
+
+  defp prepend_activity_state(detail, activity_state) when is_binary(detail) do
+    "#{activity_state || "alive"} · #{detail}"
+  end
+
+  defp prepend_activity_state(_detail, activity_state), do: "#{activity_state || "alive"} · n/a"
 
   @doc false
   @spec format_tps_for_test(number()) :: String.t()
@@ -841,12 +856,12 @@ defmodule SymphonyElixir.StatusDashboard do
     header =
       [
         format_cell("ID", @running_id_width),
-        format_cell("STAGE", @running_stage_width),
+        format_cell("PHASE", @running_stage_width),
         format_cell("PID", @running_pid_width),
         format_cell("AGE / TURN", @running_age_width),
         format_cell("TOKENS", @running_tokens_width),
         format_cell("SESSION", @running_session_width),
-        format_cell("EVENT", running_event_width)
+        format_cell("DETAIL", running_event_width)
       ]
       |> Enum.join(" ")
 
@@ -951,8 +966,6 @@ defmodule SymphonyElixir.StatusDashboard do
       session_id
     end
   end
-
-  defp compact_running_session(_running_entry), do: "n/a"
 
   defp group_thousands(value) when is_binary(value) do
     sign = if String.starts_with?(value, "-"), do: "-", else: ""
@@ -1221,6 +1234,9 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp humanize_codex_event(:tool_call_completed, _message, payload),
     do: humanize_dynamic_tool_event("dynamic tool call completed", payload)
+
+  defp humanize_codex_event(:tool_call_started, _message, payload),
+    do: humanize_dynamic_tool_event("dynamic tool call started", payload)
 
   defp humanize_codex_event(:tool_call_failed, _message, payload),
     do: humanize_dynamic_tool_event("dynamic tool call failed", payload)

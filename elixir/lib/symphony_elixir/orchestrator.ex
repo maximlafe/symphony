@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, ErrorClassifier, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, ErrorClassifier, RunPhase, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Codex.{AccountProbe, Accounts}
   alias SymphonyElixir.Linear.Issue
 
@@ -184,6 +184,9 @@ defmodule SymphonyElixir.Orchestrator do
 
       running_entry ->
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
+
+        updated_running_entry =
+          maybe_publish_run_phase_transition(issue_id, running_entry, updated_running_entry)
 
         state =
           state
@@ -998,30 +1001,39 @@ defmodule SymphonyElixir.Orchestrator do
           Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} codex_account_id=#{codex_account.id}")
         end)
 
+        started_at = DateTime.utc_now()
+
         running =
-          Map.put(state.running, issue.id, %{
-            pid: pid,
-            ref: ref,
-            identifier: issue.identifier,
-            issue: issue,
-            trace_id: trace_id,
-            session_id: nil,
-            codex_account_id: codex_account.id,
-            last_codex_message: nil,
-            last_codex_timestamp: nil,
-            last_codex_event: nil,
-            codex_app_server_pid: nil,
-            codex_input_tokens: 0,
-            codex_output_tokens: 0,
-            codex_total_tokens: 0,
-            codex_last_reported_input_tokens: 0,
-            codex_last_reported_output_tokens: 0,
-            codex_last_reported_total_tokens: 0,
-            turn_count: 0,
-            retry_attempt: normalize_retry_attempt(attempt),
-            retry_delay_type: retry_delay_type,
-            started_at: DateTime.utc_now()
-          })
+          Map.put(
+            state.running,
+            issue.id,
+            RunPhase.initialize(
+              %{
+                pid: pid,
+                ref: ref,
+                identifier: issue.identifier,
+                issue: issue,
+                trace_id: trace_id,
+                session_id: nil,
+                codex_account_id: codex_account.id,
+                last_codex_message: nil,
+                last_codex_timestamp: nil,
+                last_codex_event: nil,
+                codex_app_server_pid: nil,
+                codex_input_tokens: 0,
+                codex_output_tokens: 0,
+                codex_total_tokens: 0,
+                codex_last_reported_input_tokens: 0,
+                codex_last_reported_output_tokens: 0,
+                codex_last_reported_total_tokens: 0,
+                turn_count: 0,
+                retry_attempt: normalize_retry_attempt(attempt),
+                retry_delay_type: retry_delay_type,
+                started_at: started_at
+              },
+              started_at
+            )
+          )
 
         %{
           state
@@ -1665,6 +1677,9 @@ defmodule SymphonyElixir.Orchestrator do
     running =
       state.running
       |> Enum.map(fn {issue_id, metadata} ->
+        runtime_fields =
+          RunPhase.snapshot_fields(metadata, now, Config.settings!().codex.stall_timeout_ms)
+
         %{
           issue_id: issue_id,
           identifier: metadata.identifier,
@@ -1683,6 +1698,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_event: metadata.last_codex_event,
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
+        |> Map.merge(runtime_fields)
       end)
 
     retrying =
@@ -1768,8 +1784,9 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
 
-    {
-      Map.merge(running_entry, %{
+    updated_running_entry =
+      running_entry
+      |> Map.merge(%{
         last_codex_timestamp: timestamp,
         last_codex_message: summarize_codex_update(update),
         trace_id: trace_id_for_update(Map.get(running_entry, :trace_id), update),
@@ -1784,9 +1801,30 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
         turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
-      }),
-      token_delta
-    }
+      })
+      |> RunPhase.apply_update(update)
+
+    {updated_running_entry, token_delta}
+  end
+
+  defp maybe_publish_run_phase_transition(issue_id, previous_running_entry, current_running_entry) do
+    with true <- RunPhase.transition_reportable?(previous_running_entry, current_running_entry),
+         true <- phase_unreported?(current_running_entry),
+         comment when is_binary(comment) <- RunPhase.phase_signal_comment(current_running_entry),
+         :ok <- Tracker.create_comment(issue_id, comment) do
+      RunPhase.mark_phase_reported(current_running_entry)
+    else
+      {:error, reason} ->
+        Logger.warning("Failed to publish run phase transition for issue_id=#{issue_id}: #{inspect(reason)}")
+        current_running_entry
+
+      _ ->
+        current_running_entry
+    end
+  end
+
+  defp phase_unreported?(running_entry) do
+    Map.get(running_entry, :last_reported_phase) != Map.get(running_entry, :run_phase)
   end
 
   defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid})
