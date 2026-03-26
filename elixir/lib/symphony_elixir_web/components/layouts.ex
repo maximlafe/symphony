@@ -30,10 +30,36 @@ defmodule SymphonyElixirWeb.Layouts do
             var root = document.documentElement;
             var liveSocket;
             var liveViewObserver;
+            var localResetObserver;
             var connectPoll;
             var reconnectTimer;
             var csrfTokenMeta = document.querySelector("meta[name='csrf-token']");
             var csrfToken = csrfTokenMeta ? csrfTokenMeta.getAttribute("content") : null;
+            var localResetLocale = window.navigator && window.navigator.languages && window.navigator.languages.length
+              ? window.navigator.languages
+              : undefined;
+            var localResetTimeFormatter = window.Intl && window.Intl.DateTimeFormat
+              ? new window.Intl.DateTimeFormat(localResetLocale, {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hour12: false
+                })
+              : null;
+            var localResetDateFormatter = window.Intl && window.Intl.DateTimeFormat
+              ? new window.Intl.DateTimeFormat(localResetLocale, {
+                  day: "numeric",
+                  month: "long"
+                })
+              : null;
+            var localResetTitleFormatter = window.Intl && window.Intl.DateTimeFormat
+              ? new window.Intl.DateTimeFormat(localResetLocale, {
+                  day: "numeric",
+                  month: "long",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hour12: false
+                })
+              : null;
 
             var resolveStatusNode = function (id) {
               return document.getElementById(id);
@@ -55,6 +81,52 @@ defmodule SymphonyElixirWeb.Layouts do
               setBadgeVisibility(resolveStatusNode("liveview-status-offline"), !connected);
             };
 
+            var formatLocalResetText = function (value, style) {
+              var parsed = value ? new Date(value) : null;
+
+              if (!parsed || Number.isNaN(parsed.getTime())) return null;
+
+              if (style === "date" && localResetDateFormatter) {
+                return "· " + localResetDateFormatter.format(parsed);
+              }
+
+              if (style === "time" && localResetTimeFormatter) {
+                return "· " + localResetTimeFormatter.format(parsed);
+              }
+
+              return null;
+            };
+
+            var syncLocalResetLabels = function () {
+              if (!localResetTimeFormatter && !localResetDateFormatter) return;
+
+              document.querySelectorAll("[data-local-reset-at]").forEach(function (node) {
+                var value = node.getAttribute("data-local-reset-at");
+                var style = node.getAttribute("data-local-reset-style");
+                var parsed = value ? new Date(value) : null;
+                var text = formatLocalResetText(value, style);
+
+                if (!parsed || Number.isNaN(parsed.getTime()) || !text) return;
+                if (node.textContent !== text) node.textContent = text;
+
+                if (localResetTitleFormatter) {
+                  var title = localResetTitleFormatter.format(parsed);
+                  if (node.getAttribute("title") !== title) node.setAttribute("title", title);
+                }
+              });
+            };
+
+            var queueLocalResetSync = function () {
+              if (window.requestAnimationFrame) {
+                window.requestAnimationFrame(syncLocalResetLabels);
+              } else {
+                window.setTimeout(syncLocalResetLabels, 0);
+              }
+
+              window.setTimeout(syncLocalResetLabels, 50);
+              window.setTimeout(syncLocalResetLabels, 250);
+            };
+
             var liveViewRootConnected = function () {
               var liveViewRoot = document.querySelector("[data-phx-main]");
               return Boolean(liveViewRoot && liveViewRoot.classList.contains("phx-connected"));
@@ -73,6 +145,7 @@ defmodule SymphonyElixirWeb.Layouts do
             };
 
             setLiveViewStatus(false);
+            queueLocalResetSync();
 
             if (!window.Phoenix || !window.LiveView) return;
 
@@ -105,6 +178,32 @@ defmodule SymphonyElixirWeb.Layouts do
               });
             };
 
+            var observeLocalResetNodes = function () {
+              var liveViewRoot = document.querySelector("[data-phx-main]");
+
+              if (!liveViewRoot) {
+                queueLocalResetSync();
+                return;
+              }
+
+              if (localResetObserver) {
+                localResetObserver.disconnect();
+              }
+
+              localResetObserver = new MutationObserver(function () {
+                queueLocalResetSync();
+              });
+
+              localResetObserver.observe(liveViewRoot, {
+                attributes: true,
+                characterData: true,
+                childList: true,
+                subtree: true
+              });
+
+              queueLocalResetSync();
+            };
+
             var scheduleReconnect = function () {
               if (!liveSocket) return;
 
@@ -115,12 +214,14 @@ defmodule SymphonyElixirWeb.Layouts do
               reconnectTimer = window.setTimeout(function () {
                 reconnectTimer = null;
                 observeLiveViewRoot();
+                observeLocalResetNodes();
 
                 if (needsLiveViewReconnect()) {
                   liveSocket.connect();
                 }
 
                 syncLiveViewStatus();
+                queueLocalResetSync();
               }, 150);
             };
 
@@ -129,6 +230,7 @@ defmodule SymphonyElixirWeb.Layouts do
             liveSocket.socket.onError(syncLiveViewStatus);
 
             observeLiveViewRoot();
+            observeLocalResetNodes();
             liveSocket.connect();
             syncLiveViewStatus();
             window.liveSocket = liveSocket;
@@ -143,9 +245,11 @@ defmodule SymphonyElixirWeb.Layouts do
 
             window.addEventListener("pageshow", function (event) {
               observeLiveViewRoot();
+              observeLocalResetNodes();
 
               if (event.persisted) {
                 syncLiveViewStatus();
+                queueLocalResetSync();
                 return;
               }
 
@@ -153,6 +257,7 @@ defmodule SymphonyElixirWeb.Layouts do
                 scheduleReconnect();
               } else {
                 syncLiveViewStatus();
+                queueLocalResetSync();
               }
             });
 
@@ -161,6 +266,7 @@ defmodule SymphonyElixirWeb.Layouts do
                 scheduleReconnect();
               } else {
                 syncLiveViewStatus();
+                queueLocalResetSync();
               }
             });
 
@@ -169,6 +275,7 @@ defmodule SymphonyElixirWeb.Layouts do
                 scheduleReconnect();
               } else {
                 syncLiveViewStatus();
+                queueLocalResetSync();
               }
             });
 
@@ -178,6 +285,7 @@ defmodule SymphonyElixirWeb.Layouts do
                   scheduleReconnect();
                 } else {
                   syncLiveViewStatus();
+                  queueLocalResetSync();
                 }
               }
             });

@@ -8,7 +8,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixir.{Config, Orchestrator}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
-
   @impl true
   def mount(_params, _session, socket) do
     socket =
@@ -62,7 +61,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
          socket
          |> assign(:payload, payload)
          |> assign(:now, DateTime.utc_now())
-         |> assign(:account_selection_notice, "Active account switched to #{active_account_label(payload)}.")
+         |> assign(
+           :account_selection_notice,
+           "Active account switched to #{active_account_label(payload)}."
+         )
          |> assign(:account_selection_error, nil)}
 
       {:error, reason} ->
@@ -387,8 +389,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td class="mono cell-break"><%= account.email || "n/a" %></td>
                     <td>
                       <div class="limit-stack">
-                        <span :for={item <- account_rate_limit_items(account.rate_limits)} class="limit-chip mono">
-                          <%= item %>
+                        <span
+                          :for={item <- account_rate_limit_items(account.rate_limits, @payload.generated_at)}
+                          class="limit-chip mono"
+                        >
+                          <span><%= item.text %></span>
+                          <span
+                            :if={item.reset_fallback}
+                            class="limit-chip-reset"
+                            data-local-reset-at={item.reset_at}
+                            data-local-reset-style={item.reset_style}
+                          >
+                            · <%= item.reset_fallback %>
+                          </span>
                         </span>
                       </div>
                     </td>
@@ -466,7 +479,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       end)
   end
 
-  defp format_runtime_and_turns(started_at, turn_count, now) when is_integer(turn_count) and turn_count > 0 do
+  defp format_runtime_and_turns(started_at, turn_count, now)
+       when is_integer(turn_count) and turn_count > 0 do
     "#{format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))} / #{turn_count}"
   end
 
@@ -484,7 +498,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
     DateTime.diff(now, started_at, :second)
   end
 
-  defp runtime_seconds_from_started_at(started_at, %DateTime{} = now) when is_binary(started_at) do
+  defp runtime_seconds_from_started_at(started_at, %DateTime{} = now)
+       when is_binary(started_at) do
     case DateTime.from_iso8601(started_at) do
       {:ok, parsed, _offset} -> runtime_seconds_from_started_at(parsed, now)
       _ -> 0
@@ -525,7 +540,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp scale_bytes(value, [_unit | rest_units]), do: scale_bytes(value / 1024.0, rest_units)
 
-  defp format_keep_recent(value) when is_integer(value) and value >= 0, do: Integer.to_string(value)
+  defp format_keep_recent(value) when is_integer(value) and value >= 0,
+    do: Integer.to_string(value)
+
   defp format_keep_recent(_value), do: "n/a"
 
   defp state_badge_class(state) do
@@ -533,10 +550,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
     normalized = state |> to_string() |> String.downcase()
 
     cond do
-      String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
-      String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
-      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
-      true -> base
+      String.contains?(normalized, ["progress", "running", "active"]) ->
+        "#{base} state-badge-active"
+
+      String.contains?(normalized, ["blocked", "error", "failed"]) ->
+        "#{base} state-badge-danger"
+
+      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) ->
+        "#{base} state-badge-warning"
+
+      true ->
+        base
     end
   end
 
@@ -562,7 +586,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp api_badge_class(%{error: error}) when not is_nil(error), do: "status-badge status-badge-offline"
+  defp api_badge_class(%{error: error}) when not is_nil(error),
+    do: "status-badge status-badge-offline"
+
   defp api_badge_class(_payload), do: "status-badge status-badge-api"
 
   defp api_badge_text(%{error: error}) when not is_nil(error), do: "API degraded"
@@ -606,49 +632,82 @@ defmodule SymphonyElixirWeb.DashboardLive do
     "#{length(accounts)} total · #{healthy_count} healthy · active #{active_id}"
   end
 
-  defp account_rate_limit_items(rate_limits) when is_map(rate_limits) do
+  defp account_rate_limit_items(rate_limits, snapshot_generated_at) when is_map(rate_limits) do
     items =
       [
-        rate_limit_bucket_item("Primary", map_value(rate_limits, ["primary", :primary])),
-        rate_limit_bucket_item("Secondary", map_value(rate_limits, ["secondary", :secondary])),
+        rate_limit_bucket_item(
+          "Primary",
+          map_value(rate_limits, ["primary", :primary]),
+          snapshot_generated_at
+        ),
+        rate_limit_bucket_item(
+          "Secondary",
+          map_value(rate_limits, ["secondary", :secondary]),
+          snapshot_generated_at
+        ),
         credits_rate_limit_item(map_value(rate_limits, ["credits", :credits]))
       ]
       |> Enum.reject(&is_nil/1)
 
-    if items == [], do: ["n/a"], else: items
+    if items == [], do: [limit_chip("n/a")], else: items
   end
 
-  defp account_rate_limit_items(_rate_limits), do: ["n/a"]
+  defp account_rate_limit_items(_rate_limits, _snapshot_generated_at), do: [limit_chip("n/a")]
 
-  defp rate_limit_bucket_item(default_label, bucket) when is_map(bucket) do
+  defp rate_limit_bucket_item(default_label, bucket, snapshot_generated_at) when is_map(bucket) do
     label = rate_limit_window_label(bucket) || default_label
     summary = rate_limit_bucket_summary(bucket)
 
-    if is_binary(summary), do: "#{label}: #{summary}"
+    if is_binary(summary) do
+      reset_meta = rate_limit_bucket_reset_meta(bucket, snapshot_generated_at)
+
+      limit_chip(
+        "#{label}: #{summary}",
+        reset_meta && Map.get(reset_meta, :at),
+        reset_meta && Map.get(reset_meta, :style),
+        reset_meta && Map.get(reset_meta, :fallback)
+      )
+    end
   end
 
-  defp rate_limit_bucket_item(_default_label, _bucket), do: nil
+  defp rate_limit_bucket_item(_default_label, _bucket, _snapshot_generated_at), do: nil
 
   defp credits_rate_limit_item(bucket) when is_map(bucket) do
     balance = integer_like(map_value(bucket, ["balance", :balance]))
 
     cond do
-      map_value(bucket, ["unlimited", :unlimited]) == true -> "Credits: unlimited"
-      is_integer(balance) -> "Credits: #{format_int(balance)}"
-      map_value(bucket, ["hasCredits", :hasCredits]) == true -> "Credits: available"
-      map_value(bucket, ["hasCredits", :hasCredits]) == false -> "Credits: unavailable"
-      true -> nil
+      map_value(bucket, ["unlimited", :unlimited]) == true ->
+        limit_chip("Credits: unlimited")
+
+      is_integer(balance) ->
+        limit_chip("Credits: #{format_int(balance)}")
+
+      map_value(bucket, ["hasCredits", :hasCredits]) == true ->
+        limit_chip("Credits: available")
+
+      map_value(bucket, ["hasCredits", :hasCredits]) == false ->
+        limit_chip("Credits: unavailable")
+
+      true ->
+        nil
     end
   end
 
   defp credits_rate_limit_item(_bucket), do: nil
 
   defp rate_limit_window_label(bucket) when is_map(bucket) do
-    case integer_like(map_value(bucket, ["windowDurationMins", :windowDurationMins])) do
-      mins when is_integer(mins) and mins >= 1_440 and rem(mins, 1_440) == 0 -> "#{div(mins, 1_440)}d"
-      mins when is_integer(mins) and mins >= 60 and rem(mins, 60) == 0 -> "#{div(mins, 60)}h"
-      mins when is_integer(mins) -> "#{mins}m"
-      _ -> nil
+    case rate_limit_bucket_window_mins(bucket) do
+      mins when is_integer(mins) and mins >= 1_440 and rem(mins, 1_440) == 0 ->
+        "#{div(mins, 1_440)}d"
+
+      mins when is_integer(mins) and mins >= 60 and rem(mins, 60) == 0 ->
+        "#{div(mins, 60)}h"
+
+      mins when is_integer(mins) ->
+        "#{mins}m"
+
+      _ ->
+        nil
     end
   end
 
@@ -658,12 +717,182 @@ defmodule SymphonyElixirWeb.DashboardLive do
     used_percent = map_value(bucket, ["usedPercent", :usedPercent])
 
     cond do
-      is_integer(remaining) and is_integer(limit) -> "#{format_int(remaining)}/#{format_int(limit)} left"
-      is_integer(remaining) -> "#{format_int(remaining)} remaining"
-      is_integer(limit) -> "limit #{format_int(limit)}"
-      is_number(used_percent) -> "#{format_percent(used_percent)} used"
-      true -> nil
+      is_integer(remaining) and is_integer(limit) ->
+        "#{format_int(remaining)}/#{format_int(limit)} left"
+
+      is_integer(remaining) ->
+        "#{format_int(remaining)} remaining"
+
+      is_integer(limit) ->
+        "limit #{format_int(limit)}"
+
+      is_number(used_percent) ->
+        "#{format_percent(used_percent)} used"
+
+      true ->
+        nil
     end
+  end
+
+  defp rate_limit_bucket_reset_meta(bucket, snapshot_generated_at) when is_map(bucket) do
+    with %DateTime{} = reset_at <- rate_limit_bucket_reset_at(bucket, snapshot_generated_at) do
+      style = rate_limit_bucket_reset_style(bucket)
+
+      %{
+        at: reset_at |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+        style: style,
+        fallback: rate_limit_bucket_reset_fallback(reset_at, style)
+      }
+    end
+  end
+
+  defp rate_limit_bucket_reset_style(bucket) when is_map(bucket) do
+    case rate_limit_bucket_window_mins(bucket) do
+      mins when is_integer(mins) and mins >= 1_440 -> "date"
+      mins when is_integer(mins) and mins > 0 -> "time"
+      _ -> "time"
+    end
+  end
+
+  defp rate_limit_bucket_reset_at(bucket, snapshot_generated_at) when is_map(bucket) do
+    case rate_limit_bucket_reset_in_seconds(bucket) do
+      seconds when is_integer(seconds) ->
+        # Keep relative reset windows anchored to the payload snapshot time,
+        # not the runtime ticker stored in @now.
+        case parse_rate_limit_absolute_reset(snapshot_generated_at) do
+          %DateTime{} = snapshot_at ->
+            snapshot_at
+            |> DateTime.add(seconds, :second)
+            |> DateTime.truncate(:second)
+
+          _ ->
+            nil
+        end
+
+      _ ->
+        bucket
+        |> rate_limit_bucket_absolute_reset_value()
+        |> parse_rate_limit_absolute_reset()
+    end
+  end
+
+  defp rate_limit_bucket_reset_in_seconds(bucket) when is_map(bucket) do
+    integer_like(
+      map_value(bucket, [
+        "reset_in_seconds",
+        :reset_in_seconds,
+        "resetInSeconds",
+        :resetInSeconds
+      ])
+    )
+  end
+
+  defp rate_limit_bucket_absolute_reset_value(bucket) when is_map(bucket) do
+    map_value(bucket, [
+      "reset_at",
+      :reset_at,
+      "resetAt",
+      :resetAt,
+      "resets_at",
+      :resets_at,
+      "resetsAt",
+      :resetsAt
+    ])
+  end
+
+  defp parse_rate_limit_absolute_reset(%DateTime{} = value), do: DateTime.truncate(value, :second)
+
+  defp parse_rate_limit_absolute_reset(%NaiveDateTime{} = value) do
+    value
+    |> NaiveDateTime.truncate(:second)
+    |> DateTime.from_naive!("Etc/UTC")
+  end
+
+  defp parse_rate_limit_absolute_reset(value) when is_integer(value) and value >= 0 do
+    unix_unit =
+      cond do
+        value >= 1_000_000_000_000 -> :millisecond
+        value >= 1_000_000_000 -> :second
+        true -> nil
+      end
+
+    case unix_unit && DateTime.from_unix(value, unix_unit) do
+      {:ok, datetime} -> DateTime.truncate(datetime, :second)
+      _ -> nil
+    end
+  end
+
+  defp parse_rate_limit_absolute_reset(value) when is_float(value) and value >= 0 do
+    value
+    |> trunc()
+    |> parse_rate_limit_absolute_reset()
+  end
+
+  defp parse_rate_limit_absolute_reset(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> parse_rate_limit_absolute_reset_binary()
+  end
+
+  defp parse_rate_limit_absolute_reset(_value), do: nil
+
+  defp parse_rate_limit_absolute_reset_binary(value) do
+    parse_rate_limit_iso8601(value) ||
+      parse_rate_limit_naive_datetime(value) ||
+      parse_rate_limit_integer(value)
+  end
+
+  defp parse_rate_limit_iso8601(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> DateTime.truncate(datetime, :second)
+      _ -> nil
+    end
+  end
+
+  defp parse_rate_limit_naive_datetime(value) do
+    case NaiveDateTime.from_iso8601(value) do
+      {:ok, datetime} -> parse_rate_limit_absolute_reset(datetime)
+      _ -> nil
+    end
+  end
+
+  defp parse_rate_limit_integer(value) do
+    case Integer.parse(value) do
+      {integer, ""} when integer >= 0 -> parse_rate_limit_absolute_reset(integer)
+      _ -> nil
+    end
+  end
+
+  defp rate_limit_bucket_reset_fallback(reset_at, "time") do
+    "at #{Calendar.strftime(reset_at, "%H:%M")} UTC"
+  end
+
+  defp rate_limit_bucket_reset_fallback(reset_at, "date") do
+    "#{DateTime.to_date(reset_at).day} #{Calendar.strftime(reset_at, "%b")} UTC"
+  end
+
+  defp rate_limit_bucket_reset_fallback(_reset_at, _style), do: nil
+
+  defp rate_limit_bucket_window_mins(bucket) when is_map(bucket) do
+    integer_like(
+      map_value(bucket, [
+        "windowDurationMins",
+        :windowDurationMins,
+        "window_minutes",
+        :window_minutes,
+        "windowMinutes",
+        :windowMinutes
+      ])
+    )
+  end
+
+  defp limit_chip(text, reset_at \\ nil, reset_style \\ nil, reset_fallback \\ nil) do
+    %{
+      text: text,
+      reset_at: reset_at,
+      reset_style: reset_style,
+      reset_fallback: reset_fallback
+    }
   end
 
   defp map_value(map, [key | rest]) when is_map(map) do
@@ -696,8 +925,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp append_account_meta(list, _formatted, _value), do: list
 
-  defp active_account_selection_error(:invalid_account), do: "Selected account is no longer configured."
-  defp active_account_selection_error(:unhealthy_account), do: "Only healthy accounts can be made active."
+  defp active_account_selection_error(:invalid_account),
+    do: "Selected account is no longer configured."
+
+  defp active_account_selection_error(:unhealthy_account),
+    do: "Only healthy accounts can be made active."
+
   defp active_account_selection_error(:unavailable), do: "Orchestrator is unavailable."
 
   defp pretty_value(nil), do: "n/a"
