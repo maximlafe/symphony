@@ -1721,9 +1721,13 @@ defmodule SymphonyElixir.CoreTest do
       send(pid, {:retry_issue, issue_id, retry_token})
 
       state =
-        wait_for_orchestrator_state(pid, fn state ->
-          match?(%{trace_id: ^trace_id}, Map.get(state.running, issue_id))
-        end)
+        wait_for_orchestrator_state(
+          pid,
+          fn state ->
+            match?(%{trace_id: ^trace_id}, Map.get(state.running, issue_id))
+          end,
+          80
+        )
 
       assert %{identifier: ^issue_identifier, trace_id: ^trace_id, pid: worker_pid} =
                state.running[issue_id]

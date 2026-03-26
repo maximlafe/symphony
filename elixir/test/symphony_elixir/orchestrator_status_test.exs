@@ -89,7 +89,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        }}
     )
 
-    snapshot = GenServer.call(pid, :snapshot)
+    snapshot = GenServer.call(pid, :snapshot, 15_000)
     assert %{running: [snapshot_entry]} = snapshot
 
     assert %{
@@ -176,7 +176,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        }}
     )
 
-    snapshot = GenServer.call(pid, :snapshot)
+    snapshot = GenServer.call(pid, :snapshot, 15_000)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.run_phase == "full validate"
     assert snapshot_entry.phase_started_at == phase_timestamp

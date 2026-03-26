@@ -106,11 +106,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, %{prompt: "You are an agent for this repository."}} = Workflow.current()
 
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Second prompt")
-    send(WorkflowStore, :poll)
-
-    assert_eventually(fn ->
-      match?({:ok, %{prompt: "Second prompt"}}, Workflow.current())
-    end)
+    assert :ok = WorkflowStore.force_reload()
+    assert {:ok, %{prompt: "Second prompt"}} = Workflow.current()
 
     File.write!(Workflow.workflow_file_path(), "---\ntracker: [\n---\nBroken prompt\n")
     assert {:error, _reason} = WorkflowStore.force_reload()
