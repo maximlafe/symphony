@@ -2376,7 +2376,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       awk '
         NF {
           last=$0
-          if ($0 !~ /^make(\[[0-9]+\])?: / && $0 !~ /^Makefile:[0-9]+: warning:/ && $0 !~ /^Cloning into /) {
+          if (index($0, "make: ") != 1 && index($0, "make[") != 1 && index($0, "Makefile:") != 1 && index($0, "Cloning into ") != 1) {
             preferred=$0
           }
         }
