@@ -2391,11 +2391,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     }
     write_bootstrap_blocker() {
       failure_log=$1
-      failure_summary=$(summarize_bootstrap_failure "$failure_log")
-      if printf '%s' "$failure_summary" | grep -Fq "No rule to make target" &&
-         printf '%s' "$failure_summary" | grep -Fq "symphony-bootstrap"; then
+      if grep -Fq "No rule to make target" "$failure_log" &&
+         grep -Fq "symphony-bootstrap" "$failure_log"; then
         printf "Base branch '%s' in %s does not define make symphony-bootstrap.\n" "$base_branch" "$source_repository" > .symphony-base-branch-error
       else
+        failure_summary=$(summarize_bootstrap_failure "$failure_log")
         if [ -z "$failure_summary" ]; then
           failure_summary="unknown bootstrap failure"
         fi
