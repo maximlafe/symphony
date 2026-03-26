@@ -554,6 +554,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       workspace = Path.join(test_root, "workspace")
 
       create_bootstrap_repo!(lead_status_repo, "lead_status")
+
       create_branch_with_failing_bootstrap!(
         lead_status_repo,
         "feature/broken-bootstrap",
@@ -2375,7 +2376,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       awk '
         NF {
           last=$0
-          if ($0 !~ /^make: \*\*\* / && $0 !~ /^Makefile:[0-9]+: warning:/ && $0 !~ /^Cloning into /) {
+          if ($0 !~ /^make(\[[0-9]+\])?: \*\*\* / && $0 !~ /^make(\[[0-9]+\])?: (Entering|Leaving) directory/ && $0 !~ /^Makefile:[0-9]+: warning:/ && $0 !~ /^Cloning into /) {
             preferred=$0
           }
         }
