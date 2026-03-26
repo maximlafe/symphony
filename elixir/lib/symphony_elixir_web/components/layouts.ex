@@ -31,6 +31,7 @@ defmodule SymphonyElixirWeb.Layouts do
             var liveSocket;
             var liveViewObserver;
             var connectPoll;
+            var reconnectTimer;
             var csrfTokenMeta = document.querySelector("meta[name='csrf-token']");
             var csrfToken = csrfTokenMeta ? csrfTokenMeta.getAttribute("content") : null;
 
@@ -59,6 +60,18 @@ defmodule SymphonyElixirWeb.Layouts do
               return Boolean(liveViewRoot && liveViewRoot.classList.contains("phx-connected"));
             };
 
+            var liveSocketConnected = function () {
+              return Boolean(liveSocket && liveSocket.isConnected && liveSocket.isConnected());
+            };
+
+            var liveViewReady = function () {
+              return liveSocketConnected() || liveViewRootConnected();
+            };
+
+            var needsLiveViewReconnect = function () {
+              return !liveSocketConnected() || !liveViewRootConnected();
+            };
+
             setLiveViewStatus(false);
 
             if (!window.Phoenix || !window.LiveView) return;
@@ -68,10 +81,9 @@ defmodule SymphonyElixirWeb.Layouts do
             });
 
             var syncLiveViewStatus = function () {
-              var socketConnected = Boolean(liveSocket.isConnected && liveSocket.isConnected());
-              setLiveViewStatus(socketConnected || liveViewRootConnected());
+              setLiveViewStatus(liveViewReady());
 
-              if ((socketConnected || liveViewRootConnected()) && connectPoll) {
+              if (liveViewReady() && connectPoll) {
                 window.clearInterval(connectPoll);
                 connectPoll = null;
               }
@@ -93,6 +105,25 @@ defmodule SymphonyElixirWeb.Layouts do
               });
             };
 
+            var scheduleReconnect = function () {
+              if (!liveSocket) return;
+
+              if (reconnectTimer) {
+                window.clearTimeout(reconnectTimer);
+              }
+
+              reconnectTimer = window.setTimeout(function () {
+                reconnectTimer = null;
+                observeLiveViewRoot();
+
+                if (needsLiveViewReconnect()) {
+                  liveSocket.connect();
+                }
+
+                syncLiveViewStatus();
+              }, 150);
+            };
+
             liveSocket.socket.onOpen(syncLiveViewStatus);
             liveSocket.socket.onClose(syncLiveViewStatus);
             liveSocket.socket.onError(syncLiveViewStatus);
@@ -110,16 +141,45 @@ defmodule SymphonyElixirWeb.Layouts do
               syncLiveViewStatus();
             }, 10000);
 
-            window.addEventListener("pageshow", function () {
+            window.addEventListener("pageshow", function (event) {
               observeLiveViewRoot();
-              if (liveSocket.isConnected && !liveSocket.isConnected()) {
-                liveSocket.connect();
+
+              if (event.persisted) {
+                syncLiveViewStatus();
+                return;
               }
-              syncLiveViewStatus();
+
+              if (needsLiveViewReconnect()) {
+                scheduleReconnect();
+              } else {
+                syncLiveViewStatus();
+              }
+            });
+
+            window.addEventListener("focus", function () {
+              if (needsLiveViewReconnect()) {
+                scheduleReconnect();
+              } else {
+                syncLiveViewStatus();
+              }
+            });
+
+            window.addEventListener("online", function () {
+              if (needsLiveViewReconnect()) {
+                scheduleReconnect();
+              } else {
+                syncLiveViewStatus();
+              }
             });
 
             document.addEventListener("visibilitychange", function () {
-              if (!document.hidden) syncLiveViewStatus();
+              if (!document.hidden) {
+                if (needsLiveViewReconnect()) {
+                  scheduleReconnect();
+                } else {
+                  syncLiveViewStatus();
+                }
+              }
             });
           });
         </script>
