@@ -127,14 +127,14 @@ defmodule SymphonyElixir.CodexSkillSyncTest do
       source_root = Path.join(test_root, "bundled-skills")
       explicit_home = Path.join(test_root, "explicit-home")
       skill_dir = Path.join(source_root, "pull")
+      broken_fifo = Path.join(skill_dir, "broken_fifo")
 
       write_skill!(source_root, "pull", "# pull\n")
-      File.chmod!(skill_dir, 0o000)
+      assert {_, 0} = System.cmd("mkfifo", [broken_fifo])
 
       assert {:error, {:skill_copy_failed, _, _, _reason}} =
                SkillSync.sync_codex_homes([explicit_home], source_root)
     after
-      File.chmod(Path.join(test_root, "bundled-skills/pull"), 0o755)
       File.rm_rf(test_root)
     end
   end

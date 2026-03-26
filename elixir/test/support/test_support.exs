@@ -25,6 +25,8 @@ defmodule SymphonyElixir.TestSupport do
         only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
 
       setup do
+        :global.set_lock({SymphonyElixir.TestSupport, :workflow_test_lock})
+
         workflow_root =
           Path.join(
             System.tmp_dir!(),
@@ -36,10 +38,12 @@ defmodule SymphonyElixir.TestSupport do
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)
         SymphonyElixir.TestSupport.ensure_application_started()
-        if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+        SymphonyElixir.TestSupport.ensure_workflow_store_running()
+        SymphonyElixir.WorkflowStore.force_reload()
         stop_default_http_server()
 
         on_exit(fn ->
+          :global.del_lock({SymphonyElixir.TestSupport, :workflow_test_lock})
           Application.delete_env(:symphony_elixir, :workflow_file_path)
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
@@ -75,6 +79,20 @@ defmodule SymphonyElixir.TestSupport do
       {:ok, _started} -> :ok
       {:error, {:already_started, _app}} -> :ok
       other -> raise "failed to start :symphony_elixir for test setup: #{inspect(other)}"
+    end
+  end
+
+  def ensure_workflow_store_running do
+    case Process.whereis(SymphonyElixir.WorkflowStore) do
+      pid when is_pid(pid) ->
+        :ok
+
+      _ ->
+        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+          other -> raise "failed to restart WorkflowStore for test setup: #{inspect(other)}"
+        end
     end
   end
 
