@@ -106,11 +106,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, %{prompt: "You are an agent for this repository."}} = Workflow.current()
 
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Second prompt")
-    send(WorkflowStore, :poll)
-
-    assert_eventually(fn ->
-      match?({:ok, %{prompt: "Second prompt"}}, Workflow.current())
-    end)
+    assert :ok = WorkflowStore.force_reload()
+    assert {:ok, %{prompt: "Second prompt"}} = Workflow.current()
 
     File.write!(Workflow.workflow_file_path(), "---\ntracker: [\n---\nBroken prompt\n")
     assert {:error, _reason} = WorkflowStore.force_reload()
@@ -361,7 +358,11 @@ defmodule SymphonyElixir.ExtensionsTest do
              ],
              "running" => [
                %{
+                 "activity_state" => "alive",
                  "codex_account_id" => "primary",
+                 "current_command" => nil,
+                 "current_step" => nil,
+                 "external_step" => nil,
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
                  "trace_id" => "trace-http",
@@ -371,7 +372,11 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_event" => "notification",
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
+                 "phase_started_at" => state_payload["running"] |> List.first() |> Map.fetch!("phase_started_at"),
+                 "last_activity_at" => state_payload["running"] |> List.first() |> Map.fetch!("last_activity_at"),
                  "last_event_at" => nil,
+                 "run_phase" => "editing",
+                 "operational_notice" => nil,
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
@@ -411,22 +416,39 @@ defmodule SymphonyElixir.ExtensionsTest do
              "workspace" => %{"path" => Path.join(Config.settings!().workspace.root, "MT-HTTP")},
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
+               "activity_state" => "alive",
                "codex_account_id" => "primary",
+               "current_command" => nil,
+               "current_step" => nil,
+               "external_step" => nil,
                "trace_id" => "trace-http",
                "session_id" => "thread-http",
                "turn_count" => 7,
                "state" => "In Progress",
                "started_at" => issue_payload["running"]["started_at"],
+               "phase_started_at" => issue_payload["running"]["phase_started_at"],
+               "last_activity_at" => issue_payload["running"]["last_activity_at"],
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
+               "run_phase" => "editing",
+               "operational_notice" => nil,
                "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              },
              "retry" => nil,
              "logs" => %{"codex_session_logs" => []},
              "recent_events" => [],
              "last_error" => nil,
-             "tracked" => %{}
+             "tracked" => %{
+               "run_phase" => "editing",
+               "phase_started_at" => issue_payload["tracked"]["phase_started_at"],
+               "last_activity_at" => issue_payload["tracked"]["last_activity_at"],
+               "activity_state" => "alive",
+               "current_command" => nil,
+               "external_step" => nil,
+               "current_step" => nil,
+               "operational_notice" => nil
+             }
            }
 
     conn = get(build_conn(), "/api/v1/MT-RETRY")
@@ -593,7 +615,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "LiveView offline"
     assert html =~ "Workspace disk"
     assert html =~ "Copy ID"
-    assert html =~ "Codex update"
+    assert html =~ "Run phase"
+    assert html =~ "Current step"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"

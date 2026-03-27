@@ -1064,6 +1064,8 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert_received {:tool_called, "linear_graphql", %{"query" => "query Viewer { viewer { id } }"}}
 
+      assert_received {:app_server_message, %{event: :tool_call_started, payload: %{"params" => %{"tool" => "linear_graphql"}}}}
+
       assert_received {:app_server_message, %{event: :tool_call_failed, payload: %{"params" => %{"tool" => "linear_graphql"}}}}
     after
       File.rm_rf(test_root)

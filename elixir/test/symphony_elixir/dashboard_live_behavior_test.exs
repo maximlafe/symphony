@@ -53,6 +53,11 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
 
     assert section_offset(html, "Running sessions") < section_offset(html, "Retry queue")
     assert section_offset(html, "Retry queue") < section_offset(html, "Codex accounts")
+    assert html =~ "Run phase"
+    assert html =~ "full validate"
+    assert html =~ "slow"
+    assert html =~ "make symphony-validate"
+    assert html =~ "launch-app missing, using local HTTP/UI fallback"
     assert html =~ "metric-value-break"
     assert html =~ "very.long.primary.email.address+alerts@example.com"
     assert html =~ "ID primary"
@@ -208,6 +213,9 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert dashboard_response.status == 200
     assert running_sessions_offset < retry_queue_offset
     assert retry_queue_offset < codex_accounts_offset
+    assert dashboard_body =~ "full validate"
+    assert dashboard_body =~ "make symphony-validate"
+    assert dashboard_body =~ "launch-app missing, using local HTTP/UI fallback"
     assert dashboard_body =~ "very.long.primary.email.address+alerts@example.com"
     assert dashboard_body =~ "5h: 18/100 left"
     assert dashboard_body =~ "· at 22:00 UTC"
@@ -220,6 +228,11 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     api_response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert api_response.status == 200
     assert api_response.body["active_codex_account_id"] == "primary"
+    assert get_in(api_response.body, ["running", Access.at(0), "run_phase"]) == "full validate"
+    assert get_in(api_response.body, ["running", Access.at(0), "activity_state"]) == "slow"
+
+    assert get_in(api_response.body, ["running", Access.at(0), "current_command"]) ==
+             "make symphony-validate"
 
     primary_account =
       Enum.find(
@@ -379,6 +392,14 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
           session_id: "thread-http",
           turn_count: 7,
           codex_app_server_pid: nil,
+          run_phase: "full validate",
+          phase_started_at: ~U[2026-03-25 21:20:00Z],
+          last_activity_at: ~U[2026-03-25 21:25:00Z],
+          activity_state: "slow",
+          current_command: "make symphony-validate",
+          current_step: "make symphony-validate",
+          external_step: nil,
+          operational_notice: "launch-app missing, using local HTTP/UI fallback",
           last_codex_message: "rendered",
           last_codex_timestamp: nil,
           last_codex_event: :notification,

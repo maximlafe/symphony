@@ -640,6 +640,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     tool_name = tool_call_name(params)
     arguments = tool_call_arguments(params)
 
+    emit_message(on_message, :tool_call_started, %{payload: payload, raw: payload_string}, metadata)
+
     result = tool_executor.(tool_name, arguments)
 
     send_message(port, %{

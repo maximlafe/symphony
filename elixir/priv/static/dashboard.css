@@ -404,7 +404,7 @@ html.liveview-connected .status-badge-liveview-offline,
 
 .data-table-running {
   table-layout: fixed;
-  min-width: 980px;
+  min-width: 1360px;
 }
 
 .data-table-codex-accounts {
