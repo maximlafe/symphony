@@ -80,7 +80,6 @@ defmodule SymphonyElixir.TestSupport.Snapshot do
   defp trim_trailing_line_whitespace(content) do
     content
     |> String.split("\n", trim: false)
-    |> Enum.map(&String.trim_trailing/1)
-    |> Enum.join("\n")
+    |> Enum.map_join("\n", &String.trim_trailing/1)
   end
 end
