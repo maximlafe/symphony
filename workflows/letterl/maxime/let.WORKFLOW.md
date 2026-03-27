@@ -520,6 +520,7 @@ Instructions:
 - Use local `workpad.md` as the working copy and sync the live workpad only at bootstrap, meaningful milestones, and final handoff.
 - Before each automated stage (`Planning`, `In Progress`, `Rework`, `Merging`), post one separate top-level stage-start comment before the first live workpad sync of that stage.
 - Before any Git sync or branch decision, treat `.symphony-source-repository` and `.symphony-base-branch` as the authoritative workspace routing metadata when those files exist.
+- When normalizing the issue description into a task-spec, preserve or re-add the final `## Symphony` section with machine-readable `Repo:` and `Base branch:` lines; treat it as durable routing and audit metadata, not as workpad content.
 - If `.symphony-base-branch-note` exists, translate it into Russian in `Заметки` once and continue without asking a human; the note may describe repo-label fallback for an already bound workspace or default base-branch fallback chosen for this ticket.
 - If `.symphony-base-branch-error` exists, treat it as a routing/configuration blocker: translate the message into Russian in the workpad, fill `Checkpoint` with `checkpoint_type: human-action`, a justified `risk_level`, and a short `summary`, then move the issue to `Blocked` and stop.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.
@@ -590,10 +591,13 @@ Instructions:
    - sync the live workpad at most one final time before `Plan Review`;
    - always pass the absolute path to local `workpad.md` when calling `sync_workpad`.
 6. Update the issue-description task-spec only when required sections are missing or the task contract materially changed:
-   - use canonical Russian headings `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`;
+   - use canonical Russian headings `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and keep a final `## Symphony` section;
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
+   - keep `## Symphony` as the last section with `Repo: <resolved owner/name>` and `Base branch: <configured branch>`;
+   - if `.symphony-source-repository` or `.symphony-base-branch` exist, treat them as authoritative when repopulating `Repo:` and `Base branch:` during normalization;
    - preserve all material user facts, constraints, and acceptance intent, but allow full reformatting into the canonical sections;
    - preserve user-uploaded files, screenshots, and inline media verbatim; if the current description contains uploads or embeds that would be dropped by normalization, do not rewrite the description and keep the extra structure in the workpad instead;
+   - do not remove machine-readable `Repo:` or `Base branch:` lines even when repo routing is also inferred from project metadata or `repo:*` labels;
    - do not write checklists, managed markers, or workpad-style progress notes into the description.
 7. Maintain the Russian workpad with a compact environment stamp, hierarchical plan, `Критерии приемки`, `Проверка`, and `Заметки`.
 8. Before moving to `Plan Review`, do one final planning handoff:
@@ -645,6 +649,8 @@ Use this only when completion is blocked by missing required tools or missing au
 1. On entry to `In Progress`, first create the separate top-level comment `Начал выполнение задачи: <DD.MM.YYYY HH:MM MSK>` before any repo-changing command or the first live workpad sync of that stage.
 2. Recover from the existing task-spec description and workpad using the minimal-recovery rules unless the issue requires a full reread.
 3. Run the `pull` skill against the configured base branch from `.symphony-base-branch` before code edits, then record the result in `Заметки` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
+   - if the run creates a fresh working branch from `origin/<configured base branch>`, record `Новая ветка <branch> создана от origin/<configured base branch>.` in `Заметки` on the next live workpad sync;
+   - if the run resumes on an existing non-base branch and no lineage note exists yet, record `Текущая рабочая ветка <branch>; базовая ветка origin/<configured base branch>.` instead of inventing a creation event.
 4. Use the issue description as the canonical task contract and local `workpad.md` as the implementation plan and detailed execution log.
 5. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before final handoff.
    - фиксируй повторные попытки исправить один и тот же сигнал в workpad и соблюдай лимит auto-fix attempts ниже;
@@ -683,12 +689,13 @@ Use this only when completion is blocked by missing required tools or missing au
 5. Remove the existing `## Рабочий журнал Codex` comment.
 6. Create a fresh branch from `origin/<configured base branch>`.
 7. Create a new bootstrap `## Рабочий журнал Codex` comment.
-8. Refresh the task-spec description if the task contract changed for the new attempt, then rewrite the new workpad in Russian.
-9. Execute the normal flow again and return the issue to `In Review`.
+8. In the new workpad `Заметки`, record `Новая ветка <branch> создана от origin/<configured base branch>.` before further implementation.
+9. Refresh the task-spec description if the task contract changed for the new attempt, then rewrite the new workpad in Russian while preserving or re-adding the final `## Symphony` section from `.symphony-source-repository` and `.symphony-base-branch`.
+10. Execute the normal flow again and return the issue to `In Review`.
 
 ## Completion bar before Plan Review
 
-- The issue description contains an up-to-date Russian task-spec with `Проблема`, `Цель`, `Скоуп`, and `Критерии приемки`.
+- The issue description contains an up-to-date Russian task-spec with `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and a final `## Symphony` section whose `Repo:` and `Base branch:` match the current routing metadata.
 - The workpad comment exists and mirrors the detailed plan in Russian.
 - Required `Критерии приемки` and `Проверка` checklists are explicit and reviewable.
 - Any important reproduction or investigation signal is recorded in the workpad.
@@ -701,6 +708,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - В workpad заполнен классифицированный `Checkpoint` с `checkpoint_type: human-verify` и обоснованным `risk_level`.
 - Every final checklist item in the workpad is phrased as a pre-transition fact or readiness statement, so it can be truthfully checked before the move to `In Review`.
 - The Russian task-spec description reflects the delivered scope.
+- The final issue description still preserves the machine-readable `## Symphony` metadata.
 - Required validation/tests are green for the latest commit.
 - Actionable PR feedback is resolved.
 - PR checks are green.
@@ -798,7 +806,15 @@ Use this structure when creating a new issue description or normalizing an exist
 ## Заметки
 
 - Добавляй только если нужны rollout/context notes
+
+## Symphony
+
+Repo: owner/name
+Base branch: branch-name
 ````
+
+Keep `## Symphony` as the last section of the issue description even when repo routing also comes from project metadata or `repo:*` labels.
+`Repo:` must mirror the resolved repository, and `Base branch:` must mirror the configured base branch in machine-readable form.
 
 Do not use checkboxes, managed markers, or progress logs in the issue description.
 
@@ -837,7 +853,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 ### Заметки
 
-- <короткая заметка с временем по Москве>
+- <короткая заметка с временем по Москве; когда применимо, фиксируй branch lineage в формате `Новая ветка <branch> создана от origin/<base>.`>
 
 ### Неясности
 
