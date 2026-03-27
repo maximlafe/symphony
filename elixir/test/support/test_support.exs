@@ -33,7 +33,14 @@ defmodule SymphonyElixir.TestSupport do
             "symphony-elixir-workflow-#{System.unique_integer([:positive])}"
           )
 
+        previous_path = System.get_env("PATH")
+        previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+        previous_linear_assignee = System.get_env("LINEAR_ASSIGNEE")
+
         File.mkdir_p!(workflow_root)
+        SymphonyElixir.TestSupport.install_test_codex!(workflow_root)
+        System.delete_env("LINEAR_API_KEY")
+        System.delete_env("LINEAR_ASSIGNEE")
         workflow_file = Path.join(workflow_root, "WORKFLOW.md")
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)
@@ -48,6 +55,9 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+          restore_env("LINEAR_API_KEY", previous_linear_api_key)
+          restore_env("LINEAR_ASSIGNEE", previous_linear_assignee)
+          restore_env("PATH", previous_path)
           File.rm_rf(workflow_root)
         end)
 
@@ -255,6 +265,48 @@ defmodule SymphonyElixir.TestSupport do
       |> Enum.reject(&(&1 in [nil, ""]))
 
     Enum.join(sections, "\n") <> "\n"
+  end
+
+  def install_test_codex!(workflow_root) do
+    bin_dir = Path.join(workflow_root, "bin")
+    codex_path = Path.join(bin_dir, "codex")
+
+    File.mkdir_p!(bin_dir)
+
+    File.write!(codex_path, """
+    #!/bin/sh
+    while IFS= read -r line; do
+      case "$line" in
+        *'"method":"initialize"'*)
+          printf '%s\\n' '{"id":1,"result":{}}'
+          ;;
+        *'"method":"account/read"'*)
+          printf '%s\\n' '{"id":1001,"result":{"requiresOpenaiAuth":true}}'
+          ;;
+        *'"method":"account/rateLimits/read"'*)
+          printf '%s\\n' '{"id":1002,"result":{"rateLimitsByLimitId":{"codex":{"limitId":"codex"}}}}'
+          ;;
+        *'"method":"thread/start"'*)
+          printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-test"}}}'
+          ;;
+        *'"method":"turn/start"'*)
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-test"}}}'
+          printf '%s\\n' '{"method":"turn/completed"}'
+          ;;
+        *)
+          ;;
+      esac
+    done
+    """)
+
+    File.chmod!(codex_path, 0o755)
+
+    updated_path =
+      [bin_dir, System.get_env("PATH")]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join(":")
+
+    System.put_env("PATH", updated_path)
   end
 
   defp yaml_value(value) when is_binary(value) do
