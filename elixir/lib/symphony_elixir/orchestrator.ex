@@ -1808,8 +1808,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_publish_run_phase_transition(issue_id, previous_running_entry, current_running_entry) do
-    with true <- RunPhase.transition_reportable?(previous_running_entry, current_running_entry),
-         true <- phase_unreported?(current_running_entry),
+    with true <- should_publish_run_phase_comment?(previous_running_entry, current_running_entry),
          comment when is_binary(comment) <- RunPhase.phase_signal_comment(current_running_entry),
          :ok <- Tracker.create_comment(issue_id, comment) do
       RunPhase.mark_phase_reported(current_running_entry)
@@ -1821,6 +1820,18 @@ defmodule SymphonyElixir.Orchestrator do
       _ ->
         current_running_entry
     end
+  end
+
+  defp should_publish_run_phase_comment?(previous_running_entry, current_running_entry) do
+    phase_unreported?(current_running_entry) and
+      RunPhase.reportable_phase?(Map.get(current_running_entry, :run_phase)) and
+      (RunPhase.transition_reportable?(previous_running_entry, current_running_entry) or
+         retrying_unreported_phase_comment?(previous_running_entry, current_running_entry))
+  end
+
+  defp retrying_unreported_phase_comment?(previous_running_entry, current_running_entry) do
+    RunPhase.phase_label(Map.get(previous_running_entry, :run_phase)) ==
+      RunPhase.phase_label(Map.get(current_running_entry, :run_phase))
   end
 
   defp phase_unreported?(running_entry) do

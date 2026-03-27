@@ -11,9 +11,9 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       PHASE            PID      AGE / TURN   TOKENS     SESSION        DETAIL                               
+│   ID       STATE / PHASE                PID      AGE / TURN   TOKENS     SESSION        DETAIL
 │   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│ ● MT-777   editing          4242     1m 15s / 7        3,200 thre...567890  alive · thread token usage updated...
+│ ● MT-777   In Progress / editing        4242     1m 15s / 7        3,200 thre...567890  alive · thread token u...
 │
 ├─ Backoff queue
 │

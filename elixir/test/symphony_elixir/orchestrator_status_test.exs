@@ -1,6 +1,77 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
+  defmodule PhaseCommentLinearClient do
+    alias SymphonyElixir.Linear.Issue
+
+    def fetch_candidate_issues do
+      {:ok, configured_issues()}
+    end
+
+    def fetch_issues_by_states(states) when is_list(states) do
+      normalized_states =
+        states
+        |> Enum.map(&normalize_state/1)
+        |> MapSet.new()
+
+      {:ok,
+       Enum.filter(configured_issues(), fn %Issue{state: state} ->
+         MapSet.member?(normalized_states, normalize_state(state))
+       end)}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) when is_list(issue_ids) do
+      wanted_ids = MapSet.new(issue_ids)
+
+      {:ok,
+       Enum.filter(configured_issues(), fn %Issue{id: id} ->
+         MapSet.member?(wanted_ids, id)
+       end)}
+    end
+
+    def graphql(query, variables) do
+      send_graphql_event(query, variables)
+
+      if String.contains?(query, "commentCreate") do
+        next_graphql_result()
+      else
+        {:ok, %{"data" => %{}}}
+      end
+    end
+
+    defp configured_issues do
+      Application.get_env(:symphony_elixir, :phase_comment_linear_issues, [])
+    end
+
+    defp send_graphql_event(query, variables) do
+      case Application.get_env(:symphony_elixir, :phase_comment_linear_recipient) do
+        pid when is_pid(pid) -> send(pid, {:phase_comment_graphql_called, query, variables})
+        _ -> :ok
+      end
+    end
+
+    defp next_graphql_result do
+      case Application.get_env(:symphony_elixir, :phase_comment_linear_results_agent) do
+        pid when is_pid(pid) ->
+          Agent.get_and_update(pid, fn
+            [result | rest] -> {result, rest}
+            [] -> {{:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}, []}
+          end)
+
+        _ ->
+          {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+      end
+    end
+
+    defp normalize_state(state) when is_binary(state) do
+      state
+      |> String.trim()
+      |> String.downcase()
+    end
+
+    defp normalize_state(_state), do: ""
+  end
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -317,6 +388,159 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert_receive {:memory_tracker_comment, ^issue_id, second_comment}, 3_000
     assert second_comment =~ "waiting CI"
     assert second_comment =~ "github_wait_for_checks"
+  end
+
+  test "orchestrator retries reportable run phase comments after transient tracker failures" do
+    previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    previous_recipient = Application.get_env(:symphony_elixir, :phase_comment_linear_recipient)
+    previous_issues = Application.get_env(:symphony_elixir, :phase_comment_linear_issues)
+    previous_results_agent = Application.get_env(:symphony_elixir, :phase_comment_linear_results_agent)
+
+    on_exit(fn ->
+      if is_nil(previous_client_module) do
+        Application.delete_env(:symphony_elixir, :linear_client_module)
+      else
+        Application.put_env(:symphony_elixir, :linear_client_module, previous_client_module)
+      end
+
+      if is_nil(previous_recipient) do
+        Application.delete_env(:symphony_elixir, :phase_comment_linear_recipient)
+      else
+        Application.put_env(:symphony_elixir, :phase_comment_linear_recipient, previous_recipient)
+      end
+
+      if is_nil(previous_issues) do
+        Application.delete_env(:symphony_elixir, :phase_comment_linear_issues)
+      else
+        Application.put_env(:symphony_elixir, :phase_comment_linear_issues, previous_issues)
+      end
+
+      if is_nil(previous_results_agent) do
+        Application.delete_env(:symphony_elixir, :phase_comment_linear_results_agent)
+      else
+        Application.put_env(:symphony_elixir, :phase_comment_linear_results_agent, previous_results_agent)
+      end
+    end)
+
+    {:ok, results_agent} =
+      Agent.start_link(fn ->
+        [
+          {:error, :transient_comment_failure},
+          {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+        ]
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(results_agent) do
+        Agent.stop(results_agent)
+      end
+    end)
+
+    Application.put_env(:symphony_elixir, :linear_client_module, PhaseCommentLinearClient)
+    Application.put_env(:symphony_elixir, :phase_comment_linear_recipient, self())
+    Application.put_env(:symphony_elixir, :phase_comment_linear_results_agent, results_agent)
+
+    issue_id = "issue-phase-comment-retry"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-PHASE-RETRY",
+      title: "Retry phase comments",
+      description: "Retry Linear phase comments after transient errors",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-PHASE-RETRY"
+    }
+
+    Application.put_env(:symphony_elixir, :phase_comment_linear_issues, [issue])
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
+
+    orchestrator_name = Module.concat(__MODULE__, :RunPhaseCommentRetryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/exec_command_begin",
+           "params" => %{"msg" => %{"command" => "make symphony-validate"}}
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    assert_receive {:phase_comment_graphql_called, create_comment_query, first_variables}, 2_000
+    assert create_comment_query =~ "commentCreate"
+    assert first_variables.issueId == issue_id
+    assert first_variables.body =~ "full validate"
+
+    assert_eventually(fn ->
+      :sys.get_state(pid).running[issue_id].last_reported_phase == nil
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/token_count",
+           "params" => %{"msg" => %{"type" => "token_count"}}
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    assert_receive {:phase_comment_graphql_called, ^create_comment_query, second_variables}, 2_000
+    assert second_variables == first_variables
+
+    assert_eventually(fn ->
+      :sys.get_state(pid).running[issue_id].last_reported_phase == :full_validate
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/agent_message_delta",
+           "params" => %{"msg" => %{"payload" => %{"delta" => "still validating"}}}
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    refute_receive {:phase_comment_graphql_called, ^create_comment_query, ^first_variables}, 200
   end
 
   test "orchestrator logs warning when workspace usage exceeds threshold" do
@@ -1642,7 +1866,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert disk_config.max_no_files > 0
   end
 
-  test "status dashboard renders last codex message in EVENT column" do
+  test "status dashboard renders last codex message in DETAIL column" do
     terminal_columns = 140
 
     row =
@@ -1661,13 +1885,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
               "method" => "turn/completed",
               "params" => %{"turn" => %{"status" => "completed"}}
             }
-          }
+          },
+          run_phase: "editing"
         },
         terminal_columns
       )
 
     plain = Regex.replace(~r/\e\[[\\d;]*m/, row, "")
 
+    assert plain =~ "running / editing"
     assert plain =~ "turn completed (completed)"
     assert (String.split(plain, "turn completed (completed)") |> length()) - 1 == 1
     refute plain =~ " notification "

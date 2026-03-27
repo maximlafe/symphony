@@ -11,7 +11,7 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       PHASE            PID      AGE / TURN   TOKENS     SESSION        DETAIL                               
+│   ID       STATE / PHASE                PID      AGE / TURN   TOKENS     SESSION        DETAIL
 │   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │  No active agents
 │

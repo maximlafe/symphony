@@ -11,10 +11,10 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       PHASE            PID      AGE / TURN   TOKENS     SESSION        DETAIL                               
+│   ID       STATE / PHASE                PID      AGE / TURN   TOKENS     SESSION        DETAIL
 │   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│ ● MT-101   targeted tests   4242     13m 5s / 11     120,450 thre...567890  alive · turn completed (completed)   
-│ ● MT-102   full validate    5252     6m 52s / 4       89,200 thre...567890  alive · mix test --cover             
+│ ● MT-101   In Progress / targeted tests 4242     13m 5s / 11     120,450 thre...567890  alive · turn completed...
+│ ● MT-102   Rework / full validate       5252     6m 52s / 4       89,200 thre...567890  alive · mix test --cover
 │
 ├─ Backoff queue
 │

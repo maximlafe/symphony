@@ -11,9 +11,9 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       PHASE            PID      AGE / TURN   TOKENS     SESSION        DETAIL                               
+│   ID       STATE / PHASE                PID      AGE / TURN   TOKENS     SESSION        DETAIL
 │   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│ ● MT-638   waiting CI       4242     20m 25s / 7      14,200 thre...567890  slow · github_wait_for_checks        
+│ ● MT-638   Rework / waiting CI          4242     20m 25s / 7      14,200 thre...567890  slow · github_wait_for...
 │
 ├─ Backoff queue
 │

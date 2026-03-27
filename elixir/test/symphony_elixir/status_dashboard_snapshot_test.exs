@@ -73,6 +73,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
          running: [
            running_entry(%{
              identifier: "MT-101",
+             state: "In Progress",
              run_phase: "targeted tests",
              codex_total_tokens: 120_450,
              runtime_seconds: 785,
@@ -82,6 +83,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
            }),
            running_entry(%{
              identifier: "MT-102",
+             state: "Rework",
              run_phase: "full validate",
              session_id: "thread-abcdef1234567890",
              codex_app_server_pid: "5252",
@@ -119,7 +121,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
            running_entry(%{
              identifier: "MT-638",
              run_phase: "waiting CI",
-             state: "retrying",
+             state: "Rework",
              activity_state: "slow",
              external_step: "github_wait_for_checks",
              codex_total_tokens: 14_200,
@@ -208,7 +210,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
          running: [
            running_entry(%{
              identifier: "MT-777",
-             state: "running",
+             state: "In Progress",
              codex_total_tokens: 3_200,
              runtime_seconds: 75,
              turn_count: 7,

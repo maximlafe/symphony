@@ -16,7 +16,7 @@ defmodule SymphonyElixir.StatusDashboard do
   @throughput_graph_columns 24
   @sparkline_blocks ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
   @running_id_width 8
-  @running_stage_width 16
+  @running_stage_width 28
   @running_pid_width 8
   @running_age_width 12
   @running_tokens_width 10
@@ -668,8 +668,7 @@ defmodule SymphonyElixir.StatusDashboard do
   # credo:disable-for-next-line
   defp format_running_summary(running_entry, running_event_width) do
     issue = format_cell(running_entry.identifier || "unknown", @running_id_width)
-    phase = Map.get(running_entry, :run_phase) || "editing"
-    phase_display = format_cell(to_string(phase), @running_stage_width)
+    state_phase_display = running_entry |> state_phase_label() |> format_cell(@running_stage_width)
 
     session =
       running_entry
@@ -704,7 +703,7 @@ defmodule SymphonyElixir.StatusDashboard do
       " ",
       colorize(issue, @ansi_cyan),
       " ",
-      colorize(phase_display, status_color),
+      colorize(state_phase_display, status_color),
       " ",
       colorize(pid, @ansi_yellow),
       " ",
@@ -723,6 +722,14 @@ defmodule SymphonyElixir.StatusDashboard do
   @spec format_running_summary_for_test(map(), integer() | nil) :: String.t()
   def format_running_summary_for_test(running_entry, terminal_columns \\ nil),
     do: format_running_summary(running_entry, running_event_width(terminal_columns))
+
+  defp state_phase_label(running_entry) when is_map(running_entry) do
+    state = Map.get(running_entry, :state) |> present_string("unknown")
+    phase = Map.get(running_entry, :run_phase) |> present_string("editing")
+    "#{state} / #{phase}"
+  end
+
+  defp state_phase_label(_running_entry), do: "unknown / editing"
 
   defp running_detail_label(running_entry) when is_map(running_entry) do
     RunPhase.current_step(running_entry) ||
@@ -856,7 +863,7 @@ defmodule SymphonyElixir.StatusDashboard do
     header =
       [
         format_cell("ID", @running_id_width),
-        format_cell("PHASE", @running_stage_width),
+        format_cell("STATE / PHASE", @running_stage_width),
         format_cell("PID", @running_pid_width),
         format_cell("AGE / TURN", @running_age_width),
         format_cell("TOKENS", @running_tokens_width),
@@ -966,6 +973,18 @@ defmodule SymphonyElixir.StatusDashboard do
       session_id
     end
   end
+
+  defp present_string(value, fallback) when is_binary(value) do
+    value
+    |> String.trim()
+    |> case do
+      "" -> fallback
+      present -> present
+    end
+  end
+
+  defp present_string(value, fallback) when is_atom(value), do: present_string(Atom.to_string(value), fallback)
+  defp present_string(_value, fallback), do: fallback
 
   defp group_thousands(value) when is_binary(value) do
     sign = if String.starts_with?(value, "-"), do: "-", else: ""
