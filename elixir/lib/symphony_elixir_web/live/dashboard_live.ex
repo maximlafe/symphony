@@ -644,8 +644,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           "Secondary",
           map_value(rate_limits, ["secondary", :secondary]),
           snapshot_generated_at
-        ),
-        credits_rate_limit_item(map_value(rate_limits, ["credits", :credits]))
+        )
       ]
       |> Enum.reject(&is_nil/1)
 
@@ -671,29 +670,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp rate_limit_bucket_item(_default_label, _bucket, _snapshot_generated_at), do: nil
-
-  defp credits_rate_limit_item(bucket) when is_map(bucket) do
-    balance = integer_like(map_value(bucket, ["balance", :balance]))
-
-    cond do
-      map_value(bucket, ["unlimited", :unlimited]) == true ->
-        limit_chip("Credits: unlimited")
-
-      is_integer(balance) ->
-        limit_chip("Credits: #{format_int(balance)}")
-
-      map_value(bucket, ["hasCredits", :hasCredits]) == true ->
-        limit_chip("Credits: available")
-
-      map_value(bucket, ["hasCredits", :hasCredits]) == false ->
-        limit_chip("Credits: unavailable")
-
-      true ->
-        nil
-    end
-  end
-
-  defp credits_rate_limit_item(_bucket), do: nil
 
   defp rate_limit_window_label(bucket) when is_map(bucket) do
     case rate_limit_bucket_window_mins(bucket) do

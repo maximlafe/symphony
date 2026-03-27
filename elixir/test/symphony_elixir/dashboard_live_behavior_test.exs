@@ -69,7 +69,7 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert html =~ "data-local-reset-at=\"2026-03-25T23:30:00Z\""
     assert html =~ "· 1 Apr UTC"
     assert html =~ "data-local-reset-at=\"2026-04-01T00:00:00Z\""
-    assert html =~ "Credits: unlimited"
+    refute html =~ "Credits:"
     assert html =~ "Make active"
 
     collapsed_html = render_dashboard(%{payload: payload}, codex_accounts_expanded: false)
@@ -115,6 +115,28 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert rerendered_html =~ "· at 22:00 UTC"
     assert rerendered_html =~ "data-local-reset-at=\"2026-03-25T22:00:00Z\""
     refute rerendered_html =~ "data-local-reset-at=\"2026-03-25T22:10:00Z\""
+  end
+
+  test "render ignores credits-only variants and keeps window chips visible" do
+    payload =
+      multi_account_snapshot()
+      |> put_in(
+        [:codex_accounts, Access.at(0), :rate_limits, "credits"],
+        %{"balance" => 42}
+      )
+      |> put_in(
+        [:codex_accounts, Access.at(1), :rate_limits, "credits"],
+        %{"hasCredits" => false}
+      )
+      |> payload_from_snapshot()
+
+    html = render_dashboard(%{payload: payload}, codex_accounts_expanded: true)
+
+    refute html =~ "Credits:"
+    assert html =~ "5h: 18/100 left"
+    assert html =~ "7d: 12% used"
+    assert html =~ "5h: 76/100 left"
+    assert html =~ "7d: 4% used"
   end
 
   test "handle_event toggles the accounts section and switches the active healthy account" do
@@ -192,6 +214,7 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert dashboard_body =~ "· 31 Mar UTC"
     assert dashboard_body =~ "· at 23:30 UTC"
     assert dashboard_body =~ "· 1 Apr UTC"
+    refute dashboard_body =~ "Credits:"
     assert dashboard_body =~ "Make active"
 
     api_response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
