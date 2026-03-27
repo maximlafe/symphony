@@ -144,6 +144,28 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert html =~ "7d: 4% used"
   end
 
+  test "render uses danger styling for limit chips on unhealthy accounts" do
+    payload =
+      multi_account_snapshot()
+      |> put_in([:codex_accounts, Access.at(1), :healthy], false)
+      |> put_in([:codex_accounts, Access.at(1), :health_reason], "rate limited")
+      |> payload_from_snapshot()
+
+    html = render_dashboard(%{payload: payload}, codex_accounts_expanded: true)
+
+    healthy_row = account_row_html(html, "very.long.primary.email.address+alerts@example.com")
+    unhealthy_row = account_row_html(html, "standby.healthy@example.com")
+
+    assert healthy_row =~ ~s(class="limit-chip mono")
+    refute healthy_row =~ "limit-chip-danger"
+
+    assert unhealthy_row =~ ~s(class="limit-chip limit-chip-danger mono")
+    assert unhealthy_row =~ "5h: 76/100 left"
+    assert unhealthy_row =~ "7d: 4% used"
+    assert unhealthy_row =~ "· at 23:30 UTC"
+    assert unhealthy_row =~ "· 1 Apr UTC"
+  end
+
   test "handle_event toggles the accounts section and switches the active healthy account" do
     snapshot = multi_account_snapshot()
     orchestrator_name = unique_orchestrator_name(:EventOrchestrator)
@@ -323,6 +345,15 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
         account_selection_error: nil
       }
     }
+  end
+
+  defp account_row_html(html, email) do
+    regex = ~r/<tr\b[^>]*>(?:(?!<\/tr>).)*#{Regex.escape(email)}(?:(?!<\/tr>).)*<\/tr>/s
+
+    case Regex.run(regex, html) do
+      [row] -> row
+      _ -> raise "account row not found for #{email}"
+    end
   end
 
   defp multi_account_snapshot do

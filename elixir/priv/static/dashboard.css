@@ -465,6 +465,12 @@ html.liveview-connected .status-badge-liveview-offline,
   white-space: nowrap;
 }
 
+.limit-chip-danger {
+  background: var(--danger-soft);
+  border-color: #f6d3cf;
+  color: var(--danger);
+}
+
 .limit-chip-reset {
   opacity: 0.88;
 }

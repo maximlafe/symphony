@@ -423,7 +423,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <div class="limit-stack">
                         <span
                           :for={item <- account_rate_limit_items(account.rate_limits, @payload.generated_at)}
-                          class="limit-chip mono"
+                          class={limit_chip_class(account.healthy)}
                         >
                           <span><%= item.text %></span>
                           <span
@@ -621,6 +621,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       _ -> "#{base} state-badge-active"
     end
   end
+
+  defp limit_chip_class(true), do: "limit-chip mono"
+  defp limit_chip_class(_healthy), do: "limit-chip limit-chip-danger mono"
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
