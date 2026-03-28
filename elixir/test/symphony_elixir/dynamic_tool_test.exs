@@ -14,8 +14,12 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   test "tool_specs advertises GitHub runtime tools" do
     specs = DynamicTool.tool_specs()
+    upload_spec = Enum.find(specs, &(&1["name"] == "linear_upload_issue_attachment"))
     snapshot_spec = Enum.find(specs, &(&1["name"] == "github_pr_snapshot"))
     wait_spec = Enum.find(specs, &(&1["name"] == "github_wait_for_checks"))
+
+    assert upload_spec["inputSchema"]["required"] == ["issue_id", "file_path"]
+    assert upload_spec["description"] =~ "attachment"
 
     assert snapshot_spec["inputSchema"]["required"] == ["repo", "pr_number"]
     assert snapshot_spec["description"] =~ "GitHub"
@@ -42,6 +46,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "supportedTools" => [
                  "linear_graphql",
                  "sync_workpad",
+                 "linear_upload_issue_attachment",
                  "github_pr_snapshot",
                  "github_wait_for_checks"
                ]
@@ -391,6 +396,13 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     path
   end
 
+  defp write_tmp_file(workspace, filename, content) do
+    File.mkdir_p!(workspace)
+    path = Path.join(workspace, filename)
+    File.write!(path, content)
+    path
+  end
+
   defp decode_tool_text(response) do
     assert [%{"text" => text}] = response["contentItems"]
     Jason.decode!(text)
@@ -492,6 +504,165 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["success"] == false
     assert [%{"text" => text}] = response["contentItems"]
     assert Jason.decode!(text)["error"]["message"] =~ "cannot read"
+  end
+
+  test "linear_upload_issue_attachment uploads a local file and creates an issue attachment" do
+    test_pid = self()
+    workspace = Path.join(System.tmp_dir!(), "linear_upload_workspace_#{System.unique_integer([:positive])}")
+    path = write_tmp_file(workspace, "artifact.csv", "id,name\n1,test\n")
+
+    response =
+      DynamicTool.execute(
+        "linear_upload_issue_attachment",
+        %{
+          "issue_id" => "LET-276",
+          "file_path" => path,
+          "title" => "LET-276 export artifact",
+          "subtitle" => "CSV export",
+          "content_type" => "text/csv",
+          "metadata" => %{"artifact_type" => "export", "source" => "validation"}
+        },
+        workspace: workspace,
+        linear_client: fn query, variables, _opts ->
+          send(test_pid, {:graphql, query, variables})
+
+          cond do
+            query =~ "fileUpload(" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "fileUpload" => %{
+                     "success" => true,
+                     "uploadFile" => %{
+                       "uploadUrl" => "https://upload.example.test/artifact.csv",
+                       "assetUrl" => "https://assets.example.test/artifact.csv",
+                       "headers" => [%{"key" => "x-amz-acl", "value" => "private"}]
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "attachmentCreate" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "attachmentCreate" => %{
+                     "success" => true,
+                     "attachment" => %{
+                       "id" => "att_123",
+                       "title" => "LET-276 export artifact",
+                       "subtitle" => "CSV export",
+                       "url" => "https://assets.example.test/artifact.csv"
+                     }
+                   }
+                 }
+               }}
+
+            true ->
+              flunk("unexpected GraphQL query: #{query}")
+          end
+        end,
+        upload_request_fun: fn url, headers, body, opts ->
+          send(test_pid, {:upload, url, headers, body, opts})
+          {:ok, %{status: 200}}
+        end
+      )
+
+    assert response["success"] == true
+
+    assert_received {:graphql, file_upload_query,
+                     %{
+                       "filename" => "artifact.csv",
+                       "contentType" => "text/csv",
+                       "size" => 15
+                     }}
+
+    assert file_upload_query =~ "fileUpload"
+    refute file_upload_query =~ "makePublic"
+
+    assert_received {:upload, "https://upload.example.test/artifact.csv", headers, "id,name\n1,test\n", _opts}
+
+    assert {"content-type", "text/csv"} in headers
+    assert {"cache-control", "public, max-age=31536000"} in headers
+    assert {"x-amz-acl", "private"} in headers
+
+    assert_received {:graphql, attachment_query,
+                     %{
+                       "input" => %{
+                         "issueId" => "LET-276",
+                         "title" => "LET-276 export artifact",
+                         "subtitle" => "CSV export",
+                         "url" => "https://assets.example.test/artifact.csv",
+                         "metadata" => %{
+                           "artifact_type" => "export",
+                           "source" => "validation"
+                         }
+                       }
+                     }}
+
+    assert attachment_query =~ "attachmentCreate"
+
+    assert decode_tool_text(response) == %{
+             "artifact" => %{
+               "issue_id" => "LET-276",
+               "file_name" => "artifact.csv",
+               "file_path" => path,
+               "content_type" => "text/csv",
+               "size_bytes" => 15
+             },
+             "attachment" => %{
+               "id" => "att_123",
+               "title" => "LET-276 export artifact",
+               "subtitle" => "CSV export",
+               "url" => "https://assets.example.test/artifact.csv"
+             }
+           }
+  end
+
+  test "linear_upload_issue_attachment validates required arguments and workspace paths before calling Linear" do
+    workspace = Path.join(System.tmp_dir!(), "linear_upload_guard_#{System.unique_integer([:positive])}")
+    path = write_tmp_file(workspace, "artifact.txt", "proof")
+
+    no_issue =
+      DynamicTool.execute(
+        "linear_upload_issue_attachment",
+        %{"file_path" => path},
+        workspace: workspace,
+        linear_client: fn _query, _variables, _opts ->
+          flunk("linear client should not be called when issue_id is missing")
+        end
+      )
+
+    assert no_issue["success"] == false
+    assert decode_tool_text(no_issue)["error"]["message"] =~ "issue_id"
+
+    no_path =
+      DynamicTool.execute(
+        "linear_upload_issue_attachment",
+        %{"issue_id" => "LET-276"},
+        workspace: workspace,
+        linear_client: fn _query, _variables, _opts ->
+          flunk("linear client should not be called when file_path is missing")
+        end
+      )
+
+    assert no_path["success"] == false
+    assert decode_tool_text(no_path)["error"]["message"] =~ "file_path"
+
+    outside_workspace = write_tmp_workpad("outside")
+
+    outside =
+      DynamicTool.execute(
+        "linear_upload_issue_attachment",
+        %{"issue_id" => "LET-276", "file_path" => outside_workspace},
+        workspace: workspace,
+        linear_client: fn _query, _variables, _opts ->
+          flunk("linear client should not be called for files outside the workspace")
+        end
+      )
+
+    assert outside["success"] == false
+    assert decode_tool_text(outside)["error"]["message"] =~ "must stay within workspace"
   end
 
   test "github_pr_snapshot returns a compact summary without feedback details by default" do

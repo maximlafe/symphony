@@ -153,7 +153,7 @@ Instructions:
    - bootstrap the live workpad once if missing;
    - pass the absolute path to local `workpad.md` when calling `sync_workpad`;
    - keep subsequent edits local until a meaningful milestone or final handoff.
-3. Maintain the workpad with a compact environment stamp, plan, acceptance criteria, validation checklist, and notes.
+3. Maintain the workpad with a compact environment stamp, plan, acceptance criteria, validation checklist, artifact manifest, and notes.
 4. Before code edits, run the `pull` skill to sync with latest `origin/main`, then record the result in `Notes` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
 5. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before handoff.
    - track repeated fix loops for the same failing signal in the workpad and follow the auto-fix limit below;
@@ -162,7 +162,9 @@ Instructions:
    - execute all ticket-provided validation/test-plan requirements when present;
    - prefer targeted proof for the changed behavior;
    - revert every temporary proof edit before commit or push;
-   - if app-touching, capture runtime evidence and upload it to Linear.
+   - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
+   - if the change affects a UI or operator-facing flow, include a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
+   - if the task produces export/report files or machine-readable validation artifacts that support the handoff, attach those files to the issue instead of leaving them only in the workpad or local runtime.
 7. Before every `git push`, rerun the required validation and confirm it passes.
 8. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
 9. Merge latest `origin/main` into the branch before final handoff, resolve conflicts, and rerun required validation.
@@ -182,6 +184,7 @@ Instructions:
 7. If checks are green and no actionable feedback remains:
    - fill the `Checkpoint` section in `workpad.md` with `checkpoint_type: human-verify`, a justified `risk_level`, and a one-line `summary`;
    - finalize local `workpad.md`;
+   - ensure the workpad includes a compact artifact manifest with uploaded attachment titles, what each proves, and any expected-but-missing artifacts;
    - sync the live workpad once;
    - ensure the issue still links to the PR;
    - move the issue to `Human Review`.
@@ -258,7 +261,9 @@ Use this only when completion is blocked by missing required tools or missing au
   - the PR is pushed, linked on the issue, and labeled `symphony`;
   - actionable PR feedback is resolved;
   - PR checks are green;
-  - runtime evidence is uploaded when the change is app-touching.
+  - review-relevant artifacts created during the task are uploaded as issue attachments;
+  - runtime evidence is uploaded when the change is app-touching;
+  - the workpad includes a compact artifact manifest that maps each attachment to the claim it supports and calls out expected artifacts that were not produced.
 - For `checkpoint_type: decision` or `human-action` handoffs:
   - the workpad explains the blocking choice or required external action;
   - the summary makes clear why further autonomous progress is not justified yet;
@@ -304,6 +309,11 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Validation
 
 - [ ] targeted tests: `<command>`
+
+### Artifacts
+
+- [ ] uploaded attachment: `<title>` -> <what it proves>
+- [ ] missing expected artifact: `<name>` -> <why it was not produced>
 
 ### Checkpoint
 
