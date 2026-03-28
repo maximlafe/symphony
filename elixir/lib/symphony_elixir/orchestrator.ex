@@ -189,7 +189,6 @@ defmodule SymphonyElixir.Orchestrator do
           maybe_publish_run_phase_transition(issue_id, running_entry, updated_running_entry)
 
         tracked_account_id = Map.get(updated_running_entry, :codex_account_id)
-        account_health_before = codex_account_health(state, tracked_account_id)
 
         state =
           state
@@ -201,10 +200,8 @@ defmodule SymphonyElixir.Orchestrator do
         case maybe_failover_running_issue(
                state,
                issue_id,
-               running_entry,
                updated_running_entry,
-               tracked_account_id,
-               account_health_before
+               tracked_account_id
              ) do
           {:failover, state} ->
             {:noreply, state}
@@ -1071,7 +1068,7 @@ defmodule SymphonyElixir.Orchestrator do
           trace_id: trace_id,
           error: "failed to spawn agent: #{inspect(reason)}",
           error_class: ErrorClassifier.to_string(:transient),
-          delay_type: retry_delay_type
+          delay_type: nil
         })
     end
   end
@@ -1079,19 +1076,16 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_failover_running_issue(
          %State{} = state,
          issue_id,
-         running_entry,
          updated_running_entry,
-         tracked_account_id,
-         account_health_before
+         tracked_account_id
        )
        when is_binary(issue_id) do
     account_health_after = codex_account_health(state, tracked_account_id)
     replacement_account_id = active_codex_account_id_or_nil(state)
 
     if failover_required?(
-         running_entry,
          tracked_account_id,
-         account_health_before,
+         updated_running_entry,
          account_health_after,
          replacement_account_id
        ) do
@@ -1112,34 +1106,20 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_failover_running_issue(
          %State{} = state,
          _issue_id,
-         _running_entry,
          _updated_running_entry,
-         _tracked_account_id,
-         _account_health_before
+         _tracked_account_id
        ) do
     {:keep_running, state}
   end
 
-  defp failover_required?(
-         running_entry,
-         tracked_account_id,
-         true,
-         false,
-         replacement_account_id
-       )
+  defp failover_required?(tracked_account_id, running_entry, false, replacement_account_id)
        when is_map(running_entry) and is_binary(tracked_account_id) and is_binary(replacement_account_id) do
     Map.get(running_entry, :codex_account_id) == tracked_account_id and
       replacement_account_id != tracked_account_id
   end
 
-  defp failover_required?(
-         _running_entry,
-         _tracked_account_id,
-         _account_health_before,
-         _account_health_after,
-         _replacement_account_id
-       ),
-       do: false
+  defp failover_required?(_tracked_account_id, _running_entry, _account_health_after, _replacement_account_id),
+    do: false
 
   defp preempt_running_issue_for_failover(
          %State{} = state,
