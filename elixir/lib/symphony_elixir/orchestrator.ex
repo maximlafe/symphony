@@ -188,13 +188,30 @@ defmodule SymphonyElixir.Orchestrator do
         updated_running_entry =
           maybe_publish_run_phase_transition(issue_id, running_entry, updated_running_entry)
 
+        tracked_account_id = Map.get(updated_running_entry, :codex_account_id)
+        account_health_before = codex_account_health(state, tracked_account_id)
+
         state =
           state
           |> apply_codex_token_delta(token_delta)
-          |> apply_codex_rate_limits(update, Map.get(updated_running_entry, :codex_account_id))
+          |> apply_codex_rate_limits(update, tracked_account_id)
 
         notify_dashboard()
-        {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+
+        case maybe_failover_running_issue(
+               state,
+               issue_id,
+               running_entry,
+               updated_running_entry,
+               tracked_account_id,
+               account_health_before
+             ) do
+          {:failover, state} ->
+            {:noreply, state}
+
+          {:keep_running, state} ->
+            {:noreply, %{state | running: Map.put(state.running, issue_id, updated_running_entry)}}
+        end
     end
   end
 
@@ -1053,9 +1070,118 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: issue.identifier,
           trace_id: trace_id,
           error: "failed to spawn agent: #{inspect(reason)}",
-          error_class: ErrorClassifier.to_string(:transient)
+          error_class: ErrorClassifier.to_string(:transient),
+          delay_type: retry_delay_type
         })
     end
+  end
+
+  defp maybe_failover_running_issue(
+         %State{} = state,
+         issue_id,
+         running_entry,
+         updated_running_entry,
+         tracked_account_id,
+         account_health_before
+       )
+       when is_binary(issue_id) do
+    account_health_after = codex_account_health(state, tracked_account_id)
+    replacement_account_id = active_codex_account_id_or_nil(state)
+
+    if failover_required?(
+         running_entry,
+         tracked_account_id,
+         account_health_before,
+         account_health_after,
+         replacement_account_id
+       ) do
+      {:failover,
+       preempt_running_issue_for_failover(
+         state,
+         issue_id,
+         updated_running_entry,
+         tracked_account_id,
+         replacement_account_id,
+         account_health_after
+       )}
+    else
+      {:keep_running, state}
+    end
+  end
+
+  defp maybe_failover_running_issue(
+         %State{} = state,
+         _issue_id,
+         _running_entry,
+         _updated_running_entry,
+         _tracked_account_id,
+         _account_health_before
+       ) do
+    {:keep_running, state}
+  end
+
+  defp failover_required?(
+         running_entry,
+         tracked_account_id,
+         true,
+         false,
+         replacement_account_id
+       )
+       when is_map(running_entry) and is_binary(tracked_account_id) and is_binary(replacement_account_id) do
+    Map.get(running_entry, :codex_account_id) == tracked_account_id and
+      replacement_account_id != tracked_account_id
+  end
+
+  defp failover_required?(
+         _running_entry,
+         _tracked_account_id,
+         _account_health_before,
+         _account_health_after,
+         _replacement_account_id
+       ),
+       do: false
+
+  defp preempt_running_issue_for_failover(
+         %State{} = state,
+         issue_id,
+         running_entry,
+         from_account_id,
+         to_account_id,
+         account_health_after
+       ) do
+    identifier = Map.get(running_entry, :identifier, issue_id)
+    trace_id = Map.get(running_entry, :trace_id)
+    session_id = running_entry_session_id(running_entry)
+    attempt = next_failure_attempt_from_running(running_entry)
+    health_reason = codex_account_health_reason(state, from_account_id) || "account became unhealthy"
+
+    state =
+      state
+      |> record_session_completion_totals(running_entry)
+      |> Map.put(:running, Map.delete(state.running, issue_id))
+      |> Map.put(:retry_attempts, Map.delete(state.retry_attempts, issue_id))
+
+    with_log_metadata(issue_log_metadata(issue_id, identifier, session_id, trace_id), fn ->
+      Logger.warning(
+        "Failing over issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} from codex_account_id=#{from_account_id} to codex_account_id=#{to_account_id} reason=#{health_reason} previous_health=#{inspect(account_health_after)} attempt=#{attempt}"
+      )
+    end)
+
+    running_entry
+    |> Map.get(:ref)
+    |> cancel_running_monitor()
+
+    running_entry
+    |> Map.get(:pid)
+    |> terminate_task()
+
+    schedule_issue_retry(state, issue_id, attempt, %{
+      identifier: identifier,
+      trace_id: trace_id,
+      error: "account failover: #{health_reason}",
+      error_class: ErrorClassifier.to_string(:transient),
+      delay_type: :failover
+    })
   end
 
   defp run_workspace_housekeeping(%State{} = state, source) do
@@ -1510,6 +1636,10 @@ defmodule SymphonyElixir.Orchestrator do
   defp manual_intervention_state do
     Config.settings!().tracker.manual_intervention_state
   end
+
+  defp retry_delay(attempt, %{delay_type: :failover})
+       when is_integer(attempt) and attempt > 0,
+       do: 0
 
   defp retry_delay(attempt, %{delay_type: :continuation})
        when is_integer(attempt) and attempt > 0,
@@ -2433,6 +2563,37 @@ defmodule SymphonyElixir.Orchestrator do
   defp probe_confirms_broken_recovery?(account) when is_map(account) do
     Map.get(account, :requires_openai_auth) == false and is_map(Map.get(account, :rate_limits))
   end
+
+  defp codex_account_health(%State{} = state, account_id) when is_binary(account_id) do
+    case Map.get(state.codex_accounts, account_id) do
+      %{healthy: healthy} when is_boolean(healthy) -> healthy
+      _ -> nil
+    end
+  end
+
+  defp codex_account_health(_state, _account_id), do: nil
+
+  defp codex_account_health_reason(%State{} = state, account_id) when is_binary(account_id) do
+    case Map.get(state.codex_accounts, account_id) do
+      %{} = account -> Map.get(account, :health_reason)
+      _ -> nil
+    end
+  end
+
+  defp codex_account_health_reason(_state, _account_id), do: nil
+
+  defp active_codex_account_id_or_nil(%State{active_codex_account_id: account_id})
+       when is_binary(account_id),
+       do: account_id
+
+  defp active_codex_account_id_or_nil(_state), do: nil
+
+  defp cancel_running_monitor(ref) when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    :ok
+  end
+
+  defp cancel_running_monitor(_ref), do: :ok
 
   defp active_codex_account_available?(%State{active_codex_account_id: account_id})
        when is_binary(account_id), do: true
