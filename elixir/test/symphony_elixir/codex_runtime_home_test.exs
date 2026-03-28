@@ -1,7 +1,41 @@
+defmodule SymphonyElixir.CodexRuntimeHomeTest.FakeFileSystem do
+  @moduledoc false
+
+  @operations [:mkdir_p, :read, :dir?, :write, :ln_s, :rm_rf]
+
+  def clear_overrides do
+    Enum.each(@operations, &Process.delete({__MODULE__, &1}))
+    :ok
+  end
+
+  def set_override(operation, fun) when operation in @operations and is_function(fun) do
+    Process.put({__MODULE__, operation}, fun)
+    :ok
+  end
+
+  def mkdir_p(path), do: call(:mkdir_p, [path])
+  def read(path), do: call(:read, [path])
+  def dir?(path), do: call(:dir?, [path])
+  def write(path, contents), do: call(:write, [path, contents])
+  def ln_s(source, target), do: call(:ln_s, [source, target])
+  def rm_rf(path), do: call(:rm_rf, [path])
+
+  defp call(operation, args) do
+    case Process.get({__MODULE__, operation}) do
+      nil ->
+        apply(File, operation, args)
+
+      fun when is_function(fun, length(args)) ->
+        apply(fun, args)
+    end
+  end
+end
+
 defmodule SymphonyElixir.CodexRuntimeHomeTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Codex.RuntimeHome
+  alias SymphonyElixir.CodexRuntimeHomeTest.FakeFileSystem
 
   test "prepare builds a filtered runtime home without plugin config" do
     test_root =
@@ -162,6 +196,19 @@ defmodule SymphonyElixir.CodexRuntimeHomeTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+      previous_file_system = Application.get_env(:symphony_elixir, :runtime_home_file_system)
+
+      Application.put_env(:symphony_elixir, :runtime_home_file_system, FakeFileSystem)
+
+      on_exit(fn ->
+        FakeFileSystem.clear_overrides()
+
+        if previous_file_system do
+          Application.put_env(:symphony_elixir, :runtime_home_file_system, previous_file_system)
+        else
+          Application.delete_env(:symphony_elixir, :runtime_home_file_system)
+        end
+      end)
 
       read_error_home = Path.join(test_root, "read-error-home")
       File.mkdir_p!(read_error_home)
@@ -184,18 +231,22 @@ defmodule SymphonyElixir.CodexRuntimeHomeTest do
 
       assert {:ok, symlink_runtime_home} = RuntimeHome.prepare(symlink_error_home)
       {:ok, _paths} = File.rm_rf(Path.join(symlink_runtime_home, "skills"))
-      File.chmod!(symlink_runtime_home, 0o500)
 
-      try do
-        assert {:error, {:runtime_home_symlink_failed, source, target, symlink_reason}} =
-                 RuntimeHome.prepare(symlink_error_home)
+      expected_symlink_source = Path.join(symlink_error_home, "skills")
+      expected_symlink_target = Path.join(symlink_runtime_home, "skills")
 
-        assert source == Path.join(symlink_error_home, "skills")
-        assert target == Path.join(symlink_runtime_home, "skills")
-        assert symlink_reason in [:eacces, :eperm]
-      after
-        File.chmod!(symlink_runtime_home, 0o700)
-      end
+      FakeFileSystem.set_override(:ln_s, fn source, target ->
+        assert source == expected_symlink_source
+        assert target == expected_symlink_target
+        {:error, :eperm}
+      end)
+
+      assert {:error, {:runtime_home_symlink_failed, source, target, :eperm}} =
+               RuntimeHome.prepare(symlink_error_home)
+
+      assert source == expected_symlink_source
+      assert target == expected_symlink_target
+      FakeFileSystem.clear_overrides()
 
       remove_error_home = Path.join(test_root, "remove-error-home")
       remove_source_auth = Path.join(remove_error_home, "auth.json")
@@ -205,17 +256,21 @@ defmodule SymphonyElixir.CodexRuntimeHomeTest do
 
       assert {:ok, remove_runtime_home} = RuntimeHome.prepare(remove_error_home)
       File.rm!(remove_source_auth)
-      File.chmod!(remove_runtime_home, 0o500)
 
-      try do
-        assert {:error, {:runtime_home_remove_failed, remove_path, remove_reason}} =
-                 RuntimeHome.prepare(remove_error_home)
+      expected_remove_path = Path.join(remove_runtime_home, "auth.json")
 
-        assert remove_path == Path.join(remove_runtime_home, "auth.json")
-        assert remove_reason in [:eacces, :eperm]
-      after
-        File.chmod!(remove_runtime_home, 0o700)
-      end
+      FakeFileSystem.set_override(:rm_rf, fn path ->
+        if path == expected_remove_path do
+          {:error, :eperm, path}
+        else
+          File.rm_rf(path)
+        end
+      end)
+
+      assert {:error, {:runtime_home_remove_failed, remove_path, :eperm}} =
+               RuntimeHome.prepare(remove_error_home)
+
+      assert remove_path == expected_remove_path
     after
       File.rm_rf(test_root)
     end

@@ -17,7 +17,7 @@ defmodule SymphonyElixir.Codex.RuntimeHome do
     else
       runtime_home = runtime_home_path(expanded_source_home)
 
-      with :ok <- File.mkdir_p(runtime_home),
+      with :ok <- file_system().mkdir_p(runtime_home),
            :ok <- sync_auth(expanded_source_home, runtime_home),
            :ok <- sync_config(expanded_source_home, runtime_home),
            :ok <- sync_skills(expanded_source_home, runtime_home) do
@@ -39,7 +39,7 @@ defmodule SymphonyElixir.Codex.RuntimeHome do
     source = Path.join(source_home, @config_file)
     target = Path.join(runtime_home, @config_file)
 
-    case File.read(source) do
+    case file_system().read(source) do
       {:ok, contents} ->
         filtered = strip_plugin_tables(contents)
 
@@ -63,7 +63,7 @@ defmodule SymphonyElixir.Codex.RuntimeHome do
     source = Path.join(source_home, @skills_dir)
     target = Path.join(runtime_home, @skills_dir)
 
-    case File.dir?(source) do
+    case file_system().dir?(source) do
       true ->
         sync_symlink(source, target)
 
@@ -73,7 +73,7 @@ defmodule SymphonyElixir.Codex.RuntimeHome do
   end
 
   defp sync_optional_file(source, target) do
-    case File.read(source) do
+    case file_system().read(source) do
       {:ok, contents} ->
         write_if_changed(target, contents)
 
@@ -86,15 +86,15 @@ defmodule SymphonyElixir.Codex.RuntimeHome do
   end
 
   defp write_if_changed(target, contents) when is_binary(target) and is_binary(contents) do
-    case File.read(target) do
+    case file_system().read(target) do
       {:ok, ^contents} ->
         :ok
 
       {:ok, _different_contents} ->
-        File.write(target, contents)
+        file_system().write(target, contents)
 
       {:error, :enoent} ->
-        File.write(target, contents)
+        file_system().write(target, contents)
 
       {:error, reason} ->
         {:error, {:runtime_home_file_read_failed, target, reason}}
@@ -103,7 +103,7 @@ defmodule SymphonyElixir.Codex.RuntimeHome do
 
   defp sync_symlink(source, target) do
     with :ok <- remove_managed_path(target) do
-      case File.ln_s(source, target) do
+      case file_system().ln_s(source, target) do
         :ok -> :ok
         {:error, reason} -> {:error, {:runtime_home_symlink_failed, source, target, reason}}
       end
@@ -111,10 +111,14 @@ defmodule SymphonyElixir.Codex.RuntimeHome do
   end
 
   defp remove_managed_path(path) do
-    case File.rm_rf(path) do
+    case file_system().rm_rf(path) do
       {:ok, _paths} -> :ok
       {:error, reason, _path} -> {:error, {:runtime_home_remove_failed, path, reason}}
     end
+  end
+
+  defp file_system do
+    Application.get_env(:symphony_elixir, :runtime_home_file_system, File)
   end
 
   defp runtime_home_path(source_home) do
