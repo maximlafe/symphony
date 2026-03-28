@@ -534,15 +534,16 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp ensure_upload_path_within_workspace(_path, nil), do: :ok
 
   defp ensure_upload_path_within_workspace(path, workspace) when is_binary(path) and is_binary(workspace) do
-    with {:ok, canonical_workspace} <- PathSafety.canonicalize(workspace) do
-      workspace_prefix = canonical_workspace <> "/"
+    case PathSafety.canonicalize(workspace) do
+      {:ok, canonical_workspace} ->
+        workspace_prefix = canonical_workspace <> "/"
 
-      if path == canonical_workspace or String.starts_with?(path, workspace_prefix) do
-        :ok
-      else
-        {:error, {:linear_upload_issue_attachment, "file_path must stay within workspace `#{canonical_workspace}`"}}
-      end
-    else
+        if path == canonical_workspace or String.starts_with?(path, workspace_prefix) do
+          :ok
+        else
+          {:error, {:linear_upload_issue_attachment, "file_path must stay within workspace `#{canonical_workspace}`"}}
+        end
+
       {:error, {:path_canonicalize_failed, _path, reason}} ->
         {:error, {:linear_upload_issue_attachment, "cannot resolve workspace `#{workspace}`: #{inspect(reason)}"}}
     end
@@ -559,7 +560,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp normalize_upload_attachment_content_type(arguments, resolved_path) do
     case normalize_optional_string_arg(arguments, "content_type", :linear_upload_issue_attachment) do
       {:ok, nil} ->
-        {:ok, MIME.from_path(resolved_path) || "application/octet-stream"}
+        {:ok, MIME.from_path(resolved_path)}
 
       {:ok, content_type} ->
         {:ok, content_type}
