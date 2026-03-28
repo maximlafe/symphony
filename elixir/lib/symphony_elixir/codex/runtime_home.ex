@@ -140,10 +140,7 @@ defmodule SymphonyElixir.Codex.RuntimeHome do
   end
 
   defp sanitize_segment(segment) when is_binary(segment) do
-    case String.replace(segment, ~r/[^a-zA-Z0-9._-]/, "_") do
-      "" -> "codex-home"
-      sanitized -> sanitized
-    end
+    String.replace(segment, ~r/[^a-zA-Z0-9._-]/, "_")
   end
 
   defp short_hash(value) when is_binary(value) do
@@ -157,28 +154,28 @@ defmodule SymphonyElixir.Codex.RuntimeHome do
     {lines, _skip?} =
       contents
       |> String.split("\n", trim: false)
-      |> Enum.reduce({[], false}, fn line, {acc, skip?} ->
-        case table_header(line) do
-          nil ->
-            if skip? do
-              {acc, skip?}
-            else
-              {[line | acc], skip?}
-            end
-
-          table_name ->
-            next_skip? = plugin_table?(table_name)
-
-            if next_skip? do
-              {acc, true}
-            else
-              {[line | acc], false}
-            end
-        end
-      end)
+      |> Enum.reduce({[], false}, &reduce_config_line/2)
 
     Enum.reverse(lines)
     |> Enum.join("\n")
+  end
+
+  defp reduce_config_line(line, {acc, skip?}) do
+    case table_header(line) do
+      nil -> maybe_keep_line(line, acc, skip?)
+      table_name -> handle_table_header(line, table_name, acc)
+    end
+  end
+
+  defp maybe_keep_line(_line, acc, true), do: {acc, true}
+  defp maybe_keep_line(line, acc, false), do: {[line | acc], false}
+
+  defp handle_table_header(line, table_name, acc) do
+    if plugin_table?(table_name) do
+      {acc, true}
+    else
+      {[line | acc], false}
+    end
   end
 
   defp table_header(line) when is_binary(line) do
