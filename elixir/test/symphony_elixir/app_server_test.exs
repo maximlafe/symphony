@@ -1205,7 +1205,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server worker launch injects CODEX_HOME into the app-server environment" do
+  test "app server worker launch injects a filtered runtime CODEX_HOME into the app-server environment" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1218,9 +1218,23 @@ defmodule SymphonyElixir.AppServerTest do
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-home.trace")
       codex_home = Path.join([test_root, "accounts", "primary"])
+      skills_root = Path.join([codex_home, "skills", "custom"])
+      source_config = Path.join(codex_home, "config.toml")
 
       File.mkdir_p!(workspace)
-      File.mkdir_p!(codex_home)
+      File.mkdir_p!(skills_root)
+      File.write!(Path.join(codex_home, "auth.json"), "{\"token\":\"secret\"}\n")
+      File.write!(Path.join(skills_root, "SKILL.md"), "# custom\n")
+
+      File.write!(source_config, """
+      model = "gpt-5.4"
+
+      [mcp_servers.linear]
+      url = "https://mcp.linear.app/mcp"
+
+      [plugins."github@openai-curated"]
+      enabled = true
+      """)
 
       File.write!(codex_binary, """
       #!/bin/sh
@@ -1273,7 +1287,18 @@ defmodule SymphonyElixir.AppServerTest do
                  account_id: "primary"
                )
 
-      assert File.read!(trace_file) == codex_home <> "\n"
+      runtime_home = String.trim(File.read!(trace_file))
+
+      refute runtime_home == codex_home
+      assert String.starts_with?(runtime_home, Path.join(workspace_root, ".codex-runtime/homes/"))
+      assert File.read!(Path.join(runtime_home, "auth.json")) == "{\"token\":\"secret\"}\n"
+      assert {:ok, source_skills_root} = File.read_link(Path.join(runtime_home, "skills"))
+      assert source_skills_root == Path.join(codex_home, "skills")
+
+      filtered_config = File.read!(Path.join(runtime_home, "config.toml"))
+
+      refute filtered_config =~ "[plugins."
+      assert filtered_config =~ "[mcp_servers.linear]"
     after
       File.rm_rf(test_root)
     end

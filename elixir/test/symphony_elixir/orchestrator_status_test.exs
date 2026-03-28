@@ -648,6 +648,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       )
 
     hook_log = Path.join(test_root, "before-remove.log")
+    default_orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
 
     issue = %Issue{
       id: "issue-slow-cleanup",
@@ -664,6 +665,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     workspace = Path.join(test_root, issue.identifier)
 
     try do
+      if is_pid(default_orchestrator_pid) do
+        assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+      end
+
       File.mkdir_p!(workspace)
       File.write!(Path.join(workspace, "marker.txt"), issue.identifier)
 
@@ -689,6 +694,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       case Process.whereis(orchestrator_name) do
         pid when is_pid(pid) -> Process.exit(pid, :normal)
         _ -> :ok
+      end
+
+      if is_pid(default_orchestrator_pid) and is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
+        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+        end
       end
 
       if is_nil(previous_memory_issues) do

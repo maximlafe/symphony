@@ -3,7 +3,7 @@ defmodule SymphonyElixir.CodexAccountProbeTest do
 
   alias SymphonyElixir.Codex.AccountProbe
 
-  test "account probe reads account metadata and rate limits from the configured CODEX_HOME" do
+  test "account probe reads account metadata and rate limits from a filtered runtime home derived from CODEX_HOME" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -13,35 +13,69 @@ defmodule SymphonyElixir.CodexAccountProbeTest do
     try do
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "probe.trace")
+      workspace_root = Path.join(test_root, "workspaces")
       primary_home = Path.join(test_root, "primary-home")
       logged_out_home = Path.join(test_root, "logged-out-home")
 
       File.mkdir_p!(primary_home)
       File.mkdir_p!(logged_out_home)
+      File.write!(Path.join(primary_home, "auth.json"), ~s({"marker":"primary"}\n))
+      File.write!(Path.join(logged_out_home, "auth.json"), ~s({"marker":"logged-out"}\n))
+
+      File.write!(Path.join(primary_home, "config.toml"), """
+      [mcp_servers.linear]
+      url = "https://mcp.linear.app/mcp"
+
+      [plugins."github@openai-curated"]
+      enabled = true
+      """)
+
+      File.write!(Path.join(logged_out_home, "config.toml"), """
+      [mcp_servers.linear]
+      url = "https://mcp.linear.app/mcp"
+
+      [plugins."linear@openai-curated"]
+      enabled = true
+      """)
 
       File.write!(codex_binary, """
       #!/bin/sh
       trace_file="#{trace_file}"
-      account_name=$(basename "${CODEX_HOME:-unknown}")
+      auth_json=$(cat "${CODEX_HOME}/auth.json" 2>/dev/null || printf '{}')
+      account_name=unknown
+      plugins_present=no
       count=0
+
+      case "$auth_json" in
+        *'"marker":"primary"'*)
+          account_name=primary
+          ;;
+        *'"marker":"logged-out"'*)
+          account_name=logged-out
+          ;;
+      esac
+
+      if grep -q '^\\[plugins\\.' "${CODEX_HOME}/config.toml" 2>/dev/null; then
+        plugins_present=yes
+      fi
 
       while IFS= read -r line; do
         count=$((count + 1))
-        printf '%s:%s\\n' "$account_name" "$line" >> "$trace_file"
+        printf '%s|%s|plugins=%s:%s\\n' "$CODEX_HOME" "$account_name" "$plugins_present" "$line" >> "$trace_file"
 
         case "$count" in
           1)
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
           2)
-            if [ "$account_name" = "primary-home" ]; then
+            if [ "$account_name" = "primary" ]; then
               printf '%s\\n' '{"id":1001,"result":{"account":{"type":"chatgpt","email":"primary@example.com","planType":"pro"},"requiresOpenaiAuth":false}}'
             else
               printf '%s\\n' '{"id":1001,"result":{"requires_openai_auth":true}}'
             fi
             ;;
           3)
-            if [ "$account_name" = "primary-home" ]; then
+            if [ "$account_name" = "primary" ]; then
               printf '%s\\n' '{"id":1002,"result":{"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"windowDurationMins":300,"usedPercent":20},"secondary":{"windowDurationMins":10080,"usedPercent":35},"credits":{"hasCredits":false,"unlimited":false,"balance":null}}}}}'
             else
               printf '%s\\n' '{"id":1002,"result":{"rate_limits":{"limit_id":"codex","primary":{"window_minutes":300,"used_percent":20},"secondary":{"window_minutes":10080,"used_percent":35},"credits":{"has_credits":false,"unlimited":false,"balance":null}}}}'
@@ -57,7 +91,8 @@ defmodule SymphonyElixir.CodexAccountProbeTest do
       File.chmod!(codex_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
-        codex_command: "#{codex_binary} app-server"
+        codex_command: "#{codex_binary} app-server",
+        workspace_root: workspace_root
       )
 
       [healthy, logged_out] =
@@ -90,8 +125,11 @@ defmodule SymphonyElixir.CodexAccountProbeTest do
       assert get_in(logged_out.rate_limits, ["primary", "window_minutes"]) == 300
 
       trace = File.read!(trace_file)
-      assert trace =~ "primary-home:"
-      assert trace =~ "logged-out-home:"
+      assert trace =~ "|primary|plugins=no:"
+      assert trace =~ "|logged-out|plugins=no:"
+      assert trace =~ Path.join(workspace_root, ".codex-runtime/homes/")
+      refute trace =~ primary_home <> "|primary|"
+      refute trace =~ logged_out_home <> "|logged-out|"
     after
       File.rm_rf(test_root)
     end
