@@ -111,6 +111,44 @@ defmodule SymphonyElixir.CodexRuntimeHomeTest do
     end
   end
 
+  test "prepare leaves managed files unchanged when source contents do not change" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-runtime-home-unchanged-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      source_home = Path.join(test_root, "source-home")
+      source_skills = Path.join(source_home, "skills")
+      source_auth = Path.join(source_home, "auth.json")
+      source_config = Path.join(source_home, "config.toml")
+
+      File.mkdir_p!(source_skills)
+      File.write!(source_auth, "{\"token\":\"same\"}\n")
+
+      File.write!(source_config, """
+      [mcp_servers.linear]
+      url = "https://mcp.linear.app/mcp"
+      """)
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, runtime_home} = RuntimeHome.prepare(source_home)
+      assert {:ok, ^runtime_home} = RuntimeHome.prepare(source_home)
+
+      assert File.read!(Path.join(runtime_home, "auth.json")) == "{\"token\":\"same\"}\n"
+
+      assert File.read!(Path.join(runtime_home, "config.toml")) == """
+             [mcp_servers.linear]
+             url = "https://mcp.linear.app/mcp"
+             """
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "prepare refreshes managed runtime files when source contents change" do
     test_root =
       Path.join(
