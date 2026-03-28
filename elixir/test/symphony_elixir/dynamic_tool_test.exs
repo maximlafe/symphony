@@ -510,6 +510,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     test_pid = self()
     workspace = Path.join(System.tmp_dir!(), "linear_upload_workspace_#{System.unique_integer([:positive])}")
     path = write_tmp_file(workspace, "artifact.csv", "id,name\n1,test\n")
+    {:ok, canonical_path} = SymphonyElixir.PathSafety.canonicalize(path)
 
     response =
       DynamicTool.execute(
@@ -606,7 +607,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "artifact" => %{
                "issue_id" => "LET-276",
                "file_name" => "artifact.csv",
-               "file_path" => path,
+               "file_path" => canonical_path,
                "content_type" => "text/csv",
                "size_bytes" => 15
              },
