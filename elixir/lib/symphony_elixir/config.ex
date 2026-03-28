@@ -6,6 +6,9 @@ defmodule SymphonyElixir.Config do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Workflow
 
+  @planning_issue_states MapSet.new(["planning", "plan review"])
+  @implementation_issue_states MapSet.new(["in progress", "rework"])
+
   @default_prompt_template """
   You are working on a Linear issue.
 
@@ -68,6 +71,23 @@ defmodule SymphonyElixir.Config do
   end
 
   def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents
+
+  @spec codex_command(map() | String.t() | nil) :: String.t()
+  def codex_command(issue_or_state \\ nil) do
+    settings = settings!()
+    default_command = settings.codex.command
+
+    case codex_stage(issue_or_state) do
+      :planning ->
+        present_codex_command(settings.codex.planning_command) || default_command
+
+      :implementation ->
+        present_codex_command(settings.codex.implementation_command) || default_command
+
+      _ ->
+        default_command
+    end
+  end
 
   @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
   def codex_turn_sandbox_policy(workspace \\ nil) do
@@ -202,6 +222,35 @@ defmodule SymphonyElixir.Config do
         :ok
     end
   end
+
+  defp codex_stage(%{state: state}), do: codex_stage(state)
+  defp codex_stage(%{"state" => state}), do: codex_stage(state)
+
+  defp codex_stage(state) when is_binary(state) do
+    normalized_state =
+      state
+      |> String.trim()
+      |> String.downcase()
+
+    cond do
+      MapSet.member?(@planning_issue_states, normalized_state) ->
+        :planning
+
+      MapSet.member?(@implementation_issue_states, normalized_state) ->
+        :implementation
+
+      true ->
+        nil
+    end
+  end
+
+  defp codex_stage(_state), do: nil
+
+  defp present_codex_command(command) when is_binary(command) do
+    if String.trim(command) == "", do: nil, else: command
+  end
+
+  defp present_codex_command(_command), do: nil
 
   defp format_config_error(reason) do
     case reason do

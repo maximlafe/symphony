@@ -183,6 +183,109 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server selects stage-specific codex commands from issue state" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-stage-commands-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-STAGE")
+      trace_file = Path.join(test_root, "codex-stage-commands.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODEx_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      fallback_codex = Path.join(test_root, "fake-codex-fallback")
+      planning_codex = Path.join(test_root, "fake-codex-planning")
+      implementation_codex = Path.join(test_root, "fake-codex-implementation")
+
+      Enum.each(
+        [
+          {fallback_codex, "fallback"},
+          {planning_codex, "planning"},
+          {implementation_codex, "implementation"}
+        ],
+        fn {path, kind} ->
+          File.write!(path, """
+          #!/bin/sh
+          trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-stage-commands.trace}"
+          count=0
+          printf 'KIND:%s\\n' "#{kind}" >> "$trace_file"
+
+          while IFS= read -r line; do
+            count=$((count + 1))
+            printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+            case "$count" in
+              1)
+                printf '%s\\n' '{"id":1,"result":{}}'
+                ;;
+              2)
+                printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-stage"}}}'
+                ;;
+              3)
+                printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-stage"}}}'
+                ;;
+              4)
+                printf '%s\\n' '{"method":"turn/completed"}'
+                exit 0
+                ;;
+              *)
+                exit 0
+                ;;
+            esac
+          done
+          """)
+
+          File.chmod!(path, 0o755)
+        end
+      )
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{fallback_codex} app-server",
+        codex_planning_command: "#{planning_codex} app-server",
+        codex_implementation_command: "#{implementation_codex} app-server"
+      )
+
+      assert_stage_command = fn state, expected_kind ->
+        File.rm(trace_file)
+
+        issue = %Issue{
+          id: "issue-stage-#{state}",
+          identifier: "MT-#{String.replace(state, " ", "-")}",
+          title: "Validate stage command for #{state}",
+          description: "Ensure issue state selects the expected codex command",
+          state: state,
+          url: "https://example.org/issues/stage-#{state}",
+          labels: ["backend"]
+        }
+
+        assert {:ok, _result} = AppServer.run(workspace, "Run stage-aware command", issue)
+        assert File.read!(trace_file) =~ "KIND:#{expected_kind}"
+      end
+
+      assert_stage_command.("Planning", "planning")
+      assert_stage_command.("In Progress", "implementation")
+      assert_stage_command.("Rework", "implementation")
+      assert_stage_command.("Todo", "fallback")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server marks request-for-input events as a hard failure" do
     test_root =
       Path.join(

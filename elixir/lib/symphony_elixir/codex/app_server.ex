@@ -49,7 +49,12 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace),
-         {:ok, port} <- start_port(expanded_workspace, Keyword.get(opts, :command_env, [])) do
+         {:ok, port} <-
+           start_port(
+             expanded_workspace,
+             Keyword.get(opts, :command_env, []),
+             Keyword.get(opts, :issue)
+           ) do
       account_id = Keyword.get(opts, :account_id)
 
       metadata =
@@ -83,7 +88,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   def open_client(cwd \\ System.tmp_dir!(), opts \\ []) do
     expanded_cwd = Path.expand(cwd)
 
-    case start_port(expanded_cwd, Keyword.get(opts, :command_env, [])) do
+    case start_port(expanded_cwd, Keyword.get(opts, :command_env, []), Keyword.get(opts, :issue)) do
       {:ok, port} ->
         case send_initialize(port) do
           :ok ->
@@ -199,7 +204,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, command_env) do
+  defp start_port(workspace, command_env, issue) do
     executable = System.find_executable("bash")
 
     if is_nil(executable) do
@@ -213,7 +218,7 @@ defmodule SymphonyElixir.Codex.AppServer do
               :binary,
               :exit_status,
               :stderr_to_stdout,
-              args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
+              args: [~c"-lc", String.to_charlist(Config.codex_command(issue))],
               cd: String.to_charlist(workspace),
               line: @port_line_bytes,
               env: port_env(normalized_command_env)

@@ -1749,6 +1749,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert config.agent.max_concurrent_agents == 10
     assert config.codex.command == "codex app-server"
+    assert config.codex.planning_command == nil
+    assert config.codex.implementation_command == nil
 
     assert config.codex.approval_policy == %{
              "reject" => %{
@@ -1778,6 +1780,26 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server --model gpt-5.3-codex")
     assert Config.settings!().codex.command == "codex app-server --model gpt-5.3-codex"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command: "codex app-server --model gpt-5.3-codex",
+      codex_planning_command: "codex app-server --model gpt-5.4",
+      codex_implementation_command: "codex app-server --model gpt-5.3-codex"
+    )
+
+    config = Config.settings!()
+    assert config.codex.planning_command == "codex app-server --model gpt-5.4"
+    assert config.codex.implementation_command == "codex app-server --model gpt-5.3-codex"
+    assert Config.codex_command(%Issue{state: "Planning"}) == "codex app-server --model gpt-5.4"
+
+    assert Config.codex_command(%Issue{state: "In Progress"}) ==
+             "codex app-server --model gpt-5.3-codex"
+
+    assert Config.codex_command(%Issue{state: "Rework"}) ==
+             "codex app-server --model gpt-5.3-codex"
+
+    assert Config.codex_command(%Issue{state: "Todo"}) ==
+             "codex app-server --model gpt-5.3-codex"
 
     explicit_root =
       Path.join(
