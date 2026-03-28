@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety}
+  alias SymphonyElixir.{Codex.DynamicTool, Codex.RuntimeHome, Config, PathSafety}
 
   @initialize_id 1
   @thread_start_id 2
@@ -205,23 +205,45 @@ defmodule SymphonyElixir.Codex.AppServer do
     if is_nil(executable) do
       {:error, :bash_not_found}
     else
-      port =
-        Port.open(
-          {:spawn_executable, String.to_charlist(executable)},
-          [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
-            cd: String.to_charlist(workspace),
-            line: @port_line_bytes,
-            env: port_env(command_env)
-          ]
-        )
+      with {:ok, normalized_command_env} <- normalize_command_env(command_env) do
+        port =
+          Port.open(
+            {:spawn_executable, String.to_charlist(executable)},
+            [
+              :binary,
+              :exit_status,
+              :stderr_to_stdout,
+              args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
+              cd: String.to_charlist(workspace),
+              line: @port_line_bytes,
+              env: port_env(normalized_command_env)
+            ]
+          )
 
-      {:ok, port}
+        {:ok, port}
+      end
     end
   end
+
+  defp normalize_command_env(command_env) when is_list(command_env) do
+    {source_homes, remaining_env} =
+      Enum.reduce(command_env, {[], []}, fn
+        {"CODEX_HOME", value}, {homes, env} -> {[value | homes], env}
+        entry, {homes, env} -> {homes, [entry | env]}
+      end)
+
+    case source_homes do
+      [] ->
+        {:ok, command_env}
+
+      [source_home | _] ->
+        with {:ok, runtime_home} <- RuntimeHome.prepare(source_home) do
+          {:ok, Enum.reverse([{"CODEX_HOME", runtime_home} | remaining_env])}
+        end
+    end
+  end
+
+  defp normalize_command_env(_command_env), do: {:ok, []}
 
   defp port_metadata(port) when is_port(port) do
     case :erlang.port_info(port, :os_pid) do
