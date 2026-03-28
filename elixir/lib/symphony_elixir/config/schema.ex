@@ -203,6 +203,8 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:command, :string, default: "codex app-server")
+      field(:planning_command, :string)
+      field(:implementation_command, :string)
 
       field(:approval_policy, StringOrMap,
         default: %{
@@ -232,6 +234,8 @@ defmodule SymphonyElixir.Config.Schema do
         attrs,
         [
           :command,
+          :planning_command,
+          :implementation_command,
           :approval_policy,
           :thread_sandbox,
           :turn_sandbox_policy,
