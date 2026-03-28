@@ -145,13 +145,45 @@ mutation($issueId: String!, $url: String!, $title: String) {
 
 ## File upload
 
-Three steps:
+When `linear_upload_issue_attachment` is available in-session, prefer it for any
+durable review artifact produced in the workspace: screenshots, recordings,
+runtime evidence, exports (`csv`, `json`, `jsonl`, `html`, `md`, `txt`,
+`xlsx`, `parquet`), and machine-readable validation outputs that support the
+handoff.
+
+```json
+{
+  "issue_id": "LET-123",
+  "file_path": "/abs/path/to/runtime-evidence.json",
+  "title": "LET-123 runtime evidence",
+  "subtitle": "health + dashboard proof",
+  "metadata": {
+    "artifact_type": "runtime_evidence",
+    "claim": "service responds after the change"
+  }
+}
+```
+
+The tool performs the full server-side flow: request `fileUpload`, `PUT` the
+local file bytes, and finish with `attachmentCreate` so the artifact appears in
+the issue's standard attachments UI.
+
+In the handoff workpad/comment:
+
+- List each uploaded attachment title and what claim it proves.
+- Say which expected artifacts were not produced and why.
+- Do not leave a raw `uploads.linear.app` or storage URL as the only evidence path.
+
+Only if `linear_upload_issue_attachment` is unavailable, fall back to the
+manual GraphQL upload flow below.
+
+Three manual steps:
 
 1. Get upload URL:
 
 ```graphql
 mutation($filename: String!, $contentType: String!, $size: Int!) {
-  fileUpload(filename: $filename, contentType: $contentType, size: $size, makePublic: true) {
+  fileUpload(filename: $filename, contentType: $contentType, size: $size) {
     success
     uploadFile { uploadUrl assetUrl headers { key value } }
   }
@@ -159,7 +191,20 @@ mutation($filename: String!, $contentType: String!, $size: Int!) {
 ```
 
 2. PUT file bytes to `uploadUrl` with the returned headers (use `curl`).
-3. Embed `assetUrl` in comments/workpad as `![description](url)`.
+3. Create an issue attachment from the resulting `assetUrl`:
+
+```graphql
+mutation($input: AttachmentCreateInput!) {
+  attachmentCreate(input: $input) {
+    success
+    attachment { id title url }
+  }
+}
+```
+
+Use input fields such as `issueId`, `title`, `subtitle`, `url`, and optional
+`metadata`. Reference the resulting attachment in comments/workpad; do not rely
+on the raw upload URL as the only handoff path.
 
 ## Issue creation
 
@@ -204,6 +249,8 @@ Input: `issueId`, `relatedIssueId`, `type` (`blocks` or `related`).
 - Sync the workpad at milestones, not after every change.
 - Use `sync_workpad` for live workpad create/update whenever the tool is
   available.
+- Use `linear_upload_issue_attachment` for durable evidence whenever the task
+  produced review-relevant files inside the workspace.
 - Never inline the live workpad body into `commentCreate`/`commentUpdate` when
   `sync_workpad` is available.
 - For state transitions, always fetch team states first — never hardcode state IDs.

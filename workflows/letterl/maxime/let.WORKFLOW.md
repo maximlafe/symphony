@@ -601,7 +601,7 @@ Instructions:
    - preserve user-uploaded files, screenshots, and inline media verbatim; if the current description contains uploads or embeds that would be dropped by normalization, do not rewrite the description and keep the extra structure in the workpad instead;
    - do not remove machine-readable `Repo:` or `Base branch:` lines even when repo routing is also inferred from project metadata or `repo:*` labels;
    - do not write checklists, managed markers, or workpad-style progress notes into the description.
-7. Maintain the Russian workpad with a compact environment stamp, hierarchical plan, `Критерии приемки`, `Проверка`, and `Заметки`.
+7. Maintain the Russian workpad with a compact environment stamp, hierarchical plan, `Критерии приемки`, `Проверка`, `Артефакты`, and `Заметки`.
 8. Before moving to `Plan Review`, do one final planning handoff:
    - ensure the task-spec issue description is current;
    - ensure the final local `workpad.md` is synced exactly once;
@@ -662,13 +662,15 @@ Use this only when completion is blocked by missing required tools or missing au
    - execute every ticket-provided validation/test-plan requirement when present;
    - prefer targeted proof for the changed behavior;
    - revert every temporary proof edit before commit or push;
-   - if app-touching, capture runtime evidence and upload it to Linear.
+   - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
+   - if the change affects a UI or operator-facing flow, attach a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
+   - if the task produced review-relevant export/report files or machine-readable validation artifacts, attach them to the issue instead of leaving them only in the workpad, logs, or local runtime.
 7. Before every `git push`, rerun the required validation and confirm it passes.
 8. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
 9. Merge latest `origin/<configured base branch>` into the branch before final handoff, resolve conflicts, and rerun required validation.
 10. Before moving to `In Review`, use the compact PR/check flow:
    - run the PR feedback and checks protocol above;
-   - if checks are green and no actionable feedback remains, first rewrite every final checklist item so it is already true before the state transition (for example, `PR checks зелёные; задача готова к переводу в In Review` instead of `задача переведена в In Review`), затем заполни `Checkpoint` с `checkpoint_type: human-verify`, обоснованным `risk_level` и однострочным `summary`, закрой все выполненные parent/child checkboxes, финализируй local `workpad.md`, один раз синхронизируй live workpad, при необходимости один раз обнови task-spec description и только потом переводи issue в `In Review`;
+   - if checks are green and no actionable feedback remains, first rewrite every final checklist item so it is already true before the state transition (for example, `PR checks зелёные; задача готова к переводу в In Review` instead of `задача переведена в In Review`), затем заполни `Checkpoint` с `checkpoint_type: human-verify`, обоснованным `risk_level` и однострочным `summary`, закрой все выполненные parent/child checkboxes, финализируй local `workpad.md`, убедись что в `Артефакты` перечислены загруженные вложения, их claims и ожидаемые, но не созданные артефакты, один раз синхронизируй live workpad, при необходимости один раз обнови task-spec description и только потом переводи issue в `In Review`;
    - do not repeat label or attachment checks in the same run unless the PR changed.
 11. If PR publication or handoff is blocked by missing required non-GitHub tools/auth/permissions after all fallbacks, заполни `Checkpoint` с `checkpoint_type: human-action`, подходящим `risk_level` и blocker summary, затем переводи issue в `Blocked` с blocker brief и явным unblock action; после выполнения unblock action человек должен вручную вернуть issue в `In Progress`.
 
@@ -715,7 +717,9 @@ Use this only when completion is blocked by missing required tools or missing au
 - Actionable PR feedback is resolved.
 - PR checks are green.
 - The PR is pushed, linked on the issue, and labeled `symphony`.
+- Review-relevant artifacts produced during the task are uploaded as issue attachments.
 - Runtime evidence is uploaded when the change is app-touching.
+- The final workpad contains a compact artifact manifest that maps each uploaded attachment to its claim and calls out expected artifacts that were not produced.
 
 ## Protocol for classified checkpoints
 
@@ -846,6 +850,11 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Проверка
 
 - [ ] целевая проверка: `<command>`
+
+### Артефакты
+
+- [ ] вложение: `<title>` -> <что подтверждает>
+- [ ] ожидаемый, но не созданный артефакт: `<name>` -> <почему не был получен>
 
 ### Checkpoint
 

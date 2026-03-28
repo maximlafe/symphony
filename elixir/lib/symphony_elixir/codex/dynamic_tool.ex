@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.{Linear.Client, PathSafety}
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
@@ -46,6 +46,71 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "comment_id" => %{
         "type" => "string",
         "description" => "Existing comment ID to update. Omit to create a new comment."
+      }
+    }
+  }
+
+  @linear_upload_issue_attachment_tool "linear_upload_issue_attachment"
+  @linear_upload_issue_attachment_description """
+  Upload a local file to Linear storage on the server and create a durable issue attachment for review evidence or handoff artifacts.
+  """
+  @linear_upload_issue_attachment_file_upload """
+  mutation($filename: String!, $contentType: String!, $size: Int!) {
+    fileUpload(filename: $filename, contentType: $contentType, size: $size) {
+      success
+      uploadFile {
+        uploadUrl
+        assetUrl
+        headers {
+          key
+          value
+        }
+      }
+    }
+  }
+  """
+  @linear_upload_issue_attachment_create """
+  mutation($input: AttachmentCreateInput!) {
+    attachmentCreate(input: $input) {
+      success
+      attachment {
+        id
+        title
+        subtitle
+        url
+      }
+    }
+  }
+  """
+  @linear_upload_issue_attachment_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["issue_id", "file_path"],
+    "properties" => %{
+      "issue_id" => %{
+        "type" => "string",
+        "description" => "Linear issue identifier (e.g. \"ENG-123\") or internal UUID."
+      },
+      "file_path" => %{
+        "type" => "string",
+        "description" => "Absolute or workspace-relative path to the local file to upload."
+      },
+      "title" => %{
+        "type" => "string",
+        "description" => "Attachment title shown in the Linear issue UI. Defaults to the file name."
+      },
+      "subtitle" => %{
+        "type" => "string",
+        "description" => "Optional attachment subtitle shown under the title in the Linear issue UI."
+      },
+      "content_type" => %{
+        "type" => "string",
+        "description" => "Optional MIME type override for the uploaded file."
+      },
+      "metadata" => %{
+        "type" => ["object", "null"],
+        "description" => "Optional attachment metadata recorded via the Linear API.",
+        "additionalProperties" => true
       }
     }
   }
@@ -118,6 +183,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       @sync_workpad_tool ->
         execute_sync_workpad(arguments, opts)
 
+      @linear_upload_issue_attachment_tool ->
+        execute_linear_upload_issue_attachment(arguments, opts)
+
       @github_pr_snapshot_tool ->
         execute_github_pr_snapshot(arguments, opts)
 
@@ -146,6 +214,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "name" => @sync_workpad_tool,
         "description" => @sync_workpad_description,
         "inputSchema" => @sync_workpad_input_schema
+      },
+      %{
+        "name" => @linear_upload_issue_attachment_tool,
+        "description" => @linear_upload_issue_attachment_description,
+        "inputSchema" => @linear_upload_issue_attachment_input_schema
       },
       %{
         "name" => @github_pr_snapshot_tool,
@@ -186,6 +259,38 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
+  defp execute_linear_upload_issue_attachment(arguments, opts) do
+    linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
+    upload_request_fun = Keyword.get(opts, :upload_request_fun, &default_linear_upload_request/4)
+
+    with {:ok, upload} <- normalize_linear_upload_issue_attachment_arguments(arguments, opts),
+         {:ok, body} <- read_upload_file(upload.file_path),
+         {:ok, upload_target} <-
+           request_linear_upload_target(upload.file_path, upload.content_type, byte_size(body), linear_client),
+         {:ok, _response} <-
+           upload_request_fun.(
+             upload_target.upload_url,
+             build_linear_upload_headers(upload_target.headers, upload.content_type),
+             body,
+             []
+           ),
+         {:ok, attachment} <-
+           create_linear_issue_attachment(upload, upload_target.asset_url, linear_client) do
+      success_response(%{
+        "artifact" => %{
+          "issue_id" => upload.issue_id,
+          "file_name" => Path.basename(upload.file_path),
+          "file_path" => upload.file_path,
+          "content_type" => upload.content_type,
+          "size_bytes" => byte_size(body)
+        },
+        "attachment" => attachment
+      })
+    else
+      {:error, reason} -> failure_response(tool_error_payload(reason))
+    end
+  end
+
   defp execute_github_pr_snapshot(arguments, opts) do
     with {:ok, repo, pr_number, include_feedback_details} <-
            normalize_github_pr_snapshot_arguments(arguments),
@@ -217,12 +322,56 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     {:error, {:sync_workpad, "`issue_id` and `file_path` are required"}}
   end
 
+  defp normalize_linear_upload_issue_attachment_arguments(arguments, opts) when is_map(arguments) do
+    workspace = Keyword.get(opts, :workspace)
+
+    with {:ok, issue_id} <- required_upload_attachment_arg(arguments, "issue_id"),
+         {:ok, file_path} <- required_upload_attachment_arg(arguments, "file_path"),
+         {:ok, resolved_path} <- normalize_upload_attachment_file_path(file_path, workspace),
+         {:ok, title} <- normalize_upload_attachment_title(arguments, resolved_path),
+         {:ok, subtitle} <-
+           normalize_optional_string_arg(
+             arguments,
+             "subtitle",
+             :linear_upload_issue_attachment
+           ),
+         {:ok, content_type} <- normalize_upload_attachment_content_type(arguments, resolved_path),
+         {:ok, metadata} <- normalize_optional_metadata_arg(arguments) do
+      {:ok,
+       %{
+         issue_id: issue_id,
+         file_path: resolved_path,
+         title: title,
+         subtitle: subtitle,
+         content_type: content_type,
+         metadata: metadata
+       }}
+    end
+  end
+
+  defp normalize_linear_upload_issue_attachment_arguments(_arguments, _opts) do
+    {:error, {:linear_upload_issue_attachment, "`issue_id` and `file_path` are required"}}
+  end
+
   defp required_sync_workpad_arg(args, key) when is_map(args) and is_binary(key) do
     atom_key = String.to_atom(key)
 
     case Map.get(args, key) || Map.get(args, atom_key) do
       value when is_binary(value) and value != "" -> {:ok, value}
       _ -> {:error, {:sync_workpad, "`#{key}` is required"}}
+    end
+  end
+
+  defp required_upload_attachment_arg(args, key) when is_map(args) and is_binary(key) do
+    case get_argument(args, key) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:error, {:linear_upload_issue_attachment, "`#{key}` is required"}}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _ ->
+        {:error, {:linear_upload_issue_attachment, "`#{key}` is required"}}
     end
   end
 
@@ -342,6 +491,264 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       {:error, reason} -> {:error, {:sync_workpad, "cannot read `#{path}`: #{:file.format_error(reason)}"}}
     end
   end
+
+  defp read_upload_file(path) do
+    case File.read(path) do
+      {:ok, ""} ->
+        {:error, {:linear_upload_issue_attachment, "file is empty: `#{path}`"}}
+
+      {:ok, body} ->
+        {:ok, body}
+
+      {:error, reason} ->
+        {:error, {:linear_upload_issue_attachment, "cannot read `#{path}`: #{:file.format_error(reason)}"}}
+    end
+  end
+
+  defp normalize_upload_attachment_file_path(path, workspace) when is_binary(path) do
+    trimmed_path = String.trim(path)
+    candidate_path = expand_upload_path(trimmed_path, workspace)
+
+    with {:ok, canonical_path} <- PathSafety.canonicalize(candidate_path),
+         :ok <- ensure_upload_path_within_workspace(canonical_path, workspace) do
+      {:ok, canonical_path}
+    else
+      {:error, {:path_canonicalize_failed, _path, reason}} ->
+        {:error, {:linear_upload_issue_attachment, "cannot resolve `#{trimmed_path}`: #{inspect(reason)}"}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp expand_upload_path(path, workspace) when is_binary(path) and is_binary(workspace) do
+    if Path.type(path) == :relative do
+      Path.expand(path, workspace)
+    else
+      path
+    end
+  end
+
+  defp expand_upload_path(path, _workspace), do: path
+
+  defp ensure_upload_path_within_workspace(_path, nil), do: :ok
+
+  defp ensure_upload_path_within_workspace(path, workspace) when is_binary(path) and is_binary(workspace) do
+    case PathSafety.canonicalize(workspace) do
+      {:ok, canonical_workspace} ->
+        workspace_prefix = canonical_workspace <> "/"
+
+        if path == canonical_workspace or String.starts_with?(path, workspace_prefix) do
+          :ok
+        else
+          {:error, {:linear_upload_issue_attachment, "file_path must stay within workspace `#{canonical_workspace}`"}}
+        end
+
+      {:error, {:path_canonicalize_failed, _path, reason}} ->
+        {:error, {:linear_upload_issue_attachment, "cannot resolve workspace `#{workspace}`: #{inspect(reason)}"}}
+    end
+  end
+
+  defp normalize_upload_attachment_title(arguments, resolved_path) do
+    case normalize_optional_string_arg(arguments, "title", :linear_upload_issue_attachment) do
+      {:ok, nil} -> {:ok, Path.basename(resolved_path)}
+      {:ok, title} -> {:ok, title}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_upload_attachment_content_type(arguments, resolved_path) do
+    case normalize_optional_string_arg(arguments, "content_type", :linear_upload_issue_attachment) do
+      {:ok, nil} ->
+        {:ok, MIME.from_path(resolved_path)}
+
+      {:ok, content_type} ->
+        {:ok, content_type}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp normalize_optional_string_arg(arguments, key, tool) do
+    case get_argument(arguments, key) do
+      nil ->
+        {:ok, nil}
+
+      value when is_binary(value) ->
+        {:ok, blank_to_nil(value)}
+
+      _ ->
+        {:error, {tool, "`#{key}` must be a string when provided"}}
+    end
+  end
+
+  defp normalize_optional_metadata_arg(arguments) do
+    case get_argument(arguments, "metadata") do
+      nil -> {:ok, nil}
+      metadata when is_map(metadata) -> {:ok, metadata}
+      _ -> {:error, {:linear_upload_issue_attachment, "`metadata` must be an object when provided"}}
+    end
+  end
+
+  defp request_linear_upload_target(file_path, content_type, size, linear_client) do
+    with {:ok, response} <-
+           linear_client.(
+             @linear_upload_issue_attachment_file_upload,
+             %{
+               "filename" => Path.basename(file_path),
+               "contentType" => content_type,
+               "size" => size
+             },
+             []
+           ),
+         {:ok, upload_root} <- fetch_graphql_data_root(response, "fileUpload"),
+         true <- get_argument(upload_root, "success") == true,
+         upload_file when is_map(upload_file) <- get_argument(upload_root, "uploadFile"),
+         upload_url when is_binary(upload_url) and upload_url != "" <-
+           get_argument(upload_file, "uploadUrl"),
+         asset_url when is_binary(asset_url) and asset_url != "" <-
+           get_argument(upload_file, "assetUrl"),
+         {:ok, headers} <- normalize_linear_upload_header_items(get_argument(upload_file, "headers")) do
+      {:ok, %{upload_url: upload_url, asset_url: asset_url, headers: headers}}
+    else
+      false ->
+        {:error, {:linear_upload_issue_attachment, "fileUpload did not return a successful upload target"}}
+
+      nil ->
+        {:error, {:linear_upload_issue_attachment, "fileUpload response is missing upload details"}}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _ ->
+        {:error, {:linear_upload_issue_attachment, "fileUpload response is missing upload details"}}
+    end
+  end
+
+  defp fetch_graphql_data_root(response, root_key) when is_binary(root_key) do
+    case get_argument(response, "data") do
+      data when is_map(data) ->
+        case get_argument(data, root_key) do
+          root when is_map(root) -> {:ok, root}
+          _ -> {:error, {:linear_upload_issue_attachment, "GraphQL response is missing `data.#{root_key}`"}}
+        end
+
+      _ ->
+        {:error, {:linear_upload_issue_attachment, "GraphQL response is missing `data`"}}
+    end
+  end
+
+  defp normalize_linear_upload_header_items(nil), do: {:ok, []}
+
+  defp normalize_linear_upload_header_items(headers) when is_list(headers) do
+    Enum.reduce_while(headers, {:ok, []}, fn header, {:ok, acc} ->
+      case normalize_linear_upload_header_item(header) do
+        {:ok, header_pair} -> {:cont, {:ok, [header_pair | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, header_pairs} -> {:ok, Enum.reverse(header_pairs)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_linear_upload_header_items(_headers) do
+    {:error, {:linear_upload_issue_attachment, "fileUpload headers must be a list"}}
+  end
+
+  defp normalize_linear_upload_header_item(header) when is_map(header) do
+    key = get_argument(header, "key")
+    value = get_argument(header, "value")
+
+    if is_binary(key) and key != "" and is_binary(value) do
+      {:ok, {String.downcase(key), value}}
+    else
+      {:error, {:linear_upload_issue_attachment, "fileUpload returned an invalid header entry"}}
+    end
+  end
+
+  defp normalize_linear_upload_header_item(_header) do
+    {:error, {:linear_upload_issue_attachment, "fileUpload returned an invalid header entry"}}
+  end
+
+  defp build_linear_upload_headers(headers, content_type) when is_list(headers) do
+    headers
+    |> Enum.reduce(
+      %{
+        "content-type" => content_type,
+        "cache-control" => "public, max-age=31536000"
+      },
+      fn {key, value}, acc ->
+        Map.put(acc, String.downcase(key), value)
+      end
+    )
+    |> Enum.map(fn {key, value} -> {key, value} end)
+  end
+
+  defp default_linear_upload_request(url, headers, body, _opts) do
+    case Req.put(url,
+           headers: headers,
+           body: body,
+           connect_options: [timeout: 30_000],
+           receive_timeout: 120_000
+         ) do
+      {:ok, %{status: status} = response} when status >= 200 and status < 300 ->
+        {:ok, response}
+
+      {:ok, %{status: status}} ->
+        {:error, {:linear_upload_issue_attachment_http_status, status}}
+
+      {:error, reason} ->
+        {:error, {:linear_upload_issue_attachment_request, reason}}
+    end
+  end
+
+  defp create_linear_issue_attachment(upload, asset_url, linear_client) do
+    with {:ok, response} <-
+           linear_client.(
+             @linear_upload_issue_attachment_create,
+             %{"input" => linear_attachment_create_input(upload, asset_url)},
+             []
+           ),
+         {:ok, attachment_root} <- fetch_graphql_data_root(response, "attachmentCreate"),
+         true <- get_argument(attachment_root, "success") == true,
+         attachment when is_map(attachment) <- get_argument(attachment_root, "attachment") do
+      {:ok,
+       %{
+         "id" => get_argument(attachment, "id"),
+         "title" => get_argument(attachment, "title"),
+         "subtitle" => get_argument(attachment, "subtitle"),
+         "url" => get_argument(attachment, "url")
+       }}
+    else
+      false ->
+        {:error, {:linear_upload_issue_attachment, "attachmentCreate did not return a successful attachment"}}
+
+      nil ->
+        {:error, {:linear_upload_issue_attachment, "attachmentCreate response is missing attachment data"}}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _ ->
+        {:error, {:linear_upload_issue_attachment, "attachmentCreate response is missing attachment data"}}
+    end
+  end
+
+  defp linear_attachment_create_input(upload, asset_url) do
+    %{
+      "issueId" => upload.issue_id,
+      "title" => upload.title,
+      "url" => asset_url
+    }
+    |> maybe_put_graphql_input("subtitle", upload.subtitle)
+    |> maybe_put_graphql_input("metadata", upload.metadata)
+  end
+
+  defp maybe_put_graphql_input(input, _key, nil), do: input
+  defp maybe_put_graphql_input(input, key, value), do: Map.put(input, key, value)
 
   defp normalize_linear_graphql_arguments(arguments) when is_binary(arguments) do
     case String.trim(arguments) do
@@ -803,6 +1210,28 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp tool_error_payload({:sync_workpad, message}) do
     %{"error" => %{"message" => "sync_workpad: #{message}"}}
+  end
+
+  defp tool_error_payload({:linear_upload_issue_attachment, message}) do
+    %{"error" => %{"message" => "linear_upload_issue_attachment: #{message}"}}
+  end
+
+  defp tool_error_payload({:linear_upload_issue_attachment_http_status, status}) do
+    %{
+      "error" => %{
+        "message" => "linear_upload_issue_attachment: upload PUT request failed with HTTP #{status}.",
+        "status" => status
+      }
+    }
+  end
+
+  defp tool_error_payload({:linear_upload_issue_attachment_request, reason}) do
+    %{
+      "error" => %{
+        "message" => "linear_upload_issue_attachment: upload PUT request failed before receiving a successful response.",
+        "reason" => inspect(reason)
+      }
+    }
   end
 
   defp tool_error_payload({:github_pr_snapshot, message}) do
