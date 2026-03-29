@@ -1801,6 +1801,22 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.codex_command(%Issue{state: "Todo"}) ==
              "codex app-server --model gpt-5.3-codex"
 
+    assert Config.codex_command("  Plan Review  ") == "codex app-server --model gpt-5.4"
+
+    assert Config.codex_command(%{"state" => " rework "}) ==
+             "codex app-server --model gpt-5.3-codex"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command: "codex app-server --model gpt-5.3-codex",
+      codex_planning_command: "   ",
+      codex_implementation_command: ""
+    )
+
+    assert Config.codex_command("Planning") == "codex app-server --model gpt-5.3-codex"
+
+    assert Config.codex_command(%{"state" => "In Progress"}) ==
+             "codex app-server --model gpt-5.3-codex"
+
     explicit_root =
       Path.join(
         System.tmp_dir!(),
