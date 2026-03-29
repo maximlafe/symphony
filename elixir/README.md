@@ -233,6 +233,9 @@ codex:
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+- Set `server.path` when the dashboard is served behind a reverse-proxy path prefix such as
+  `/proxy/symphony`; Symphony still serves upstream requests at `/` while generating prefixed
+  LiveView and static asset URLs for the proxied mount point.
 
 ## Web dashboard
 

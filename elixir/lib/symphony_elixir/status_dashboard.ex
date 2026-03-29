@@ -483,16 +483,21 @@ defmodule SymphonyElixir.StatusDashboard do
   defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
 
   defp dashboard_url do
-    dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
+    dashboard_url(
+      Config.settings!().server.host,
+      Config.server_port(),
+      HttpServer.bound_port(),
+      Config.settings!().server.path
+    )
   end
 
-  defp dashboard_url(_host, nil, _bound_port), do: nil
+  defp dashboard_url(_host, nil, _bound_port, _path), do: nil
 
-  defp dashboard_url(host, configured_port, bound_port) do
+  defp dashboard_url(host, configured_port, bound_port, path) do
     port = bound_port || configured_port
 
     if is_integer(port) and port > 0 do
-      "http://#{dashboard_url_host(host)}:#{port}/"
+      "http://#{dashboard_url_host(host)}:#{port}#{dashboard_url_path(path)}"
     else
       nil
     end
@@ -618,10 +623,13 @@ defmodule SymphonyElixir.StatusDashboard do
     do: format_snapshot_content(snapshot_data, tps, terminal_columns)
 
   @doc false
-  @spec dashboard_url_for_test(String.t(), non_neg_integer() | nil, non_neg_integer() | nil) ::
+  @spec dashboard_url_for_test(String.t(), non_neg_integer() | nil, non_neg_integer() | nil, String.t() | nil) ::
           String.t() | nil
-  def dashboard_url_for_test(host, configured_port, bound_port),
-    do: dashboard_url(host, configured_port, bound_port)
+  def dashboard_url_for_test(host, configured_port, bound_port, path \\ nil),
+    do: dashboard_url(host, configured_port, bound_port, path)
+
+  defp dashboard_url_path(path) when path in [nil, "", "/"], do: "/"
+  defp dashboard_url_path(path), do: path <> "/"
 
   defp snapshot_payload do
     if Process.whereis(Orchestrator) do

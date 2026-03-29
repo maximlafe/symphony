@@ -1627,6 +1627,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert StatusDashboard.dashboard_url_for_test("::1", 4000, nil) ==
              "http://[::1]:4000/"
+
+    assert StatusDashboard.dashboard_url_for_test("127.0.0.1", 4000, nil, "/proxy/symphony") ==
+             "http://127.0.0.1:4000/proxy/symphony/"
   end
 
   test "status dashboard renders next refresh countdown and checking marker" do

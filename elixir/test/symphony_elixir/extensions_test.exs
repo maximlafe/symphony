@@ -775,6 +775,35 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
   end
 
+  @tag :dashboard
+  test "http server keeps the configured proxy path in dashboard bootstrap URLs" do
+    snapshot = static_snapshot()
+    orchestrator_name = Module.concat(__MODULE__, :PrefixedHttpServerOrchestrator)
+
+    refresh = %{
+      queued: true,
+      coalesced: false,
+      requested_at: DateTime.utc_now(),
+      operations: ["poll"]
+    }
+
+    write_workflow_file!(Workflow.workflow_file_path(), server_path: " /proxy/symphony/ ")
+
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot, refresh: refresh})
+
+    start_supervised!({HttpServer, [host: "127.0.0.1", port: 0, orchestrator: orchestrator_name, snapshot_timeout_ms: 50]})
+
+    port = wait_for_bound_port()
+
+    response = Req.get!("http://127.0.0.1:#{port}/")
+    assert response.status == 200
+    assert response.body =~ ~s(/proxy/symphony/dashboard.css?v=)
+    assert response.body =~ ~s(/proxy/symphony/vendor/phoenix_html/phoenix_html.js?v=)
+    assert response.body =~ ~s(/proxy/symphony/vendor/phoenix/phoenix.js?v=)
+    assert response.body =~ ~s(/proxy/symphony/vendor/phoenix_live_view/phoenix_live_view.js?v=)
+    assert response.body =~ ~s(new window.LiveView.LiveSocket("/proxy/symphony/live", window.Phoenix.Socket, {)
+  end
+
   defp start_test_endpoint(overrides) do
     endpoint_config =
       :symphony_elixir

@@ -311,14 +311,34 @@ defmodule SymphonyElixir.Config.Schema do
     embedded_schema do
       field(:port, :integer)
       field(:host, :string, default: "127.0.0.1")
+      field(:path, :string)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:port, :host], empty_values: [])
+      |> cast(attrs, [:port, :host, :path], empty_values: [])
+      |> update_change(:path, &normalize_optional_path/1)
       |> validate_number(:port, greater_than_or_equal_to: 0)
     end
+
+    defp normalize_optional_path(value) when is_binary(value) do
+      case String.trim(value) do
+        "" ->
+          nil
+
+        "/" ->
+          "/"
+
+        trimmed ->
+          trimmed
+          |> String.trim_trailing("/")
+          |> ensure_leading_slash()
+      end
+    end
+
+    defp ensure_leading_slash("/" <> _ = path), do: path
+    defp ensure_leading_slash(path), do: "/" <> path
   end
 
   embedded_schema do

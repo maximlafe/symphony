@@ -1747,6 +1747,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.tracker.project_slug == nil
     assert config.tracker.team_key == nil
     assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
+    assert config.server.path == nil
     assert config.agent.max_concurrent_agents == 10
     assert config.codex.command == "codex app-server"
     assert config.codex.planning_command == nil
@@ -1869,7 +1870,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       observability_refresh_ms: %{bad: true},
       observability_render_interval_ms: %{bad: true},
       server_port: -1,
-      server_host: 123
+      server_host: 123,
+      server_path: 123
     )
 
     assert {:error, {:invalid_workflow_config, _message}} = Config.validate!()
@@ -1908,6 +1910,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server")
     assert Config.settings!().codex.command == "codex app-server"
+
+    write_workflow_file!(Workflow.workflow_file_path(), server_path: " proxy/symphony/ ")
+    assert Config.settings!().server.path == "/proxy/symphony"
   end
 
   test "config resolves $VAR references for env-backed secret and path values" do

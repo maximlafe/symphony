@@ -21,22 +21,24 @@ defmodule SymphonyElixir.HttpServer do
     case Keyword.get(opts, :port, Config.server_port()) do
       port when is_integer(port) and port >= 0 ->
         host = Keyword.get(opts, :host, Config.settings!().server.host)
+        path = Keyword.get(opts, :path, Config.settings!().server.path)
         orchestrator = Keyword.get(opts, :orchestrator, Orchestrator)
         snapshot_timeout_ms = Keyword.get(opts, :snapshot_timeout_ms, 15_000)
 
         with {:ok, ip} <- parse_host(host) do
+          existing_endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
+
           endpoint_opts = [
             server: true,
             http: [ip: ip, port: port],
-            url: [host: normalize_host(host)],
+            url: endpoint_url(Keyword.get(existing_endpoint_config, :url, []), host, path),
             orchestrator: orchestrator,
             snapshot_timeout_ms: snapshot_timeout_ms,
             secret_key_base: secret_key_base()
           ]
 
           endpoint_config =
-            :symphony_elixir
-            |> Application.get_env(Endpoint, [])
+            existing_endpoint_config
             |> Keyword.merge(endpoint_opts)
 
           Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
@@ -81,6 +83,16 @@ defmodule SymphonyElixir.HttpServer do
   defp normalize_host(host) when host in ["", nil], do: "127.0.0.1"
   defp normalize_host(host) when is_binary(host), do: host
   defp normalize_host(host), do: to_string(host)
+
+  defp endpoint_url(existing_url, host, nil) do
+    Keyword.merge(existing_url, host: normalize_host(host))
+  end
+
+  defp endpoint_url(existing_url, host, path) when is_binary(path) do
+    existing_url
+    |> Keyword.merge(host: normalize_host(host))
+    |> Keyword.put(:path, path)
+  end
 
   defp secret_key_base do
     Base.encode64(:crypto.strong_rand_bytes(@secret_key_bytes), padding: false)
