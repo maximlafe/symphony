@@ -20,6 +20,8 @@ polling:
   interval_ms: 5000
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
+server:
+  path: /proxy/symphony
 hooks:
   timeout_ms: 600000
   after_create: |
