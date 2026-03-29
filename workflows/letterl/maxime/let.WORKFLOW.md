@@ -21,6 +21,7 @@ polling:
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 server:
+  host: 0.0.0.0
   path: /proxy/symphony
 hooks:
   timeout_ms: 600000
