@@ -2171,7 +2171,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   @tag :dashboard
-  test "orchestrator switches active codex accounts on live rate-limit exhaustion and recovery" do
+  test "snapshot shows failover retry after live rate-limit exhaustion" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
       codex_accounts: [
@@ -2184,12 +2184,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     issue_id = "issue-account-failover"
     issue = %Issue{id: issue_id, identifier: "MT-ACCT", state: "In Progress"}
-    orchestrator_name = Module.concat(__MODULE__, :AccountFailoverOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
 
     on_exit(fn ->
-      if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
       end
     end)
 
@@ -2207,114 +2206,108 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
     }
 
-    running_entry = %{
-      pid: self(),
-      ref: make_ref(),
-      identifier: issue.identifier,
-      issue: issue,
-      session_id: "thread-account-turn-1",
-      codex_account_id: "primary",
-      last_codex_message: nil,
-      last_codex_timestamp: nil,
-      last_codex_event: nil,
-      codex_input_tokens: 0,
-      codex_output_tokens: 0,
-      codex_total_tokens: 0,
-      codex_last_reported_input_tokens: 0,
-      codex_last_reported_output_tokens: 0,
-      codex_last_reported_total_tokens: 0,
-      started_at: DateTime.utc_now()
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      next_poll_due_at_ms: nil,
+      poll_check_in_progress: false,
+      tick_timer_ref: nil,
+      tick_token: nil,
+      workspace_usage_bytes: 0,
+      workspace_cleanup_ref: nil,
+      workspace_usage_refresh_ref: nil,
+      workspace_threshold_exceeded?: false,
+      running: %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: make_ref(),
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-status-failover",
+          session_id: "thread-account-turn-1",
+          codex_account_id: "primary",
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          started_at: DateTime.utc_now()
+        }
+      },
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{
+        "primary" => %{
+          id: "primary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        },
+        "secondary" => %{
+          id: "secondary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        }
+      },
+      active_codex_account_id: "primary",
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: healthy_rate_limits,
+      codex_dispatch_reason: nil
     }
 
-    :sys.replace_state(pid, fn state ->
-      %{
-        state
-        | running: %{issue_id => running_entry},
-          claimed: MapSet.put(state.claimed, issue_id),
-          codex_accounts: %{
-            "primary" => %{
-              id: "primary",
-              explicit?: true,
-              healthy: true,
-              health_reason: nil,
-              auth_mode: "chatgpt",
-              requires_openai_auth: false,
-              missing_windows_mins: [],
-              insufficient_windows_mins: [],
-              rate_limits: healthy_rate_limits
-            },
-            "secondary" => %{
-              id: "secondary",
-              explicit?: true,
-              healthy: true,
-              health_reason: nil,
-              auth_mode: "chatgpt",
-              requires_openai_auth: false,
-              missing_windows_mins: [],
-              insufficient_windows_mins: [],
-              rate_limits: healthy_rate_limits
+    update = %{
+      event: :notification,
+      codex_account_id: "primary",
+      payload: %{
+        "method" => "codex/event/token_count",
+        "params" => %{
+          "msg" => %{
+            "type" => "event_msg",
+            "payload" => %{
+              "type" => "token_count",
+              "rate_limits" => exhausted_rate_limits
             }
-          },
-          active_codex_account_id: "primary",
-          codex_rate_limits: healthy_rate_limits
-      }
-    end)
+          }
+        }
+      },
+      timestamp: DateTime.utc_now()
+    }
 
-    send(
-      pid,
-      {:codex_worker_update, issue_id,
-       %{
-         event: :notification,
-         codex_account_id: "primary",
-         payload: %{
-           "method" => "codex/event/token_count",
-           "params" => %{
-             "msg" => %{
-               "type" => "event_msg",
-               "payload" => %{
-                 "type" => "token_count",
-                 "rate_limits" => exhausted_rate_limits
-               }
-             }
-           }
-         },
-         timestamp: DateTime.utc_now()
-       }}
-    )
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
 
-    snapshot = GenServer.call(pid, :snapshot)
+    assert_receive {:retry_issue, ^issue_id, _retry_token}, 200
+
+    assert {:reply, snapshot, _snapshot_state} =
+             Orchestrator.handle_call(:snapshot, {self(), make_ref()}, updated_state)
+
     assert snapshot.active_codex_account_id == "secondary"
     assert snapshot.rate_limits == healthy_rate_limits
-    assert [%{codex_account_id: "primary"}] = snapshot.running
-
-    send(
-      pid,
-      {:codex_worker_update, issue_id,
-       %{
-         event: :notification,
-         codex_account_id: "primary",
-         payload: %{
-           "method" => "codex/event/token_count",
-           "params" => %{
-             "msg" => %{
-               "type" => "event_msg",
-               "payload" => %{
-                 "type" => "token_count",
-                 "rate_limits" => healthy_rate_limits
-               }
-             }
-           }
-         },
-         timestamp: DateTime.utc_now()
-       }}
-    )
-
-    snapshot = GenServer.call(pid, :snapshot)
-    assert snapshot.active_codex_account_id == "primary"
-    assert snapshot.rate_limits == healthy_rate_limits
+    assert snapshot.running == []
+    assert [%{issue_id: ^issue_id, attempt: 1, error_class: "transient"}] = snapshot.retrying
   end
 
-  test "manual codex account selection prefers the chosen healthy account and falls back on degradation" do
+  test "manual codex account selection falls back when the selected running account degrades" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
       codex_accounts: [
@@ -2327,12 +2320,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     issue_id = "issue-manual-account-selection"
     issue = %Issue{id: issue_id, identifier: "MT-SELECT", state: "In Progress"}
-    orchestrator_name = Module.concat(__MODULE__, :ManualAccountSelectionOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
 
     on_exit(fn ->
-      if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
       end
     end)
 
@@ -2348,126 +2340,113 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 98}
     }
 
-    running_entry = %{
-      pid: self(),
-      ref: make_ref(),
-      identifier: issue.identifier,
-      issue: issue,
-      session_id: "thread-account-turn-2",
-      codex_account_id: "secondary",
-      codex_app_server_pid: nil,
-      last_codex_message: nil,
-      last_codex_timestamp: nil,
-      last_codex_event: nil,
-      codex_input_tokens: 0,
-      codex_output_tokens: 0,
-      codex_total_tokens: 0,
-      codex_last_reported_input_tokens: 0,
-      codex_last_reported_output_tokens: 0,
-      codex_last_reported_total_tokens: 0,
-      started_at: DateTime.utc_now()
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      next_poll_due_at_ms: nil,
+      poll_check_in_progress: false,
+      tick_timer_ref: nil,
+      tick_token: nil,
+      workspace_usage_bytes: 0,
+      workspace_cleanup_ref: nil,
+      workspace_usage_refresh_ref: nil,
+      workspace_threshold_exceeded?: false,
+      running: %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: make_ref(),
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-manual-fallback",
+          session_id: "thread-account-turn-2",
+          codex_account_id: "secondary",
+          codex_app_server_pid: nil,
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          started_at: DateTime.utc_now()
+        }
+      },
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{
+        "primary" => %{
+          id: "primary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        },
+        "secondary" => %{
+          id: "secondary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        }
+      },
+      active_codex_account_id: "primary",
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: healthy_rate_limits,
+      codex_dispatch_reason: nil
     }
 
-    :sys.replace_state(pid, fn state ->
-      %{
-        state
-        | running: %{issue_id => running_entry},
-          claimed: MapSet.put(state.claimed, issue_id),
-          codex_accounts: %{
-            "primary" => %{
-              id: "primary",
-              explicit?: true,
-              healthy: true,
-              health_reason: nil,
-              auth_mode: "chatgpt",
-              requires_openai_auth: false,
-              missing_windows_mins: [],
-              insufficient_windows_mins: [],
-              rate_limits: healthy_rate_limits
-            },
-            "secondary" => %{
-              id: "secondary",
-              explicit?: true,
-              healthy: true,
-              health_reason: nil,
-              auth_mode: "chatgpt",
-              requires_openai_auth: false,
-              missing_windows_mins: [],
-              insufficient_windows_mins: [],
-              rate_limits: healthy_rate_limits
+    assert {:reply, {:ok, "secondary"}, selected_state} =
+             Orchestrator.handle_call(
+               {:select_active_codex_account, "secondary"},
+               {self(), make_ref()},
+               state
+             )
+
+    update = %{
+      event: :notification,
+      codex_account_id: "secondary",
+      payload: %{
+        "method" => "codex/event/token_count",
+        "params" => %{
+          "msg" => %{
+            "type" => "event_msg",
+            "payload" => %{
+              "type" => "token_count",
+              "rate_limits" => exhausted_rate_limits
             }
-          },
-          active_codex_account_id: "primary",
-          codex_rate_limits: healthy_rate_limits
-      }
-    end)
+          }
+        }
+      },
+      timestamp: DateTime.utc_now()
+    }
 
-    assert {:ok, "secondary"} = Orchestrator.select_active_codex_account(orchestrator_name, "secondary")
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, selected_state)
 
-    assert_eventually(fn ->
-      match?(
-        %{active_codex_account_id: "secondary", rate_limits: ^healthy_rate_limits},
-        Orchestrator.snapshot(orchestrator_name, 5_000)
-      )
-    end)
+    assert_receive {:retry_issue, ^issue_id, _retry_token}, 200
 
-    send(
-      pid,
-      {:codex_worker_update, issue_id,
-       %{
-         event: :notification,
-         codex_account_id: "secondary",
-         payload: %{
-           "method" => "codex/event/token_count",
-           "params" => %{
-             "msg" => %{
-               "type" => "event_msg",
-               "payload" => %{
-                 "type" => "token_count",
-                 "rate_limits" => exhausted_rate_limits
-               }
-             }
-           }
-         },
-         timestamp: DateTime.utc_now()
-       }}
-    )
+    assert {:reply, snapshot, _snapshot_state} =
+             Orchestrator.handle_call(:snapshot, {self(), make_ref()}, updated_state)
 
-    assert_eventually(fn ->
-      match?(
-        %{active_codex_account_id: "primary", rate_limits: ^healthy_rate_limits},
-        Orchestrator.snapshot(orchestrator_name, 5_000)
-      )
-    end)
-
-    send(
-      pid,
-      {:codex_worker_update, issue_id,
-       %{
-         event: :notification,
-         codex_account_id: "secondary",
-         payload: %{
-           "method" => "codex/event/token_count",
-           "params" => %{
-             "msg" => %{
-               "type" => "event_msg",
-               "payload" => %{
-                 "type" => "token_count",
-                 "rate_limits" => healthy_rate_limits
-               }
-             }
-           }
-         },
-         timestamp: DateTime.utc_now()
-       }}
-    )
-
-    assert_eventually(fn ->
-      match?(
-        %{active_codex_account_id: "secondary", rate_limits: ^healthy_rate_limits},
-        Orchestrator.snapshot(orchestrator_name, 5_000)
-      )
-    end)
+    assert snapshot.active_codex_account_id == "primary"
+    assert snapshot.rate_limits == healthy_rate_limits
+    assert snapshot.running == []
+    assert [%{issue_id: ^issue_id, attempt: 1, error_class: "transient"}] = snapshot.retrying
   end
 
   test "application stop renders offline status" do
