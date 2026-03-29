@@ -2014,6 +2014,13 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `before_run` hook runs before each attempt and failure/timeouts abort the current attempt
 - `after_run` hook runs after each attempt and failure/timeouts are logged and ignored
 - `before_remove` hook runs on cleanup and failures/timeouts are ignored
+- Terminal issue cleanup removes allowlisted issue-prefixed task artifacts (default:
+  `/tmp/symphony-<ISSUE>-*`, `/var/tmp/symphony-<ISSUE>-*`) and removes the exact issue workspace
+  only when it falls outside the configured retention window inside `workspace.root`
+- External task artifacts are eligible for automatic cleanup only when the path is explicitly
+  namespaced by issue identifier and validated under allowed root prefixes
+- Terminal issue cleanup rejects shared paths, unsafe globbing outside basename, and symlink/root
+  escapes
 - Workspace path sanitization and root containment invariants are enforced before agent launch
 - Agent launch uses the per-issue workspace path as cwd and rejects out-of-root paths
 
@@ -2036,7 +2043,10 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `Todo` issue with terminal blockers is eligible
 - Active-state issue refresh updates running entry state
 - Non-active state stops running agent without workspace cleanup
-- Terminal state stops running agent and cleans workspace
+- Terminal state stops running agent and schedules issue-scoped cleanup only after the issue no
+  longer has running or retrying session state; exact issue workspace deletion still respects
+  `workspace.cleanup_keep_recent`
+- `Merging` does not trigger terminal cleanup
 - Reconciliation with no running issues is a no-op
 - Normal worker exit schedules continuation retry with bounded backoff
 - Abnormal worker exit increments retries with 10s-based exponential backoff

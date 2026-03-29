@@ -9,6 +9,11 @@ defmodule SymphonyElixir.Workspace do
   @excluded_entries MapSet.new([".elixir_ls", "tmp"])
   @fresh_attempt_states MapSet.new(["Rework"])
   @stale_bootstrap_markers [".symphony-base-branch-error"]
+  @default_issue_cleanup_external_roots ["/tmp", "/var/tmp"]
+  @issue_cleanup_prefix "symphony-"
+  @issue_cleanup_lock_dir ".symphony-cleanup-locks"
+  @issue_cleanup_lock_retry_ms 10
+  @issue_cleanup_lock_max_attempts 500
 
   @spec create_for_issue(map() | String.t() | nil) :: {:ok, Path.t()} | {:error, term()}
   def create_for_issue(issue_or_identifier) do
@@ -94,16 +99,39 @@ defmodule SymphonyElixir.Workspace do
   def remove_issue_workspaces(identifier) when is_binary(identifier) do
     safe_id = safe_identifier(identifier)
 
-    case workspace_path_for_issue(safe_id) do
-      {:ok, workspace} -> remove(workspace)
-      {:error, _reason} -> :ok
-    end
+    with_issue_cleanup_lock(safe_id, fn ->
+      remove_issue_workspace(safe_id)
+      :ok
+    end)
 
     :ok
   end
 
   def remove_issue_workspaces(_identifier) do
     :ok
+  end
+
+  @spec cleanup_issue_artifacts(term(), keyword()) :: :ok
+  def cleanup_issue_artifacts(identifier, opts \\ []) when is_list(opts) do
+    case identifier do
+      identifier when is_binary(identifier) ->
+        safe_id = safe_identifier(identifier)
+
+        with_issue_cleanup_lock(safe_id, fn ->
+          maybe_remove_issue_workspace(safe_id, opts)
+
+          safe_id
+          |> issue_cleanup_patterns(opts)
+          |> Enum.each(&remove_issue_external_pattern(&1, safe_id, opts))
+
+          :ok
+        end)
+
+        :ok
+
+      _ ->
+        :ok
+    end
   end
 
   @spec run_before_run_hook(Path.t(), map() | String.t() | nil, keyword()) :: :ok | {:error, term()}
@@ -160,16 +188,25 @@ defmodule SymphonyElixir.Workspace do
   @spec cleanup_completed_issue_workspaces([map()], keyword()) ::
           {:ok, %{kept: [String.t()], removed: [String.t()]}}
   def cleanup_completed_issue_workspaces(issues, opts \\ []) when is_list(issues) and is_list(opts) do
-    keep_recent = keep_recent_option(opts)
+    {kept_issues, removed_issues} = partition_completed_issues(issues, opts)
 
-    {kept, removed} =
-      issues
-      |> completed_issue_identifiers_sorted()
-      |> Enum.split(keep_recent)
+    kept = Enum.map(kept_issues, &completed_issue_identifier/1)
 
-    Enum.each(removed, &remove_issue_workspaces/1)
+    removed =
+      removed_issues
+      |> Enum.map(&completed_issue_identifier/1)
+      |> Enum.filter(&remove_retained_issue_workspace/1)
 
     {:ok, %{kept: kept, removed: removed}}
+  end
+
+  @spec partition_completed_issues([map()], keyword()) :: {[map()], [map()]}
+  def partition_completed_issues(issues, opts \\ []) when is_list(issues) and is_list(opts) do
+    keep_recent = keep_recent_option(opts)
+
+    issues
+    |> completed_issues_sorted()
+    |> Enum.split(keep_recent)
   end
 
   defp keep_recent_option(opts) when is_list(opts) do
@@ -179,17 +216,274 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp completed_issue_identifiers_sorted(issues) do
+  defp remove_issue_workspace(safe_id) when is_binary(safe_id) do
+    case workspace_path_for_issue(safe_id) do
+      {:ok, workspace} ->
+        removed? = File.exists?(workspace)
+        _ = remove(workspace)
+        removed?
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp maybe_remove_issue_workspace(safe_id, opts)
+       when is_binary(safe_id) and is_list(opts) do
+    if Keyword.get(opts, :remove_workspace, true) == false do
+      false
+    else
+      remove_issue_workspace(safe_id)
+    end
+  end
+
+  defp remove_retained_issue_workspace(identifier) when is_binary(identifier) do
+    safe_id = safe_identifier(identifier)
+    with_issue_cleanup_lock(safe_id, fn -> remove_issue_workspace(safe_id) end)
+  end
+
+  defp issue_cleanup_patterns(safe_id, opts) when is_binary(safe_id) and is_list(opts) do
+    default_patterns =
+      Enum.map(@default_issue_cleanup_external_roots, fn root ->
+        Path.join(root, "#{@issue_cleanup_prefix}#{safe_id}-*")
+      end)
+
+    extra_patterns =
+      case Keyword.get(opts, :external_paths, []) do
+        patterns when is_list(patterns) -> Enum.filter(patterns, &is_binary/1)
+        _ -> []
+      end
+
+    default_patterns ++ extra_patterns
+  end
+
+  defp remove_issue_external_pattern(pattern, safe_id, opts)
+       when is_binary(pattern) and is_binary(safe_id) and is_list(opts) do
+    case validate_issue_cleanup_pattern(pattern, safe_id, opts) do
+      {:ok, expanded_pattern, allowed_roots} ->
+        expanded_pattern
+        |> Path.wildcard(match_dot: true)
+        |> Enum.each(&remove_issue_cleanup_match(&1, safe_id, allowed_roots))
+
+      {:error, reason} ->
+        Logger.warning("Skipping unsafe issue cleanup pattern issue_identifier=#{safe_id} pattern=#{inspect(pattern)} reason=#{inspect(reason)}")
+    end
+  end
+
+  defp remove_issue_cleanup_match(path, safe_id, allowed_roots)
+       when is_binary(path) and is_binary(safe_id) and is_list(allowed_roots) do
+    case validate_issue_cleanup_match(path, safe_id, allowed_roots) do
+      :ok ->
+        File.rm_rf(path)
+
+      {:error, reason} ->
+        Logger.warning("Skipping unsafe issue cleanup match issue_identifier=#{safe_id} path=#{inspect(path)} reason=#{inspect(reason)}")
+    end
+  end
+
+  defp validate_issue_cleanup_pattern(pattern, safe_id, opts)
+       when is_binary(pattern) and is_binary(safe_id) and is_list(opts) do
+    expanded_pattern = Path.expand(pattern)
+    dirname = Path.dirname(expanded_pattern)
+    basename = Path.basename(expanded_pattern)
+    allowed_roots = allowed_issue_cleanup_roots(opts)
+
+    with :ok <- validate_issue_cleanup_absolute_path(expanded_pattern),
+         :ok <- validate_issue_cleanup_basename(basename, safe_id),
+         :ok <- validate_issue_cleanup_pattern_prefix(dirname, expanded_pattern),
+         :ok <- validate_issue_cleanup_directory(dirname, allowed_roots) do
+      {:ok, expanded_pattern, allowed_roots}
+    end
+  end
+
+  defp validate_issue_cleanup_absolute_path(expanded_pattern)
+       when is_binary(expanded_pattern) do
+    if Path.type(expanded_pattern) == :absolute do
+      :ok
+    else
+      {:error, {:issue_cleanup_path_not_absolute, expanded_pattern}}
+    end
+  end
+
+  defp validate_issue_cleanup_basename(basename, safe_id)
+       when is_binary(basename) and is_binary(safe_id) do
+    cond do
+      basename in [".", "..", ""] ->
+        {:error, {:issue_cleanup_invalid_basename, basename}}
+
+      issue_cleanup_basename?(basename, safe_id) ->
+        :ok
+
+      true ->
+        {:error, {:issue_cleanup_unscoped_basename, basename, safe_id}}
+    end
+  end
+
+  defp validate_issue_cleanup_pattern_prefix(dirname, expanded_pattern)
+       when is_binary(dirname) and is_binary(expanded_pattern) do
+    if glob_in_path_prefix?(dirname) do
+      {:error, {:issue_cleanup_glob_outside_basename, expanded_pattern}}
+    else
+      :ok
+    end
+  end
+
+  defp validate_issue_cleanup_match(path, safe_id, allowed_roots)
+       when is_binary(path) and is_binary(safe_id) and is_list(allowed_roots) do
+    expanded_path = Path.expand(path)
+    basename = Path.basename(expanded_path)
+
+    cond do
+      basename in [".", "..", ""] ->
+        {:error, {:issue_cleanup_invalid_basename, basename}}
+
+      not issue_cleanup_basename?(basename, safe_id) ->
+        {:error, {:issue_cleanup_unscoped_basename, basename, safe_id}}
+
+      true ->
+        validate_issue_cleanup_directory(Path.dirname(expanded_path), allowed_roots)
+    end
+  end
+
+  defp validate_issue_cleanup_directory(path, allowed_roots)
+       when is_binary(path) and is_list(allowed_roots) do
+    expanded_path = Path.expand(path)
+
+    Enum.find_value(
+      allowed_roots,
+      {:error, {:issue_cleanup_outside_allowed_roots, expanded_path, allowed_roots}},
+      fn root ->
+        case validate_issue_cleanup_root(expanded_path, root) do
+          :ok -> :ok
+          {:error, _reason} -> nil
+        end
+      end
+    )
+  end
+
+  defp validate_issue_cleanup_root(path, root) when is_binary(path) and is_binary(root) do
+    expanded_root = Path.expand(root)
+    expanded_root_prefix = expanded_root <> "/"
+
+    with {:ok, canonical_path} <- PathSafety.canonicalize(path),
+         {:ok, canonical_root} <- PathSafety.canonicalize(expanded_root) do
+      canonical_root_prefix = canonical_root <> "/"
+
+      cond do
+        canonical_path == canonical_root ->
+          :ok
+
+        String.starts_with?(canonical_path <> "/", canonical_root_prefix) ->
+          :ok
+
+        String.starts_with?(path <> "/", expanded_root_prefix) ->
+          {:error, {:issue_cleanup_symlink_escape, path, canonical_root}}
+
+        true ->
+          {:error, {:issue_cleanup_outside_allowed_root, canonical_path, canonical_root}}
+      end
+    else
+      {:error, {:path_canonicalize_failed, unreadable_path, reason}} ->
+        {:error, {:issue_cleanup_path_unreadable, unreadable_path, reason}}
+    end
+  end
+
+  defp allowed_issue_cleanup_roots(opts) when is_list(opts) do
+    case Keyword.get(opts, :allowed_external_roots, []) do
+      roots when is_list(roots) ->
+        (@default_issue_cleanup_external_roots ++ roots)
+        |> Enum.filter(&is_binary/1)
+        |> Enum.map(&Path.expand/1)
+        |> Enum.uniq()
+
+      _ ->
+        @default_issue_cleanup_external_roots
+    end
+  end
+
+  defp issue_cleanup_basename?(basename, safe_id)
+       when is_binary(basename) and is_binary(safe_id) do
+    String.starts_with?(basename, "#{@issue_cleanup_prefix}#{safe_id}-")
+  end
+
+  defp glob_in_path_prefix?(path) when is_binary(path) do
+    String.contains?(path, ["*", "?", "["])
+  end
+
+  defp with_issue_cleanup_lock(safe_id, fun)
+       when is_binary(safe_id) and is_function(fun, 0) do
+    lock_path = issue_cleanup_lock_path(safe_id)
+
+    case acquire_issue_cleanup_lock(lock_path, @issue_cleanup_lock_max_attempts) do
+      :ok ->
+        try do
+          fun.()
+        after
+          release_issue_cleanup_lock(lock_path)
+        end
+
+      {:error, reason} ->
+        Logger.warning("Skipping issue cleanup lock acquisition issue_identifier=#{safe_id} reason=#{inspect(reason)}")
+
+        false
+    end
+  end
+
+  defp issue_cleanup_lock_path(safe_id) when is_binary(safe_id) do
+    Config.settings!().workspace.root
+    |> Path.expand()
+    |> Path.join(@issue_cleanup_lock_dir)
+    |> Path.join(safe_id)
+  end
+
+  defp acquire_issue_cleanup_lock(lock_path, attempts_left)
+       when is_binary(lock_path) and is_integer(attempts_left) and attempts_left > 0 do
+    lock_root = Path.dirname(lock_path)
+
+    case File.mkdir(lock_path) do
+      :ok ->
+        :ok
+
+      {:error, :enoent} ->
+        File.mkdir_p!(lock_root)
+        acquire_issue_cleanup_lock(lock_path, attempts_left)
+
+      {:error, :eexist} ->
+        Process.sleep(@issue_cleanup_lock_retry_ms)
+        acquire_issue_cleanup_lock(lock_path, attempts_left - 1)
+
+      {:error, reason} ->
+        {:error, {:issue_cleanup_lock_failed, lock_path, reason}}
+    end
+  end
+
+  defp acquire_issue_cleanup_lock(lock_path, 0) when is_binary(lock_path) do
+    {:error, {:issue_cleanup_lock_timeout, lock_path}}
+  end
+
+  defp release_issue_cleanup_lock(lock_path) when is_binary(lock_path) do
+    case File.rmdir(lock_path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, :enotempty} -> File.rm_rf(lock_path)
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp completed_issues_sorted(issues) do
     issues
     |> Enum.flat_map(fn issue ->
       case completed_issue_identifier(issue) do
-        identifier when is_binary(identifier) -> [{identifier, completed_issue_sort_key(issue)}]
-        _ -> []
+        identifier when is_binary(identifier) ->
+          [{issue, identifier, completed_issue_sort_key(issue)}]
+
+        _ ->
+          []
       end
     end)
-    |> Enum.sort_by(fn {_identifier, sort_key} -> sort_key end, :desc)
-    |> Enum.uniq_by(fn {identifier, _sort_key} -> identifier end)
-    |> Enum.map(fn {identifier, _sort_key} -> identifier end)
+    |> Enum.sort_by(fn {_issue, _identifier, sort_key} -> sort_key end, :desc)
+    |> Enum.uniq_by(fn {_issue, identifier, _sort_key} -> identifier end)
+    |> Enum.map(fn {issue, _identifier, _sort_key} -> issue end)
   end
 
   defp completed_issue_identifier(%{identifier: identifier})
