@@ -382,7 +382,7 @@ defmodule SymphonyElixir.Orchestrator do
           Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
         end)
 
-        terminate_running_issue(state, issue.id, false)
+        terminate_running_issue(state, issue.id, true)
 
       !issue_routable_to_worker?(issue) ->
         with_log_metadata(log_metadata, fn ->
@@ -462,10 +462,6 @@ defmodule SymphonyElixir.Orchestrator do
       %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
         state = record_session_completion_totals(state, running_entry)
 
-        if cleanup_workspace do
-          cleanup_issue_workspace(identifier)
-        end
-
         if is_pid(pid) do
           terminate_task(pid)
         end
@@ -474,12 +470,18 @@ defmodule SymphonyElixir.Orchestrator do
           Process.demonitor(ref, [:flush])
         end
 
-        %{
+        updated_state = %{
           state
           | running: Map.delete(state.running, issue_id),
             claimed: MapSet.delete(state.claimed, issue_id),
             retry_attempts: Map.delete(state.retry_attempts, issue_id)
         }
+
+        if cleanup_workspace do
+          maybe_cleanup_terminal_issue_artifacts(updated_state, issue_id, identifier)
+        else
+          updated_state
+        end
 
       _ ->
         release_issue_claim(state, issue_id)
@@ -881,7 +883,12 @@ defmodule SymphonyElixir.Orchestrator do
           end
         )
 
-        {:noreply, release_issue_claim(state, issue_id)}
+        state =
+          state
+          |> release_issue_claim(issue_id)
+          |> maybe_cleanup_terminal_issue_artifacts(issue_id, issue.identifier)
+
+        {:noreply, state}
 
       retry_candidate_issue?(issue, terminal_states) ->
         handle_active_retry(state, issue, attempt, metadata)
@@ -909,11 +916,11 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, release_issue_claim(state, issue_id)}
   end
 
-  defp cleanup_issue_workspace(identifier) when is_binary(identifier) do
-    Workspace.remove_issue_workspaces(identifier)
+  defp cleanup_issue_artifacts(identifier) when is_binary(identifier) do
+    Workspace.cleanup_issue_artifacts(identifier)
   end
 
-  defp cleanup_issue_workspace(_identifier), do: :ok
+  defp cleanup_issue_artifacts(_identifier), do: :ok
 
   defp handle_agent_exit_reason(
          state,
@@ -1091,22 +1098,35 @@ defmodule SymphonyElixir.Orchestrator do
        do: state
 
   defp maybe_schedule_terminal_workspace_cleanup(%State{} = state, source) do
+    busy_issue_ids = busy_issue_ids_for_cleanup(state)
+
     task =
       Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
-        {:workspace_cleanup_completed, source, run_terminal_workspace_cleanup(source)}
+        {:workspace_cleanup_completed, source, run_terminal_workspace_cleanup(source, busy_issue_ids)}
       end)
 
     %{state | workspace_cleanup_ref: task.ref}
   end
 
-  defp run_terminal_workspace_cleanup(source) do
+  defp run_terminal_workspace_cleanup(source, busy_issue_ids) when is_map(busy_issue_ids) do
     keep_recent = workspace_cleanup_keep_recent()
     terminal_cleanup_states = terminal_cleanup_states()
 
     case Tracker.fetch_issues_by_states(terminal_cleanup_states) do
       {:ok, issues} ->
+        {eligible_issues, _skipped_issues} =
+          partition_terminal_cleanup_issues(issues, busy_issue_ids)
+
+        Enum.each(eligible_issues, fn
+          %Issue{identifier: identifier} when is_binary(identifier) and identifier != "" ->
+            cleanup_issue_artifacts(identifier)
+
+          _ ->
+            :ok
+        end)
+
         {:ok, %{removed: removed}} =
-          Workspace.cleanup_completed_issue_workspaces(issues, keep_recent: keep_recent)
+          Workspace.cleanup_completed_issue_workspaces(eligible_issues, keep_recent: keep_recent)
 
         if removed != [] do
           Logger.info("Workspace retention cleanup source=#{source} removed=#{length(removed)} keep_recent=#{keep_recent}")
@@ -1245,6 +1265,40 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp notify_dashboard do
     StatusDashboard.notify_update()
+  end
+
+  defp maybe_cleanup_terminal_issue_artifacts(%State{} = state, issue_id, identifier)
+       when is_binary(issue_id) do
+    if issue_cleanup_busy?(state, issue_id) do
+      state
+    else
+      cleanup_issue_artifacts(identifier)
+      state
+    end
+  end
+
+  defp maybe_cleanup_terminal_issue_artifacts(%State{} = state, _issue_id, _identifier), do: state
+
+  defp busy_issue_ids_for_cleanup(%State{} = state) do
+    state.running
+    |> Map.keys()
+    |> Kernel.++(Map.keys(state.retry_attempts))
+    |> MapSet.new()
+  end
+
+  defp partition_terminal_cleanup_issues(issues, busy_issue_ids)
+       when is_list(issues) and is_map(busy_issue_ids) do
+    Enum.split_with(issues, fn
+      %Issue{id: issue_id} when is_binary(issue_id) ->
+        not MapSet.member?(busy_issue_ids, issue_id)
+
+      _ ->
+        true
+    end)
+  end
+
+  defp issue_cleanup_busy?(%State{} = state, issue_id) when is_binary(issue_id) do
+    Map.has_key?(state.running, issue_id) or Map.has_key?(state.retry_attempts, issue_id)
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do

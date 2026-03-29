@@ -343,7 +343,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "terminal issue state stops running agent and defers workspace cleanup to retention pass" do
+  test "terminal issue state stops running agent and cleans issue artifacts" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -353,6 +353,7 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-2"
     issue_identifier = "MT-556"
     workspace = Path.join(test_root, issue_identifier)
+    issue_tmp_dir = Path.join("/tmp", "symphony-#{issue_identifier}-#{System.unique_integer([:positive])}")
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
@@ -363,6 +364,8 @@ defmodule SymphonyElixir.CoreTest do
 
       File.mkdir_p!(test_root)
       File.mkdir_p!(workspace)
+      File.mkdir_p!(issue_tmp_dir)
+      File.write!(Path.join(issue_tmp_dir, "marker.txt"), issue_identifier)
 
       agent_pid =
         spawn(fn ->
@@ -400,9 +403,11 @@ defmodule SymphonyElixir.CoreTest do
       refute Map.has_key?(updated_state.running, issue_id)
       refute MapSet.member?(updated_state.claimed, issue_id)
       refute Process.alive?(agent_pid)
-      assert File.exists?(workspace)
+      refute File.exists?(workspace)
+      refute File.exists?(issue_tmp_dir)
     after
       File.rm_rf(test_root)
+      File.rm_rf(issue_tmp_dir)
     end
   end
 

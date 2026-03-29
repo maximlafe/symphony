@@ -1129,6 +1129,160 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert :ok = Workspace.remove_issue_workspaces(nil)
   end
 
+  test "issue cleanup removes the exact workspace and namespaced tmp artifacts" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-issue-artifact-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    issue_identifier = "LET-263"
+    workspace = Path.join(workspace_root, issue_identifier)
+    issue_tmp_dir = Path.join("/tmp", "symphony-#{issue_identifier}-#{System.unique_integer([:positive])}")
+    shared_tmp_dir = Path.join("/tmp", "symphony-shared-#{System.unique_integer([:positive])}")
+
+    try do
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "marker.txt"), "workspace")
+      File.mkdir_p!(issue_tmp_dir)
+      File.write!(Path.join(issue_tmp_dir, "marker.txt"), "artifact")
+      File.mkdir_p!(shared_tmp_dir)
+      File.write!(Path.join(shared_tmp_dir, "marker.txt"), "shared")
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert :ok = Workspace.cleanup_issue_artifacts(issue_identifier)
+      refute File.exists?(workspace)
+      refute File.exists?(issue_tmp_dir)
+      assert File.exists?(shared_tmp_dir)
+    after
+      File.rm_rf(workspace_root)
+      File.rm_rf(issue_tmp_dir)
+      File.rm_rf(shared_tmp_dir)
+    end
+  end
+
+  test "issue cleanup removes explicitly allowed namespaced external paths" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-allowed-issue-artifact-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    custom_root = Path.join(test_root, "artifacts")
+    issue_identifier = "LET-264"
+    explicit_artifact = Path.join(custom_root, "symphony-#{issue_identifier}-report")
+    shared_artifact = Path.join(custom_root, "shared-report")
+
+    try do
+      File.mkdir_p!(explicit_artifact)
+      File.mkdir_p!(shared_artifact)
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert :ok =
+               Workspace.cleanup_issue_artifacts(issue_identifier,
+                 external_paths: [explicit_artifact],
+                 allowed_external_roots: [custom_root]
+               )
+
+      refute File.exists?(explicit_artifact)
+      assert File.exists?(shared_artifact)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "issue cleanup ignores shared paths and unsafe external masks" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-unsafe-issue-artifact-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    custom_root = Path.join(test_root, "artifacts")
+    issue_identifier = "LET-265"
+    shared_tmp_path = Path.join("/tmp", "shared-artifact-#{System.unique_integer([:positive])}")
+
+    unsafe_nested_artifact =
+      Path.join([
+        custom_root,
+        "nested",
+        "symphony-#{issue_identifier}-artifact"
+      ])
+
+    try do
+      File.mkdir_p!(Path.dirname(unsafe_nested_artifact))
+      File.write!(unsafe_nested_artifact, "keep")
+      File.write!(shared_tmp_path, "keep")
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert :ok =
+               Workspace.cleanup_issue_artifacts(issue_identifier,
+                 external_paths: [
+                   Path.join("/tmp", "*"),
+                   Path.join([custom_root, "*", "symphony-#{issue_identifier}-*"]),
+                   shared_tmp_path
+                 ],
+                 allowed_external_roots: [custom_root]
+               )
+
+      assert File.exists?(shared_tmp_path)
+      assert File.exists?(unsafe_nested_artifact)
+    after
+      File.rm_rf(test_root)
+      File.rm_rf(shared_tmp_path)
+    end
+  end
+
+  test "issue cleanup serializes concurrent cleanup for the same issue" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-serialized-issue-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    before_remove_log = Path.join(test_root, "before-remove.log")
+    issue_identifier = "LET-266"
+    workspace = Path.join(workspace_root, issue_identifier)
+    issue_tmp_dir = Path.join("/tmp", "symphony-#{issue_identifier}-#{System.unique_integer([:positive])}")
+
+    try do
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "marker.txt"), "workspace")
+      File.mkdir_p!(issue_tmp_dir)
+      File.write!(Path.join(issue_tmp_dir, "marker.txt"), "artifact")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_remove: """
+        printf 'cleanup\\n' >> "#{before_remove_log}"
+        sleep 0.2
+        """
+      )
+
+      results =
+        1..2
+        |> Task.async_stream(
+          fn _ -> Workspace.cleanup_issue_artifacts(issue_identifier) end,
+          max_concurrency: 2,
+          timeout: 5_000
+        )
+        |> Enum.to_list()
+
+      assert results == [ok: :ok, ok: :ok]
+      refute File.exists?(workspace)
+      refute File.exists?(issue_tmp_dir)
+      assert File.read!(before_remove_log) == "cleanup\n"
+    after
+      File.rm_rf(test_root)
+      File.rm_rf(issue_tmp_dir)
+    end
+  end
+
   test "workspace reports recursive disk usage bytes" do
     workspace_root =
       Path.join(

@@ -109,6 +109,11 @@ Instructions:
 - Fresh workspace bootstrap is `git clone` of `maximlafe/symphony` followed by `make symphony-bootstrap`.
 - Run `make symphony-preflight` once per run before treating auth or tooling gaps as blockers.
 - Default validation gate is `make symphony-validate`; run `make symphony-live-e2e` only for explicit smoke or end-to-end tasks that should exercise real Linear and Codex services.
+- Terminal-state per-task cleanup is limited to the exact issue workspace and issue-prefixed task artifacts such as `/tmp/symphony-<ISSUE>-*` and `/var/tmp/symphony-<ISSUE>-*`.
+- `workspace.cleanup_keep_recent` remains a retention setting for workspaces inside `workspace.root`; do not use it as a shared `/tmp` cleanup policy.
+- External task-scoped artifacts that should be eligible for automatic cleanup must be explicitly namespaced as `symphony-<ISSUE>-...` and validated against allowed roots.
+- `hooks.before_remove` is workspace-scoped only; it must not be treated as a hook for shared caches, logs, or broad external path cleanup.
+- `Merging` is an active state, not a terminal cleanup trigger.
 - Repo-local worker skills live in `.agents/skills/` and are part of the required target-repo contract.
 
 ## Status map
