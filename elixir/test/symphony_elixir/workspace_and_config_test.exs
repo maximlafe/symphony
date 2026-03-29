@@ -1913,6 +1913,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), server_path: " proxy/symphony/ ")
     assert Config.settings!().server.path == "/proxy/symphony"
+
+    write_workflow_file!(Workflow.workflow_file_path(), server_path: "/")
+    assert Config.settings!().server.path == "/"
+
+    write_workflow_file!(Workflow.workflow_file_path(), server_path: "   ")
+    assert Config.settings!().server.path == nil
   end
 
   test "config resolves $VAR references for env-backed secret and path values" do
