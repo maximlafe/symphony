@@ -110,6 +110,10 @@ Instructions:
 - Run `make symphony-preflight` once per run before treating auth or tooling gaps as blockers.
 - Default validation gate is `make symphony-validate`; run `make symphony-live-e2e` only for explicit smoke or end-to-end tasks that should exercise real Linear and Codex services.
 - Repo-local worker skills live in `.agents/skills/` and are part of the required target-repo contract.
+- When a fresh working branch is needed, do not reuse tracker-generated `branchName` values. Create the branch yourself as `Symphony/<lowercase issue identifier>-<short-kebab-summary>`.
+- Keep the summary slug ASCII, brief, and outcome-oriented. Prefer 2-6 meaningful English words, for example `Symphony/let-267-safe-task-cleanup`.
+- Never put usernames, worker ids, or full-title transliterations into the branch name. Names like `cycloid-yips0i/...` are invalid for this workflow.
+- When creating or editing a PR, keep the title short and review-friendly in the form `<ISSUE-ID>: <clear shipped outcome>` instead of copying a long noisy issue title verbatim.
 
 ## Status map
 
@@ -141,7 +145,7 @@ Instructions:
 5. Minimal recovery for straightforward `In Progress` runs:
    - if `.workpad-id` exists and the live workpad is available, read only the current state, live workpad, current branch/HEAD, and PR link or attachment if present;
    - reread full comment/history context only for missing workpad, state/content mismatch, `Rework`, or real ambiguity.
-6. If the existing branch PR is already closed or merged, do not reuse that branch. Create a fresh branch from `origin/main` and continue as a new attempt.
+6. If the existing branch PR is already closed or merged, do not reuse that branch. Create a fresh branch from `origin/main` using the required `Symphony/<issue-id>-<short-kebab-summary>` format and continue as a new attempt.
 
 ## Step 1: Execute (Todo or In Progress)
 
@@ -249,7 +253,7 @@ Use this only when completion is blocked by missing required tools or missing au
 2. Re-read the issue body and human review feedback, explicitly identify what changes this attempt.
 3. Close the existing PR tied to the issue.
 4. Remove the existing `## Codex Workpad` comment.
-5. Create a fresh branch from `origin/main`.
+5. Create a fresh branch from `origin/main` using the required `Symphony/<issue-id>-<short-kebab-summary>` format.
 6. Bootstrap a new workpad and execute the normal flow again.
 
 ## Human Review handoff bar

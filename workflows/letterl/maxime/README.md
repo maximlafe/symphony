@@ -35,7 +35,8 @@ Notes:
   - `Repo:` is an audit mirror of the resolved repository and must match the routing implied by project metadata and any required `repo:*` label;
   - if `Base branch:` is missing, the worker stays unattended and falls back to that repository's default branch;
   - if `Base branch:` is invalid or that branch does not satisfy the `make symphony-bootstrap` contract, the task moves into the blocker path instead of silently picking another branch or failing inside the workspace hook.
-- When a run creates a fresh working branch, the workpad should record branch lineage as `Новая ветка <branch> создана от origin/<base>`.
+- When a run creates a fresh working branch, name it `Symphony/<lowercase issue identifier>-<short-kebab-summary>` instead of reusing Linear `gitBranchName` values such as `cycloid-yips0i/...`, and record branch lineage as `Новая ветка <branch> создана от origin/<base>`.
+- PR titles for unattended runs should stay short and outcome-oriented in the form `<ISSUE-ID>: <clear shipped outcome>`.
 - PR handoff uses `In Review` instead of `Human Review`.
 - Auth and permission blockers move the issue to `Blocked`.
 - `Blocked` is a manual gate: after a `decision` or `human-action` handoff is resolved, resume only when a human moves the issue back to `In Progress`; comments alone do not resume work.

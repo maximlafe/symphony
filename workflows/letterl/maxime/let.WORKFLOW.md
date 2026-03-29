@@ -522,6 +522,10 @@ Instructions:
 - Use local `workpad.md` as the working copy and sync the live workpad only at bootstrap, meaningful milestones, and final handoff.
 - Before each automated stage (`Planning`, `In Progress`, `Rework`, `Merging`), post one separate top-level stage-start comment before the first live workpad sync of that stage.
 - Before any Git sync or branch decision, treat `.symphony-source-repository` and `.symphony-base-branch` as the authoritative workspace routing metadata when those files exist.
+- When a fresh working branch is needed, do not reuse Linear `gitBranchName` values. Create the branch yourself as `Symphony/<lowercase issue identifier>-<short-kebab-summary>`.
+- Keep the summary slug ASCII, concise, and outcome-oriented. Prefer 2-6 meaningful English words, for example `Symphony/let-267-safe-task-cleanup`.
+- Never put usernames, worker ids, or full-title transliterations into the branch name. Names like `cycloid-yips0i/...` are invalid for this workflow.
+- When creating or editing a PR, keep the title short and review-friendly in the form `<ISSUE-ID>: <clear shipped outcome>` instead of copying a long noisy issue title verbatim.
 - When normalizing the issue description into a task-spec, preserve or re-add the final `## Symphony` section with machine-readable `Repo:` and `Base branch:` lines; treat it as durable routing and audit metadata, not as workpad content.
 - If `.symphony-base-branch-note` exists, translate it into Russian in `Заметки` once and continue without asking a human; the note may describe repo-label fallback for an already bound workspace or default base-branch fallback chosen for this ticket.
 - If `.symphony-base-branch-error` exists, treat it as a routing/configuration blocker: translate the message into Russian in the workpad, fill `Checkpoint` with `checkpoint_type: human-action`, a justified `risk_level`, and a short `summary`, then move the issue to `Blocked` and stop.
@@ -566,7 +570,7 @@ Instructions:
 5. Minimal recovery for straightforward `In Progress` runs:
    - if `.workpad-id` exists and the issue is already in `In Progress`, read only the current state, the issue-description task-spec, the live workpad, the current branch/HEAD, and the PR link or attachment if present;
    - reread full comment/history context only for missing workpad, state/content mismatch, `Rework`, missing PR context, or real ambiguity.
-6. If the existing branch PR is already closed or merged, do not reuse that branch. Create a fresh branch from `origin/<configured base branch>` and continue as a new attempt.
+6. If the existing branch PR is already closed or merged, do not reuse that branch. Create a fresh branch from `origin/<configured base branch>` using the required `Symphony/<issue-id>-<short-kebab-summary>` format and continue as a new attempt.
 
 ## Step 1: Planning phase (Todo or Planning -> Plan Review)
 
@@ -691,7 +695,7 @@ Use this only when completion is blocked by missing required tools or missing au
 3. Re-read the issue body task-spec, human comments, and PR feedback; explicitly identify what changes this attempt.
 4. Close the existing PR tied to the issue.
 5. Remove the existing `## Рабочий журнал Codex` comment.
-6. Create a fresh branch from `origin/<configured base branch>`.
+6. Create a fresh branch from `origin/<configured base branch>` using the required `Symphony/<issue-id>-<short-kebab-summary>` format.
 7. Create a new bootstrap `## Рабочий журнал Codex` comment.
 8. In the new workpad `Заметки`, record `Новая ветка <branch> создана от origin/<configured base branch>.` before further implementation.
 9. Refresh the task-spec description if the task contract changed for the new attempt, then rewrite the new workpad in Russian while preserving or re-adding the final `## Symphony` section from `.symphony-source-repository` and `.symphony-base-branch`.
