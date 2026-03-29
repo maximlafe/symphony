@@ -3165,7 +3165,7 @@ defmodule SymphonyElixir.CoreTest do
       assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
 
       lines = File.read!(trace_file) |> String.split("\n", trim: true)
-      assert length(Enum.filter(lines, &(&1 == "RUN"))) == 1
+      assert length(Enum.filter(lines, &String.contains?(&1, "\"method\":\"thread/start\""))) == 1
       assert length(Enum.filter(lines, &String.contains?(&1, "\"method\":\"turn/start\""))) == 2
     after
       File.rm_rf(test_root)

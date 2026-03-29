@@ -5,14 +5,27 @@ defmodule SymphonyElixirWeb.Layouts do
 
   use Phoenix.Component
 
-  alias SymphonyElixirWeb.StaticAssets
+  alias SymphonyElixirWeb.{Endpoint, StaticAssets}
 
   @spec root(map()) :: Phoenix.LiveView.Rendered.t()
   def root(assigns) do
+    asset_version = StaticAssets.version()
+
     assigns =
       assigns
       |> assign(:csrf_token, Plug.CSRFProtection.get_csrf_token())
-      |> assign(:asset_version, StaticAssets.version())
+      |> assign(:asset_version, asset_version)
+      |> assign(:dashboard_css_path, asset_path("/dashboard.css", asset_version))
+      |> assign(
+        :phoenix_html_js_path,
+        asset_path("/vendor/phoenix_html/phoenix_html.js", asset_version)
+      )
+      |> assign(:phoenix_js_path, asset_path("/vendor/phoenix/phoenix.js", asset_version))
+      |> assign(
+        :phoenix_live_view_js_path,
+        asset_path("/vendor/phoenix_live_view/phoenix_live_view.js", asset_version)
+      )
+      |> assign(:live_socket_path, Endpoint.path("/live"))
 
     ~H"""
     <!DOCTYPE html>
@@ -22,9 +35,9 @@ defmodule SymphonyElixirWeb.Layouts do
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="csrf-token" content={@csrf_token} />
         <title>Symphony Observability</title>
-        <script defer src={"/vendor/phoenix_html/phoenix_html.js?v=#{@asset_version}"}></script>
-        <script defer src={"/vendor/phoenix/phoenix.js?v=#{@asset_version}"}></script>
-        <script defer src={"/vendor/phoenix_live_view/phoenix_live_view.js?v=#{@asset_version}"}></script>
+        <script defer src={@phoenix_html_js_path}></script>
+        <script defer src={@phoenix_js_path}></script>
+        <script defer src={@phoenix_live_view_js_path}></script>
         <script>
           window.addEventListener("DOMContentLoaded", function () {
             var root = document.documentElement;
@@ -203,7 +216,7 @@ defmodule SymphonyElixirWeb.Layouts do
 
             if (!window.Phoenix || !window.LiveView) return;
 
-            liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
+            liveSocket = new window.LiveView.LiveSocket("<%= @live_socket_path %>", window.Phoenix.Socket, {
               params: {_csrf_token: csrfToken}
             });
 
@@ -345,7 +358,7 @@ defmodule SymphonyElixirWeb.Layouts do
             });
           });
         </script>
-        <link rel="stylesheet" href={"/dashboard.css?v=#{@asset_version}"} />
+        <link rel="stylesheet" href={@dashboard_css_path} />
       </head>
       <body>
         {@inner_content}
@@ -361,5 +374,9 @@ defmodule SymphonyElixirWeb.Layouts do
       {@inner_content}
     </main>
     """
+  end
+
+  defp asset_path(path, version) when is_binary(path) and is_binary(version) do
+    Endpoint.path(path) <> "?v=" <> version
   end
 end

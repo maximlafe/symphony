@@ -24,7 +24,7 @@ defmodule SymphonyElixir.TestSupport do
       import SymphonyElixir.TestSupport,
         only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
 
-      setup do
+      setup context do
         :global.set_lock({SymphonyElixir.TestSupport, :workflow_test_lock})
 
         workflow_root =
@@ -39,8 +39,12 @@ defmodule SymphonyElixir.TestSupport do
 
         File.mkdir_p!(workflow_root)
         SymphonyElixir.TestSupport.install_test_codex!(workflow_root)
-        System.delete_env("LINEAR_API_KEY")
-        System.delete_env("LINEAR_ASSIGNEE")
+
+        unless Map.get(context, :live_e2e, false) do
+          System.delete_env("LINEAR_API_KEY")
+          System.delete_env("LINEAR_ASSIGNEE")
+        end
+
         workflow_file = Path.join(workflow_root, "WORKFLOW.md")
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)

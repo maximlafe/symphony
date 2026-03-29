@@ -169,6 +169,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_receive :poll, 1_100
 
     Process.exit(manual_pid, :normal)
+    SymphonyElixir.TestSupport.ensure_application_started()
     restart_result = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
 
     assert match?({:ok, _pid}, restart_result) or
@@ -581,6 +582,37 @@ defmodule SymphonyElixir.ExtensionsTest do
       response(get(build_conn(), "/vendor/phoenix_live_view/phoenix_live_view.js"), 200)
 
     assert live_view_js =~ "var LiveView = (() => {"
+  end
+
+  @tag :dashboard
+  test "dashboard bootstraps asset and live paths with the configured endpoint prefix" do
+    orchestrator_name = Module.concat(__MODULE__, :PrefixedAssetOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: %{
+          queued: true,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: ["poll"]
+        }
+      )
+
+    start_test_endpoint(
+      orchestrator: orchestrator_name,
+      snapshot_timeout_ms: 50,
+      url: [host: "localhost", path: "/proxy/symphony"]
+    )
+
+    html = html_response(get(build_conn(), "/"), 200)
+
+    assert html =~ ~s(/proxy/symphony/dashboard.css?v=)
+    assert html =~ ~s(/proxy/symphony/vendor/phoenix_html/phoenix_html.js?v=)
+    assert html =~ ~s(/proxy/symphony/vendor/phoenix/phoenix.js?v=)
+    assert html =~ ~s(/proxy/symphony/vendor/phoenix_live_view/phoenix_live_view.js?v=)
+    assert html =~ ~s(new window.LiveView.LiveSocket("/proxy/symphony/live", window.Phoenix.Socket, {)
   end
 
   @tag :dashboard

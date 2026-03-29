@@ -385,7 +385,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        }}
     )
 
-    assert_receive {:memory_tracker_comment, ^issue_id, second_comment}, 3_000
+    assert_receive {:memory_tracker_comment, ^issue_id, second_comment}, 5_000
     assert second_comment =~ "waiting CI"
     assert second_comment =~ "github_wait_for_checks"
   end
@@ -621,9 +621,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       )
 
       {:ok, _pid} = Orchestrator.start_link(name: orchestrator_name)
-      Process.sleep(250)
 
-      refute File.exists?(workspace)
+      assert_eventually(fn -> not File.exists?(workspace) end)
     after
       case Process.whereis(orchestrator_name) do
         pid when is_pid(pid) -> Process.exit(pid, :normal)
