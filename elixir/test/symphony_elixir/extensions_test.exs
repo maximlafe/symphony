@@ -807,31 +807,21 @@ defmodule SymphonyElixir.ExtensionsTest do
   @tag :dashboard
   test "http server clears a stale endpoint proxy path when server path is unset" do
     orchestrator_name = Module.concat(__MODULE__, :ClearedProxyPathOrchestrator)
-    managed_path_key = {HttpServer, :managed_url_path}
-    previous_managed_path = Application.get_env(:symphony_elixir, managed_path_key)
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
 
-    Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint,
-      url: [path: "/stale-proxy"]
+    Application.put_env(
+      :symphony_elixir,
+      SymphonyElixirWeb.Endpoint,
+      endpoint_config
+      |> Keyword.update(:url, [path: "/stale-proxy"], &Keyword.put(&1, :path, "/stale-proxy"))
+      |> Keyword.put(:http_server_managed_url_path, "/stale-proxy")
     )
-    Application.put_env(:symphony_elixir, managed_path_key, "/stale-proxy")
-
-    on_exit(fn ->
-      if is_nil(previous_managed_path) do
-        Application.delete_env(:symphony_elixir, managed_path_key)
-      else
-        Application.put_env(:symphony_elixir, managed_path_key, previous_managed_path)
-      end
-    end)
 
     write_workflow_file!(Workflow.workflow_file_path(), server_path: "   ")
 
-    start_supervised!(
-      {StaticOrchestrator, name: orchestrator_name, snapshot: static_snapshot(), refresh: %{queued: false}}
-    )
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: static_snapshot(), refresh: %{queued: false}})
 
-    start_supervised!(
-      {HttpServer, [host: "127.0.0.1", port: 0, orchestrator: orchestrator_name, snapshot_timeout_ms: 50]}
-    )
+    start_supervised!({HttpServer, [host: "127.0.0.1", port: 0, orchestrator: orchestrator_name, snapshot_timeout_ms: 50]})
 
     port = wait_for_bound_port()
 
@@ -840,6 +830,56 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute response.body =~ "/stale-proxy/dashboard.css?v="
     assert response.body =~ ~s(href="/dashboard.css?v=)
     assert response.body =~ ~s(new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {)
+  end
+
+  @tag :dashboard
+  test "http server restores an external endpoint proxy path when server path is unset" do
+    snapshot = static_snapshot()
+    orchestrator_name = Module.concat(__MODULE__, :RestoredProxyPathOrchestrator)
+
+    refresh = %{
+      queued: false,
+      coalesced: false,
+      requested_at: DateTime.utc_now(),
+      operations: []
+    }
+
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+
+    Application.put_env(
+      :symphony_elixir,
+      SymphonyElixirWeb.Endpoint,
+      Keyword.update(endpoint_config, :url, [path: "/external-prefix"], &Keyword.put(&1, :path, "/external-prefix"))
+    )
+
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot, refresh: refresh})
+
+    write_workflow_file!(Workflow.workflow_file_path(), server_path: "/managed-prefix")
+
+    start_supervised!({HttpServer, [host: "127.0.0.1", port: 0, orchestrator: orchestrator_name, snapshot_timeout_ms: 50]})
+
+    port = wait_for_bound_port()
+
+    response = Req.get!("http://127.0.0.1:#{port}/")
+    assert response.status == 200
+    assert response.body =~ ~s(/managed-prefix/dashboard.css?v=)
+    assert response.body =~ ~s(new window.LiveView.LiveSocket("/managed-prefix/live", window.Phoenix.Socket, {)
+
+    stop_supervised!(HttpServer)
+
+    write_workflow_file!(Workflow.workflow_file_path(), server_path: "   ")
+
+    start_supervised!({HttpServer, [host: "127.0.0.1", port: 0, orchestrator: orchestrator_name, snapshot_timeout_ms: 50]})
+
+    restored_port = wait_for_bound_port()
+
+    restored_response = Req.get!("http://127.0.0.1:#{restored_port}/")
+    assert restored_response.status == 200
+    refute restored_response.body =~ "/managed-prefix/dashboard.css?v="
+    assert restored_response.body =~ ~s(/external-prefix/dashboard.css?v=)
+
+    assert restored_response.body =~
+             ~s(new window.LiveView.LiveSocket("/external-prefix/live", window.Phoenix.Socket, {)
   end
 
   defp start_test_endpoint(overrides) do

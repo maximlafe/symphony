@@ -7,6 +7,8 @@ defmodule SymphonyElixir.HttpServer do
   alias SymphonyElixirWeb.Endpoint
 
   @secret_key_bytes 48
+  @managed_url_path_key :http_server_managed_url_path
+  @managed_previous_url_path_key :http_server_previous_url_path
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
@@ -27,12 +29,16 @@ defmodule SymphonyElixir.HttpServer do
 
         with {:ok, ip} <- parse_host(host) do
           existing_endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
-          managed_url_path = Application.get_env(:symphony_elixir, {__MODULE__, :managed_url_path})
+          existing_url = Keyword.get(existing_endpoint_config, :url, [])
+          managed_url_path = Keyword.get(existing_endpoint_config, @managed_url_path_key)
+
+          managed_previous_url_path =
+            Keyword.get(existing_endpoint_config, @managed_previous_url_path_key)
 
           endpoint_opts = [
             server: true,
             http: [ip: ip, port: port],
-            url: endpoint_url(Keyword.get(existing_endpoint_config, :url, []), host, path, managed_url_path),
+            url: endpoint_url(existing_url, host, path, managed_url_path, managed_previous_url_path),
             orchestrator: orchestrator,
             snapshot_timeout_ms: snapshot_timeout_ms,
             secret_key_base: secret_key_base()
@@ -41,9 +47,14 @@ defmodule SymphonyElixir.HttpServer do
           endpoint_config =
             existing_endpoint_config
             |> Keyword.merge(endpoint_opts)
+            |> track_managed_url_path(
+              existing_url,
+              path,
+              managed_url_path,
+              managed_previous_url_path
+            )
 
           Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
-          Application.put_env(:symphony_elixir, {__MODULE__, :managed_url_path}, path)
           Endpoint.start_link()
         end
 
@@ -86,21 +97,76 @@ defmodule SymphonyElixir.HttpServer do
   defp normalize_host(host) when is_binary(host), do: host
   defp normalize_host(host), do: to_string(host)
 
-  defp endpoint_url(existing_url, host, nil, managed_url_path) do
-    existing_url =
-      if managed_url_path && Keyword.get(existing_url, :path) == managed_url_path do
-        Keyword.delete(existing_url, :path)
-      else
-        existing_url
-      end
-
-    Keyword.merge(existing_url, host: normalize_host(host))
+  defp endpoint_url(existing_url, host, nil, managed_url_path, managed_previous_url_path) do
+    existing_url
+    |> restore_url_path(managed_url_path, managed_previous_url_path)
+    |> Keyword.merge(host: normalize_host(host))
   end
 
-  defp endpoint_url(existing_url, host, path, _managed_url_path) when is_binary(path) do
+  defp endpoint_url(existing_url, host, path, _managed_url_path, _managed_previous_url_path)
+       when is_binary(path) do
     existing_url
     |> Keyword.merge(host: normalize_host(host))
     |> Keyword.put(:path, path)
+  end
+
+  defp restore_url_path(existing_url, managed_url_path, managed_previous_url_path) do
+    if managed_url_path?(existing_url, managed_url_path) do
+      case managed_previous_url_path do
+        path when is_binary(path) -> Keyword.put(existing_url, :path, path)
+        _ -> Keyword.delete(existing_url, :path)
+      end
+    else
+      existing_url
+    end
+  end
+
+  defp track_managed_url_path(
+         endpoint_config,
+         _existing_url,
+         nil,
+         _managed_url_path,
+         _managed_previous_url_path
+       ) do
+    endpoint_config
+    |> Keyword.delete(@managed_url_path_key)
+    |> Keyword.delete(@managed_previous_url_path_key)
+  end
+
+  defp track_managed_url_path(
+         endpoint_config,
+         existing_url,
+         path,
+         managed_url_path,
+         managed_previous_url_path
+       )
+       when is_binary(path) do
+    previous_url_path =
+      if managed_url_path?(existing_url, managed_url_path) do
+        managed_previous_url_path
+      else
+        Keyword.get(existing_url, :path)
+      end
+
+    endpoint_config
+    |> Keyword.put(@managed_url_path_key, path)
+    |> put_previous_url_path(previous_url_path)
+  end
+
+  defp put_previous_url_path(endpoint_config, path) when is_binary(path) do
+    Keyword.put(endpoint_config, @managed_previous_url_path_key, path)
+  end
+
+  defp put_previous_url_path(endpoint_config, _path) do
+    Keyword.delete(endpoint_config, @managed_previous_url_path_key)
+  end
+
+  defp managed_url_path?(existing_url, managed_url_path) when is_binary(managed_url_path) do
+    Keyword.get(existing_url, :path) == managed_url_path
+  end
+
+  defp managed_url_path?(_existing_url, _managed_url_path) do
+    false
   end
 
   defp secret_key_base do
