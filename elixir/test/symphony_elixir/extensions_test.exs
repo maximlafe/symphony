@@ -806,6 +806,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   @tag :dashboard
   test "http server clears a stale endpoint proxy path when server path is unset" do
+    snapshot = static_snapshot()
+    refresh = %{queued: false}
     orchestrator_name = Module.concat(__MODULE__, :ClearedProxyPathOrchestrator)
     endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
 
@@ -819,9 +821,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), server_path: "   ")
 
-    start_supervised!(
-      {StaticOrchestrator, name: orchestrator_name, snapshot: static_snapshot(), refresh: %{queued: false}}
-    )
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot, refresh: refresh})
 
     start_supervised!({HttpServer, [host: "127.0.0.1", port: 0, orchestrator: orchestrator_name, snapshot_timeout_ms: 50]})
 
