@@ -804,6 +804,44 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert response.body =~ ~s(new window.LiveView.LiveSocket("/proxy/symphony/live", window.Phoenix.Socket, {)
   end
 
+  @tag :dashboard
+  test "http server clears a stale endpoint proxy path when server path is unset" do
+    orchestrator_name = Module.concat(__MODULE__, :ClearedProxyPathOrchestrator)
+    managed_path_key = {HttpServer, :managed_url_path}
+    previous_managed_path = Application.get_env(:symphony_elixir, managed_path_key)
+
+    Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint,
+      url: [path: "/stale-proxy"]
+    )
+    Application.put_env(:symphony_elixir, managed_path_key, "/stale-proxy")
+
+    on_exit(fn ->
+      if is_nil(previous_managed_path) do
+        Application.delete_env(:symphony_elixir, managed_path_key)
+      else
+        Application.put_env(:symphony_elixir, managed_path_key, previous_managed_path)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), server_path: "   ")
+
+    start_supervised!(
+      {StaticOrchestrator, name: orchestrator_name, snapshot: static_snapshot(), refresh: %{queued: false}}
+    )
+
+    start_supervised!(
+      {HttpServer, [host: "127.0.0.1", port: 0, orchestrator: orchestrator_name, snapshot_timeout_ms: 50]}
+    )
+
+    port = wait_for_bound_port()
+
+    response = Req.get!("http://127.0.0.1:#{port}/")
+    assert response.status == 200
+    refute response.body =~ "/stale-proxy/dashboard.css?v="
+    assert response.body =~ ~s(href="/dashboard.css?v=)
+    assert response.body =~ ~s(new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {)
+  end
+
   defp start_test_endpoint(overrides) do
     endpoint_config =
       :symphony_elixir

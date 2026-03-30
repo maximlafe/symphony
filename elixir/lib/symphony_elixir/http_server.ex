@@ -27,11 +27,12 @@ defmodule SymphonyElixir.HttpServer do
 
         with {:ok, ip} <- parse_host(host) do
           existing_endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
+          managed_url_path = Application.get_env(:symphony_elixir, {__MODULE__, :managed_url_path})
 
           endpoint_opts = [
             server: true,
             http: [ip: ip, port: port],
-            url: endpoint_url(Keyword.get(existing_endpoint_config, :url, []), host, path),
+            url: endpoint_url(Keyword.get(existing_endpoint_config, :url, []), host, path, managed_url_path),
             orchestrator: orchestrator,
             snapshot_timeout_ms: snapshot_timeout_ms,
             secret_key_base: secret_key_base()
@@ -42,6 +43,7 @@ defmodule SymphonyElixir.HttpServer do
             |> Keyword.merge(endpoint_opts)
 
           Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
+          Application.put_env(:symphony_elixir, {__MODULE__, :managed_url_path}, path)
           Endpoint.start_link()
         end
 
@@ -84,11 +86,18 @@ defmodule SymphonyElixir.HttpServer do
   defp normalize_host(host) when is_binary(host), do: host
   defp normalize_host(host), do: to_string(host)
 
-  defp endpoint_url(existing_url, host, nil) do
+  defp endpoint_url(existing_url, host, nil, managed_url_path) do
+    existing_url =
+      if managed_url_path && Keyword.get(existing_url, :path) == managed_url_path do
+        Keyword.delete(existing_url, :path)
+      else
+        existing_url
+      end
+
     Keyword.merge(existing_url, host: normalize_host(host))
   end
 
-  defp endpoint_url(existing_url, host, path) when is_binary(path) do
+  defp endpoint_url(existing_url, host, path, _managed_url_path) when is_binary(path) do
     existing_url
     |> Keyword.merge(host: normalize_host(host))
     |> Keyword.put(:path, path)
