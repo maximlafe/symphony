@@ -819,7 +819,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), server_path: "   ")
 
-    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: static_snapshot(), refresh: %{queued: false}})
+    start_supervised!(
+      {StaticOrchestrator, name: orchestrator_name, snapshot: static_snapshot(), refresh: %{queued: false}}
+    )
 
     start_supervised!({HttpServer, [host: "127.0.0.1", port: 0, orchestrator: orchestrator_name, snapshot_timeout_ms: 50]})
 
