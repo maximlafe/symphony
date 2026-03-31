@@ -15,8 +15,6 @@ import subprocess
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from http.server import BaseHTTPRequestHandler
 
 
@@ -257,7 +255,13 @@ def find_or_download_nginx(workdir):
     return nginx_bin
 
 
-def write_nginx_config(path, listen_port):
+def write_runtime_include(path, upstream_port):
+    text = CONFIG_PATH.read_text(encoding="utf-8")
+    rewritten = text.replace("127.0.0.1:4101", f"127.0.0.1:{upstream_port}")
+    path.write_text(rewritten, encoding="utf-8")
+
+
+def write_nginx_config(path, listen_port, include_path):
     client_body_temp = path.parent / "client_body_temp"
     proxy_temp = path.parent / "proxy_temp"
     fastcgi_temp = path.parent / "fastcgi_temp"
@@ -284,7 +288,7 @@ def write_nginx_config(path, listen_port):
                 "    server {",
                 f"        listen 127.0.0.1:{listen_port};",
                 "        server_name stream.cash;",
-                f"        include {CONFIG_PATH};",
+                f"        include {include_path};",
                 "    }",
                 "}",
                 "",
@@ -397,87 +401,8 @@ def assert_websocket_proxy(port):
     log("websocket proxy ok: /proxy/symphony/live/echo upgrades and reaches upstream /live/echo")
 
 
-def detect_existing_symphony():
-    try:
-        with urllib.request.urlopen("http://127.0.0.1:4101/", timeout=5) as response:
-            body = response.read(2048).decode("utf-8", "replace")
-    except urllib.error.URLError:
-        return False
-
-    return "Symphony Observability" in body and "/proxy/symphony/" in body
-
-
-def assert_existing_symphony_http_proxy(port):
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    conn.request("GET", "/proxy/symphony/", headers={"Host": "stream.cash"})
-    response = conn.getresponse()
-    body = response.read().decode("utf-8", "replace")
-    conn.close()
-
-    if response.status != 200:
-        raise RuntimeError(f"expected proxied dashboard response, got status={response.status}")
-
-    required_fragments = [
-        "Symphony Observability",
-        "/proxy/symphony/dashboard.css",
-        'LiveSocket("/proxy/symphony/live"',
-    ]
-
-    missing = [fragment for fragment in required_fragments if fragment not in body]
-    if missing:
-        raise RuntimeError(f"proxied dashboard HTML is missing expected fragments: {missing}")
-
-    log("http proxy ok: proxied Symphony dashboard renders behind /proxy/symphony/")
-
-
-def assert_existing_symphony_api_proxy(port):
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    conn.request("GET", "/proxy/symphony/api/v1/state", headers={"Host": "stream.cash"})
-    response = conn.getresponse()
-    body = response.read()
-    conn.close()
-
-    if response.status != 200:
-        raise RuntimeError(f"expected proxied dashboard API response, got status={response.status}")
-
-    payload = json.loads(body.decode("utf-8"))
-    if "counts" not in payload:
-        raise RuntimeError("proxied dashboard API response does not look like Symphony state payload")
-
-    log("api proxy ok: /proxy/symphony/api/v1/state reaches the upstream dashboard API")
-
-
-def assert_existing_symphony_websocket_proxy(port):
-    websocket_key = base64.b64encode(os.urandom(16)).decode("ascii")
-
-    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
-        request = "\r\n".join(
-            [
-                "GET /proxy/symphony/live/websocket?vsn=2.0.0 HTTP/1.1",
-                "Host: stream.cash",
-                "Upgrade: websocket",
-                "Connection: Upgrade",
-                f"Sec-WebSocket-Key: {websocket_key}",
-                "Sec-WebSocket-Version: 13",
-                "",
-                "",
-            ]
-        )
-        sock.sendall(request.encode("ascii"))
-
-        response = b""
-        while b"\r\n\r\n" not in response:
-            response += sock.recv(4096)
-
-    header_block = response.split(b"\r\n\r\n", 1)[0].decode("ascii")
-    if "101 Switching Protocols" not in header_block:
-        raise RuntimeError(f"expected websocket 101, got:\n{header_block}")
-
-    log("websocket proxy ok: /proxy/symphony/live/websocket upgrades through nginx")
-
-
 def run_runtime_smoke():
-    upstream_port = 4101
+    upstream_port = free_port()
     listen_port = free_port()
     temp_parent = REPO_ROOT / ".tmp"
     temp_parent.mkdir(exist_ok=True)
@@ -485,23 +410,13 @@ def run_runtime_smoke():
     with tempfile.TemporaryDirectory(prefix="symphony-nginx-smoke-", dir=temp_parent) as temp_root:
         temp_root_path = pathlib.Path(temp_root)
         nginx_bin = find_or_download_nginx(temp_root_path)
+        runtime_include = temp_root_path / "stream.cash.symphony-proxy.runtime.conf"
         nginx_conf = temp_root_path / "nginx.conf"
-        write_nginx_config(nginx_conf, listen_port)
-        server = None
-        server_thread = None
-        use_existing_symphony = False
-
-        try:
-            server = ThreadingTCPServer(("127.0.0.1", upstream_port), ProxyUpstreamHandler)
-            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-            server_thread.start()
-        except OSError as error:
-            if error.errno != 98:
-                raise
-            if not detect_existing_symphony():
-                raise RuntimeError("port 4101 is already busy and does not appear to be a local Symphony dashboard") from error
-            use_existing_symphony = True
-            log("port 4101 is already busy; reusing the existing local Symphony dashboard for proxy smoke")
+        write_runtime_include(runtime_include, upstream_port)
+        write_nginx_config(nginx_conf, listen_port, runtime_include)
+        server = ThreadingTCPServer(("127.0.0.1", upstream_port), ProxyUpstreamHandler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
 
         try:
             try:
@@ -521,19 +436,12 @@ def run_runtime_smoke():
             ):
                 wait_for_http(listen_port, "/proxy/symphony/")
                 assert_redirect(listen_port)
-                if use_existing_symphony:
-                    assert_existing_symphony_http_proxy(listen_port)
-                    assert_existing_symphony_api_proxy(listen_port)
-                    assert_existing_symphony_websocket_proxy(listen_port)
-                else:
-                    assert_http_proxy(listen_port)
-                    assert_websocket_proxy(listen_port)
+                assert_http_proxy(listen_port)
+                assert_websocket_proxy(listen_port)
         finally:
-            if server is not None:
-                server.shutdown()
-                server.server_close()
-            if server_thread is not None:
-                server_thread.join(timeout=5)
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=5)
 
 
 def parse_args():
