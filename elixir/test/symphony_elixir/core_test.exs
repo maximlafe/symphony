@@ -2952,21 +2952,24 @@ defmodule SymphonyElixir.CoreTest do
 
       lines = File.read!(trace_file) |> String.split("\n", trim: true)
 
-      assert length(Enum.filter(lines, &String.starts_with?(&1, "RUN:"))) == 1
       assert length(Enum.filter(lines, &String.contains?(&1, "\"method\":\"thread/start\""))) == 1
 
-      turn_texts =
+      turn_payloads =
         lines
         |> Enum.filter(&String.starts_with?(&1, "JSON:"))
         |> Enum.map(&String.trim_leading(&1, "JSON:"))
         |> Enum.map(&Jason.decode!/1)
         |> Enum.filter(&(&1["method"] == "turn/start"))
-        |> Enum.map(fn payload ->
+
+      assert length(turn_payloads) == 2
+      assert Enum.uniq(Enum.map(turn_payloads, &get_in(&1, ["params", "threadId"]))) == ["thread-cont"]
+
+      turn_texts =
+        Enum.map(turn_payloads, fn payload ->
           get_in(payload, ["params", "input"])
           |> Enum.map_join("\n", &Map.get(&1, "text", ""))
         end)
 
-      assert length(turn_texts) == 2
       assert Enum.at(turn_texts, 0) =~ "You are an agent for this repository."
       refute Enum.at(turn_texts, 1) =~ "You are an agent for this repository."
       assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
