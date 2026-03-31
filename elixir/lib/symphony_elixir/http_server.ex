@@ -41,7 +41,7 @@ defmodule SymphonyElixir.HttpServer do
             url: endpoint_url(existing_url, host, path, managed_url_path, managed_previous_url_path),
             orchestrator: orchestrator,
             snapshot_timeout_ms: snapshot_timeout_ms,
-            secret_key_base: secret_key_base()
+            secret_key_base: Keyword.get(existing_endpoint_config, :secret_key_base) || secret_key_base()
           ]
 
           endpoint_config =

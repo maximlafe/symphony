@@ -1,0 +1,39 @@
+name: Setup Elixir CI
+description: Install the pinned toolchain, restore caches, and fetch Elixir deps.
+
+inputs:
+  cache-scope:
+    description: Cache namespace suffix for Elixir deps and build artifacts.
+    required: false
+    default: elixir
+
+runs:
+  using: composite
+  steps:
+    - name: Set up mise tools
+      uses: jdx/mise-action@v3
+      with:
+        install: true
+        cache: true
+        working_directory: elixir
+
+    - name: Restore Elixir cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          elixir/deps
+          elixir/_build
+          ~/.mix
+        key: ${{ runner.os }}-${{ inputs.cache-scope }}-${{ hashFiles('elixir/mix.lock', 'elixir/mix.exs', 'elixir/mise.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ inputs.cache-scope }}-
+          ${{ runner.os }}-elixir-
+
+    - name: Install Hex, Rebar, and dependencies
+      shell: bash
+      working-directory: elixir
+      run: |
+        mix local.hex --force
+        mix local.rebar --force
+        mix deps.get
+

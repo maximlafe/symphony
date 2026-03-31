@@ -4,7 +4,7 @@ config :phoenix, :json_library, Jason
 
 config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
-  url: [host: "localhost"],
+  url: [host: "127.0.0.1"],
   render_errors: [
     formats: [html: SymphonyElixirWeb.ErrorHTML, json: SymphonyElixirWeb.ErrorJSON],
     layout: false

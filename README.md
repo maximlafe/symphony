@@ -31,6 +31,18 @@ Fresh worker clones use the contract that lives in this repo:
 
 That means a clean Symphony workspace no longer depends on hidden setup from other repos: the workflow, worker skills, bootstrap, and validation path all live here.
 
+## Production CI/CD contract
+
+The repo now ships a production-oriented CI/CD path:
+
+- `.github/workflows/actionlint.yml` validates workflow syntax and semantics.
+- `.github/workflows/release-image.yml` builds the production image, smoke-tests startup, and
+  publishes a digest-pinned image contract on `main`.
+- `.github/workflows/deploy-production.yml` downloads that contract and performs an environment-gated
+  production deploy.
+- `elixir/deploy/docker/README.md` documents the host env files, rollback flow, and deploy
+  prerequisites.
+
 ## How it works
 
 Symphony polls a Linear project or team for active tickets. Each ticket gets an isolated workspace clone and a Codex agent. The agent reads the ticket, writes a plan, implements, validates, and opens a PR. You review PRs and move tickets through states — the agents handle the rest.
@@ -67,6 +79,9 @@ cd elixir && mise exec -- ./bin/symphony ./WORKFLOW.md --port 4101
 fresh clone. In this repo it configures git credentials through `gh`, prepares the pinned Elixir
 toolchain through `mise`, and keeps the bootstrap path repo-owned instead of buried in shell
 history.
+
+For a host-level Docker deployment instead of an interactive local process, use the runbook in
+`elixir/deploy/docker/README.md` and the digest-pinned image contract emitted by `release-image`.
 
 **[Getting Started with OpenAI Symphony](https://x.com/odysseus0z/status/2031850264240800131)** — full walkthrough with context on why these defaults matter.
 

@@ -2,35 +2,37 @@ name: make-all
 
 on:
   pull_request:
+    paths:
+      - .github/actions/setup-elixir/**
+      - .github/workflows/**
+      - Makefile
+      - README.md
+      - elixir/**
+      - scripts/**
   push:
     branches:
       - main
+    paths:
+      - .github/actions/setup-elixir/**
+      - .github/workflows/**
+      - Makefile
+      - README.md
+      - elixir/**
+      - scripts/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: make-all-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   make-all:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: elixir
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up mise tools
-        uses: jdx/mise-action@v3
-        with:
-          install: true
-          cache: true
-          working_directory: elixir
-
-      - name: Cache deps
-        uses: actions/cache@v4
-        with:
-          path: elixir/deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('elixir/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-
-
-      - name: Verify make all
-        run: make all
+    uses: ./.github/workflows/_elixir-command.yml
+    with:
+      artifact-name: make-all
+      cache-scope: make-all
+      command: make all
+      timeout-minutes: 35
+    secrets: inherit

@@ -168,14 +168,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert removed_state.workflow.prompt == "Manual workflow prompt"
     assert_receive :poll, 1_100
 
-    Process.exit(manual_pid, :normal)
+    Workflow.set_workflow_file_path(existing_path)
+    assert :ok = GenServer.stop(manual_pid, :normal, 1_500)
+    assert Process.whereis(WorkflowStore) == nil
+
     SymphonyElixir.TestSupport.ensure_application_started()
     restart_result = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
 
     assert match?({:ok, _pid}, restart_result) or
+             match?({:error, :running}, restart_result) or
              match?({:error, {:already_started, _pid}}, restart_result)
 
-    Workflow.set_workflow_file_path(existing_path)
+    assert is_pid(Process.whereis(WorkflowStore))
     WorkflowStore.force_reload()
   end
 

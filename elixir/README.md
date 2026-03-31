@@ -67,6 +67,14 @@ root exposes the worker contract:
 Use those root targets instead of ad-hoc shell history when validating a fresh clone or a new
 runtime host.
 
+The production runtime contract now lives alongside the app:
+
+- `deploy/docker/README.md`
+- `deploy/docker/compose.env.example`
+- `deploy/docker/symphony.runtime.env.example`
+- `.github/workflows/release-image.yml`
+- `.github/workflows/deploy-production.yml`
+
 For isolated smoke tickets in the dedicated `Symphony` project, keep the Linear assignee empty
 unless you intentionally route the run through an assignee-filtered worker. This avoids accidental
 pickup by a separate team-scoped worker that is filtering on `tracker.assignee`.
