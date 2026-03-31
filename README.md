@@ -24,7 +24,8 @@ Fresh worker clones use the contract that lives in this repo:
 - `make symphony-preflight` checks `codex`, `mise`, `gh auth status`, `LINEAR_API_KEY`, and non-interactive git access for the repo remote.
 - `make symphony-bootstrap` configures GitHub git auth with `gh auth setup-git`, installs the pinned toolchain via `mise`, and runs `mix setup` in `elixir/`.
 - `make symphony-dashboard-checks` runs the deterministic dashboard-focused test slice used for UI/runtime proof without invoking the real live e2e smoke.
-- `make symphony-nginx-proxy-smoke` validates the versioned `stream.cash` nginx proxy include and replays the `/proxy/symphony/` plus websocket upgrade flow through a disposable local nginx runtime.
+- `make symphony-nginx-proxy-contract` validates the committed `stream.cash` nginx include without requiring a local `nginx` binary.
+- `make symphony-nginx-proxy-smoke` replays the `/proxy/symphony/` plus websocket upgrade flow through a disposable local nginx runtime when `nginx` is installed or `NGINX_BIN` is set.
 - `make symphony-validate` runs the main quality gate for this repo (`make -C elixir all`).
 - `make symphony-live-e2e` runs the disposable live smoke test (`make -C elixir e2e`) when you explicitly want a real Linear/Codex end-to-end run.
 

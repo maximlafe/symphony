@@ -162,6 +162,7 @@ defmodule SymphonyElixir.CoreTest do
     assert makefile =~ "symphony-preflight:"
     assert makefile =~ "symphony-bootstrap:"
     assert makefile =~ "symphony-dashboard-checks:"
+    assert makefile =~ "symphony-nginx-proxy-contract:"
     assert makefile =~ "symphony-nginx-proxy-smoke:"
     assert makefile =~ "symphony-validate:"
     assert makefile =~ "symphony-live-e2e:"
@@ -169,6 +170,7 @@ defmodule SymphonyElixir.CoreTest do
     assert makefile =~ "$(MISE) install"
     assert makefile =~ "$(MISE) exec -- mix setup"
     assert makefile =~ "$(MISE) exec -- $(MAKE) dashboard"
+    assert makefile =~ "python3 scripts/symphony_nginx_proxy_smoke.py --contract-only"
     assert makefile =~ "python3 scripts/symphony_nginx_proxy_smoke.py"
     assert makefile =~ "$(MISE) exec -- $(MAKE) all"
   end

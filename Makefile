@@ -1,10 +1,10 @@
-.PHONY: help symphony-bootstrap symphony-dashboard-checks symphony-live-e2e symphony-preflight symphony-validate symphony-nginx-proxy-smoke
+.PHONY: help symphony-bootstrap symphony-dashboard-checks symphony-live-e2e symphony-preflight symphony-validate symphony-nginx-proxy-contract symphony-nginx-proxy-smoke
 
 MISE ?= mise
 ELIXIR_DIR ?= elixir
 
 help:
-	@echo "Targets: symphony-preflight, symphony-bootstrap, symphony-dashboard-checks, symphony-validate, symphony-live-e2e, symphony-nginx-proxy-smoke"
+	@echo "Targets: symphony-preflight, symphony-bootstrap, symphony-dashboard-checks, symphony-validate, symphony-live-e2e, symphony-nginx-proxy-contract, symphony-nginx-proxy-smoke"
 
 symphony-preflight:
 	@if ! command -v codex >/dev/null 2>&1; then \
@@ -55,6 +55,9 @@ symphony-bootstrap:
 
 symphony-dashboard-checks:
 	cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) dashboard
+
+symphony-nginx-proxy-contract:
+	python3 scripts/symphony_nginx_proxy_smoke.py --contract-only
 
 symphony-nginx-proxy-smoke:
 	python3 scripts/symphony_nginx_proxy_smoke.py

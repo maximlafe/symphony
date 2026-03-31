@@ -258,8 +258,10 @@ It assumes the local Symphony runtime already matches the `LET-286` bootstrap co
 - `server.port: 4101`
 
 Use `deploy/nginx/README.md` for the `stream.cash` include/apply procedure and
-`make symphony-nginx-proxy-smoke` to validate the HTTP path rewrite plus websocket upgrade flow
-from the repo.
+`make symphony-nginx-proxy-contract` to validate the committed include from any repo clone.
+Run `make symphony-nginx-proxy-smoke` only on hosts that already have `nginx` installed, or with
+`NGINX_BIN` pointing at an executable nginx binary, when you want the disposable runtime replay for
+the HTTP path rewrite plus websocket upgrade flow.
 
 ## Project Layout
 

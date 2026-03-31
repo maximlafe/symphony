@@ -47,13 +47,16 @@ dashboard route on `stream.cash`.
 
 ## Repo-level validation
 
-Run the versioned smoke path from the repo root:
+Run the versioned validation path from the repo root:
 
 ```bash
 make symphony-dashboard-checks
+make symphony-nginx-proxy-contract
 make symphony-nginx-proxy-smoke
 ```
 
 `make symphony-dashboard-checks` proves the Symphony dashboard emits `/proxy/symphony/...` asset and
-LiveView URLs. `make symphony-nginx-proxy-smoke` validates the nginx include itself and replays the
-HTTP path rewrite plus websocket upgrade through a disposable local nginx runtime.
+LiveView URLs. `make symphony-nginx-proxy-contract` validates the committed nginx include on any
+repo clone without requiring a local nginx install. `make symphony-nginx-proxy-smoke` replays the
+HTTP path rewrite plus websocket upgrade through a disposable local nginx runtime and requires
+either `nginx` on `PATH` or `NGINX_BIN` pointing at an executable nginx binary.

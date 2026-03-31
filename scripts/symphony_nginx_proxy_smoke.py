@@ -8,7 +8,6 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import socket
 import socketserver
 import subprocess
@@ -212,7 +211,7 @@ def validate_contract():
     log(f"contract ok: {CONFIG_PATH}")
 
 
-def find_or_download_nginx(workdir):
+def find_nginx_binary():
     override = os.environ.get("NGINX_BIN")
     if override:
         nginx_bin = pathlib.Path(override)
@@ -224,35 +223,9 @@ def find_or_download_nginx(workdir):
     if local_nginx:
         return pathlib.Path(local_nginx)
 
-    download_dir = pathlib.Path(workdir) / "apt-downloads"
-    root_dir = pathlib.Path(workdir) / "nginx-root"
-    download_dir.mkdir(parents=True, exist_ok=True)
-    root_dir.mkdir(parents=True, exist_ok=True)
-
-    log("nginx not found on PATH; downloading temporary Debian packages into the workspace")
-    subprocess.run(
-        ["apt-get", "download", "nginx", "nginx-common"],
-        cwd=download_dir,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+    raise RuntimeError(
+        "nginx binary not found; install nginx locally or set NGINX_BIN to an executable nginx path"
     )
-
-    for deb in download_dir.glob("*.deb"):
-        subprocess.run(
-            ["dpkg-deb", "-x", str(deb), str(root_dir)],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-
-    nginx_bin = root_dir / "usr" / "sbin" / "nginx"
-    if not nginx_bin.is_file():
-        raise RuntimeError("failed to extract a temporary nginx binary")
-
-    return nginx_bin
 
 
 def write_runtime_include(path, upstream_port):
@@ -409,7 +382,7 @@ def run_runtime_smoke():
 
     with tempfile.TemporaryDirectory(prefix="symphony-nginx-smoke-", dir=temp_parent) as temp_root:
         temp_root_path = pathlib.Path(temp_root)
-        nginx_bin = find_or_download_nginx(temp_root_path)
+        nginx_bin = find_nginx_binary()
         runtime_include = temp_root_path / "stream.cash.symphony-proxy.runtime.conf"
         nginx_conf = temp_root_path / "nginx.conf"
         write_runtime_include(runtime_include, upstream_port)
