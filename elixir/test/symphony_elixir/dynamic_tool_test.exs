@@ -739,7 +739,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert file_upload_query =~ "fileUpload"
 
     assert_received {:upload, "https://upload.example.test/artifact.txt", headers, "proof", _opts}
-    assert headers == [{"content-type", "text/plain"}, {"cache-control", "public, max-age=31536000"}]
+    assert length(headers) == 2
+    assert {"content-type", "text/plain"} in headers
+    assert {"cache-control", "public, max-age=31536000"} in headers
 
     assert_received {:graphql, attachment_query,
                      %{
