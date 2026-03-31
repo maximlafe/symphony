@@ -246,6 +246,23 @@ The observability UI now runs on a minimal Phoenix stack:
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 
+### Hosted dashboard behind nginx
+
+The versioned reverse-proxy contract for `https://stream.cash/proxy/symphony/` lives in
+`deploy/nginx/stream.cash.symphony-proxy.conf`.
+
+It assumes the local Symphony runtime already matches the `LET-286` bootstrap contract:
+
+- `server.host: 0.0.0.0`
+- `server.path: /proxy/symphony`
+- `server.port: 4101`
+
+Use `deploy/nginx/README.md` for the `stream.cash` include/apply procedure and
+`make symphony-nginx-proxy-contract` to validate the committed include from any repo clone.
+Run `make symphony-nginx-proxy-smoke` only on hosts that already have `nginx` installed, or with
+`NGINX_BIN` pointing at an executable nginx binary, when you want the disposable runtime replay for
+the HTTP path rewrite plus websocket upgrade flow.
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks
