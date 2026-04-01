@@ -48,7 +48,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p contract
-          gh run download "${{ github.event.workflow_run.id }}" --name production-image-contract --dir contract
+          gh run download "${{ github.event.workflow_run.id }}" --repo "${{ github.repository }}" --name production-image-contract --dir contract
 
       - name: Resolve deploy contract
         id: contract
@@ -122,4 +122,3 @@ jobs:
           name: deploy-production-diagnostics
           if-no-files-found: ignore
           path: ci-artifacts/deploy-production.log
-
