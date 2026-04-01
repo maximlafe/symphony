@@ -3524,7 +3524,12 @@ defmodule SymphonyElixir.CoreTest do
 
   defp restore_task_supervisor_for_test({child_id, pid}) do
     if Process.alive?(pid) do
-      GenServer.stop(pid)
+      try do
+        GenServer.stop(pid)
+      catch
+        :exit, {:noproc, _details} -> :ok
+        :exit, :noproc -> :ok
+      end
     end
 
     restart_task_supervisor_for_test(child_id)

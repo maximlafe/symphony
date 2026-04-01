@@ -93,7 +93,8 @@ if [ -n "${SYMPHONY_DEPLOY_PRE_UP_COMMAND:-}" ]; then
   sh -lc "${SYMPHONY_DEPLOY_PRE_UP_COMMAND}"
 fi
 
-docker compose -f "${SYMPHONY_DEPLOY_COMPOSE_FILE}" config >/tmp/symphony-compose.rendered.yml
+# Validate the Compose contract without persisting expanded env (includes secrets from env_file).
+docker compose -f "${SYMPHONY_DEPLOY_COMPOSE_FILE}" config >/dev/null
 docker compose -f "${SYMPHONY_DEPLOY_COMPOSE_FILE}" pull
 docker compose -f "${SYMPHONY_DEPLOY_COMPOSE_FILE}" up -d --remove-orphans
 
@@ -126,4 +127,3 @@ for attempt in $(seq 1 20); do
   sleep 5
 done
 REMOTE
-
