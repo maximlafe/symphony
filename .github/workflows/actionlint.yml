@@ -1,0 +1,45 @@
+name: actionlint
+
+on:
+  pull_request:
+    paths:
+      - .github/actions/**
+      - .github/workflows/**
+  push:
+    branches:
+      - main
+    paths:
+      - .github/actions/**
+      - .github/workflows/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actionlint-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run actionlint
+        shell: bash
+        run: |
+          mkdir -p ci-artifacts
+          set -o pipefail
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color 2>&1 | tee ci-artifacts/actionlint.log
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: actionlint-diagnostics
+          if-no-files-found: ignore
+          path: ci-artifacts/actionlint.log
+

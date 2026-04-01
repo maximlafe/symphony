@@ -1,7 +1,9 @@
 FROM elixir:1.19.5-otp-28
 
+ARG MIX_ENV=prod
+
 ENV DEBIAN_FRONTEND=noninteractive \
-    MIX_ENV=dev \
+    MIX_ENV=${MIX_ENV} \
     NPM_VERSION=11.6.2 \
     POETRY_VERSION=1.8.5 \
     CODEX_HOME=/root/.codex \

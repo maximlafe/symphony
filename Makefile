@@ -1,10 +1,12 @@
-.PHONY: help symphony-bootstrap symphony-dashboard-checks symphony-live-e2e symphony-preflight symphony-validate symphony-nginx-proxy-contract symphony-nginx-proxy-smoke
+.PHONY: help test symphony-bootstrap symphony-dashboard-checks symphony-live-e2e symphony-preflight symphony-validate symphony-nginx-proxy-contract symphony-nginx-proxy-smoke
 
 MISE ?= mise
 ELIXIR_DIR ?= elixir
 
 help:
-	@echo "Targets: symphony-preflight, symphony-bootstrap, symphony-dashboard-checks, symphony-validate, symphony-live-e2e, symphony-nginx-proxy-contract, symphony-nginx-proxy-smoke"
+	@echo "Targets: test, symphony-preflight, symphony-bootstrap, symphony-dashboard-checks, symphony-validate, symphony-live-e2e, symphony-nginx-proxy-contract, symphony-nginx-proxy-smoke"
+
+test: symphony-validate symphony-dashboard-checks symphony-nginx-proxy-contract
 
 symphony-preflight:
 	@if ! command -v codex >/dev/null 2>&1; then \

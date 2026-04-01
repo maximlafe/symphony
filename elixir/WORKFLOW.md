@@ -21,6 +21,9 @@ workspace:
   root: ~/code/symphony-workspaces
   cleanup_keep_recent: 5
   warning_threshold_bytes: 10737418240
+server:
+  host: $SYMPHONY_SERVER_HOST
+  path: $SYMPHONY_SERVER_PATH
 hooks:
   after_create: |
     export GIT_TERMINAL_PROMPT=0

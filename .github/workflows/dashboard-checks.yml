@@ -2,39 +2,37 @@ name: dashboard-checks
 
 on:
   pull_request:
+    paths:
+      - .github/actions/setup-elixir/**
+      - .github/workflows/**
+      - Makefile
+      - README.md
+      - elixir/**
+      - scripts/**
   push:
     branches:
       - main
+    paths:
+      - .github/actions/setup-elixir/**
+      - .github/workflows/**
+      - Makefile
+      - README.md
+      - elixir/**
+      - scripts/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-checks-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   dashboard-checks:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: elixir
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up mise tools
-        uses: jdx/mise-action@v3
-        with:
-          install: true
-          cache: true
-          working_directory: elixir
-
-      - name: Cache deps
-        uses: actions/cache@v4
-        with:
-          path: elixir/deps
-          key: ${{ runner.os }}-dashboard-${{ hashFiles('elixir/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-dashboard-
-            ${{ runner.os }}-mix-
-
-      - name: Install dashboard test deps
-        run: make setup
-
-      - name: Verify dashboard checks
-        run: make dashboard
+    uses: ./.github/workflows/_elixir-command.yml
+    with:
+      artifact-name: dashboard-checks
+      cache-scope: dashboard-checks
+      command: make dashboard
+      timeout-minutes: 20
+    secrets: inherit

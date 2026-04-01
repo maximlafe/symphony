@@ -1,0 +1,125 @@
+name: deploy-production
+
+on:
+  workflow_run:
+    workflows:
+      - release-image
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Immutable image tag to deploy or roll back to.
+        required: true
+        type: string
+      image_digest:
+        description: Immutable image digest to deploy or roll back to.
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  deployments: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/maximlafe/symphony
+
+jobs:
+  resolve-contract:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      image_digest: ${{ steps.contract.outputs.image_digest }}
+      image_ref: ${{ steps.contract.outputs.image_ref }}
+      image_tag: ${{ steps.contract.outputs.image_tag }}
+
+    steps:
+      - name: Download published image contract
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p contract
+          gh run download "${{ github.event.workflow_run.id }}" --name production-image-contract --dir contract
+
+      - name: Resolve deploy contract
+        id: contract
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            image_tag='${{ inputs.image_tag }}'
+            image_digest='${{ inputs.image_digest }}'
+          else
+            image_tag=$(python3 -c 'import json, pathlib; print(json.loads(pathlib.Path("contract/production-image-contract.json").read_text())["image_tag"])')
+            image_digest=$(python3 -c 'import json, pathlib; print(json.loads(pathlib.Path("contract/production-image-contract.json").read_text())["image_digest"])')
+          fi
+
+          {
+            echo "image_tag=${image_tag}"
+            echo "image_digest=${image_digest}"
+            echo "image_ref=${IMAGE_REPOSITORY}@${image_digest}"
+          } >> "$GITHUB_OUTPUT"
+
+  deploy-production:
+    if: github.event_name == 'workflow_dispatch' || vars.SYMPHONY_DEPLOY_ENABLED == 'true'
+    needs:
+      - resolve-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: ${{ vars.SYMPHONY_DEPLOY_PUBLIC_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH material
+        env:
+          SYMPHONY_DEPLOY_KNOWN_HOSTS: ${{ secrets.SYMPHONY_DEPLOY_KNOWN_HOSTS }}
+          SYMPHONY_DEPLOY_SSH_KEY: ${{ secrets.SYMPHONY_DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SYMPHONY_DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$SYMPHONY_DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/known_hosts ~/.ssh/id_ed25519
+
+      - name: Deploy production contract
+        shell: bash
+        env:
+          SYMPHONY_DEPLOY_COMPOSE_FILE: ${{ vars.SYMPHONY_DEPLOY_COMPOSE_FILE }}
+          SYMPHONY_DEPLOY_ENV_FILE: ${{ vars.SYMPHONY_DEPLOY_ENV_FILE }}
+          SYMPHONY_DEPLOY_HEALTHCHECK_URL: ${{ vars.SYMPHONY_DEPLOY_HEALTHCHECK_URL }}
+          SYMPHONY_DEPLOY_HOST: ${{ vars.SYMPHONY_DEPLOY_HOST }}
+          SYMPHONY_DEPLOY_POST_UP_COMMAND: ${{ vars.SYMPHONY_DEPLOY_POST_UP_COMMAND }}
+          SYMPHONY_DEPLOY_PRE_UP_COMMAND: ${{ vars.SYMPHONY_DEPLOY_PRE_UP_COMMAND }}
+          SYMPHONY_DEPLOY_SSH_PORT: ${{ vars.SYMPHONY_DEPLOY_SSH_PORT }}
+          SYMPHONY_DEPLOY_USER: ${{ vars.SYMPHONY_DEPLOY_USER }}
+          SYMPHONY_REGISTRY_PASSWORD: ${{ secrets.SYMPHONY_REGISTRY_PASSWORD }}
+          SYMPHONY_REGISTRY_USERNAME: ${{ secrets.SYMPHONY_REGISTRY_USERNAME }}
+        run: |
+          mkdir -p ci-artifacts
+          set -o pipefail
+          ./scripts/symphony_deploy.sh \
+            --image-repository "${IMAGE_REPOSITORY}" \
+            --image-tag "${{ needs.resolve-contract.outputs.image_tag }}" \
+            --image-digest "${{ needs.resolve-contract.outputs.image_digest }}" \
+            2>&1 | tee ci-artifacts/deploy-production.log
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-production-diagnostics
+          if-no-files-found: ignore
+          path: ci-artifacts/deploy-production.log
+

@@ -1,0 +1,258 @@
+name: release-image
+
+on:
+  pull_request:
+    paths:
+      - .dockerignore
+      - .github/actions/setup-elixir/**
+      - .github/ci/**
+      - .github/workflows/**
+      - Makefile
+      - README.md
+      - elixir/**
+      - scripts/**
+  push:
+    branches:
+      - main
+    paths:
+      - .dockerignore
+      - .github/actions/setup-elixir/**
+      - .github/ci/**
+      - .github/workflows/**
+      - Makefile
+      - README.md
+      - elixir/**
+      - scripts/**
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: release-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/maximlafe/symphony
+  IMAGE_TAG: sha-${{ github.sha }}
+
+jobs:
+  build-production-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      image_ref: ${{ steps.contract.outputs.image_ref }}
+      image_repository: ${{ steps.contract.outputs.image_repository }}
+      image_tag: ${{ steps.contract.outputs.image_tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image contract variables
+        id: contract
+        run: |
+          {
+            echo "image_repository=${IMAGE_REPOSITORY}"
+            echo "image_tag=${IMAGE_TAG}"
+            echo "image_ref=${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build production image archive
+        shell: bash
+        run: |
+          mkdir -p ci-artifacts
+          set -o pipefail
+          docker buildx build \
+            --build-arg MIX_ENV=prod \
+            --cache-from type=gha,scope=symphony-production-image \
+            --cache-to type=gha,mode=max,scope=symphony-production-image \
+            --file elixir/deploy/docker/Dockerfile \
+            --output "type=docker,dest=${RUNNER_TEMP}/symphony-production-image.tar" \
+            --tag "${{ steps.contract.outputs.image_ref }}" \
+            . 2>&1 | tee ci-artifacts/build-production-image.log
+
+      - name: Load production image
+        run: docker load --input "${RUNNER_TEMP}/symphony-production-image.tar"
+
+      - name: Smoke test built image
+        shell: bash
+        run: |
+          mkdir -p ci-artifacts
+          container_name="symphony-build-smoke-${GITHUB_RUN_ID}"
+          trap 'docker logs "$container_name" > ci-artifacts/build-production-image-smoke.log 2>&1 || true; docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT
+
+          docker run -d --name "$container_name" \
+            -e MIX_ENV=prod \
+            -e SOURCE_REPO_URL=https://github.com/maximlafe/symphony.git \
+            -e SYMPHONY_LOGS_ROOT=/tmp/symphony/logs \
+            -e SYMPHONY_PORT=4101 \
+            -e SYMPHONY_PUBLIC_HOST=127.0.0.1 \
+            -e SYMPHONY_REQUIRED_ENV_VARS="SYMPHONY_SECRET_KEY_BASE SYMPHONY_PUBLIC_HOST" \
+            -e SYMPHONY_SECRET_KEY_BASE=ci-smoke-secret-key-base-ci-smoke-secret-key-base \
+            -e SYMPHONY_WORKSPACE_ROOT=/tmp/symphony/workspaces \
+            -e WORKFLOW_PATH=/opt/symphony/.github/ci/production-smoke.WORKFLOW.md \
+            -p 4101:4101 \
+            "${{ steps.contract.outputs.image_ref }}" >/dev/null
+
+          for attempt in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:4101/api/v1/state > ci-artifacts/build-production-image-health.json; then
+              exit 0
+            fi
+            echo "Health probe attempt ${attempt}/20 failed, retrying..." >&2
+            sleep 3
+          done
+
+          echo "Production image failed to expose /api/v1/state in time." >&2
+          exit 1
+
+      - name: Upload image archive
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: symphony-production-image
+          path: ${{ runner.temp }}/symphony-production-image.tar
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-production-image-diagnostics
+          if-no-files-found: ignore
+          path: |
+            ci-artifacts/build-production-image.log
+            ci-artifacts/build-production-image-smoke.log
+            ci-artifacts/build-production-image-health.json
+
+  publish-production-image:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs:
+      - build-production-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      image_digest: ${{ steps.contract.outputs.image_digest }}
+      image_digest_ref: ${{ steps.contract.outputs.image_digest_ref }}
+      image_ref: ${{ steps.contract.outputs.image_ref }}
+      image_tag: ${{ steps.contract.outputs.image_tag }}
+
+    steps:
+      - name: Download image archive
+        uses: actions/download-artifact@v4
+        with:
+          name: symphony-production-image
+          path: ${{ runner.temp }}
+
+      - name: Load production image
+        run: docker load --input "${RUNNER_TEMP}/symphony-production-image.tar"
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Publish immutable and channel tags
+        shell: bash
+        run: |
+          mkdir -p ci-artifacts
+          set -o pipefail
+          docker push "${{ needs.build-production-image.outputs.image_ref }}" 2>&1 | tee ci-artifacts/publish-production-image.log
+          docker tag "${{ needs.build-production-image.outputs.image_ref }}" "${IMAGE_REPOSITORY}:main"
+          docker push "${IMAGE_REPOSITORY}:main" 2>&1 | tee -a ci-artifacts/publish-production-image.log
+
+      - name: Resolve published digest
+        id: contract
+        shell: bash
+        run: |
+          docker pull "${{ needs.build-production-image.outputs.image_ref }}" >/dev/null
+          digest_ref=$(docker image inspect "${{ needs.build-production-image.outputs.image_ref }}" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep "@sha256:" | head -n 1)
+          image_digest="${digest_ref#*@}"
+          image_digest_ref="${IMAGE_REPOSITORY}@${image_digest}"
+
+          {
+            echo "image_tag=${IMAGE_TAG}"
+            echo "image_ref=${{ needs.build-production-image.outputs.image_ref }}"
+            echo "image_digest=${image_digest}"
+            echo "image_digest_ref=${image_digest_ref}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test published image
+        shell: bash
+        run: |
+          mkdir -p ci-artifacts
+          container_name="symphony-publish-smoke-${GITHUB_RUN_ID}"
+          trap 'docker logs "$container_name" > ci-artifacts/publish-production-image-smoke.log 2>&1 || true; docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT
+
+          docker run -d --name "$container_name" \
+            -e MIX_ENV=prod \
+            -e SOURCE_REPO_URL=https://github.com/maximlafe/symphony.git \
+            -e SYMPHONY_LOGS_ROOT=/tmp/symphony/logs \
+            -e SYMPHONY_PORT=4101 \
+            -e SYMPHONY_PUBLIC_HOST=127.0.0.1 \
+            -e SYMPHONY_REQUIRED_ENV_VARS="SYMPHONY_SECRET_KEY_BASE SYMPHONY_PUBLIC_HOST" \
+            -e SYMPHONY_SECRET_KEY_BASE=ci-smoke-secret-key-base-ci-smoke-secret-key-base \
+            -e SYMPHONY_WORKSPACE_ROOT=/tmp/symphony/workspaces \
+            -e WORKFLOW_PATH=/opt/symphony/.github/ci/production-smoke.WORKFLOW.md \
+            -p 4101:4101 \
+            "${{ steps.contract.outputs.image_digest_ref }}" >/dev/null
+
+          for attempt in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:4101/api/v1/state > ci-artifacts/publish-production-image-health.json; then
+              exit 0
+            fi
+            echo "Health probe attempt ${attempt}/20 failed, retrying..." >&2
+            sleep 3
+          done
+
+          echo "Published production image failed to expose /api/v1/state in time." >&2
+          exit 1
+
+      - name: Write image contract
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          contract = {
+              "image_repository": os.environ["IMAGE_REPOSITORY"],
+              "image_tag": os.environ["IMAGE_TAG"],
+              "image_ref": os.environ["IMAGE_REF"],
+              "image_digest": os.environ["IMAGE_DIGEST"],
+              "image_digest_ref": os.environ["IMAGE_DIGEST_REF"],
+              "git_sha": os.environ["GITHUB_SHA"],
+              "git_ref": os.environ["GITHUB_REF"],
+          }
+          Path("ci-artifacts").mkdir(exist_ok=True)
+          Path("ci-artifacts/production-image-contract.json").write_text(
+              json.dumps(contract, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+        env:
+          IMAGE_DIGEST: ${{ steps.contract.outputs.image_digest }}
+          IMAGE_DIGEST_REF: ${{ steps.contract.outputs.image_digest_ref }}
+          IMAGE_REF: ${{ steps.contract.outputs.image_ref }}
+
+      - name: Upload published contract
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-image-contract
+          path: ci-artifacts/production-image-contract.json
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-production-image-diagnostics
+          if-no-files-found: ignore
+          path: |
+            ci-artifacts/publish-production-image.log
+            ci-artifacts/publish-production-image-smoke.log
+            ci-artifacts/publish-production-image-health.json
+            ci-artifacts/production-image-contract.json
+

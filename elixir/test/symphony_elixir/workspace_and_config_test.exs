@@ -1924,31 +1924,43 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "config resolves $VAR references for env-backed secret and path values" do
     workspace_env_var = "SYMP_WORKSPACE_ROOT_#{System.unique_integer([:positive])}"
     api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
+    server_host_env_var = "SYMP_SERVER_HOST_#{System.unique_integer([:positive])}"
+    server_path_env_var = "SYMP_SERVER_PATH_#{System.unique_integer([:positive])}"
     workspace_root = Path.join("/tmp", "symphony-workspace-root")
     api_key = "resolved-secret"
     codex_bin = Path.join(["~", "bin", "codex"])
 
     previous_workspace_root = System.get_env(workspace_env_var)
     previous_api_key = System.get_env(api_key_env_var)
+    previous_server_host = System.get_env(server_host_env_var)
+    previous_server_path = System.get_env(server_path_env_var)
 
     System.put_env(workspace_env_var, workspace_root)
     System.put_env(api_key_env_var, api_key)
+    System.put_env(server_host_env_var, "0.0.0.0")
+    System.put_env(server_path_env_var, " proxy/symphony/ ")
 
     on_exit(fn ->
       restore_env(workspace_env_var, previous_workspace_root)
       restore_env(api_key_env_var, previous_api_key)
+      restore_env(server_host_env_var, previous_server_host)
+      restore_env(server_path_env_var, previous_server_path)
     end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "$#{api_key_env_var}",
       workspace_root: "$#{workspace_env_var}",
-      codex_command: "#{codex_bin} app-server"
+      codex_command: "#{codex_bin} app-server",
+      server_host: "$#{server_host_env_var}",
+      server_path: "$#{server_path_env_var}"
     )
 
     config = Config.settings!()
     assert config.tracker.api_key == api_key
     assert config.workspace.root == Path.expand(workspace_root)
     assert config.codex.command == "#{codex_bin} app-server"
+    assert config.server.host == "0.0.0.0"
+    assert config.server.path == "/proxy/symphony"
   end
 
   test "config no longer resolves legacy env: references" do
@@ -2078,6 +2090,33 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert settings.tracker.api_key == "fallback-linear-token"
     assert settings.workspace.root == Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))
+  end
+
+  test "server changeset normalizes literal and env-backed host/path values" do
+    changeset =
+      Schema.Server.changeset(%Schema.Server{}, %{
+        host: " 0.0.0.0 ",
+        path: "$SYMPHONY_SERVER_PATH"
+      })
+
+    assert Changeset.get_change(changeset, :host) == "0.0.0.0"
+    assert Changeset.get_change(changeset, :path) == "$SYMPHONY_SERVER_PATH"
+
+    literal_changeset =
+      Schema.Server.changeset(%Schema.Server{}, %{
+        host: "",
+        path: "/proxy/symphony/"
+      })
+
+    assert Changeset.get_change(literal_changeset, :host) == nil
+    assert Changeset.get_change(literal_changeset, :path) == "/proxy/symphony"
+
+    invalid_env_token_changeset =
+      Schema.Server.changeset(%Schema.Server{}, %{
+        path: "$9BROKEN"
+      })
+
+    assert Changeset.get_change(invalid_env_token_changeset, :path) == "/$9BROKEN"
   end
 
   test "schema resolves sandbox policies from explicit and default workspaces" do

@@ -157,8 +157,9 @@ defmodule SymphonyElixir.CoreTest do
     makefile = File.read!(makefile_path)
 
     assert makefile =~
-             ".PHONY: help symphony-bootstrap symphony-dashboard-checks symphony-live-e2e symphony-preflight symphony-validate"
+             ".PHONY: help test symphony-bootstrap symphony-dashboard-checks symphony-live-e2e symphony-preflight symphony-validate"
 
+    assert makefile =~ "test: symphony-validate symphony-dashboard-checks symphony-nginx-proxy-contract"
     assert makefile =~ "symphony-preflight:"
     assert makefile =~ "symphony-bootstrap:"
     assert makefile =~ "symphony-dashboard-checks:"
@@ -3523,7 +3524,12 @@ defmodule SymphonyElixir.CoreTest do
 
   defp restore_task_supervisor_for_test({child_id, pid}) do
     if Process.alive?(pid) do
-      GenServer.stop(pid)
+      try do
+        GenServer.stop(pid)
+      catch
+        :exit, {:noproc, _details} -> :ok
+        :exit, :noproc -> :ok
+      end
     end
 
     restart_task_supervisor_for_test(child_id)

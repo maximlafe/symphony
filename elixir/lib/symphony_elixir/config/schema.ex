@@ -318,8 +318,23 @@ defmodule SymphonyElixir.Config.Schema do
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:port, :host, :path], empty_values: [])
-      |> update_change(:path, &normalize_optional_path/1)
+      |> update_change(:host, &normalize_optional_string/1)
+      |> update_change(:path, &normalize_optional_path_token/1)
       |> validate_number(:port, greater_than_or_equal_to: 0)
+    end
+
+    defp normalize_optional_string(value) when is_binary(value) do
+      case String.trim(value) do
+        "" -> nil
+        normalized -> normalized
+      end
+    end
+
+    defp normalize_optional_path_token(value) when is_binary(value) do
+      case env_reference_name(value) do
+        {:ok, _env_name} -> value
+        :error -> normalize_optional_path(value)
+      end
     end
 
     defp normalize_optional_path(value) when is_binary(value) do
@@ -339,6 +354,16 @@ defmodule SymphonyElixir.Config.Schema do
 
     defp ensure_leading_slash("/" <> _ = path), do: path
     defp ensure_leading_slash(path), do: "/" <> path
+
+    defp env_reference_name("$" <> env_name) do
+      if String.match?(env_name, ~r/^[A-Za-z_][A-Za-z0-9_]*$/) do
+        {:ok, env_name}
+      else
+        :error
+      end
+    end
+
+    defp env_reference_name(_value), do: :error
   end
 
   embedded_schema do
@@ -518,6 +543,12 @@ defmodule SymphonyElixir.Config.Schema do
       | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "symphony_workspaces"))
     }
 
+    server = %{
+      settings.server
+      | host: resolve_server_host(settings.server.host),
+        path: resolve_server_path(settings.server.path)
+    }
+
     with {:ok, codex_accounts} <- resolve_codex_accounts(settings.codex.accounts) do
       codex = %{
         settings.codex
@@ -527,9 +558,49 @@ defmodule SymphonyElixir.Config.Schema do
           accounts: codex_accounts
       }
 
-      {:ok, %{settings | tracker: tracker, workspace: workspace, codex: codex}}
+      {:ok, %{settings | tracker: tracker, workspace: workspace, codex: codex, server: server}}
     end
   end
+
+  defp resolve_server_host(nil), do: "127.0.0.1"
+
+  defp resolve_server_host(value) when is_binary(value) do
+    case resolve_env_value(value, "127.0.0.1") do
+      resolved when is_binary(resolved) ->
+        case String.trim(resolved) do
+          "" -> "127.0.0.1"
+          normalized -> normalized
+        end
+
+      _ ->
+        "127.0.0.1"
+    end
+  end
+
+  defp resolve_server_host(_value), do: "127.0.0.1"
+
+  defp resolve_server_path(nil), do: nil
+
+  defp resolve_server_path(value) when is_binary(value) do
+    case resolve_env_value(value, nil) do
+      nil ->
+        nil
+
+      resolved ->
+        case String.trim(resolved) do
+          "" ->
+            nil
+
+          "/" ->
+            "/"
+
+          trimmed ->
+            "/" <> String.trim_leading(String.trim_trailing(trimmed, "/"), "/")
+        end
+    end
+  end
+
+  defp resolve_server_path(_value), do: nil
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->

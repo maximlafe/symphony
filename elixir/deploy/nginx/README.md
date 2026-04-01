@@ -6,8 +6,9 @@ dashboard route on `stream.cash`.
 ## Assumptions
 
 - Symphony listens on `127.0.0.1:4101`
-- The runtime already sets `server.host: 0.0.0.0`
-- The runtime already sets `server.path: /proxy/symphony`
+- The runtime sets `SYMPHONY_SERVER_HOST=0.0.0.0`
+- The runtime sets `SYMPHONY_SERVER_PATH=/proxy/symphony`
+- The public endpoint uses `SYMPHONY_PUBLIC_PATH=/proxy/symphony`
 - The dashboard and API stay mounted upstream at `/` and `/api/v1/*`
 
 ## Install on `stream.cash`
