@@ -666,6 +666,111 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert decode_tool_text(outside)["error"]["message"] =~ "must stay within workspace"
   end
 
+  test "linear_upload_issue_attachment infers defaults when optional fields and upload headers are omitted" do
+    test_pid = self()
+    workspace = Path.join(System.tmp_dir!(), "linear_upload_defaults_#{System.unique_integer([:positive])}")
+    path = write_tmp_file(workspace, "artifact.txt", "proof")
+    {:ok, canonical_path} = SymphonyElixir.PathSafety.canonicalize(path)
+
+    response =
+      DynamicTool.execute(
+        "linear_upload_issue_attachment",
+        %{
+          "issue_id" => "LET-276",
+          "file_path" => "./artifact.txt",
+          "subtitle" => "   ",
+          "content_type" => "  "
+        },
+        workspace: workspace,
+        linear_client: fn query, variables, _opts ->
+          send(test_pid, {:graphql, query, variables})
+
+          cond do
+            query =~ "fileUpload(" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "fileUpload" => %{
+                     "success" => true,
+                     "uploadFile" => %{
+                       "uploadUrl" => "https://upload.example.test/artifact.txt",
+                       "assetUrl" => "https://assets.example.test/artifact.txt",
+                       "headers" => nil
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "attachmentCreate" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "attachmentCreate" => %{
+                     "success" => true,
+                     "attachment" => %{
+                       "id" => "att_defaults",
+                       "title" => "artifact.txt",
+                       "subtitle" => nil,
+                       "url" => "https://assets.example.test/artifact.txt"
+                     }
+                   }
+                 }
+               }}
+
+            true ->
+              flunk("unexpected GraphQL query: #{query}")
+          end
+        end,
+        upload_request_fun: fn url, headers, body, opts ->
+          send(test_pid, {:upload, url, headers, body, opts})
+          {:ok, %{status: 200}}
+        end
+      )
+
+    assert response["success"] == true
+
+    assert_received {:graphql, file_upload_query,
+                     %{
+                       "filename" => "artifact.txt",
+                       "contentType" => "text/plain",
+                       "size" => 5
+                     }}
+
+    assert file_upload_query =~ "fileUpload"
+
+    assert_received {:upload, "https://upload.example.test/artifact.txt", headers, "proof", _opts}
+    assert length(headers) == 2
+    assert {"content-type", "text/plain"} in headers
+    assert {"cache-control", "public, max-age=31536000"} in headers
+
+    assert_received {:graphql, attachment_query,
+                     %{
+                       "input" => %{
+                         "issueId" => "LET-276",
+                         "title" => "artifact.txt",
+                         "url" => "https://assets.example.test/artifact.txt"
+                       }
+                     }}
+
+    assert attachment_query =~ "attachmentCreate"
+
+    assert decode_tool_text(response) == %{
+             "artifact" => %{
+               "issue_id" => "LET-276",
+               "file_name" => "artifact.txt",
+               "file_path" => canonical_path,
+               "content_type" => "text/plain",
+               "size_bytes" => 5
+             },
+             "attachment" => %{
+               "id" => "att_defaults",
+               "title" => "artifact.txt",
+               "subtitle" => nil,
+               "url" => "https://assets.example.test/artifact.txt"
+             }
+           }
+  end
+
   test "github_pr_snapshot returns a compact summary without feedback details by default" do
     test_pid = self()
 
