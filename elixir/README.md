@@ -174,8 +174,20 @@ Notes:
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, then call the repo-owned bootstrap entrypoint such as
   `make symphony-bootstrap`.
-- `workspace.cleanup_keep_recent` controls how many of the most recent terminal issue workspaces
-  Symphony keeps on disk before retention cleanup removes older ones. Default: `5`.
+- `workspace.cleanup_keep_recent` controls only retention of completed issue workspaces inside
+  `workspace.root`; it is not a shared `/tmp` cleanup mechanism. Default: `5`.
+- Terminal-state issue cleanup always removes default task-scoped external artifacts that match
+  `/tmp/symphony-<ISSUE>-*` and `/var/tmp/symphony-<ISSUE>-*`, and removes the exact issue
+  workspace only when it falls outside the retained `workspace.cleanup_keep_recent` window.
+- External temporary artifacts that should be safe for automatic per-task cleanup must use the
+  `symphony-<ISSUE>-...` naming contract. Additional external paths are eligible only when the
+  cleanup caller passes an explicit issue-namespaced path and Symphony validates it against allowed
+  root prefixes.
+- `before_remove` remains a workspace-scoped hook for the exact issue workspace only; it is not a
+  general shared-path cleanup hook.
+- `Merging` remains an active state and does not trigger terminal cleanup.
+- Shared runtime areas such as `.codex-runtime/homes/*/.tmp` stay outside this per-task cleanup
+  scope and require separate TTL/GC or placement controls.
 - `workspace.warning_threshold_bytes` sets the workspace-root disk-usage threshold that triggers a
   runtime warning and dashboard highlight. Default: `10737418240` bytes (`10 GiB`).
 - Workspace hooks receive issue metadata in environment variables such as

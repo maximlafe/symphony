@@ -348,7 +348,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "terminal issue state stops running agent and defers workspace cleanup to retention pass" do
+  test "terminal issue state stops running agent and schedules cleanup for non-retained artifacts" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -358,16 +358,22 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-2"
     issue_identifier = "MT-556"
     workspace = Path.join(test_root, issue_identifier)
+    issue_tmp_dir = Path.join("/tmp", "symphony-#{issue_identifier}-#{System.unique_integer([:positive])}")
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
         workspace_root: test_root,
         tracker_active_states: ["Todo", "In Progress", "In Review"],
-        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"]
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"],
+        workspace_cleanup_keep_recent: 0
       )
 
       File.mkdir_p!(test_root)
       File.mkdir_p!(workspace)
+      File.mkdir_p!(issue_tmp_dir)
+      File.write!(Path.join(issue_tmp_dir, "marker.txt"), issue_identifier)
 
       agent_pid =
         spawn(fn ->
@@ -400,14 +406,31 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
       updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
 
       refute Map.has_key?(updated_state.running, issue_id)
       refute MapSet.member?(updated_state.claimed, issue_id)
       refute Process.alive?(agent_pid)
-      assert File.exists?(workspace)
+
+      Enum.each(1..20, fn _attempt ->
+        if File.exists?(workspace) or File.exists?(issue_tmp_dir) do
+          Process.sleep(50)
+        end
+      end)
+
+      refute File.exists?(workspace)
+      refute File.exists?(issue_tmp_dir)
     after
+      if is_nil(previous_memory_issues) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_memory_issues)
+      end
+
       File.rm_rf(test_root)
+      File.rm_rf(issue_tmp_dir)
     end
   end
 

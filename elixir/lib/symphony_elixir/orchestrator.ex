@@ -396,7 +396,7 @@ defmodule SymphonyElixir.Orchestrator do
           Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
         end)
 
-        terminate_running_issue(state, issue.id, false)
+        terminate_running_issue(state, issue.id, true)
 
       !issue_routable_to_worker?(issue) ->
         with_log_metadata(log_metadata, fn ->
@@ -473,12 +473,8 @@ defmodule SymphonyElixir.Orchestrator do
       nil ->
         release_issue_claim(state, issue_id)
 
-      %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
+      %{pid: pid, ref: ref} = running_entry ->
         state = record_session_completion_totals(state, running_entry)
-
-        if cleanup_workspace do
-          cleanup_issue_workspace(identifier)
-        end
 
         if is_pid(pid) do
           terminate_task(pid)
@@ -488,12 +484,18 @@ defmodule SymphonyElixir.Orchestrator do
           Process.demonitor(ref, [:flush])
         end
 
-        %{
+        updated_state = %{
           state
           | running: Map.delete(state.running, issue_id),
             claimed: MapSet.delete(state.claimed, issue_id),
             retry_attempts: Map.delete(state.retry_attempts, issue_id)
         }
+
+        if cleanup_workspace do
+          maybe_schedule_terminal_workspace_cleanup(updated_state, :terminal_transition)
+        else
+          updated_state
+        end
 
       _ ->
         release_issue_claim(state, issue_id)
@@ -895,7 +897,10 @@ defmodule SymphonyElixir.Orchestrator do
           end
         )
 
-        {:noreply, release_issue_claim(state, issue_id)}
+        {:noreply,
+         state
+         |> release_issue_claim(issue_id)
+         |> maybe_schedule_terminal_workspace_cleanup(:retry_terminal)}
 
       retry_candidate_issue?(issue, terminal_states) ->
         handle_active_retry(state, issue, attempt, metadata)
@@ -923,11 +928,9 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, release_issue_claim(state, issue_id)}
   end
 
-  defp cleanup_issue_workspace(identifier) when is_binary(identifier) do
-    Workspace.remove_issue_workspaces(identifier)
+  defp cleanup_issue_artifacts(identifier) when is_binary(identifier) do
+    Workspace.cleanup_issue_artifacts(identifier)
   end
-
-  defp cleanup_issue_workspace(_identifier), do: :ok
 
   defp handle_agent_exit_reason(
          state,
@@ -1197,34 +1200,98 @@ defmodule SymphonyElixir.Orchestrator do
        do: state
 
   defp maybe_schedule_terminal_workspace_cleanup(%State{} = state, source) do
+    busy_issue_ids = busy_issue_ids_for_cleanup(state)
+    orchestrator = self()
+
     task =
       Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
-        {:workspace_cleanup_completed, source, run_terminal_workspace_cleanup(source)}
+        {:workspace_cleanup_completed, source, run_terminal_workspace_cleanup(orchestrator, source, busy_issue_ids)}
       end)
 
     %{state | workspace_cleanup_ref: task.ref}
   end
 
-  defp run_terminal_workspace_cleanup(source) do
+  defp run_terminal_workspace_cleanup(orchestrator, source, busy_issue_ids)
+       when is_pid(orchestrator) and is_map(busy_issue_ids) do
     keep_recent = workspace_cleanup_keep_recent()
     terminal_cleanup_states = terminal_cleanup_states()
+    terminal_states = terminal_state_set()
 
     case Tracker.fetch_issues_by_states(terminal_cleanup_states) do
       {:ok, issues} ->
-        {:ok, %{removed: removed}} =
-          Workspace.cleanup_completed_issue_workspaces(issues, keep_recent: keep_recent)
-
-        if removed != [] do
-          Logger.info("Workspace retention cleanup source=#{source} removed=#{length(removed)} keep_recent=#{keep_recent}")
-        end
-
-        :ok
+        run_revalidated_terminal_workspace_cleanup(
+          orchestrator,
+          source,
+          issues,
+          terminal_states,
+          busy_issue_ids,
+          keep_recent
+        )
 
       {:error, reason} ->
         Logger.warning("Skipping terminal workspace cleanup source=#{source}; failed to fetch terminal issues: #{inspect(reason)}")
 
         :ok
     end
+  end
+
+  defp run_revalidated_terminal_workspace_cleanup(
+         orchestrator,
+         source,
+         issues,
+         terminal_states,
+         busy_issue_ids,
+         keep_recent
+       ) do
+    case revalidate_terminal_cleanup_issues(issues, terminal_states) do
+      {:ok, terminal_issues} ->
+        cleanup_revalidated_terminal_issues(
+          orchestrator,
+          source,
+          terminal_issues,
+          busy_issue_ids,
+          keep_recent
+        )
+
+      {:error, reason} ->
+        Logger.warning("Skipping terminal workspace cleanup source=#{source}; failed to revalidate terminal issues: #{inspect(reason)}")
+
+        :ok
+    end
+  end
+
+  defp cleanup_revalidated_terminal_issues(
+         orchestrator,
+         source,
+         terminal_issues,
+         busy_issue_ids,
+         keep_recent
+       ) do
+    {kept_issues, removed_issues} =
+      Workspace.partition_completed_issues(terminal_issues, keep_recent: keep_recent)
+
+    Enum.each(kept_issues, fn issue ->
+      cleanup_terminal_issue_external_artifacts(orchestrator, issue, busy_issue_ids)
+    end)
+
+    removed = removed_terminal_issue_identifiers(orchestrator, removed_issues, busy_issue_ids)
+
+    if removed != [] do
+      Logger.info("Workspace retention cleanup source=#{source} removed=#{length(removed)} keep_recent=#{keep_recent}")
+    end
+
+    :ok
+  end
+
+  defp removed_terminal_issue_identifiers(orchestrator, removed_issues, busy_issue_ids) do
+    removed_issues
+    |> Enum.reduce([], fn issue, acc ->
+      case cleanup_terminal_issue_artifacts(orchestrator, issue, busy_issue_ids) do
+        {:removed, identifier} -> [identifier | acc]
+        _ -> acc
+      end
+    end)
+    |> Enum.reverse()
   end
 
   defp apply_workspace_cleanup_result(%State{} = state, :ok, _source), do: state
@@ -1352,6 +1419,129 @@ defmodule SymphonyElixir.Orchestrator do
   defp notify_dashboard do
     StatusDashboard.notify_update()
   end
+
+  defp busy_issue_ids_for_cleanup(%State{} = state) do
+    state.running
+    |> Map.keys()
+    |> Kernel.++(Map.keys(state.retry_attempts))
+    |> MapSet.new()
+  end
+
+  defp issue_cleanup_busy?(%State{} = state, issue_id) when is_binary(issue_id) do
+    Map.has_key?(state.running, issue_id) or Map.has_key?(state.retry_attempts, issue_id)
+  end
+
+  defp revalidate_terminal_cleanup_issues(issues, terminal_states)
+       when is_list(issues) and is_map(terminal_states) do
+    issue_ids =
+      issues
+      |> Enum.flat_map(fn issue ->
+        case terminal_cleanup_issue_id(issue) do
+          issue_id when is_binary(issue_id) -> [issue_id]
+          _ -> []
+        end
+      end)
+      |> Enum.uniq()
+
+    case issue_ids do
+      [] ->
+        {:ok, []}
+
+      _ ->
+        case Tracker.fetch_issue_states_by_ids(issue_ids) do
+          {:ok, issues} ->
+            {:ok,
+             Enum.filter(issues, fn issue ->
+               terminal_issue_state?(terminal_cleanup_issue_state(issue), terminal_states)
+             end)}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  defp cleanup_terminal_issue_external_artifacts(orchestrator, issue, busy_issue_ids) do
+    if issue_cleanup_busy_now?(orchestrator, terminal_cleanup_issue_id(issue), busy_issue_ids) do
+      :skipped
+    else
+      case terminal_cleanup_issue_identifier(issue) do
+        identifier when is_binary(identifier) and identifier != "" ->
+          Workspace.cleanup_issue_artifacts(identifier, remove_workspace: false)
+
+        _ ->
+          :skipped
+      end
+    end
+  end
+
+  defp cleanup_terminal_issue_artifacts(orchestrator, issue, busy_issue_ids) do
+    if issue_cleanup_busy_now?(orchestrator, terminal_cleanup_issue_id(issue), busy_issue_ids) do
+      :skipped
+    else
+      case terminal_cleanup_issue_identifier(issue) do
+        identifier when is_binary(identifier) and identifier != "" ->
+          cleanup_issue_artifacts(identifier)
+          {:removed, identifier}
+
+        _ ->
+          :skipped
+      end
+    end
+  end
+
+  defp issue_cleanup_busy_now?(orchestrator, issue_id, busy_issue_ids)
+       when is_pid(orchestrator) and is_binary(issue_id) and is_map(busy_issue_ids) do
+    GenServer.call(orchestrator, {:issue_cleanup_busy?, issue_id}, 100)
+    |> normalize_issue_cleanup_busy_response(issue_id, busy_issue_ids)
+  catch
+    :exit, _reason ->
+      MapSet.member?(busy_issue_ids, issue_id)
+  end
+
+  defp issue_cleanup_busy_now?(_orchestrator, issue_id, busy_issue_ids)
+       when is_binary(issue_id) and is_map(busy_issue_ids) do
+    MapSet.member?(busy_issue_ids, issue_id)
+  end
+
+  defp issue_cleanup_busy_now?(_orchestrator, _issue_id, _busy_issue_ids), do: false
+
+  defp normalize_issue_cleanup_busy_response(busy?, _issue_id, _busy_issue_ids)
+       when is_boolean(busy?),
+       do: busy?
+
+  defp normalize_issue_cleanup_busy_response(_response, issue_id, busy_issue_ids)
+       when is_binary(issue_id) and is_map(busy_issue_ids) do
+    MapSet.member?(busy_issue_ids, issue_id)
+  end
+
+  defp terminal_cleanup_issue_id(%Issue{id: issue_id}) when is_binary(issue_id), do: issue_id
+  defp terminal_cleanup_issue_id(%{id: issue_id}) when is_binary(issue_id), do: issue_id
+  defp terminal_cleanup_issue_id(%{"id" => issue_id}) when is_binary(issue_id), do: issue_id
+  defp terminal_cleanup_issue_id(_issue), do: nil
+
+  defp terminal_cleanup_issue_identifier(%Issue{identifier: identifier})
+       when is_binary(identifier),
+       do: identifier
+
+  defp terminal_cleanup_issue_identifier(%{identifier: identifier}) when is_binary(identifier),
+    do: identifier
+
+  defp terminal_cleanup_issue_identifier(%{"identifier" => identifier}) when is_binary(identifier),
+    do: identifier
+
+  defp terminal_cleanup_issue_identifier(_issue), do: nil
+
+  defp terminal_cleanup_issue_state(%Issue{state: state_name}) when is_binary(state_name),
+    do: state_name
+
+  defp terminal_cleanup_issue_state(%{state: state_name}) when is_binary(state_name),
+    do: state_name
+
+  defp terminal_cleanup_issue_state(%{"state" => state_name}) when is_binary(state_name),
+    do: state_name
+
+  defp terminal_cleanup_issue_state(_issue), do: nil
 
   defp handle_active_retry(state, issue, attempt, metadata) do
     cond do
@@ -1779,6 +1969,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
+  def handle_call({:issue_cleanup_busy?, issue_id}, _from, state) when is_binary(issue_id) do
+    {:reply, issue_cleanup_busy?(state, issue_id), state}
+  end
+
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
     now = DateTime.utc_now()

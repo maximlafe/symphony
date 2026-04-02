@@ -588,7 +588,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
   end
 
-  test "startup workspace cleanup removes cancelled issue workspaces" do
+  test "startup terminal cleanup removes issue workspaces and namespaced tmp artifacts" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -608,10 +608,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     orchestrator_name = Module.concat(__MODULE__, :CancelledWorkspaceCleanupOrchestrator)
     workspace = Path.join(test_root, issue.identifier)
+    issue_tmp_dir = Path.join("/tmp", "symphony-#{issue.identifier}-#{System.unique_integer([:positive])}")
+    shared_tmp_dir = Path.join("/tmp", "symphony-shared-#{System.unique_integer([:positive])}")
 
     try do
       File.mkdir_p!(workspace)
       File.write!(Path.join(workspace, "marker.txt"), issue.identifier)
+      File.mkdir_p!(issue_tmp_dir)
+      File.write!(Path.join(issue_tmp_dir, "marker.txt"), issue.identifier)
+      File.mkdir_p!(shared_tmp_dir)
+      File.write!(Path.join(shared_tmp_dir, "marker.txt"), "shared")
 
       write_workflow_file!(Workflow.workflow_file_path(),
         tracker_kind: "memory",
@@ -622,7 +628,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       {:ok, _pid} = Orchestrator.start_link(name: orchestrator_name)
 
-      assert_eventually(fn -> not File.exists?(workspace) end)
+      assert_eventually(fn ->
+        not File.exists?(workspace) and
+          not File.exists?(issue_tmp_dir) and
+          File.exists?(shared_tmp_dir)
+      end)
     after
       case Process.whereis(orchestrator_name) do
         pid when is_pid(pid) -> Process.exit(pid, :normal)
@@ -636,10 +646,214 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
 
       File.rm_rf(test_root)
+      File.rm_rf(issue_tmp_dir)
+      File.rm_rf(shared_tmp_dir)
     end
   end
 
-  test "workspace cleanup does not overlap when before_remove is slow" do
+  test "startup terminal cleanup preserves retained workspace but removes namespaced tmp artifacts" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-retained-workspace-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    issue = %Issue{
+      id: "issue-retained-workspace",
+      identifier: "MT-RETAINED",
+      state: "Done",
+      title: "Retained issue",
+      updated_at: DateTime.utc_now()
+    }
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    orchestrator_name = Module.concat(__MODULE__, :RetainedWorkspaceCleanupOrchestrator)
+    workspace = Path.join(test_root, issue.identifier)
+    issue_tmp_dir = Path.join("/tmp", "symphony-#{issue.identifier}-#{System.unique_integer([:positive])}")
+
+    try do
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "marker.txt"), issue.identifier)
+      File.mkdir_p!(issue_tmp_dir)
+      File.write!(Path.join(issue_tmp_dir, "marker.txt"), issue.identifier)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
+        workspace_cleanup_keep_recent: 1
+      )
+
+      {:ok, _pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      assert_eventually(fn ->
+        File.exists?(workspace) and not File.exists?(issue_tmp_dir)
+      end)
+    after
+      case Process.whereis(orchestrator_name) do
+        pid when is_pid(pid) -> Process.exit(pid, :normal)
+        _ -> :ok
+      end
+
+      if is_nil(previous_memory_issues) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_memory_issues)
+      end
+
+      File.rm_rf(test_root)
+      File.rm_rf(issue_tmp_dir)
+    end
+  end
+
+  test "retry lookup cleans issue artifacts after terminal transition" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-retry-terminal-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "issue-retry-terminal-cleanup"
+
+    active_issue = %Issue{
+      id: issue_id,
+      identifier: "MT-RETRY-CLEANUP",
+      state: "In Progress",
+      title: "Retry cleanup issue",
+      updated_at: DateTime.utc_now()
+    }
+
+    terminal_issue = %{active_issue | state: "Done"}
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [active_issue])
+
+    orchestrator_name = Module.concat(__MODULE__, :RetryTerminalCleanupOrchestrator)
+    workspace = Path.join(test_root, active_issue.identifier)
+    issue_tmp_dir = Path.join("/tmp", "symphony-#{active_issue.identifier}-#{System.unique_integer([:positive])}")
+    retry_token = make_ref()
+
+    try do
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "marker.txt"), active_issue.identifier)
+      File.mkdir_p!(issue_tmp_dir)
+      File.write!(Path.join(issue_tmp_dir, "marker.txt"), active_issue.identifier)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_active_states: ["Todo", "In Progress", "Merging", "Rework"],
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
+        poll_interval_ms: 30_000,
+        workspace_cleanup_keep_recent: 0
+      )
+
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | claimed: MapSet.put(state.claimed, issue_id),
+            retry_attempts: %{
+              issue_id => %{
+                attempt: 1,
+                retry_token: retry_token,
+                timer_ref: nil,
+                due_at_ms: 0,
+                identifier: active_issue.identifier,
+                trace_id: nil,
+                error: nil,
+                error_class: nil,
+                delay_type: :continuation
+              }
+            }
+        }
+      end)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [terminal_issue])
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      assert_eventually(fn ->
+        not File.exists?(workspace) and not File.exists?(issue_tmp_dir)
+      end)
+    after
+      case Process.whereis(orchestrator_name) do
+        pid when is_pid(pid) -> Process.exit(pid, :normal)
+        _ -> :ok
+      end
+
+      if is_nil(previous_memory_issues) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_memory_issues)
+      end
+
+      File.rm_rf(test_root)
+      File.rm_rf(issue_tmp_dir)
+    end
+  end
+
+  test "merging issue does not trigger terminal cleanup" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-merging-cleanup-guard-#{System.unique_integer([:positive])}"
+      )
+
+    issue = %Issue{
+      id: "issue-merging-cleanup",
+      identifier: "MT-MERGING",
+      state: "Merging",
+      title: "Merging issue",
+      updated_at: DateTime.utc_now()
+    }
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    orchestrator_name = Module.concat(__MODULE__, :MergingCleanupGuardOrchestrator)
+    workspace = Path.join(test_root, issue.identifier)
+    issue_tmp_dir = Path.join("/tmp", "symphony-#{issue.identifier}-#{System.unique_integer([:positive])}")
+
+    try do
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "marker.txt"), issue.identifier)
+      File.mkdir_p!(issue_tmp_dir)
+      File.write!(Path.join(issue_tmp_dir, "marker.txt"), issue.identifier)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_active_states: ["Todo", "In Progress", "Merging", "Rework"],
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
+        poll_interval_ms: 50
+      )
+
+      {:ok, _pid} = Orchestrator.start_link(name: orchestrator_name)
+      Process.sleep(250)
+
+      assert File.exists?(workspace)
+      assert File.exists?(issue_tmp_dir)
+    after
+      case Process.whereis(orchestrator_name) do
+        pid when is_pid(pid) -> Process.exit(pid, :normal)
+        _ -> :ok
+      end
+
+      if is_nil(previous_memory_issues) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_memory_issues)
+      end
+
+      File.rm_rf(test_root)
+      File.rm_rf(issue_tmp_dir)
+    end
+  end
+
+  test "terminal cleanup does not overlap when before_remove is slow" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -662,6 +876,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     orchestrator_name = Module.concat(__MODULE__, :SerializedWorkspaceCleanupOrchestrator)
     workspace = Path.join(test_root, issue.identifier)
+    issue_tmp_dir = Path.join("/tmp", "symphony-#{issue.identifier}-#{System.unique_integer([:positive])}")
 
     try do
       if is_pid(default_orchestrator_pid) do
@@ -670,6 +885,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       File.mkdir_p!(workspace)
       File.write!(Path.join(workspace, "marker.txt"), issue.identifier)
+      File.mkdir_p!(issue_tmp_dir)
+      File.write!(Path.join(issue_tmp_dir, "marker.txt"), issue.identifier)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         tracker_kind: "memory",
@@ -685,7 +902,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       {:ok, _pid} = Orchestrator.start_link(name: orchestrator_name)
 
-      assert_eventually(fn -> not File.exists?(workspace) end)
+      assert_eventually(fn -> not File.exists?(workspace) and not File.exists?(issue_tmp_dir) end)
       Process.sleep(150)
 
       assert File.read!(hook_log) == "cleanup\n"
@@ -709,6 +926,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
 
       File.rm_rf(test_root)
+      File.rm_rf(issue_tmp_dir)
     end
   end
 
