@@ -658,6 +658,8 @@ Instructions:
    - do not remove machine-readable `Repo:`, `Base branch:`, or `Working branch:` lines even when repo routing is also inferred from project metadata or `repo:*` labels;
    - do not write checklists, managed markers, or workpad-style progress notes into the description.
 7. Maintain the Russian workpad with a compact environment stamp, hierarchical plan, `Критерии приемки`, `Проверка`, `Артефакты`, and `Заметки`.
+   - If `Неясности` is non-empty, every bullet must be a concrete decision-blocker written in three parts: what is still unconfirmed, why that blocks execution or acceptance, and which exact repo-controlled signal, artifact, or human input will clear it.
+   - Prefer specific nouns such as `production bundle bytes`, `deploy manifest`, `literal copy`, `drawer footer/actions`, `screenshot baseline`, or `Basic auth access`; avoid vague phrasing like `нужно разобраться` without a stated unblock condition.
 8. Before moving to `Plan Review`, do one final planning handoff:
    - ensure the task-spec issue description is current;
    - ensure the final local `workpad.md` is synced exactly once;
@@ -925,7 +927,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 ### Неясности
 
-- <добавляй только если что-то действительно было неясно>
+- <добавляй только если что-то действительно было неясно; каждый пункт пиши как decision-blocker: что не подтверждено -> что это блокирует -> какой точный signal/artifact или human input снимет блок>
 ````
 
 For the final handoff to `In Review`, phrase checklist items so they are true before the state change. Good: `PR checks зелёные; задача готова к переводу в In Review`. Bad: `Задача переведена в In Review`.

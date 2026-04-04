@@ -2635,6 +2635,8 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "`human-verify`"
     assert prompt =~ "`decision`"
     assert prompt =~ "`human-action`"
+    assert prompt =~ "every bullet must be an actionable blocker in three parts"
+    assert prompt =~ "why it blocks execution or acceptance"
     assert prompt =~ "`low-context`"
     assert prompt =~ "Limit yourself to 2 auto-fix attempts"
   end

@@ -167,6 +167,8 @@ Instructions:
    - pass the absolute path to local `workpad.md` when calling `sync_workpad`;
    - keep subsequent edits local until a meaningful milestone or final handoff.
 3. Maintain the workpad with a compact environment stamp, plan, acceptance criteria, validation checklist, artifact manifest, and notes.
+   - If `Confusions` is non-empty, every bullet must be an actionable blocker in three parts: what is still unconfirmed, why it blocks execution or acceptance, and which exact artifact, signal, or human input will resolve it.
+   - Prefer concrete terms such as `production bundle bytes`, `deploy manifest`, `literal copy`, or `screenshot baseline`; avoid vague statements that do not name the unblock condition.
 4. Before code edits, run the `pull` skill to sync with latest `origin/main`, then record the result in `Notes` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
 5. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before handoff.
    - track repeated fix loops for the same failing signal in the workpad and follow the auto-fix limit below;
@@ -340,5 +342,5 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 ### Confusions
 
-- <only include when something was confusing during execution>
+- <only include when something was genuinely unresolved; write each item as: unresolved fact -> why it blocks execution/acceptance -> exact artifact/signal/human input that clears it>
 ````
