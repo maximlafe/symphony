@@ -31,11 +31,11 @@ Notes:
   - unknown projects also move the task into the blocker path.
 - `let.WORKFLOW.md` still supports per-issue base-branch routing from the Linear issue description:
   - add a `## Symphony` section;
-  - keep `Repo: owner/name` and `Base branch: feature/...` in that section whenever the description is normalized into task-spec form;
+  - keep `Repo: owner/name`, `Base branch: feature/...`, and optional `Working branch: feature/...` in that section whenever the description is normalized into task-spec form;
   - `Repo:` is an audit mirror of the resolved repository and must match the routing implied by project metadata and any required `repo:*` label;
   - if `Base branch:` is missing, the worker stays unattended and falls back to that repository's default branch;
   - if `Base branch:` is invalid or that branch does not satisfy the `make symphony-bootstrap` contract, the task moves into the blocker path instead of silently picking another branch or failing inside the workspace hook.
-- When a run creates a fresh working branch, name it `Symphony/<lowercase issue identifier>-<short-kebab-summary>` instead of reusing Linear `gitBranchName` values such as `cycloid-yips0i/...`, and record branch lineage as `Новая ветка <branch> создана от origin/<base>`.
+- When a run creates a fresh working branch, use `Working branch:` exactly when it is set; otherwise name it `Symphony/<lowercase issue identifier>-<short-kebab-summary>` instead of reusing Linear `gitBranchName` values such as `cycloid-yips0i/...`, and record branch lineage as `Новая ветка <branch> создана от origin/<base>`.
 - PR titles for unattended runs should stay short and outcome-oriented in the form `<ISSUE-ID>: <clear shipped outcome>`.
 - PR handoff uses `In Review` instead of `Human Review`.
 - Auth and permission blockers move the issue to `Blocked`.
