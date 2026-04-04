@@ -1000,7 +1000,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
-  test "repository retry script preserves the stored base branch when Base branch marker is absent" do
+  test "repository retry script clears the stored working branch when Working branch marker is absent" do
     previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
     previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
     previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
@@ -1049,7 +1049,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert File.read!(Path.join(workspace, ".symphony-source-repository")) == "maximlafe/lead_status\n"
       assert File.read!(Path.join(workspace, ".symphony-base-branch")) == "release/42\n"
-      assert File.read!(Path.join(workspace, ".symphony-working-branch")) == "merge/retry-42\n"
+      refute File.exists?(Path.join(workspace, ".symphony-working-branch"))
       refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
       refute File.exists?(Path.join(workspace, ".symphony-base-branch-note"))
     after
@@ -2917,7 +2917,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     previous_base_branch=
     base_branch=
     requested_working_branch=
-    previous_working_branch=
     working_branch=
     base_branch_error=
     current_repository=
@@ -2925,7 +2924,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     rm -f .symphony-base-branch-error .symphony-base-branch-note
     current_repository=$(resolve_current_repository)
     previous_base_branch=$(cat .symphony-base-branch 2>/dev/null || true)
-    previous_working_branch=$(cat .symphony-working-branch 2>/dev/null || true)
     if [ "$repo_label_count" -gt 1 ]; then
       base_branch_error="Multiple repo:* labels found on the Linear issue."
     elif [ "$repo_label_count" -eq 1 ]; then
@@ -2989,8 +2987,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       else
         working_branch=$requested_working_branch
       fi
-    elif [ -n "$previous_working_branch" ]; then
-      working_branch=$previous_working_branch
     fi
     if [ -n "$base_branch_error" ]; then
       printf '%s\n' "$base_branch_error" > .symphony-base-branch-error

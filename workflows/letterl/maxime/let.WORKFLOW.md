@@ -391,7 +391,6 @@ hooks:
     previous_base_branch=
     base_branch=
     requested_working_branch=
-    previous_working_branch=
     working_branch=
     base_branch_error=
     current_repository=
@@ -399,7 +398,6 @@ hooks:
     rm -f .symphony-base-branch-error .symphony-base-branch-note
     current_repository=$(resolve_current_repository)
     previous_base_branch=$(cat .symphony-base-branch 2>/dev/null || true)
-    previous_working_branch=$(cat .symphony-working-branch 2>/dev/null || true)
     if [ "$repo_label_count" -gt 1 ]; then
       base_branch_error="Multiple repo:* labels found on the Linear issue."
     elif [ "$repo_label_count" -eq 1 ]; then
@@ -465,8 +463,6 @@ hooks:
       else
         working_branch=$requested_working_branch
       fi
-    elif [ -n "$previous_working_branch" ]; then
-      working_branch=$previous_working_branch
     fi
     if [ -n "$base_branch_error" ]; then
       printf '%s\n' "$base_branch_error" > .symphony-base-branch-error
