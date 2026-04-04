@@ -462,7 +462,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                  cd: workspace,
                  env: [
                    {"SYMPHONY_ISSUE_PROJECT_NAME", "Извлечение задач"},
-                   {"SYMPHONY_ISSUE_DESCRIPTION", "## Symphony\nBase branch: feature/symphony-ready\n"},
+                   {"SYMPHONY_ISSUE_DESCRIPTION", "## Symphony\nBase branch: feature/symphony-ready\nWorking branch: merge/step-01\n"},
                    {"SYMPHONY_ISSUE_LABELS", ""}
                  ]
                )
@@ -470,7 +470,113 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert File.read!(Path.join(workspace, "BOOTSTRAP_REPO.txt")) == "lead_status\n"
       assert File.read!(Path.join(workspace, ".symphony-source-repository")) == "maximlafe/lead_status\n"
       assert File.read!(Path.join(workspace, ".symphony-base-branch")) == "feature/symphony-ready\n"
+      assert File.read!(Path.join(workspace, ".symphony-working-branch")) == "merge/step-01\n"
       refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "repository routing script writes blocker file when Working branch marker is invalid" do
+    previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
+    previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
+    previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("TEST_LEAD_STATUS_REPO_URL", previous_lead_status_repo)
+      restore_env("TEST_SYMPHONY_REPO_URL", previous_symphony_repo)
+      restore_env("TEST_TG_LIVE_EXPORT_REPO_URL", previous_tg_live_export_repo)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-invalid-working-branch-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      lead_status_repo = Path.join(test_root, "lead_status")
+      symphony_repo = Path.join(test_root, "symphony")
+      tg_live_export_repo = Path.join(test_root, "tg_live_export")
+      workspace = Path.join(test_root, "workspace")
+
+      create_bootstrap_repo!(lead_status_repo, "lead_status")
+      create_bootstrap_repo!(symphony_repo, "symphony")
+      create_bootstrap_repo!(tg_live_export_repo, "tg_live_export")
+      File.mkdir_p!(workspace)
+
+      System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
+      System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
+      System.put_env("TEST_TG_LIVE_EXPORT_REPO_URL", tg_live_export_repo)
+
+      assert {_output, 0} =
+               System.cmd("sh", ["-lc", repository_routing_hook()],
+                 cd: workspace,
+                 env: [
+                   {"SYMPHONY_ISSUE_PROJECT_NAME", "Извлечение задач"},
+                   {"SYMPHONY_ISSUE_DESCRIPTION", "## Symphony\nBase branch: main\nWorking branch: invalid branch\n"},
+                   {"SYMPHONY_ISSUE_LABELS", ""}
+                 ]
+               )
+
+      assert File.read!(Path.join(workspace, ".symphony-base-branch-error")) ==
+               "Working branch: in ## Symphony is empty or contains whitespace.\n"
+
+      refute File.exists?(Path.join(workspace, ".symphony-working-branch"))
+      refute File.exists?(Path.join(workspace, "BOOTSTRAP_REPO.txt"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "repository routing script writes blocker file when Working branch matches Base branch" do
+    previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
+    previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
+    previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("TEST_LEAD_STATUS_REPO_URL", previous_lead_status_repo)
+      restore_env("TEST_SYMPHONY_REPO_URL", previous_symphony_repo)
+      restore_env("TEST_TG_LIVE_EXPORT_REPO_URL", previous_tg_live_export_repo)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-same-working-and-base-branch-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      lead_status_repo = Path.join(test_root, "lead_status")
+      symphony_repo = Path.join(test_root, "symphony")
+      tg_live_export_repo = Path.join(test_root, "tg_live_export")
+      workspace = Path.join(test_root, "workspace")
+
+      create_bootstrap_repo!(lead_status_repo, "lead_status")
+      create_bootstrap_repo!(symphony_repo, "symphony")
+      create_bootstrap_repo!(tg_live_export_repo, "tg_live_export")
+      File.mkdir_p!(workspace)
+
+      System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
+      System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
+      System.put_env("TEST_TG_LIVE_EXPORT_REPO_URL", tg_live_export_repo)
+
+      assert {_output, 0} =
+               System.cmd("sh", ["-lc", repository_routing_hook()],
+                 cd: workspace,
+                 env: [
+                   {"SYMPHONY_ISSUE_PROJECT_NAME", "Извлечение задач"},
+                   {"SYMPHONY_ISSUE_DESCRIPTION", "## Symphony\nBase branch: main\nWorking branch: main\n"},
+                   {"SYMPHONY_ISSUE_LABELS", ""}
+                 ]
+               )
+
+      assert File.read!(Path.join(workspace, ".symphony-base-branch-error")) ==
+               "Working branch 'main' in ## Symphony must differ from Base branch 'main'.\n"
+
+      refute File.exists?(Path.join(workspace, ".symphony-source-repository"))
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch"))
+      refute File.exists?(Path.join(workspace, ".symphony-working-branch"))
     after
       File.rm_rf(test_root)
     end
@@ -894,7 +1000,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
-  test "repository retry script preserves the stored base branch when Base branch marker is absent" do
+  test "repository retry script clears the stored working branch when Working branch marker is absent" do
     previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
     previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
     previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
@@ -924,6 +1030,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       System.cmd("git", ["clone", "--depth", "1", lead_status_repo, workspace])
       File.write!(Path.join(workspace, ".symphony-source-repository"), "maximlafe/lead_status\n")
       File.write!(Path.join(workspace, ".symphony-base-branch"), "release/42\n")
+      File.write!(Path.join(workspace, ".symphony-working-branch"), "merge/retry-42\n")
 
       System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
       System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
@@ -942,8 +1049,67 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert File.read!(Path.join(workspace, ".symphony-source-repository")) == "maximlafe/lead_status\n"
       assert File.read!(Path.join(workspace, ".symphony-base-branch")) == "release/42\n"
+      refute File.exists?(Path.join(workspace, ".symphony-working-branch"))
       refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
       refute File.exists?(Path.join(workspace, ".symphony-base-branch-note"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "repository retry script writes blocker file when Working branch matches Base branch" do
+    previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
+    previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
+    previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("TEST_LEAD_STATUS_REPO_URL", previous_lead_status_repo)
+      restore_env("TEST_SYMPHONY_REPO_URL", previous_symphony_repo)
+      restore_env("TEST_TG_LIVE_EXPORT_REPO_URL", previous_tg_live_export_repo)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-retry-same-working-and-base-branch-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      lead_status_repo = Path.join(test_root, "lead_status")
+      symphony_repo = Path.join(test_root, "symphony")
+      tg_live_export_repo = Path.join(test_root, "tg_live_export")
+      workspace = Path.join(test_root, "workspace")
+
+      create_bootstrap_repo!(lead_status_repo, "lead_status")
+      create_bootstrap_repo!(symphony_repo, "symphony")
+      create_bootstrap_repo!(tg_live_export_repo, "tg_live_export")
+
+      System.cmd("git", ["clone", "--depth", "1", lead_status_repo, workspace])
+      File.write!(Path.join(workspace, ".symphony-source-repository"), "maximlafe/lead_status\n")
+      File.write!(Path.join(workspace, ".symphony-base-branch"), "release/42\n")
+      File.write!(Path.join(workspace, ".symphony-working-branch"), "merge/retry-42\n")
+
+      System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
+      System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
+      System.put_env("TEST_TG_LIVE_EXPORT_REPO_URL", tg_live_export_repo)
+
+      assert {_output, 0} =
+               System.cmd("sh", ["-lc", repository_retry_hook()],
+                 cd: workspace,
+                 env: [
+                   {"SYMPHONY_ISSUE_DESCRIPTION", "## Symphony\nBase branch: main\nWorking branch: main\n"},
+                   {"SYMPHONY_ISSUE_PROJECT_SLUG", "master-komand-dfbe2b1b972e"},
+                   {"SYMPHONY_ISSUE_PROJECT_NAME", "Мастер команд"},
+                   {"SYMPHONY_ISSUE_LABELS", ""}
+                 ]
+               )
+
+      assert File.read!(Path.join(workspace, ".symphony-base-branch-error")) ==
+               "Working branch 'main' in ## Symphony must differ from Base branch 'main'.\n"
+
+      assert File.read!(Path.join(workspace, ".symphony-source-repository")) == "maximlafe/lead_status\n"
+      assert File.read!(Path.join(workspace, ".symphony-base-branch")) == "release/42\n"
+      refute File.exists?(Path.join(workspace, ".symphony-working-branch"))
     after
       File.rm_rf(test_root)
     end
@@ -2710,14 +2876,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     repo_label_count=$(printf '%s\n' "$repo_labels" | sed '/^$/d' | wc -l | tr -d ' ')
     requested_base_branches=$(extract_symphony_marker "Base branch")
     base_branch_marker_count=$(printf '%s\n' "$requested_base_branches" | sed '/^$/d' | wc -l | tr -d ' ')
+    requested_working_branches=$(extract_symphony_marker "Working branch")
+    working_branch_marker_count=$(printf '%s\n' "$requested_working_branches" | sed '/^$/d' | wc -l | tr -d ' ')
     repo_override=
     resolved_project_repository=
     source_repository=
     source_repo_url=
     requested_base_branch=
     base_branch=
+    requested_working_branch=
+    working_branch=
     setup_note=
-    rm -f .symphony-base-branch-error .symphony-base-branch-note .symphony-source-repository .symphony-base-branch .symphony-bootstrap-error.log
+    rm -f .symphony-base-branch-error .symphony-base-branch-note .symphony-source-repository .symphony-base-branch .symphony-working-branch .symphony-bootstrap-error.log
     if [ "$repo_label_count" -gt 1 ]; then
       printf '%s\n' "Multiple repo:* labels found on the Linear issue." > .symphony-base-branch-error
       exit 0
@@ -2762,6 +2932,21 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         exit 0
       fi
     fi
+    if [ "$working_branch_marker_count" -gt 1 ]; then
+      printf '%s\n' "Multiple Working branch: lines found in ## Symphony." > .symphony-base-branch-error
+      exit 0
+    elif [ "$working_branch_marker_count" -eq 1 ]; then
+      requested_working_branch=$requested_working_branches
+      if [ "$requested_working_branch" = "__EMPTY__" ] || printf '%s' "$requested_working_branch" | grep -Eq '[[:space:]]'; then
+        printf '%s\n' "Working branch: in ## Symphony is empty or contains whitespace." > .symphony-base-branch-error
+        exit 0
+      elif ! git check-ref-format --branch "$requested_working_branch" >/dev/null 2>&1; then
+        printf "Working branch '%s' in ## Symphony is not a valid git branch name.\n" "$requested_working_branch" > .symphony-base-branch-error
+        exit 0
+      else
+        working_branch=$requested_working_branch
+      fi
+    fi
     if [ -n "$requested_base_branch" ]; then
       if git ls-remote --exit-code --heads "$source_repo_url" "$requested_base_branch" >/dev/null 2>&1; then
         git clone --depth 1 --single-branch --branch "$requested_base_branch" "$source_repo_url" .
@@ -2776,8 +2961,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       base_branch=$(detect_repo_default_branch)
       append_note "Base branch marker is missing; using the repository default branch $base_branch."
     fi
+    if [ -n "$working_branch" ] && [ "$working_branch" = "$base_branch" ]; then
+      printf "Working branch '%s' in ## Symphony must differ from Base branch '%s'.\n" "$working_branch" "$base_branch" > .symphony-base-branch-error
+      exit 0
+    fi
     printf '%s\n' "$source_repository" > .symphony-source-repository
     printf '%s\n' "$base_branch" > .symphony-base-branch
+    if [ -n "$working_branch" ]; then
+      printf '%s\n' "$working_branch" > .symphony-working-branch
+    fi
     if [ -n "$setup_note" ]; then
       printf '%s\n' "$setup_note" > .symphony-base-branch-note
     fi
@@ -2897,6 +3089,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     repo_label_count=$(printf '%s\n' "$repo_labels" | sed '/^$/d' | wc -l | tr -d ' ')
     requested_base_branches=$(extract_symphony_marker "Base branch")
     base_branch_marker_count=$(printf '%s\n' "$requested_base_branches" | sed '/^$/d' | wc -l | tr -d ' ')
+    requested_working_branches=$(extract_symphony_marker "Working branch")
+    working_branch_marker_count=$(printf '%s\n' "$requested_working_branches" | sed '/^$/d' | wc -l | tr -d ' ')
     repo_override=
     resolved_project_repository=
     source_repository=
@@ -2904,6 +3098,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     requested_base_branch=
     previous_base_branch=
     base_branch=
+    requested_working_branch=
+    working_branch=
     base_branch_error=
     current_repository=
     setup_note=
@@ -2962,6 +3158,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     elif [ -n "$previous_base_branch" ]; then
       base_branch=$previous_base_branch
     fi
+    if [ -z "$base_branch_error" ] && [ "$working_branch_marker_count" -gt 1 ]; then
+      base_branch_error="Multiple Working branch: lines found in ## Symphony."
+    elif [ -z "$base_branch_error" ] && [ "$working_branch_marker_count" -eq 1 ]; then
+      requested_working_branch=$requested_working_branches
+      if [ "$requested_working_branch" = "__EMPTY__" ] || printf '%s' "$requested_working_branch" | grep -Eq '[[:space:]]'; then
+        base_branch_error="Working branch: in ## Symphony is empty or contains whitespace."
+      elif ! git check-ref-format --branch "$requested_working_branch" >/dev/null 2>&1; then
+        base_branch_error="Working branch '$requested_working_branch' in ## Symphony is not a valid git branch name."
+      else
+        working_branch=$requested_working_branch
+      fi
+    fi
     if [ -n "$base_branch_error" ]; then
       printf '%s\n' "$base_branch_error" > .symphony-base-branch-error
       exit 0
@@ -2970,8 +3178,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       base_branch=$(detect_repo_default_branch)
       append_note "Base branch marker is missing; using the repository default branch $base_branch."
     fi
+    if [ -n "$working_branch" ] && [ "$working_branch" = "$base_branch" ]; then
+      rm -f .symphony-working-branch
+      printf "Working branch '%s' in ## Symphony must differ from Base branch '%s'.\n" "$working_branch" "$base_branch" > .symphony-base-branch-error
+      exit 0
+    fi
     printf '%s\n' "$source_repository" > .symphony-source-repository
     printf '%s\n' "$base_branch" > .symphony-base-branch
+    if [ -n "$working_branch" ]; then
+      printf '%s\n' "$working_branch" > .symphony-working-branch
+    else
+      rm -f .symphony-working-branch
+    fi
     if [ -n "$setup_note" ]; then
       printf '%s\n' "$setup_note" > .symphony-base-branch-note
     fi
