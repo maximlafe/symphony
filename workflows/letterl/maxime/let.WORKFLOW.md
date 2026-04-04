@@ -167,15 +167,19 @@ hooks:
     repo_label_count=$(printf '%s\n' "$repo_labels" | sed '/^$/d' | wc -l | tr -d ' ')
     requested_base_branches=$(extract_symphony_marker "Base branch")
     base_branch_marker_count=$(printf '%s\n' "$requested_base_branches" | sed '/^$/d' | wc -l | tr -d ' ')
+    requested_working_branches=$(extract_symphony_marker "Working branch")
+    working_branch_marker_count=$(printf '%s\n' "$requested_working_branches" | sed '/^$/d' | wc -l | tr -d ' ')
     repo_override=
     resolved_project_repository=
     source_repository=
     source_repo_url=
     requested_base_branch=
     base_branch=
+    requested_working_branch=
+    working_branch=
     base_branch_error=
     setup_note=
-    rm -f .symphony-base-branch-error .symphony-base-branch-note .symphony-source-repository
+    rm -f .symphony-base-branch-error .symphony-base-branch-note .symphony-source-repository .symphony-working-branch
     if [ "$repo_label_count" -gt 1 ]; then
       base_branch_error="Multiple repo:* labels found on the Linear issue."
     elif [ "$repo_label_count" -eq 1 ]; then
@@ -218,6 +222,18 @@ hooks:
         base_branch_error="Base branch: in ## Symphony is empty or contains whitespace."
       fi
     fi
+    if [ -z "$base_branch_error" ] && [ "$working_branch_marker_count" -gt 1 ]; then
+      base_branch_error="Multiple Working branch: lines found in ## Symphony."
+    elif [ -z "$base_branch_error" ] && [ "$working_branch_marker_count" -eq 1 ]; then
+      requested_working_branch=$requested_working_branches
+      if [ "$requested_working_branch" = "__EMPTY__" ] || printf '%s' "$requested_working_branch" | grep -Eq '[[:space:]]'; then
+        base_branch_error="Working branch: in ## Symphony is empty or contains whitespace."
+      elif ! git check-ref-format --branch "$requested_working_branch" >/dev/null 2>&1; then
+        base_branch_error="Working branch '$requested_working_branch' in ## Symphony is not a valid git branch name."
+      else
+        working_branch=$requested_working_branch
+      fi
+    fi
     if [ -n "$base_branch_error" ]; then
       printf '%s\n' "$base_branch_error" > .symphony-base-branch-error
       exit 0
@@ -236,8 +252,15 @@ hooks:
       base_branch=$(detect_repo_default_branch)
       append_note "Base branch marker is missing; using the repository default branch $base_branch."
     fi
+    if [ -n "$working_branch" ] && [ "$working_branch" = "$base_branch" ]; then
+      printf "Working branch '%s' in ## Symphony must differ from Base branch '%s'.\n" "$working_branch" "$base_branch" > .symphony-base-branch-error
+      exit 0
+    fi
     printf '%s\n' "$source_repository" > .symphony-source-repository
     printf '%s\n' "$base_branch" > .symphony-base-branch
+    if [ -n "$working_branch" ]; then
+      printf '%s\n' "$working_branch" > .symphony-working-branch
+    fi
     if [ -n "$setup_note" ]; then
       printf '%s\n' "$setup_note" > .symphony-base-branch-note
     fi
@@ -358,6 +381,8 @@ hooks:
     repo_label_count=$(printf '%s\n' "$repo_labels" | sed '/^$/d' | wc -l | tr -d ' ')
     requested_base_branches=$(extract_symphony_marker "Base branch")
     base_branch_marker_count=$(printf '%s\n' "$requested_base_branches" | sed '/^$/d' | wc -l | tr -d ' ')
+    requested_working_branches=$(extract_symphony_marker "Working branch")
+    working_branch_marker_count=$(printf '%s\n' "$requested_working_branches" | sed '/^$/d' | wc -l | tr -d ' ')
     repo_override=
     resolved_project_repository=
     source_repository=
@@ -365,12 +390,16 @@ hooks:
     requested_base_branch=
     previous_base_branch=
     base_branch=
+    requested_working_branch=
+    previous_working_branch=
+    working_branch=
     base_branch_error=
     current_repository=
     setup_note=
     rm -f .symphony-base-branch-error .symphony-base-branch-note
     current_repository=$(resolve_current_repository)
     previous_base_branch=$(cat .symphony-base-branch 2>/dev/null || true)
+    previous_working_branch=$(cat .symphony-working-branch 2>/dev/null || true)
     if [ "$repo_label_count" -gt 1 ]; then
       base_branch_error="Multiple repo:* labels found on the Linear issue."
     elif [ "$repo_label_count" -eq 1 ]; then
@@ -425,6 +454,20 @@ hooks:
     elif [ -n "$previous_base_branch" ]; then
       base_branch=$previous_base_branch
     fi
+    if [ -z "$base_branch_error" ] && [ "$working_branch_marker_count" -gt 1 ]; then
+      base_branch_error="Multiple Working branch: lines found in ## Symphony."
+    elif [ -z "$base_branch_error" ] && [ "$working_branch_marker_count" -eq 1 ]; then
+      requested_working_branch=$requested_working_branches
+      if [ "$requested_working_branch" = "__EMPTY__" ] || printf '%s' "$requested_working_branch" | grep -Eq '[[:space:]]'; then
+        base_branch_error="Working branch: in ## Symphony is empty or contains whitespace."
+      elif ! git check-ref-format --branch "$requested_working_branch" >/dev/null 2>&1; then
+        base_branch_error="Working branch '$requested_working_branch' in ## Symphony is not a valid git branch name."
+      else
+        working_branch=$requested_working_branch
+      fi
+    elif [ -n "$previous_working_branch" ]; then
+      working_branch=$previous_working_branch
+    fi
     if [ -n "$base_branch_error" ]; then
       printf '%s\n' "$base_branch_error" > .symphony-base-branch-error
       exit 0
@@ -433,8 +476,18 @@ hooks:
       base_branch=$(detect_repo_default_branch)
       append_note "Base branch marker is missing; using the repository default branch $base_branch."
     fi
+    if [ -n "$working_branch" ] && [ "$working_branch" = "$base_branch" ]; then
+      rm -f .symphony-working-branch
+      printf "Working branch '%s' in ## Symphony must differ from Base branch '%s'.\n" "$working_branch" "$base_branch" > .symphony-base-branch-error
+      exit 0
+    fi
     printf '%s\n' "$source_repository" > .symphony-source-repository
     printf '%s\n' "$base_branch" > .symphony-base-branch
+    if [ -n "$working_branch" ]; then
+      printf '%s\n' "$working_branch" > .symphony-working-branch
+    else
+      rm -f .symphony-working-branch
+    fi
     if [ -n "$setup_note" ]; then
       printf '%s\n' "$setup_note" > .symphony-base-branch-note
     fi
@@ -524,12 +577,12 @@ Instructions:
 - Keep the issue description as the canonical task-spec and exactly one persistent workpad comment as the implementation plan and execution log.
 - Use local `workpad.md` as the working copy and sync the live workpad only at bootstrap, meaningful milestones, and final handoff.
 - Before each automated stage (`Planning`, `In Progress`, `Rework`, `Merging`), post one separate top-level stage-start comment before the first live workpad sync of that stage.
-- Before any Git sync or branch decision, treat `.symphony-source-repository` and `.symphony-base-branch` as the authoritative workspace routing metadata when those files exist.
-- When a fresh working branch is needed, do not reuse Linear `gitBranchName` values. Create the branch yourself as `Symphony/<lowercase issue identifier>-<short-kebab-summary>`.
-- Keep the summary slug ASCII, concise, and outcome-oriented. Prefer 2-6 meaningful English words, for example `Symphony/let-267-safe-task-cleanup`.
+- Before any Git sync or branch decision, treat `.symphony-source-repository`, `.symphony-base-branch`, and optional `.symphony-working-branch` as the authoritative workspace routing metadata when those files exist.
+- When a fresh working branch is needed, use `.symphony-working-branch` exactly when it exists. Otherwise, do not reuse Linear `gitBranchName` values and create the branch yourself as `Symphony/<lowercase issue identifier>-<short-kebab-summary>`.
+- Keep the fallback summary slug ASCII, concise, and outcome-oriented. Prefer 2-6 meaningful English words, for example `Symphony/let-267-safe-task-cleanup`.
 - Never put usernames, worker ids, or full-title transliterations into the branch name. Names like `cycloid-yips0i/...` are invalid for this workflow.
 - When creating or editing a PR, keep the title short and review-friendly in the form `<ISSUE-ID>: <clear shipped outcome>` instead of copying a long noisy issue title verbatim.
-- When normalizing the issue description into a task-spec, preserve or re-add the final `## Symphony` section with machine-readable `Repo:` and `Base branch:` lines; treat it as durable routing and audit metadata, not as workpad content.
+- When normalizing the issue description into a task-spec, preserve or re-add the final `## Symphony` section with machine-readable `Repo:`, `Base branch:`, and optional `Working branch:` lines; treat it as durable routing and audit metadata, not as workpad content.
 - If `.symphony-base-branch-note` exists, translate it into Russian in `Заметки` once and continue without asking a human; the note may describe repo-label fallback for an already bound workspace or default base-branch fallback chosen for this ticket.
 - If `.symphony-base-branch-error` exists, treat it as a routing/configuration blocker: translate the message into Russian in the workpad, fill `Checkpoint` with `checkpoint_type: human-action`, a justified `risk_level`, and a short `summary`, then move the issue to `Blocked` and stop.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.
@@ -573,7 +626,7 @@ Instructions:
 5. Minimal recovery for straightforward `In Progress` runs:
    - if `.workpad-id` exists and the issue is already in `In Progress`, read only the current state, the issue-description task-spec, the live workpad, the current branch/HEAD, and the PR link or attachment if present;
    - reread full comment/history context only for missing workpad, state/content mismatch, `Rework`, missing PR context, or real ambiguity.
-6. If the existing branch PR is already closed or merged, do not reuse that branch. Create a fresh branch from `origin/<configured base branch>` using the required `Symphony/<issue-id>-<short-kebab-summary>` format and continue as a new attempt.
+6. If the existing branch PR is already closed or merged, do not reuse that branch. Create a fresh branch from `origin/<configured base branch>` using `.symphony-working-branch` when configured; otherwise use the fallback `Symphony/<issue-id>-<short-kebab-summary>` format and continue as a new attempt.
 
 ## Step 1: Planning phase (Todo or Planning -> Plan Review)
 
@@ -602,11 +655,11 @@ Instructions:
 6. Update the issue-description task-spec only when required sections are missing or the task contract materially changed:
    - use canonical Russian headings `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and keep a final `## Symphony` section;
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
-   - keep `## Symphony` as the last section with `Repo: <resolved owner/name>` and `Base branch: <configured branch>`;
-   - if `.symphony-source-repository` or `.symphony-base-branch` exist, treat them as authoritative when repopulating `Repo:` and `Base branch:` during normalization;
+   - keep `## Symphony` as the last section with `Repo: <resolved owner/name>`, `Base branch: <configured branch>`, and `Working branch: <configured branch name>` when `.symphony-working-branch` exists;
+   - if `.symphony-source-repository`, `.symphony-base-branch`, or `.symphony-working-branch` exist, treat them as authoritative when repopulating `Repo:`, `Base branch:`, and `Working branch:` during normalization;
    - preserve all material user facts, constraints, and acceptance intent, but allow full reformatting into the canonical sections;
    - preserve user-uploaded files, screenshots, and inline media verbatim; if the current description contains uploads or embeds that would be dropped by normalization, do not rewrite the description and keep the extra structure in the workpad instead;
-   - do not remove machine-readable `Repo:` or `Base branch:` lines even when repo routing is also inferred from project metadata or `repo:*` labels;
+   - do not remove machine-readable `Repo:`, `Base branch:`, or `Working branch:` lines even when repo routing is also inferred from project metadata or `repo:*` labels;
    - do not write checklists, managed markers, or workpad-style progress notes into the description.
 7. Maintain the Russian workpad with a compact environment stamp, hierarchical plan, `Критерии приемки`, `Проверка`, `Артефакты`, and `Заметки`.
 8. Before moving to `Plan Review`, do one final planning handoff:
@@ -698,15 +751,15 @@ Use this only when completion is blocked by missing required tools or missing au
 3. Re-read the issue body task-spec, human comments, and PR feedback; explicitly identify what changes this attempt.
 4. Close the existing PR tied to the issue.
 5. Remove the existing `## Рабочий журнал Codex` comment.
-6. Create a fresh branch from `origin/<configured base branch>` using the required `Symphony/<issue-id>-<short-kebab-summary>` format.
+6. Create a fresh branch from `origin/<configured base branch>` using `.symphony-working-branch` when configured; otherwise use the fallback `Symphony/<issue-id>-<short-kebab-summary>` format.
 7. Create a new bootstrap `## Рабочий журнал Codex` comment.
 8. In the new workpad `Заметки`, record `Новая ветка <branch> создана от origin/<configured base branch>.` before further implementation.
-9. Refresh the task-spec description if the task contract changed for the new attempt, then rewrite the new workpad in Russian while preserving or re-adding the final `## Symphony` section from `.symphony-source-repository` and `.symphony-base-branch`.
+9. Refresh the task-spec description if the task contract changed for the new attempt, then rewrite the new workpad in Russian while preserving or re-adding the final `## Symphony` section from `.symphony-source-repository`, `.symphony-base-branch`, and `.symphony-working-branch` when that file exists.
 10. Execute the normal flow again and return the issue to `In Review`.
 
 ## Completion bar before Plan Review
 
-- The issue description contains an up-to-date Russian task-spec with `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and a final `## Symphony` section whose `Repo:` and `Base branch:` match the current routing metadata.
+- The issue description contains an up-to-date Russian task-spec with `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and a final `## Symphony` section whose `Repo:` and `Base branch:` match the current routing metadata and whose `Working branch:` matches `.symphony-working-branch` when that file exists.
 - The workpad comment exists and mirrors the detailed plan in Russian.
 - Required `Критерии приемки` and `Проверка` checklists are explicit and reviewable.
 - Any important reproduction or investigation signal is recorded in the workpad.
@@ -824,10 +877,11 @@ Use this structure when creating a new issue description or normalizing an exist
 
 Repo: owner/name
 Base branch: branch-name
+Working branch: branch-name
 ````
 
 Keep `## Symphony` as the last section of the issue description even when repo routing also comes from project metadata or `repo:*` labels.
-`Repo:` must mirror the resolved repository, and `Base branch:` must mirror the configured base branch in machine-readable form.
+`Repo:` must mirror the resolved repository, `Base branch:` must mirror the configured base branch, and `Working branch:` is optional but must mirror the configured exact working-branch name when present.
 
 Do not use checkboxes, managed markers, or progress logs in the issue description.
 
