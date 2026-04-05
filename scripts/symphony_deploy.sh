@@ -3,13 +3,15 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/symphony_deploy.sh --image-repository <repo> --image-tag <tag> --image-digest <sha256:...>
+Usage: scripts/symphony_deploy.sh --image-repository <repo> --image-tag <tag> --image-digest <sha256:...> [--workflow-file <path>] [--required-codex-accounts-file <path>]
 EOF
 }
 
 image_repository=""
 image_tag=""
 image_digest=""
+workflow_file=""
+required_codex_accounts_file=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -23,6 +25,14 @@ while [ $# -gt 0 ]; do
       ;;
     --image-digest)
       image_digest="${2:-}"
+      shift 2
+      ;;
+    --workflow-file)
+      workflow_file="${2:-}"
+      shift 2
+      ;;
+    --required-codex-accounts-file)
+      required_codex_accounts_file="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -51,14 +61,53 @@ registry_host="${image_repository%%/*}"
 image_ref="${image_repository}:${image_tag}"
 image_digest_ref="${image_repository}@${image_digest}"
 release_sha="${GITHUB_SHA:-unknown}"
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+remote="${SYMPHONY_DEPLOY_USER}@${SYMPHONY_DEPLOY_HOST}"
+ssh_common_opts=(
+  -i "${HOME}/.ssh/id_ed25519"
+  -o BatchMode=yes
+  -o StrictHostKeyChecking=yes
+  -o UserKnownHostsFile="${HOME}/.ssh/known_hosts"
+)
+
+if [ -n "${workflow_file}" ] && [ ! -f "${workflow_file}" ]; then
+  echo "Workflow file not found: ${workflow_file}" >&2
+  exit 1
+fi
+
+if [ -n "${required_codex_accounts_file}" ] && [ ! -f "${required_codex_accounts_file}" ]; then
+  echo "Required Codex accounts file not found: ${required_codex_accounts_file}" >&2
+  exit 1
+fi
+
+if [ -n "${workflow_file}" ] && [ -n "${required_codex_accounts_file}" ]; then
+  python3 "${script_dir}/validate_codex_accounts_contract.py" \
+    --workflow-file "${workflow_file}" \
+    --required-accounts-file "${required_codex_accounts_file}"
+fi
+
+if [ -n "${workflow_file}" ]; then
+  remote_workflow_file="$(
+    ssh "${ssh_common_opts[@]}" -p "${ssh_port}" "${remote}" \
+      env SYMPHONY_DEPLOY_ENV_FILE="${SYMPHONY_DEPLOY_ENV_FILE}" bash -s <<'REMOTE'
+set -euo pipefail
+set -a
+. "${SYMPHONY_DEPLOY_ENV_FILE}"
+set +a
+workflow_host_path="${SYMPHONY_WORKFLOW_HOST_PATH:?Set SYMPHONY_WORKFLOW_HOST_PATH in the deploy env file.}"
+workflow_basename="$(basename "${SYMPHONY_WORKFLOW_PATH:?Set SYMPHONY_WORKFLOW_PATH in the deploy env file.}")"
+printf '%s\n' "${workflow_host_path%/}/${workflow_basename}"
+REMOTE
+  )"
+  ssh "${ssh_common_opts[@]}" -p "${ssh_port}" "${remote}" "mkdir -p \"$(dirname "${remote_workflow_file}")\""
+  scp "${ssh_common_opts[@]}" -P "${ssh_port}" "${workflow_file}" "${remote}:${remote_workflow_file}"
+  printf 'synced workflow file: %s -> %s\n' "${workflow_file}" "${remote_workflow_file}"
+fi
 
 ssh \
-  -i "${HOME}/.ssh/id_ed25519" \
-  -o BatchMode=yes \
-  -o StrictHostKeyChecking=yes \
-  -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+  "${ssh_common_opts[@]}" \
   -p "${ssh_port}" \
-  "${SYMPHONY_DEPLOY_USER}@${SYMPHONY_DEPLOY_HOST}" \
+  "${remote}" \
   env \
     REGISTRY_HOST="${registry_host}" \
     SYMPHONY_DEPLOY_COMPOSE_FILE="${SYMPHONY_DEPLOY_COMPOSE_FILE}" \
@@ -115,8 +164,6 @@ fi
 
 for attempt in $(seq 1 20); do
   if curl -fsS "${SYMPHONY_DEPLOY_HEALTHCHECK_URL}" > /tmp/symphony-post-deploy-health.json; then
-    cat /tmp/symphony-post-deploy-health.json
-    docker compose -f "${SYMPHONY_DEPLOY_COMPOSE_FILE}" ps
     exit 0
   fi
   if [ "${attempt}" -eq 20 ]; then
@@ -126,4 +173,28 @@ for attempt in $(seq 1 20); do
   fi
   sleep 5
 done
+REMOTE
+
+health_payload_file="$(mktemp)"
+trap 'rm -f "${health_payload_file}"' EXIT
+
+ssh "${ssh_common_opts[@]}" -p "${ssh_port}" "${remote}" "cat /tmp/symphony-post-deploy-health.json" > "${health_payload_file}"
+cat "${health_payload_file}"
+
+if [ -n "${required_codex_accounts_file}" ]; then
+  python3 "${script_dir}/validate_codex_accounts_contract.py" \
+    --state-json-file "${health_payload_file}" \
+    --required-accounts-file "${required_codex_accounts_file}"
+fi
+
+ssh "${ssh_common_opts[@]}" -p "${ssh_port}" "${remote}" \
+  env \
+    SYMPHONY_DEPLOY_COMPOSE_FILE="${SYMPHONY_DEPLOY_COMPOSE_FILE}" \
+    SYMPHONY_DEPLOY_ENV_FILE="${SYMPHONY_DEPLOY_ENV_FILE}" \
+    bash -s <<'REMOTE'
+set -euo pipefail
+set -a
+. "${SYMPHONY_DEPLOY_ENV_FILE}"
+set +a
+docker compose -f "${SYMPHONY_DEPLOY_COMPOSE_FILE}" ps
 REMOTE

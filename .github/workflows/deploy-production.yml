@@ -113,6 +113,8 @@ jobs:
             --image-repository "${IMAGE_REPOSITORY}" \
             --image-tag "${{ needs.resolve-contract.outputs.image_tag }}" \
             --image-digest "${{ needs.resolve-contract.outputs.image_digest }}" \
+            --workflow-file workflows/letterl/maxime/let.WORKFLOW.md \
+            --required-codex-accounts-file workflows/letterl/maxime/let.required_codex_accounts.txt \
             2>&1 | tee ci-artifacts/deploy-production.log
 
       - name: Upload diagnostics

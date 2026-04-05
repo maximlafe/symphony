@@ -46,8 +46,9 @@ application image locally; it only pulls a CI-validated image reference (`tag` +
    `production-image-contract.json`.
 4. `deploy-production` downloads that contract, waits on the `production` GitHub Environment, and
    runs `scripts/symphony_deploy.sh`.
-5. The deploy script pulls the digest-pinned image, recreates the Compose service, and verifies the
-   post-deploy health endpoint.
+5. The deploy script validates the checked-in workflow contract, syncs the active workflow file to
+   the host mount, pulls the digest-pinned image, recreates the Compose service, and verifies the
+   post-deploy health endpoint plus required `codex_accounts`.
 
 ## Environment approvals
 
@@ -93,4 +94,3 @@ Rollback is the same deployment path with an older contract:
    `image_digest`.
 3. The workflow reuses the same SSH, Compose, and health-check path, so rollback is auditable and
    symmetric with forward deploys.
-
