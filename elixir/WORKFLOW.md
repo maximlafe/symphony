@@ -169,6 +169,8 @@ Instructions:
 3. Maintain the workpad with a compact environment stamp, plan, acceptance criteria, validation checklist, artifact manifest, and notes.
    - If `Confusions` is non-empty, every bullet must be an actionable blocker in three parts: what is still unconfirmed, why it blocks execution or acceptance, and which exact artifact, signal, or human input will resolve it.
    - Prefer concrete terms such as `production bundle bytes`, `deploy manifest`, `literal copy`, or `screenshot baseline`; avoid vague statements that do not name the unblock condition.
+   - Shape the plan with `DRY`, `KISS`, and `YAGNI`: reuse existing code paths before inventing new abstractions, choose the smallest coherent change that satisfies the acceptance criteria, and keep speculative cleanup or future-proofing out of scope unless the ticket explicitly requires it.
+   - If the plan still needs a new abstraction, shared helper, or refactor, justify in `Notes` why reuse or a simpler localized change is insufficient.
 4. Before code edits, run the `pull` skill to sync with latest `origin/main`, then record the result in `Notes` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
 5. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before handoff.
    - track repeated fix loops for the same failing signal in the workpad and follow the auto-fix limit below;
