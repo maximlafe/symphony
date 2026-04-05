@@ -1,4 +1,4 @@
-.PHONY: help all setup deps build fmt fmt-check lint test dashboard coverage ci dialyzer e2e
+.PHONY: help all setup deps build fmt fmt-check lint test dashboard coverage ci dialyzer e2e contracts
 
 MIX ?= mix
 
@@ -29,6 +29,12 @@ coverage:
 test:
 	$(MIX) test
 
+contracts:
+	python3 ../scripts/test_validate_codex_accounts_contract.py
+	python3 ../scripts/validate_codex_accounts_contract.py \
+		--workflow-file ../workflows/letterl/maxime/let.WORKFLOW.md \
+		--required-accounts-file ../workflows/letterl/maxime/let.required_codex_accounts.txt
+
 dashboard:
 	$(MIX) test --only dashboard
 
@@ -50,6 +56,7 @@ e2e:
 	SYMPHONY_RUN_LIVE_E2E=1 $(MIX) test test/symphony_elixir/live_e2e_test.exs
 
 ci:
+	$(MAKE) contracts
 	$(MAKE) setup
 	$(MAKE) build
 	$(MAKE) fmt-check

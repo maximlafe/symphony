@@ -10,6 +10,7 @@ on:
       - Makefile
       - README.md
       - elixir/**
+      - workflows/**
       - scripts/**
   push:
     branches:
@@ -22,6 +23,7 @@ on:
       - Makefile
       - README.md
       - elixir/**
+      - workflows/**
       - scripts/**
 
 permissions:
@@ -255,4 +257,3 @@ jobs:
             ci-artifacts/publish-production-image-smoke.log
             ci-artifacts/publish-production-image-health.json
             ci-artifacts/production-image-contract.json
-

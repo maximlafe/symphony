@@ -506,6 +506,8 @@ codex:
   turn_sandbox_policy:
     type: dangerFullAccess
   accounts:
+    - id: "charlotte.coulter@hmlservice.com"
+      codex_home: /root/.codex
     - id: "furrow.03-offline@icloud.com"
       codex_home: /root/.codex-furrow
     - id: "rebeccakirby3711@outlook.com"
