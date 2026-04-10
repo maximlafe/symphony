@@ -6,7 +6,7 @@ defmodule SymphonyElixir.Config do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Workflow
 
-  @planning_issue_states MapSet.new(["planning", "plan review"])
+  @planning_issue_states MapSet.new(["spec prep", "spec review"])
   @implementation_issue_states MapSet.new(["in progress", "rework"])
 
   @default_prompt_template """

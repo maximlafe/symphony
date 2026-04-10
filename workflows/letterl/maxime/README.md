@@ -36,12 +36,12 @@ Notes:
   - if `Base branch:` is missing, the worker stays unattended and falls back to that repository's default branch;
   - if `Base branch:` is invalid or that branch does not satisfy the `make symphony-bootstrap` contract, the task moves into the blocker path instead of silently picking another branch or failing inside the workspace hook.
 - `Todo` routing is label-driven:
-  - `mode:research` -> `Todo -> Planning -> Plan Review -> In Progress`;
-  - `mode:plan` -> `Todo -> Planning -> Plan Review -> In Progress`;
+  - `mode:research` -> `Todo -> Spec Prep -> Spec Review -> In Progress`;
+  - `mode:plan` -> `Todo -> Spec Prep -> Spec Review -> In Progress`;
   - no `mode:*` -> `Todo -> In Progress`;
   - if both `mode:research` and `mode:plan` are present, `mode:research` wins;
   - once a ticket enters `In Progress`, `mode:*` labels no longer change the flow.
-- `Planning` and `Plan Review` remain as the opt-in analysis-only path for `mode:research`, `mode:plan`, and legacy planning tickets; implementation-ready issues should skip them.
+- `Spec Prep` and `Spec Review` remain as the opt-in analysis-only path for `mode:research`, `mode:plan`, and legacy spec-prep tickets; implementation-ready issues should skip them.
 - `research-mode` and `plan-mode` are authored as repo-local Symphony skills and should be loaded from `.agents/skills/...` when present; for workspaces cloned from other LET-managed repos, fallback to the bundled copies under `$CODEX_HOME/skills/...`.
 - When a run creates a fresh working branch, use `Working branch:` exactly when it is set; otherwise name it `Symphony/<lowercase issue identifier>-<short-kebab-summary>` instead of reusing Linear `gitBranchName` values such as `cycloid-yips0i/...`, and record branch lineage as `Новая ветка <branch> создана от origin/<base>`.
 - PR titles for unattended runs should stay short and outcome-oriented in the form `<ISSUE-ID>: <clear shipped outcome>`.

@@ -277,7 +277,7 @@ defmodule SymphonyElixir.AppServerTest do
         assert File.read!(trace_file) =~ "KIND:#{expected_kind}"
       end
 
-      assert_stage_command.("Planning", "planning")
+      assert_stage_command.("Spec Prep", "planning")
       assert_stage_command.("In Progress", "implementation")
       assert_stage_command.("Rework", "implementation")
       assert_stage_command.("Todo", "fallback")

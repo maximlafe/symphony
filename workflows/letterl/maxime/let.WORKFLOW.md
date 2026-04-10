@@ -5,7 +5,7 @@ tracker:
   assignee: "4eb8c4a3-8050-4af2-aa2b-da38d903c941"
   active_states:
     - Todo
-    - Planning
+    - Spec Prep
     - In Progress
     - Merging
     - Rework
@@ -574,7 +574,7 @@ Instructions:
 - Start by determining the current state, then follow the matching flow.
 - Keep the issue description as the canonical task-spec and exactly one persistent workpad comment as the implementation plan and execution log.
 - Use local `workpad.md` as the working copy and sync the live workpad only at bootstrap, meaningful milestones, and final handoff.
-- Before each automated stage (`Planning`, `In Progress`, `Rework`, `Merging`), post one separate top-level stage-start comment before the first live workpad sync of that stage.
+- Before each automated stage (`Spec Prep`, `In Progress`, `Rework`, `Merging`), post one separate top-level stage-start comment before the first live workpad sync of that stage.
 - Before any Git sync or branch decision, treat `.symphony-source-repository`, `.symphony-base-branch`, and optional `.symphony-working-branch` as the authoritative workspace routing metadata when those files exist.
 - When a fresh working branch is needed, use `.symphony-working-branch` exactly when it exists. Otherwise, do not reuse Linear `gitBranchName` values and create the branch yourself as `Symphony/<lowercase issue identifier>-<short-kebab-summary>`.
 - Keep the fallback summary slug ASCII, concise, and outcome-oriented. Prefer 2-6 meaningful English words, for example `Symphony/let-267-safe-task-cleanup`.
@@ -592,10 +592,10 @@ Instructions:
 
 - `Backlog` -> вне этого workflow; не изменяй.
 - `Todo` -> intake state. Сначала проверь `mode:*` labels:
-  - `mode:research` или `mode:plan` -> переводи в `Planning`;
+  - `mode:research` или `mode:plan` -> переводи в `Spec Prep`;
   - без `mode:*` -> сразу переводи в `In Progress`.
-- `Planning` -> analysis-only stage для `mode:research`, `mode:plan` и legacy planning тикетов; продуктовый код не меняй.
-- `Plan Review` -> человеческий гейт для результатов `research`/`planning`; не кодируй.
+- `Spec Prep` -> analysis-only stage для `mode:research`, `mode:plan` и legacy spec-prep тикетов; продуктовый код не меняй.
+- `Spec Review` -> человеческий гейт для результатов `research`/`planning`; не кодируй.
 - `In Progress` -> активная реализация.
 - `In Review` -> `checkpoint_type: human-verify`; PR приложен и провалидирован, ждём человеческий тест/ревью.
 - `Merging` -> одобрено человеком; используй `land` skill и не вызывай `gh pr merge` напрямую.
@@ -606,10 +606,10 @@ Instructions:
 ## Todo label routing
 
 - Поддерживаемые intake labels:
-  - `mode:research` -> сначала исследование и task-spec normalization, потом `Plan Review`.
-  - `mode:plan` -> сначала planning-only task-spec/workpad pass, потом `Plan Review`.
+  - `mode:research` -> сначала исследование и task-spec normalization, потом `Spec Review`.
+  - `mode:plan` -> сначала planning-only task-spec/workpad pass, потом `Spec Review`.
 - Если на issue одновременно стоят `mode:research` и `mode:plan`, `mode:research` выигрывает. Зафиксируй конфликт в `Заметки` и в финальном Linear-comment этой стадии, но продолжай без ожидания человека.
-- Если тикет уже попал в `Planning` без `mode:*`, считай это legacy planning path и веди его как `plan-mode`.
+- Если тикет уже попал в `Spec Prep` без `mode:*`, считай это legacy spec-prep path и веди его как `plan-mode`.
 - `mode:*` labels влияют только на routing из `Todo`. После входа в `In Progress` текущий state становится authoritative, и labels больше не меняют flow.
 
 ## Step 0: Determine current ticket state and route
@@ -619,10 +619,10 @@ Instructions:
 3. Route to the matching flow:
    - `Backlog` -> stop and wait for a human move to `Todo`.
    - `Todo` -> inspect `mode:*` labels:
-     - with `mode:research` or `mode:plan`, move to `Planning`, post the `Planning` start comment, bootstrap the workpad, then start analysis-only work;
+     - with `mode:research` or `mode:plan`, move to `Spec Prep`, post the `Spec Prep` start comment, bootstrap the workpad, then start analysis-only work;
      - with no `mode:*`, move to `In Progress`, post the `In Progress` start comment, bootstrap or recover the workpad, then start execution.
-   - `Planning` -> continue research/planning without touching product code.
-   - `Plan Review` -> wait and poll; do not code or change the repo.
+   - `Spec Prep` -> continue research/planning without touching product code.
+   - `Spec Review` -> wait and poll; do not code or change the repo.
    - `In Progress` -> continue execution with minimal recovery when possible.
    - `In Review` -> wait and poll for review decisions.
    - `Merging` -> post the `Merging` start comment, then use the `land` skill.
@@ -633,18 +633,18 @@ Instructions:
    - current branch is not the configured base branch from `.symphony-base-branch`;
    - the issue already references a PR in links, attachments, or comments;
    - the current state is `In Progress`, `In Review`, `Rework`, or `Merging`.
-   - For fresh `Todo` or `Planning` runs on the configured base branch with no PR signal, skip branch PR lookup and do not log placeholder notes.
+   - For fresh `Todo` or `Spec Prep` runs on the configured base branch with no PR signal, skip branch PR lookup and do not log placeholder notes.
 5. Minimal recovery for straightforward `In Progress` runs:
    - if `.workpad-id` exists and the issue is already in `In Progress`, read only the current state, the issue-description task-spec, the live workpad, the current branch/HEAD, and the PR link or attachment if present;
    - reread full comment/history context only for missing workpad, state/content mismatch, `Rework`, missing PR context, or real ambiguity.
 6. If the existing branch PR is already closed or merged, do not reuse that branch. Create a fresh branch from `origin/<configured base branch>` using `.symphony-working-branch` when configured; otherwise use the fallback `Symphony/<issue-id>-<short-kebab-summary>` format and continue as a new attempt.
 
-## Step 1: Planning/research phase (Planning -> Plan Review)
+## Step 1: Spec-prep / research phase (Spec Prep -> Spec Review)
 
-1. If arriving from `Todo`, the issue should already be in `Planning` and the separate planning/research start comment should already exist before workpad bootstrap begins.
+1. If arriving from `Todo`, the issue should already be in `Spec Prep` and the separate spec-prep/research start comment should already exist before workpad bootstrap begins.
 2. Ensure exactly one separate top-level stage-start comment exists for the current automated stage:
-   - `Planning` + `mode:research` -> `Начал исследование задачи: <DD.MM.YYYY HH:MM MSK>`
-   - `Planning` без `mode:research` -> `Начал планирование задачи: <DD.MM.YYYY HH:MM MSK>`
+   - `Spec Prep` + `mode:research` -> `Начал исследование задачи: <DD.MM.YYYY HH:MM MSK>`
+   - `Spec Prep` без `mode:research` -> `Начал подготовку спеки задачи: <DD.MM.YYYY HH:MM MSK>`
    - `In Progress` -> `Начал выполнение задачи: <DD.MM.YYYY HH:MM MSK>`
    - `Rework` -> `Начал доработку задачи: <DD.MM.YYYY HH:MM MSK>`
    - `Merging` -> `Начал слияние задачи: <DD.MM.YYYY HH:MM MSK>`
@@ -653,7 +653,7 @@ Instructions:
    - reuse legacy `## Codex Workpad` if it already exists and rename it on the next sync;
    - ignore resolved comments;
    - persist the comment ID in `.workpad-id`.
-4. `Planning` is analysis-only and must resolve the intake mode before broad investigation:
+4. `Spec Prep` is analysis-only and must resolve the intake mode before broad investigation:
    - if `.symphony-base-branch-error` exists, translate its message into Russian in `Заметки`, fill `Checkpoint` with `checkpoint_type: human-action`, a justified `risk_level`, and a short `summary`, sync the workpad once, move the issue to `Blocked`, and stop;
    - if `.symphony-base-branch-note` exists, translate it into Russian in `Заметки` once before continuing;
    - do not edit product code, commit, or push;
@@ -664,10 +664,10 @@ Instructions:
      - if neither label exists, treat the ticket as the legacy `plan-mode` path;
    - read the issue body, only the relevant comments and PR context, and inspect the codebase;
    - capture a reproduction or investigation signal only when it materially sharpens the task-spec.
-5. Keep local `workpad.md` as the planning source of truth:
+5. Keep local `workpad.md` as the spec-prep source of truth:
    - bootstrap the live workpad once if missing;
-   - after bootstrap, keep planning edits local until the final plan is ready;
-   - sync the live workpad at most one final time before `Plan Review`;
+   - after bootstrap, keep spec-prep edits local until the final spec is ready;
+   - sync the live workpad at most one final time before `Spec Review`;
    - always pass the absolute path to local `workpad.md` when calling `sync_workpad`.
 6. Update the issue-description task-spec only when required sections are missing or the task contract materially changed:
    - use canonical Russian headings `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and keep a final `## Symphony` section;
@@ -682,17 +682,17 @@ Instructions:
    - If `Неясности` is non-empty, every bullet must be a concrete decision-blocker written in three parts: what is still unconfirmed, why that blocks execution or acceptance, and which exact repo-controlled signal, artifact, or human input will clear it.
    - Prefer specific nouns such as `production bundle bytes`, `deploy manifest`, `literal copy`, `drawer footer/actions`, `screenshot baseline`, or `Basic auth access`; avoid vague phrasing like `нужно разобраться` without a stated unblock condition.
    - For `mode:research`, explicitly record confirmed root cause or the smallest evidence-ranked set of plausible hypotheses; never blur confirmed facts and open hypotheses.
-   - For `mode:plan` and legacy planning tickets, make the recommended implementation contour explicit enough that execution can start from the description and workpad without hidden chat context.
+   - For `mode:plan` and legacy spec-prep tickets, make the recommended implementation contour explicit enough that execution can start from the description and workpad without hidden chat context.
    - Build the plan with `DRY`, `KISS`, and `YAGNI`: prefer existing code paths and abstractions over new ones, choose the smallest coherent change that satisfies the acceptance criteria, and keep speculative cleanup, extension points, and "for the future" work out of scope unless the ticket explicitly requires them.
    - If the plan still introduces a new abstraction, helper, or refactor, justify in `Заметки` why reuse or a simpler localized change is insufficient.
-8. Before moving to `Plan Review`, do one final planning handoff:
+8. Before moving to `Spec Review`, do one final spec-prep handoff:
    - ensure the task-spec issue description is current;
    - if `mode:research`, ensure the description and workpad clearly separate confirmed findings from remaining hypotheses and recommend the minimal implementation contour;
-   - if `mode:plan` or legacy planning path, ensure the description and workpad are implementation-ready and contain no hidden scope assumptions;
+   - if `mode:plan` or legacy spec-prep path, ensure the description and workpad are implementation-ready and contain no hidden scope assumptions;
    - ensure the final local `workpad.md` is synced exactly once;
-   - do not fill the classified `Checkpoint` section for this planning/research gate; `Plan Review` is an unclassified review of the resulting spec, not an execution handoff;
-   - record notes such as `на этапе Planning продуктовые файлы не изменялись` locally before that final sync, not through an extra sync cycle.
-9. Move the issue to `Plan Review`.
+   - do not fill the classified `Checkpoint` section for this spec-prep/research gate; `Spec Review` is an unclassified review of the resulting spec, not an execution handoff;
+   - record notes such as `на этапе Spec Prep продуктовые файлы не изменялись` locally before that final sync, not through an extra sync cycle.
+9. Move the issue to `Spec Review`.
 10. Do not begin implementation until a human moves the issue to `In Progress`.
 
 ## Validation preflight
@@ -737,7 +737,7 @@ Use this only when completion is blocked by missing required tools or missing au
 2. Recover from the existing task-spec description and workpad using the minimal-recovery rules unless the issue requires a full reread.
 3. If this run entered `In Progress` directly from `Todo`, do one short readiness check before the first repo-changing command:
    - if the issue description is already implementation-ready, continue execution;
-   - if the task contract is materially underspecified, do not improvise hidden scope in the workpad; normalize the task-spec, sync the workpad once, move the issue to `Plan Review`, and stop before product code changes.
+   - if the task contract is materially underspecified, do not improvise hidden scope in the workpad; normalize the task-spec, sync the workpad once, move the issue to `Spec Review`, and stop before product code changes.
 4. Ignore `mode:*` labels once the issue is in `In Progress`; the current state is authoritative for routing.
 5. Run the `pull` skill against the configured base branch from `.symphony-base-branch` before code edits, then record the result in `Заметки` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
    - if the run creates a fresh working branch from `origin/<configured base branch>`, record `Новая ветка <branch> создана от origin/<configured base branch>.` in `Заметки` on the next live workpad sync;
@@ -786,16 +786,16 @@ Use this only when completion is blocked by missing required tools or missing au
 9. Refresh the task-spec description if the task contract changed for the new attempt, then rewrite the new workpad in Russian while preserving or re-adding the final `## Symphony` section from `.symphony-source-repository`, `.symphony-base-branch`, and `.symphony-working-branch` when that file exists.
 10. Execute the normal flow again and return the issue to `In Review`.
 
-## Completion bar before Plan Review
+## Completion bar before Spec Review
 
 - The issue description contains an up-to-date Russian task-spec with `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and a final `## Symphony` section whose `Repo:` and `Base branch:` match the current routing metadata and whose `Working branch:` matches `.symphony-working-branch` when that file exists.
 - For `mode:research`, the description/workpad explicitly separate confirmed findings from remaining hypotheses and recommend the minimal implementation contour.
-- For `mode:plan` and legacy planning tickets, the description/workpad explicitly capture the recommended implementation contour and validation plan.
+- For `mode:plan` and legacy spec-prep tickets, the description/workpad explicitly capture the recommended implementation contour and validation plan.
 - The workpad comment exists and mirrors the resulting spec and detailed plan in Russian.
 - Required `Критерии приемки` and `Проверка` checklists are explicit and reviewable.
 - Any important reproduction or investigation signal is recorded in the workpad.
-- No product code changes, commits, or PR publication happened during `Planning`.
-- `Plan Review` does not require a classified `Checkpoint`; classified checkpoints begin with execution handoffs to `In Review` or `Blocked`.
+- No product code changes, commits, or PR publication happened during `Spec Prep`.
+- `Spec Review` does not require a classified `Checkpoint`; classified checkpoints begin with execution handoffs to `In Review` or `Blocked`.
 
 ## Completion bar before In Review
 
@@ -816,7 +816,7 @@ Use this only when completion is blocked by missing required tools or missing au
 
 Используй этот протокол для execution-handoff: когда переводишь задачу в `In Review` или `Blocked`, либо останавливаешь автономный прогресс во время реализации.
 
-- `Plan Review` сюда не относится: это отдельный planning-only human gate без `Checkpoint`.
+- `Spec Review` сюда не относится: это отдельный spec-prep-only human gate без `Checkpoint`.
 
 - Перед финальным `sync_workpad` добавь компактный checkpoint в локальный `workpad.md`.
 - Для handoff в `Blocked` комментарий человека сам по себе не резюмирует задачу; канонический unblock signal — ручной перевод issue обратно в `In Progress` после решения или выполнения требуемого действия.
@@ -866,8 +866,8 @@ Use this only when completion is blocked by missing required tools or missing au
 - После 2 неуспешных auto-fix attempts по одному сигналу не начинай третью спекулятивную правку.
 - Temporary proof edits are allowed only for local verification and must be reverted before commit.
 - Out-of-scope improvements go to a separate Backlog issue instead of expanding current scope.
-- Treat the completion bars for `Plan Review` and `In Review` as hard gates.
-- In `Plan Review`, `In Review`, and `Blocked`, do not change the repo.
+- Treat the completion bars for `Spec Review` and `In Review` as hard gates.
+- In `Spec Review`, `In Review`, and `Blocked`, do not change the repo.
 
 ## Task-spec issue description
 

@@ -2455,7 +2455,7 @@ defmodule SymphonyElixir.CoreTest do
       identifier: "LET-182",
       title: "Создать phase1-smoke.md",
       description: "Русский smoke test",
-      state: "Planning",
+      state: "Spec Prep",
       url: "https://example.org/issues/LET-182",
       labels: ["smoke"]
     }
@@ -2463,7 +2463,7 @@ defmodule SymphonyElixir.CoreTest do
     prompt = PromptBuilder.build_prompt(issue)
 
     assert String.valid?(prompt)
-    assert prompt == "Задача LET-182 Создать phase1-smoke.md статус=Planning"
+    assert prompt == "Задача LET-182 Создать phase1-smoke.md статус=Spec Prep"
   end
 
   test "prompt builder normalizes nested date-like values, maps, and structs in issue fields" do
