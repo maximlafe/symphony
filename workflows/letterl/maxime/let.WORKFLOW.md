@@ -658,8 +658,8 @@ Instructions:
    - if `.symphony-base-branch-note` exists, translate it into Russian in `Заметки` once before continuing;
    - do not edit product code, commit, or push;
    - determine the intake mode from labels before broad investigation:
-     - `mode:research` -> load and follow `.agents/skills/research-mode/SKILL.md`;
-     - `mode:plan` -> load and follow `.agents/skills/plan-mode/SKILL.md`;
+    - `mode:research` -> load and follow repo-local `.agents/skills/research-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/research-mode/SKILL.md`;
+    - `mode:plan` -> load and follow repo-local `.agents/skills/plan-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/plan-mode/SKILL.md`;
      - if both labels exist, `mode:research` wins;
      - if neither label exists, treat the ticket as the legacy `plan-mode` path;
    - read the issue body, only the relevant comments and PR context, and inspect the codebase;

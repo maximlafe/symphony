@@ -28,6 +28,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "Если на issue одновременно стоят `mode:research` и `mode:plan`, `mode:research` выигрывает."
     assert prompt =~ ".agents/skills/research-mode/SKILL.md"
     assert prompt =~ ".agents/skills/plan-mode/SKILL.md"
+    assert prompt =~ "$CODEX_HOME/skills/research-mode/SKILL.md"
+    assert prompt =~ "$CODEX_HOME/skills/plan-mode/SKILL.md"
     refute prompt =~ "`Todo` -> сразу переводи в `Planning`."
   end
 
