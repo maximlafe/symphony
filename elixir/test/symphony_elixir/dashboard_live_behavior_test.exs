@@ -238,6 +238,8 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert dashboard_body =~ "full validate"
     assert dashboard_body =~ "make symphony-validate"
     assert dashboard_body =~ "launch-app missing, using local HTTP/UI fallback"
+    assert dashboard_body =~ "verification failed for profile `runtime`"
+    assert dashboard_body =~ "verification failed"
     assert dashboard_body =~ "very.long.primary.email.address+alerts@example.com"
     assert dashboard_body =~ "5h: 18/100 left"
     assert dashboard_body =~ "· at 22:00 UTC"
@@ -255,6 +257,9 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
 
     assert get_in(api_response.body, ["running", Access.at(0), "current_command"]) ==
              "make symphony-validate"
+
+    assert get_in(api_response.body, ["running", Access.at(0), "verification_profile"]) == "runtime"
+    assert get_in(api_response.body, ["running", Access.at(0), "verification_result"]) == "failed"
 
     primary_account =
       Enum.find(
@@ -431,6 +436,11 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
           current_step: "make symphony-validate",
           external_step: nil,
           operational_notice: "launch-app missing, using local HTTP/UI fallback",
+          verification_profile: "runtime",
+          verification_result: "failed",
+          verification_summary: "verification failed for profile `runtime`: profile `runtime` is missing a matching uploaded proof artifact",
+          verification_missing_items: ["profile `runtime` is missing a matching uploaded proof artifact"],
+          verification_checked_at: ~U[2026-03-25 21:26:00Z],
           last_codex_message: "rendered",
           last_codex_timestamp: nil,
           last_codex_event: :notification,

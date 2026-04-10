@@ -17,6 +17,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     upload_spec = Enum.find(specs, &(&1["name"] == "linear_upload_issue_attachment"))
     snapshot_spec = Enum.find(specs, &(&1["name"] == "github_pr_snapshot"))
     wait_spec = Enum.find(specs, &(&1["name"] == "github_wait_for_checks"))
+    handoff_spec = Enum.find(specs, &(&1["name"] == "symphony_handoff_check"))
 
     assert upload_spec["inputSchema"]["required"] == ["issue_id", "file_path"]
     assert upload_spec["description"] =~ "attachment"
@@ -26,6 +27,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert wait_spec["inputSchema"]["required"] == ["repo", "pr_number"]
     assert wait_spec["description"] =~ "checks"
+
+    assert handoff_spec["inputSchema"]["required"] == ["issue_id", "file_path", "repo", "pr_number"]
+    assert handoff_spec["description"] =~ "handoff"
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -48,7 +52,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                  "sync_workpad",
                  "linear_upload_issue_attachment",
                  "github_pr_snapshot",
-                 "github_wait_for_checks"
+                 "github_wait_for_checks",
+                 "symphony_handoff_check"
                ]
              }
            }
@@ -1078,5 +1083,330 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert payload["error"]["details"]["timeout_ms"] == 250
     assert payload["error"]["details"]["duration_ms"] >= 300
     assert length(payload["error"]["details"]["pending_checks"]) == 1
+  end
+
+  test "symphony_handoff_check fails closed for an incomplete workpad and writes a manifest" do
+    workspace = Path.join(System.tmp_dir!(), "handoff_tool_workspace_#{System.unique_integer([:positive])}")
+
+    workpad_path =
+      write_tmp_file(workspace, "workpad.md", """
+      ## Codex Workpad
+
+      ### Validation
+
+      - [x] targeted tests: `mix test test/smoke.exs`
+
+      ### Artifacts
+
+      - [x] uploaded attachment: `proof.txt` -> placeholder proof
+
+      ### Checkpoint
+
+      - `checkpoint_type`: `<human-verify|decision|human-action>` (fill only at handoff)
+      """)
+
+    response =
+      DynamicTool.execute(
+        "symphony_handoff_check",
+        %{
+          "issue_id" => "LET-416",
+          "file_path" => workpad_path,
+          "repo" => "maximlafe/symphony",
+          "pr_number" => 52
+        },
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckIssue" do
+            {:ok,
+             %{
+               "data" => %{
+                 "issue" => %{
+                   "id" => "LET-416",
+                   "identifier" => "LET-416",
+                   "state" => %{"name" => "In Progress"},
+                   "labels" => %{"nodes" => []},
+                   "attachments" => %{"nodes" => [%{"title" => "proof.txt", "url" => "https://example.test/proof.txt"}]}
+                 }
+               }
+             }}
+          else
+            flunk("unexpected GraphQL query: #{query}")
+          end
+        end,
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "52", "-R", "maximlafe/symphony", "--json", _] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://example.test/pr/52",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "",
+                 "mergeStateStatus" => "CLEAN",
+                 "statusCheckRollup" => [
+                   %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/symphony/issues/52/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/symphony/pulls/52/reviews?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/symphony/pulls/52/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            _ ->
+              flunk("unexpected gh command: #{inspect(args)}")
+          end
+        end
+      )
+
+    assert response["success"] == false
+    payload = decode_tool_text(response)
+    assert payload["error"]["message"] =~ "verification contract failed"
+    assert payload["manifest"]["manifest_path"] =~ ".symphony/verification/handoff-manifest.json"
+    assert File.exists?(payload["manifest"]["manifest_path"])
+    assert Enum.any?(payload["manifest"]["missing_items"], &String.contains?(&1, "preflight"))
+  end
+
+  test "linear_graphql blocks review-ready issue transitions until symphony_handoff_check succeeds" do
+    workspace = Path.join(System.tmp_dir!(), "handoff_guard_workspace_#{System.unique_integer([:positive])}")
+
+    workpad_path =
+      write_tmp_file(workspace, "workpad.md", """
+      ## Codex Workpad
+
+      ### Validation
+
+      - [x] preflight: `make symphony-preflight`
+      - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+      - [x] repo validation: `make symphony-validate`
+
+      ### Artifacts
+
+      - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log from the health check
+
+      ### Checkpoint
+
+      - `checkpoint_type`: `human-verify`
+      - `risk_level`: `medium`
+      - `summary`: Runtime proof, tests, and repo validation are complete.
+      """)
+
+    state_catalog_response = fn ->
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "team" => %{
+               "states" => %{
+                 "nodes" => [
+                   %{"id" => "in-review-state-id", "name" => "In Review"}
+                 ]
+               }
+             }
+           }
+         }
+       }}
+    end
+
+    blocked =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-416", "stateId" => "in-review-state-id"}
+        },
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckState" do
+            state_catalog_response.()
+          else
+            flunk("unexpected linear_graphql mutation without manifest guard")
+          end
+        end
+      )
+
+    assert blocked["success"] == false
+    assert decode_tool_text(blocked)["error"]["message"] =~ "review-ready issue transitions require"
+
+    blocked_nested_input =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+          "variables" => %{"id" => "LET-416", "input" => %{"stateId" => "in-review-state-id"}}
+        },
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckState" do
+            state_catalog_response.()
+          else
+            flunk("unexpected nested-input mutation without manifest guard")
+          end
+        end
+      )
+
+    assert blocked_nested_input["success"] == false
+    assert decode_tool_text(blocked_nested_input)["error"]["message"] =~ "review-ready issue transitions require"
+
+    blocked_inline_literal =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation { issueUpdate(id: \"LET-416\", input: { stateId: \"in-review-state-id\" }) { success } }",
+          "variables" => %{}
+        },
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckState" do
+            state_catalog_response.()
+          else
+            flunk("unexpected inline-literal mutation without manifest guard")
+          end
+        end
+      )
+
+    assert blocked_inline_literal["success"] == false
+    assert decode_tool_text(blocked_inline_literal)["error"]["message"] =~ "review-ready issue transitions require"
+
+    assert DynamicTool.execute(
+             "symphony_handoff_check",
+             %{
+               "issue_id" => "LET-416",
+               "file_path" => workpad_path,
+               "repo" => "maximlafe/symphony",
+               "pr_number" => 52,
+               "profile" => "runtime"
+             },
+             workspace: workspace,
+             linear_client: fn query, _variables, _opts ->
+               if query =~ "SymphonyHandoffCheckIssue" do
+                 {:ok,
+                  %{
+                    "data" => %{
+                      "issue" => %{
+                        "id" => "LET-416",
+                        "identifier" => "LET-416",
+                        "state" => %{"name" => "In Progress"},
+                        "labels" => %{"nodes" => [%{"name" => "verification:runtime"}]},
+                        "attachments" => %{"nodes" => [%{"title" => "runtime-proof.log", "url" => "https://example.test/runtime-proof.log"}]}
+                      }
+                    }
+                  }}
+               else
+                 flunk("unexpected handoff query: #{query}")
+               end
+             end,
+             gh_runner: fn args, _opts ->
+               case args do
+                 ["pr", "view", "52", "-R", "maximlafe/symphony", "--json", _] ->
+                   {:ok,
+                    Jason.encode!(%{
+                      "state" => "OPEN",
+                      "url" => "https://example.test/pr/52",
+                      "labels" => [%{"name" => "symphony"}],
+                      "reviewDecision" => "",
+                      "mergeStateStatus" => "CLEAN",
+                      "statusCheckRollup" => [
+                        %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                      ]
+                    })}
+
+                 ["api", "repos/maximlafe/symphony/issues/52/comments?per_page=100"] ->
+                   {:ok, "[]"}
+
+                 ["api", "repos/maximlafe/symphony/pulls/52/reviews?per_page=100"] ->
+                   {:ok, "[]"}
+
+                 ["api", "repos/maximlafe/symphony/pulls/52/comments?per_page=100"] ->
+                   {:ok, "[]"}
+
+                 _ ->
+                   flunk("unexpected gh command: #{inspect(args)}")
+               end
+             end
+           )["success"] == true
+
+    allowed =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-416", "stateId" => "in-review-state-id"}
+        },
+        workspace: workspace,
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              state_catalog_response.()
+
+            query =~ "issueUpdate" ->
+              send(self(), {:issue_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected GraphQL query: #{query}")
+          end
+        end
+      )
+
+    assert allowed["success"] == true
+    assert_received {:issue_update, %{"id" => "LET-416", "stateId" => "in-review-state-id"}}
+
+    allowed_nested_input =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+          "variables" => %{"id" => "LET-416", "input" => %{"stateId" => "in-review-state-id"}}
+        },
+        workspace: workspace,
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              state_catalog_response.()
+
+            query =~ "issueUpdate" ->
+              send(self(), {:issue_update_nested, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected nested-input GraphQL query: #{query}")
+          end
+        end
+      )
+
+    assert allowed_nested_input["success"] == true
+    assert_received {:issue_update_nested, %{"id" => "LET-416", "input" => %{"stateId" => "in-review-state-id"}}}
+
+    allowed_inline_literal =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation { issueUpdate(id: \"LET-416\", input: { stateId: \"in-review-state-id\" }) { success } }",
+          "variables" => %{}
+        },
+        workspace: workspace,
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              state_catalog_response.()
+
+            query =~ "issueUpdate" ->
+              send(self(), {:issue_update_literal, query, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected inline-literal GraphQL query: #{query}")
+          end
+        end
+      )
+
+    assert allowed_inline_literal["success"] == true
+
+    assert_received {:issue_update_literal, "mutation { issueUpdate(id: \"LET-416\", input: { stateId: \"in-review-state-id\" }) { success } }", %{}}
   end
 end

@@ -302,6 +302,133 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Verification do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @supported_profiles ["ui", "data-extraction", "runtime", "generic"]
+    @default_profile_labels %{
+      "ui" => "verification:ui",
+      "data-extraction" => "verification:data-extraction",
+      "runtime" => "verification:runtime",
+      "generic" => "verification:generic"
+    }
+    @default_review_ready_states ["In Review", "Human Review"]
+    @default_manifest_path ".symphony/verification/handoff-manifest.json"
+
+    @primary_key false
+    embedded_schema do
+      field(:profile, :string)
+      field(:profile_labels, :map, default: @default_profile_labels)
+      field(:review_ready_states, {:array, :string}, default: @default_review_ready_states)
+      field(:manifest_path, :string, default: @default_manifest_path)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:profile, :profile_labels, :review_ready_states, :manifest_path], empty_values: [])
+      |> update_change(:profile, &normalize_optional_string/1)
+      |> validate_inclusion(:profile, @supported_profiles)
+      |> update_change(:profile_labels, &normalize_profile_labels/1)
+      |> validate_profile_labels()
+      |> update_change(:review_ready_states, &normalize_review_ready_states/1)
+      |> validate_review_ready_states()
+      |> update_change(:manifest_path, &normalize_manifest_path/1)
+      |> validate_length(:manifest_path, min: 1)
+    end
+
+    defp normalize_optional_string(nil), do: nil
+
+    defp normalize_optional_string(value) when is_binary(value) do
+      case String.trim(value) do
+        "" -> nil
+        normalized -> normalized
+      end
+    end
+
+    defp normalize_optional_string(value), do: value
+
+    defp normalize_profile_labels(nil), do: @default_profile_labels
+
+    defp normalize_profile_labels(labels) when is_map(labels) do
+      Enum.reduce(labels, %{}, fn {profile, label}, acc ->
+        normalized_profile =
+          profile
+          |> to_string()
+          |> String.trim()
+
+        normalized_label =
+          label
+          |> to_string()
+          |> String.trim()
+
+        Map.put(acc, normalized_profile, normalized_label)
+      end)
+    end
+
+    defp normalize_profile_labels(_labels), do: @default_profile_labels
+
+    defp validate_profile_labels(changeset) do
+      validate_change(changeset, :profile_labels, fn :profile_labels, labels ->
+        keys = Map.keys(labels)
+        values = Map.values(labels)
+
+        cond do
+          Enum.any?(keys, &(&1 == "" or &1 not in @supported_profiles)) ->
+            [profile_labels: "profile_labels keys must be one of #{Enum.join(@supported_profiles, ", ")}"]
+
+          Enum.any?(values, &(&1 == "")) ->
+            [profile_labels: "profile_labels values must not be blank"]
+
+          length(values) != length(Enum.uniq(values)) ->
+            [profile_labels: "profile_labels values must be unique"]
+
+          true ->
+            []
+        end
+      end)
+    end
+
+    defp normalize_review_ready_states(nil), do: @default_review_ready_states
+
+    defp normalize_review_ready_states(states) when is_list(states) do
+      Enum.map(states, fn
+        value when is_binary(value) -> String.trim(value)
+        value -> value |> to_string() |> String.trim()
+      end)
+    end
+
+    defp normalize_review_ready_states(_states), do: @default_review_ready_states
+
+    defp validate_review_ready_states(changeset) do
+      validate_change(changeset, :review_ready_states, fn :review_ready_states, states ->
+        cond do
+          not is_list(states) or states == [] ->
+            [review_ready_states: "review_ready_states must include at least one state"]
+
+          Enum.any?(states, &(&1 == "")) ->
+            [review_ready_states: "review_ready_states must not contain blank values"]
+
+          true ->
+            []
+        end
+      end)
+    end
+
+    defp normalize_manifest_path(value) when is_binary(value) do
+      value
+      |> String.trim()
+      |> case do
+        "" -> @default_manifest_path
+        normalized -> normalized
+      end
+    end
+
+    defp normalize_manifest_path(_value), do: @default_manifest_path
+  end
+
   defmodule Server do
     @moduledoc false
     use Ecto.Schema
@@ -374,6 +501,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:verification, Verification, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
   end
 
@@ -528,6 +656,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
+    |> cast_embed(:verification, with: &Verification.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
   end
 

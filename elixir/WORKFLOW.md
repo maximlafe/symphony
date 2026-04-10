@@ -52,6 +52,16 @@ codex:
       codex_home: ~/.codex-primary
     - id: backup
       codex_home: ~/.codex-backup
+verification:
+  profile_labels:
+    ui: "verification:ui"
+    "data-extraction": "verification:data-extraction"
+    runtime: "verification:runtime"
+    generic: "verification:generic"
+  review_ready_states:
+    - In Review
+    - Human Review
+  manifest_path: .symphony/verification/handoff-manifest.json
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`
@@ -93,6 +103,7 @@ Instructions:
    - `sync_workpad` for the live workpad comment; do not inline the workpad body into raw `commentCreate`/`commentUpdate` when `sync_workpad` is available.
    - `github_pr_snapshot` for compact PR status/feedback summaries.
    - `github_wait_for_checks` for CI waits outside the model loop.
+   - `symphony_handoff_check` for the repo-owned, fail-closed review-ready contract.
 
 ## Operating rules
 
@@ -112,6 +123,7 @@ Instructions:
 - Fresh workspace bootstrap is `git clone` of `maximlafe/symphony` followed by `make symphony-bootstrap`.
 - Run `make symphony-preflight` once per run before treating auth or tooling gaps as blockers.
 - Default validation gate is `make symphony-validate`; run `make symphony-live-e2e` only for explicit smoke or end-to-end tasks that should exercise real Linear and Codex services.
+- The repo-owned review-ready gate is `make symphony-handoff-check`, backed by the `symphony_handoff_check` runtime tool and the workspace manifest at `.symphony/verification/handoff-manifest.json`.
 - Terminal-state per-task cleanup always removes issue-prefixed task artifacts such as `/tmp/symphony-<ISSUE>-*` and `/var/tmp/symphony-<ISSUE>-*`; exact issue workspaces inside `workspace.root` are deleted only when they fall outside the retained `workspace.cleanup_keep_recent` window.
 - `workspace.cleanup_keep_recent` remains a retention setting for workspaces inside `workspace.root`; do not use it as a shared `/tmp` cleanup policy.
 - External task-scoped artifacts that should be eligible for automatic cleanup must be explicitly namespaced as `symphony-<ISSUE>-...` and validated against allowed roots.
@@ -129,7 +141,7 @@ Instructions:
 - `Backlog` -> out of scope; do not modify.
 - `Todo` -> immediately move to `In Progress`, then bootstrap the workpad and execute.
 - `In Progress` -> active implementation.
-- `Human Review` -> classified human handoff; use `checkpoint_type` to distinguish normal `human-verify` review from `decision` or `human-action`.
+- `In Review` -> classified human handoff; use `checkpoint_type` to distinguish normal `human-verify` review from `decision` or `human-action`.
 - `Merging` -> approved by human; use the `land` skill and do not call `gh pr merge` directly.
 - `Rework` -> start a fresh attempt from updated review feedback.
 - `Done` -> terminal state; no further action required.
@@ -142,14 +154,14 @@ Instructions:
    - `Backlog` -> stop and wait for a human move to `Todo`.
    - `Todo` -> move to `In Progress`, then bootstrap the workpad and start execution.
    - `In Progress` -> resume execution, preferring minimal recovery over a full reread.
-   - `Human Review` -> wait and poll for review decisions.
+   - `In Review` -> wait and poll for review decisions.
    - `Merging` -> use the `land` skill.
    - `Rework` -> run the rework flow.
    - `Done` -> do nothing and shut down.
 4. Query GitHub for an existing PR only when at least one reuse signal exists:
    - current branch is not `main`;
    - the issue already references a PR in links, attachments, or comments;
-   - the current state is `In Progress`, `Human Review`, `Rework`, or `Merging`.
+   - the current state is `In Progress`, `In Review`, `Rework`, or `Merging`.
    - For fresh `Todo` runs on `main` with no PR signal, skip branch PR lookup and do not log placeholder notes.
 5. Minimal recovery for straightforward `In Progress` runs:
    - if `.workpad-id` exists and the live workpad is available, read only the current state, live workpad, current branch/HEAD, and PR link or attachment if present;
@@ -186,7 +198,7 @@ Instructions:
 8. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
 9. Merge latest `origin/main` into the branch before final handoff, resolve conflicts, and rerun required validation.
 
-## PR handoff protocol (required before Human Review)
+## PR handoff protocol (required before In Review)
 
 1. Identify the PR number from issue links or attachments.
 2. Run `github_pr_snapshot` once with default summary output.
@@ -199,12 +211,13 @@ Instructions:
 5. When checks complete, run `github_pr_snapshot` again.
 6. If checks are not green or actionable feedback remains, continue the fix/validate loop.
 7. If checks are green and no actionable feedback remains:
+   - run `symphony_handoff_check` (or `make symphony-handoff-check`) and require it to pass before any review-ready state transition;
    - fill the `Checkpoint` section in `workpad.md` with `checkpoint_type: human-verify`, a justified `risk_level`, and a one-line `summary`;
    - finalize local `workpad.md`;
    - ensure the workpad includes a compact artifact manifest with uploaded attachment titles, what each proves, and any expected-but-missing artifacts;
    - sync the live workpad once;
    - ensure the issue still links to the PR;
-   - move the issue to `Human Review`.
+   - move the issue to `In Review`.
 8. Do not repeat label or attachment checks in the same run unless the PR changed.
 9. Do not fetch full GitHub feedback payloads when the summary snapshot shows no review activity.
 
@@ -219,16 +232,16 @@ Use this whenever you pause, hand off, or stop because autonomous progress is no
   - `summary`: the minimum evidence-backed reason for the handoff
 - `human-verify`:
   - use when implementation is complete enough for human review or manual verification;
-  - keep it aligned with the normal PR -> `Human Review` flow;
+  - keep it aligned with the normal PR -> `In Review` flow;
   - do not use it when a product/technical choice or external action is still required first.
 - `decision`:
   - use when progress depends on a product/technical choice, conflicting requirements, or multiple plausible fixes after repeated attempts;
   - include the viable options, your recommendation, and the consequence of choosing differently;
-  - route to `Human Review` and wait for an explicit human decision instead of normal PR approval.
+  - route to `In Review` and wait for an explicit human decision instead of normal PR approval.
 - `human-action`:
   - use when a human must do something outside the agent loop (grant access, add a secret, repair external state, run a deploy gate, provide missing input);
   - include the exact required action and why the agent cannot complete it alone;
-  - route to `Human Review` and wait for that action.
+  - route to `In Review` and wait for that action.
 - Classify risk conservatively:
   - `low` for localized, reversible changes with strong evidence;
   - `medium` for multi-file behavior changes or incomplete verification;
@@ -248,12 +261,12 @@ Use this whenever you pause, hand off, or stop because autonomous progress is no
 Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
 
 - GitHub is not a valid blocker by default; try fallback publish/review strategies first.
-- If a required non-GitHub tool or auth path is missing, record a concise blocker brief in the workpad with `checkpoint_type: human-action`, an appropriate `risk_level`, what is missing, why it blocks acceptance, and the exact human unblock action, then move the issue to `Human Review`.
-- This blocker route is a classified handoff, not a PR-ready `human-verify` handoff, so satisfy the matching `Human Review` handoff bar below instead of the PR-ready bar.
+- If a required non-GitHub tool or auth path is missing, record a concise blocker brief in the workpad with `checkpoint_type: human-action`, an appropriate `risk_level`, what is missing, why it blocks acceptance, and the exact human unblock action, then move the issue to `In Review`.
+- This blocker route is a classified handoff, not a PR-ready `human-verify` handoff, so satisfy the matching `In Review` handoff bar below instead of the PR-ready bar.
 
-## Step 2: Human Review and merge handling
+## Step 2: In Review and merge handling
 
-1. In `Human Review`, do not code or change ticket content.
+1. In `In Review`, do not code or change ticket content.
 2. Poll for review updates as needed.
    - if the latest checkpoint is `decision` or `human-action`, wait for that explicit decision/action instead of treating the state like ordinary PR approval;
 3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
@@ -269,7 +282,7 @@ Use this only when completion is blocked by missing required tools or missing au
 5. Create a fresh branch from `origin/main` using the exact `Working branch:` value when it is configured; otherwise use the fallback `Symphony/<issue-id>-<short-kebab-summary>` format.
 6. Bootstrap a new workpad and execute the normal flow again.
 
-## Human Review handoff bar
+## In Review handoff bar
 
 - The single workpad comment accurately reflects the completed plan, acceptance criteria, validation, and handoff notes.
 - The workpad contains a classified checkpoint with one of `checkpoint_type: human-verify`, `decision`, or `human-action`, and a justified `risk_level`.
@@ -278,13 +291,14 @@ Use this only when completion is blocked by missing required tools or missing au
   - the PR is pushed, linked on the issue, and labeled `symphony`;
   - actionable PR feedback is resolved;
   - PR checks are green;
+  - `symphony_handoff_check` passed and wrote the current workspace manifest;
   - review-relevant artifacts created during the task are uploaded as issue attachments;
   - runtime evidence is uploaded when the change is app-touching;
   - the workpad includes a compact artifact manifest that maps each attachment to the claim it supports and calls out expected artifacts that were not produced.
 - For `checkpoint_type: decision` or `human-action` handoffs:
   - the workpad explains the blocking choice or required external action;
   - the summary makes clear why further autonomous progress is not justified yet;
-  - PR publication, green checks, and review-ready validation are not required before moving to `Human Review`.
+  - PR publication, green checks, and review-ready validation are not required before moving to `In Review`.
 
 ## Guardrails
 
@@ -298,7 +312,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - After 2 unsuccessful auto-fix attempts on the same signal, do not start a third speculative fix.
 - Temporary proof edits are allowed only for local verification and must be reverted before commit.
 - Out-of-scope improvements go to a separate Backlog issue instead of expanding current scope.
-- Treat the matching `Human Review` handoff bar for the chosen `checkpoint_type` as a hard gate.
+- Treat the matching `In Review` handoff bar for the chosen `checkpoint_type` as a hard gate.
 
 ## Workpad template
 
@@ -325,7 +339,9 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 ### Validation
 
+- [ ] preflight: `make symphony-preflight`
 - [ ] targeted tests: `<command>`
+- [ ] repo validation: `make symphony-validate`
 
 ### Artifacts
 

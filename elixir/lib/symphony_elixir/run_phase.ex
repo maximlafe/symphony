@@ -6,6 +6,7 @@ defmodule SymphonyElixir.RunPhase do
   @type phase ::
           :editing
           | :targeted_tests
+          | :verification
           | :runtime_proof
           | :full_validate
           | :waiting_external
@@ -15,6 +16,7 @@ defmodule SymphonyElixir.RunPhase do
   @phase_labels %{
     editing: "editing",
     targeted_tests: "targeted tests",
+    verification: "verification",
     runtime_proof: "runtime proof",
     full_validate: "full validate",
     waiting_external: "waiting external",
@@ -25,6 +27,7 @@ defmodule SymphonyElixir.RunPhase do
 
   @reportable_phases MapSet.new([
                        :targeted_tests,
+                       :verification,
                        :runtime_proof,
                        :full_validate,
                        :waiting_external,
@@ -241,6 +244,9 @@ defmodule SymphonyElixir.RunPhase do
     cond do
       normalized == "github_wait_for_checks" ->
         :waiting_ci
+
+      normalized == "symphony_handoff_check" ->
+        :verification
 
       String.ends_with?(normalized, "browser_wait_for") ->
         :waiting_external

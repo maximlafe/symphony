@@ -248,6 +248,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <span :if={entry.operational_notice} class="muted cell-break">
                           <%= entry.operational_notice %>
                         </span>
+                        <span :if={entry.verification_result} class="muted cell-break">
+                          verification
+                          <span class="mono"><%= entry.verification_result %></span>
+                          <span :if={entry.verification_profile}>
+                            for <span class="mono"><%= entry.verification_profile %></span>
+                          </span>
+                        </span>
                       </div>
                     </td>
                     <td>
@@ -291,6 +298,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span class="muted event-meta">
                           <%= entry.last_message || to_string(entry.last_event || "n/a") %>
+                        </span>
+                        <span :if={entry.verification_summary} class="muted cell-break">
+                          <%= entry.verification_summary %>
+                        </span>
+                        <span
+                          :if={entry.verification_checked_at}
+                          class="muted event-meta"
+                        >
+                          verified
+                          <span class="mono numeric"><%= entry.verification_checked_at %></span>
                         </span>
                         <span :if={entry.last_event_at} class="muted event-meta">
                           <span class="mono numeric"><%= entry.last_event_at %></span>

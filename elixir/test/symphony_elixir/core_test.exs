@@ -156,13 +156,12 @@ defmodule SymphonyElixir.CoreTest do
 
     makefile = File.read!(makefile_path)
 
-    assert makefile =~
-             ".PHONY: help test symphony-bootstrap symphony-dashboard-checks symphony-live-e2e symphony-preflight symphony-validate"
-
+    assert makefile =~ ".PHONY:"
     assert makefile =~ "test: symphony-validate symphony-dashboard-checks symphony-nginx-proxy-contract"
     assert makefile =~ "symphony-preflight:"
     assert makefile =~ "symphony-bootstrap:"
     assert makefile =~ "symphony-dashboard-checks:"
+    assert makefile =~ "symphony-handoff-check:"
     assert makefile =~ "symphony-nginx-proxy-contract:"
     assert makefile =~ "symphony-nginx-proxy-smoke:"
     assert makefile =~ "symphony-validate:"

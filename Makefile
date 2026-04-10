@@ -1,10 +1,10 @@
-.PHONY: help test symphony-bootstrap symphony-dashboard-checks symphony-live-e2e symphony-preflight symphony-validate symphony-nginx-proxy-contract symphony-nginx-proxy-smoke
+.PHONY: help test symphony-bootstrap symphony-dashboard-checks symphony-handoff-check symphony-live-e2e symphony-preflight symphony-validate symphony-nginx-proxy-contract symphony-nginx-proxy-smoke
 
 MISE ?= mise
 ELIXIR_DIR ?= elixir
 
 help:
-	@echo "Targets: test, symphony-preflight, symphony-bootstrap, symphony-dashboard-checks, symphony-validate, symphony-live-e2e, symphony-nginx-proxy-contract, symphony-nginx-proxy-smoke"
+	@echo "Targets: test, symphony-preflight, symphony-bootstrap, symphony-dashboard-checks, symphony-handoff-check, symphony-validate, symphony-live-e2e, symphony-nginx-proxy-contract, symphony-nginx-proxy-smoke"
 
 test: symphony-validate symphony-dashboard-checks symphony-nginx-proxy-contract
 
@@ -57,6 +57,25 @@ symphony-bootstrap:
 
 symphony-dashboard-checks:
 	cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) dashboard
+
+symphony-handoff-check:
+	@if [ -z "$$ISSUE_ID" ]; then \
+		echo "\`ISSUE_ID\` must be set."; \
+		exit 1; \
+	fi
+	@if [ -z "$$WORKPAD_FILE" ]; then \
+		echo "\`WORKPAD_FILE\` must be set."; \
+		exit 1; \
+	fi
+	@if [ -z "$$REPO" ]; then \
+		echo "\`REPO\` must be set."; \
+		exit 1; \
+	fi
+	@if [ -z "$$PR_NUMBER" ]; then \
+		echo "\`PR_NUMBER\` must be set."; \
+		exit 1; \
+	fi
+	cd $(ELIXIR_DIR) && $(MISE) exec -- mix handoff.check --issue "$$ISSUE_ID" --workpad "$$WORKPAD_FILE" --repo "$$REPO" --pr "$$PR_NUMBER" $(if $(MANIFEST_FILE),--manifest "$(MANIFEST_FILE)",)
 
 symphony-nginx-proxy-contract:
 	python3 scripts/symphony_nginx_proxy_smoke.py --contract-only

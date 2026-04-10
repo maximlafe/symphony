@@ -7,7 +7,9 @@ defmodule SymphonyElixir.RunPhaseTest do
     assert RunPhase.phase_label(nil) == nil
     assert RunPhase.phase_label("waiting ci") == "waiting CI"
     assert RunPhase.phase_label(:full_validate) == "full validate"
+    assert RunPhase.phase_label(:verification) == "verification"
     assert RunPhase.reportable_phase?("publishing PR")
+    assert RunPhase.reportable_phase?("verification")
     refute RunPhase.reportable_phase?("editing")
 
     assert RunPhase.transition_reportable?(
@@ -159,6 +161,12 @@ defmodule SymphonyElixir.RunPhaseTest do
              now,
              1_000
            ).run_phase == "waiting external"
+
+    assert RunPhase.snapshot_fields(
+             %{started_at: now, external_step: "symphony_handoff_check"},
+             now,
+             1_000
+           ).run_phase == "verification"
 
     assert RunPhase.snapshot_fields(
              %{started_at: now, external_step: "linear_graphql"},

@@ -124,6 +124,11 @@ defmodule SymphonyElixirWeb.Presenter do
         Map.get(entry, :current_step) || Map.get(entry, :current_command) ||
           Map.get(entry, :external_step),
       operational_notice: Map.get(entry, :operational_notice),
+      verification_profile: Map.get(entry, :verification_profile),
+      verification_result: Map.get(entry, :verification_result),
+      verification_summary: Map.get(entry, :verification_summary),
+      verification_missing_items: Map.get(entry, :verification_missing_items, []),
+      verification_checked_at: iso8601(Map.get(entry, :verification_checked_at)),
       tokens: %{
         input_tokens: entry.codex_input_tokens,
         output_tokens: entry.codex_output_tokens,
@@ -165,6 +170,11 @@ defmodule SymphonyElixirWeb.Presenter do
         Map.get(running, :current_step) || Map.get(running, :current_command) ||
           Map.get(running, :external_step),
       operational_notice: Map.get(running, :operational_notice),
+      verification_profile: Map.get(running, :verification_profile),
+      verification_result: Map.get(running, :verification_result),
+      verification_summary: Map.get(running, :verification_summary),
+      verification_missing_items: Map.get(running, :verification_missing_items, []),
+      verification_checked_at: iso8601(Map.get(running, :verification_checked_at)),
       tokens: %{
         input_tokens: running.codex_input_tokens,
         output_tokens: running.codex_output_tokens,
@@ -211,7 +221,12 @@ defmodule SymphonyElixirWeb.Presenter do
       current_step:
         Map.get(running, :current_step) || Map.get(running, :current_command) ||
           Map.get(running, :external_step),
-      operational_notice: Map.get(running, :operational_notice)
+      operational_notice: Map.get(running, :operational_notice),
+      verification_profile: Map.get(running, :verification_profile),
+      verification_result: Map.get(running, :verification_result),
+      verification_summary: Map.get(running, :verification_summary),
+      verification_missing_items: Map.get(running, :verification_missing_items, []),
+      verification_checked_at: iso8601(Map.get(running, :verification_checked_at))
     }
   end
 
