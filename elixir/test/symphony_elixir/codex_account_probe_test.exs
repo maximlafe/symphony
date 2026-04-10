@@ -176,4 +176,74 @@ defmodule SymphonyElixir.CodexAccountProbeTest do
       File.rm_rf(test_root)
     end
   end
+
+  test "account probe keeps logged-in accounts healthy when rate limits require extra auth" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-account-probe-rate-limits-auth-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      codex_binary = Path.join(test_root, "fake-codex")
+      codex_home = Path.join(test_root, "primary-home")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      File.mkdir_p!(codex_home)
+      File.write!(Path.join(codex_home, "auth.json"), ~s({"marker":"primary"}\n))
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":1001,"result":{"account":{"type":"chatgpt","email":"primary@example.com","planType":"pro"},"requiresOpenaiAuth":false}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":1002,"error":{"code":-32600,"message":"codex account authentication required to read rate limits"}}'
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        codex_command: "#{codex_binary} app-server",
+        workspace_root: workspace_root
+      )
+
+      [account] =
+        AccountProbe.probe_accounts(
+          [%{id: "primary", codex_home: codex_home, explicit?: true}],
+          cwd: test_root,
+          monitored_windows_mins: [300, 10_080],
+          minimum_remaining_percent: 5,
+          timeout_ms: 1_000
+        )
+
+      assert account.id == "primary"
+      assert account.healthy == true
+      assert account.auth_mode == "chatgpt"
+      assert account.email == "primary@example.com"
+      assert account.plan_type == "pro"
+      assert account.requires_openai_auth == false
+      assert account.health_reason == nil
+      assert account.rate_limits == nil
+      assert account.missing_windows_mins == []
+      assert account.insufficient_windows_mins == []
+    after
+      File.rm_rf(test_root)
+    end
+  end
 end
