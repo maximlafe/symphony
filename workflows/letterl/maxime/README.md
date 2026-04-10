@@ -52,6 +52,7 @@ Notes:
 - Each Symphony process must use its own workspace root, logs root, and dashboard port.
 - Worker bootstrap now runs `make symphony-bootstrap` inside the selected allowlisted repo, so each supported repo must expose that target on the branch Symphony clones.
 - Docker on the VPS should mount `/srv/symphony/app/workflows/letterl/maxime` directly into `/srv/symphony/workflows`, so the active worker rules stay aligned with the checked-out repo.
+- Secondary LET Codex accounts must live under the mounted primary CODEX_HOME tree (`/root/.codex/...`) so they survive container recreation and stay visible inside the runtime container.
 - `let.required_codex_accounts.txt` is the production account contract for `let.WORKFLOW.md`; CI and post-deploy smoke both fail if any listed account disappears from the workflow or `/api/v1/state`.
 - Supported production shape is a single Docker-based `symphony-let` runner using `let.WORKFLOW.md`; legacy `symphony-task-extract`, `symphony-team-master`, and `symphony-platform` `systemd` units should stay retired so host-side `.WORKFLOW.md` copies cannot drift from the repo checkout.
 

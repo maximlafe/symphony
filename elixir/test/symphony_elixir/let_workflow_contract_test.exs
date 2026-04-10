@@ -33,6 +33,22 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     refute prompt =~ "`Todo` -> сразу переводи в `Spec Prep`."
   end
 
+  test "LET workflow keeps secondary codex homes under the mounted primary CODEX_HOME" do
+    assert {:ok, %{config: config}} = Workflow.load(@let_workflow_path)
+
+    accounts = get_in(config, ["codex", "accounts"])
+
+    assert [
+             %{"codex_home" => "/root/.codex"},
+             %{"codex_home" => "/root/.codex/.codex-furrow"},
+             %{"codex_home" => "/root/.codex/.codex-rebecca"},
+             %{"codex_home" => "/root/.codex/.codex-deborah"},
+             %{"codex_home" => "/root/.codex/.codex-kjfdn41739"},
+             %{"codex_home" => "/root/.codex/.codex-xvnza54743"},
+             %{"codex_home" => "/root/.codex/.codex-tatonkasperski8844"}
+           ] = Enum.map(accounts, &Map.take(&1, ["codex_home"]))
+  end
+
   test "research and plan mode skills exist with no-implementation guardrails" do
     research_skill = File.read!(@research_skill_path)
     plan_skill = File.read!(@plan_skill_path)
