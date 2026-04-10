@@ -741,6 +741,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp running_detail_label(running_entry) when is_map(running_entry) do
     RunPhase.current_step(running_entry) ||
+      Map.get(running_entry, :verification_summary) ||
       Map.get(running_entry, :operational_notice) ||
       summarize_message(Map.get(running_entry, :last_codex_message))
   end

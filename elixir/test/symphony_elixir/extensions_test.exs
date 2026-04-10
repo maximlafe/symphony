@@ -382,6 +382,11 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_event_at" => nil,
                  "run_phase" => "editing",
                  "operational_notice" => nil,
+                 "verification_profile" => nil,
+                 "verification_result" => nil,
+                 "verification_summary" => nil,
+                 "verification_missing_items" => [],
+                 "verification_checked_at" => nil,
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
@@ -438,6 +443,11 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event_at" => nil,
                "run_phase" => "editing",
                "operational_notice" => nil,
+               "verification_profile" => nil,
+               "verification_result" => nil,
+               "verification_summary" => nil,
+               "verification_missing_items" => [],
+               "verification_checked_at" => nil,
                "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              },
              "retry" => nil,
@@ -452,7 +462,12 @@ defmodule SymphonyElixir.ExtensionsTest do
                "current_command" => nil,
                "external_step" => nil,
                "current_step" => nil,
-               "operational_notice" => nil
+               "operational_notice" => nil,
+               "verification_profile" => nil,
+               "verification_result" => nil,
+               "verification_summary" => nil,
+               "verification_missing_items" => [],
+               "verification_checked_at" => nil
              }
            }
 

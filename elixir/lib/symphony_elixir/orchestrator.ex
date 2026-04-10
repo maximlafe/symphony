@@ -2000,6 +2000,11 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
+          verification_profile: Map.get(metadata, :verification_profile),
+          verification_result: Map.get(metadata, :verification_result),
+          verification_summary: Map.get(metadata, :verification_summary),
+          verification_missing_items: Map.get(metadata, :verification_missing_items, []),
+          verification_checked_at: Map.get(metadata, :verification_checked_at),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
         |> Map.merge(runtime_fields)
@@ -2106,10 +2111,73 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
         turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
       })
+      |> apply_verification_update(update)
       |> RunPhase.apply_update(update)
 
     {updated_running_entry, token_delta}
   end
+
+  defp apply_verification_update(running_entry, update) when is_map(running_entry) and is_map(update) do
+    case verification_manifest_from_update(update) do
+      {:ok, manifest} ->
+        Map.merge(running_entry, %{
+          verification_profile: manifest["profile"],
+          verification_result: if(manifest["passed"] == true, do: "passed", else: "failed"),
+          verification_summary: manifest["summary"],
+          verification_missing_items: manifest["missing_items"] || [],
+          verification_checked_at: parse_manifest_checked_at(manifest["checked_at"])
+        })
+
+      :error ->
+        running_entry
+    end
+  end
+
+  defp verification_manifest_from_update(%{event: event, payload: payload})
+       when event in [:tool_call_completed, :tool_call_failed] and is_map(payload) do
+    tool_name =
+      get_in(payload, ["params", "tool"]) ||
+        get_in(payload, ["params", "name"])
+
+    if tool_name == "symphony_handoff_check" do
+      result =
+        Map.get(payload, :result) ||
+          Map.get(payload, "result")
+
+      extract_verification_manifest(result)
+    else
+      :error
+    end
+  end
+
+  defp verification_manifest_from_update(_update), do: :error
+
+  defp extract_verification_manifest(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text) do
+    case Jason.decode(text) do
+      {:ok, %{"manifest" => manifest}} when is_map(manifest) -> {:ok, manifest}
+      {:ok, manifest} when is_map(manifest) -> {:ok, manifest}
+      _ -> :error
+    end
+  end
+
+  defp extract_verification_manifest(%{contentItems: [%{text: text} | _]}) when is_binary(text) do
+    case Jason.decode(text) do
+      {:ok, %{"manifest" => manifest}} when is_map(manifest) -> {:ok, manifest}
+      {:ok, manifest} when is_map(manifest) -> {:ok, manifest}
+      _ -> :error
+    end
+  end
+
+  defp extract_verification_manifest(_result), do: :error
+
+  defp parse_manifest_checked_at(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      _ -> nil
+    end
+  end
+
+  defp parse_manifest_checked_at(_value), do: nil
 
   defp maybe_publish_run_phase_transition(issue_id, previous_running_entry, current_running_entry) do
     with true <- should_publish_run_phase_comment?(previous_running_entry, current_running_entry),

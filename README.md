@@ -24,6 +24,7 @@ Fresh worker clones use the contract that lives in this repo:
 - `make symphony-preflight` checks `codex`, `mise`, `gh auth status`, `LINEAR_API_KEY`, and non-interactive git access for the repo remote.
 - `make symphony-bootstrap` configures GitHub git auth with `gh auth setup-git`, installs the pinned toolchain via `mise`, and runs `mix setup` in `elixir/`.
 - `make symphony-dashboard-checks` runs the deterministic dashboard-focused test slice used for UI/runtime proof without invoking the real live e2e smoke.
+- `make symphony-handoff-check` runs the repo-owned review-ready contract against the current workpad, issue attachments, and PR state.
 - `make symphony-nginx-proxy-contract` validates the committed `stream.cash` nginx include without requiring a local `nginx` binary.
 - `make symphony-nginx-proxy-smoke` replays the `/proxy/symphony/` plus websocket upgrade flow through a disposable local nginx runtime when `nginx` is installed or `NGINX_BIN` is set.
 - `make symphony-validate` runs the main quality gate for this repo (`make -C elixir all`).
@@ -63,7 +64,7 @@ The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatt
 1. Build: `git clone https://github.com/odysseus0/symphony && cd symphony && make symphony-bootstrap && cd elixir && mise exec -- mix build`
 2. Install skills: `npx skills add odysseus0/symphony -a codex -s linear land commit push pull debug --copy -y` and copy `elixir/WORKFLOW.md` to your repo
 3. In `WORKFLOW.md`, set exactly one Linear polling scope: `tracker.project_slug` or `tracker.team_key`, plus `hooks.after_create` (clone your repo + setup commands). Hooks also receive issue metadata in env vars like `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_DESCRIPTION`, `SYMPHONY_ISSUE_BRANCH_NAME`, `SYMPHONY_ISSUE_PROJECT_SLUG`, and `SYMPHONY_ISSUE_LABELS` if you need structured per-issue bootstrap behavior.
-4. Add **Rework**, **Human Review**, **Merging** as custom states in Linear (Team Settings → Workflow)
+4. Add **Rework**, **In Review**, **Merging** as custom states in Linear (Team Settings → Workflow)
 5. Commit, push, then: `mise exec -- ./bin/symphony /path/to/your-repo/WORKFLOW.md`
 
 For this repository's own self-hosted target flow, use the repo root targets first:

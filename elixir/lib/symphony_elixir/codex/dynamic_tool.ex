@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.{Linear.Client, PathSafety}
+  alias SymphonyElixir.{Config, HandoffCheck, Linear.Client, PathSafety}
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
@@ -167,6 +167,78 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   }
 
+  @symphony_handoff_check_tool "symphony_handoff_check"
+  @symphony_handoff_check_description """
+  Run Symphony's fail-closed handoff contract against the current workpad, issue attachments, and pull request state.
+  """
+  @symphony_handoff_check_issue_query """
+  query SymphonyHandoffCheckIssue($issueId: String!) {
+    issue(id: $issueId) {
+      id
+      identifier
+      state {
+        name
+      }
+      labels {
+        nodes {
+          name
+        }
+      }
+      attachments(first: 100) {
+        nodes {
+          title
+          url
+        }
+      }
+    }
+  }
+  """
+  @symphony_handoff_check_state_query """
+  query SymphonyHandoffCheckState($issueId: String!) {
+    issue(id: $issueId) {
+      team {
+        states(first: 100) {
+          nodes {
+            id
+            name
+          }
+        }
+      }
+    }
+  }
+  """
+  @symphony_handoff_check_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["issue_id", "file_path", "repo", "pr_number"],
+    "properties" => %{
+      "issue_id" => %{
+        "type" => "string",
+        "description" => "Linear issue identifier (e.g. \"ENG-123\") or internal UUID."
+      },
+      "file_path" => %{
+        "type" => "string",
+        "description" => "Absolute or workspace-relative path to the local workpad markdown file."
+      },
+      "repo" => %{
+        "type" => "string",
+        "description" => "GitHub repository in OWNER/REPO format."
+      },
+      "pr_number" => %{
+        "type" => ["integer", "string"],
+        "description" => "Pull request number."
+      },
+      "profile" => %{
+        "type" => ["string", "null"],
+        "description" => "Optional explicit verification profile override."
+      },
+      "manifest_path" => %{
+        "type" => ["string", "null"],
+        "description" => "Optional workspace-relative path for the verification manifest JSON file."
+      }
+    }
+  }
+
   @default_github_wait_timeout_ms 3_600_000
   @default_github_wait_poll_interval_ms 10_000
   @success_check_conclusions MapSet.new(["SUCCESS", "SUCCESSFUL", "NEUTRAL", "SKIPPED"])
@@ -191,6 +263,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
       @github_wait_for_checks_tool ->
         execute_github_wait_for_checks(arguments, opts)
+
+      @symphony_handoff_check_tool ->
+        execute_symphony_handoff_check(arguments, opts)
 
       other ->
         failure_response(%{
@@ -229,6 +304,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "name" => @github_wait_for_checks_tool,
         "description" => @github_wait_for_checks_description,
         "inputSchema" => @github_wait_for_checks_input_schema
+      },
+      %{
+        "name" => @symphony_handoff_check_tool,
+        "description" => @symphony_handoff_check_description,
+        "inputSchema" => @symphony_handoff_check_input_schema
       }
     ]
   end
@@ -237,6 +317,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
 
     with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
+         :ok <- maybe_guard_review_ready_issue_update(query, variables, linear_client, opts),
          {:ok, response} <- linear_client.(query, variables, []) do
       graphql_response(response)
     else
@@ -247,7 +328,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp execute_sync_workpad(args, opts) do
     with {:ok, issue_id, file_path, comment_id} <- normalize_sync_workpad_args(args),
-         {:ok, body} <- read_workpad_file(file_path) do
+         {:ok, body} <- read_workpad_file(file_path, :sync_workpad) do
       {query, variables} =
         if comment_id,
           do: {@sync_workpad_update, %{"id" => comment_id, "body" => body}},
@@ -308,6 +389,92 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       success_response(result)
     else
       {:error, reason} -> failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp execute_symphony_handoff_check(arguments, opts) do
+    linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
+
+    with {:ok, issue_id, workpad_path, repo, pr_number, profile, manifest_path} <-
+           normalize_symphony_handoff_check_arguments(arguments, opts),
+         {:ok, workpad_body} <- read_workpad_file(workpad_path, :symphony_handoff_check),
+         {:ok, issue_context} <- fetch_handoff_issue_context(issue_id, linear_client),
+         {:ok, pr_snapshot} <- build_github_pr_snapshot(repo, pr_number, true, opts) do
+      result =
+        HandoffCheck.evaluate(
+          workpad_body,
+          issue_id: issue_id,
+          issue_identifier: Map.get(issue_context, "identifier"),
+          workpad_path: workpad_path,
+          repo: repo,
+          pr_number: pr_number,
+          profile: profile || Config.settings!().verification.profile,
+          labels: Map.get(issue_context, "labels", []),
+          attachments: Map.get(issue_context, "attachments", []),
+          pr_snapshot: pr_snapshot,
+          profile_labels: Config.settings!().verification.profile_labels
+        )
+
+      handoff_check_response(result, manifest_path)
+    else
+      {:error, reason} -> failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp handoff_check_response({:ok, manifest}, manifest_path) do
+    manifest = prepare_handoff_manifest(manifest, manifest_path)
+
+    case persist_handoff_manifest(manifest, manifest_path) do
+      {:ok, persisted_manifest} ->
+        success_response(persisted_manifest)
+
+      {:error, reason} ->
+        failure_response(%{
+          "error" => %{
+            "message" => "symphony_handoff_check: failed to write verification manifest.",
+            "reason" => inspect(reason)
+          },
+          "manifest" => manifest
+        })
+    end
+  end
+
+  defp handoff_check_response({:error, manifest}, manifest_path) do
+    manifest = prepare_handoff_manifest(manifest, manifest_path)
+
+    case persist_handoff_manifest(manifest, manifest_path) do
+      {:ok, persisted_manifest} ->
+        failure_response(%{
+          "error" => %{
+            "message" => "symphony_handoff_check: verification contract failed.",
+            "summary" => manifest["summary"],
+            "missing_items" => manifest["missing_items"],
+            "manifest_path" => persisted_manifest["manifest_path"]
+          },
+          "manifest" => persisted_manifest
+        })
+
+      {:error, reason} ->
+        failure_response(%{
+          "error" => %{
+            "message" => "symphony_handoff_check: verification contract failed and the manifest could not be written.",
+            "reason" => inspect(reason)
+          },
+          "manifest" => manifest
+        })
+    end
+  end
+
+  defp prepare_handoff_manifest(manifest, manifest_path) do
+    manifest
+    |> Map.put("manifest_path", manifest_path)
+    |> Map.put("target_state", nil)
+  end
+
+  defp persist_handoff_manifest(manifest, manifest_path) do
+    case HandoffCheck.write_manifest(manifest, manifest_path) do
+      {:ok, persisted_path} -> {:ok, Map.put(manifest, "manifest_path", persisted_path)}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -375,6 +542,19 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
+  defp required_handoff_check_arg(args, key) when is_map(args) and is_binary(key) do
+    case get_argument(args, key) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:error, {:symphony_handoff_check, "`#{key}` is required"}}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _ ->
+        {:error, {:symphony_handoff_check, "`#{key}` is required"}}
+    end
+  end
+
   defp optional_sync_workpad_comment_id(args) when is_map(args) do
     case Map.get(args, "comment_id") || Map.get(args, :comment_id) do
       value when is_binary(value) and value != "" -> value
@@ -418,6 +598,32 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp normalize_github_wait_for_checks_arguments(_arguments) do
     {:error, {:github_wait_for_checks, "`repo` and `pr_number` are required"}}
+  end
+
+  defp normalize_symphony_handoff_check_arguments(arguments, opts) when is_map(arguments) do
+    workspace = Keyword.get(opts, :workspace)
+    verification = Config.settings!().verification
+
+    with {:ok, issue_id} <- required_handoff_check_arg(arguments, "issue_id"),
+         {:ok, file_path} <- required_handoff_check_arg(arguments, "file_path"),
+         {:ok, repo} <- normalize_repo(arguments, :symphony_handoff_check),
+         {:ok, pr_number} <- normalize_pr_number(arguments, :symphony_handoff_check),
+         {:ok, resolved_workpad_path} <-
+           normalize_workspace_file_path(file_path, workspace, :symphony_handoff_check),
+         {:ok, profile} <-
+           normalize_optional_string_arg(arguments, "profile", :symphony_handoff_check),
+         {:ok, manifest_path} <-
+           normalize_workspace_manifest_path(
+             get_argument(arguments, "manifest_path") || verification.manifest_path,
+             workspace,
+             :symphony_handoff_check
+           ) do
+      {:ok, issue_id, resolved_workpad_path, repo, pr_number, profile, manifest_path}
+    end
+  end
+
+  defp normalize_symphony_handoff_check_arguments(_arguments, _opts) do
+    {:error, {:symphony_handoff_check, "`issue_id`, `file_path`, `repo`, and `pr_number` are required"}}
   end
 
   defp normalize_repo(arguments, tool) do
@@ -484,11 +690,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     ArgumentError -> Map.get(arguments, key)
   end
 
-  defp read_workpad_file(path) do
+  defp read_workpad_file(path, tool) do
     case File.read(path) do
-      {:ok, ""} -> {:error, {:sync_workpad, "file is empty: `#{path}`"}}
+      {:ok, ""} -> {:error, {tool, "file is empty: `#{path}`"}}
       {:ok, body} -> {:ok, body}
-      {:error, reason} -> {:error, {:sync_workpad, "cannot read `#{path}`: #{:file.format_error(reason)}"}}
+      {:error, reason} -> {:error, {tool, "cannot read `#{path}`: #{:file.format_error(reason)}"}}
     end
   end
 
@@ -521,6 +727,39 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
+  defp normalize_workspace_file_path(path, workspace, tool) when is_binary(path) do
+    trimmed_path = String.trim(path)
+    candidate_path = expand_upload_path(trimmed_path, workspace)
+
+    with {:ok, canonical_path} <- PathSafety.canonicalize(candidate_path),
+         :ok <- ensure_workspace_path_within_workspace(canonical_path, workspace, tool, "file_path") do
+      {:ok, canonical_path}
+    else
+      {:error, {:path_canonicalize_failed, _path, reason}} ->
+        {:error, {tool, "cannot resolve `#{trimmed_path}`: #{inspect(reason)}"}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp normalize_workspace_manifest_path(path, workspace, tool) when is_binary(path) do
+    trimmed_path = String.trim(path)
+    candidate_path = expand_upload_path(trimmed_path, workspace)
+    manifest_dir = Path.dirname(candidate_path)
+
+    with {:ok, canonical_dir} <- PathSafety.canonicalize(manifest_dir),
+         :ok <- ensure_workspace_path_within_workspace(canonical_dir, workspace, tool, "manifest_path") do
+      {:ok, Path.join(canonical_dir, Path.basename(candidate_path))}
+    else
+      {:error, {:path_canonicalize_failed, _path, reason}} ->
+        {:error, {tool, "cannot resolve manifest path `#{trimmed_path}`: #{inspect(reason)}"}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp expand_upload_path(path, workspace) when is_binary(path) and is_binary(workspace) do
     if Path.type(path) == :relative do
       Path.expand(path, workspace)
@@ -546,6 +785,25 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
       {:error, {:path_canonicalize_failed, _path, reason}} ->
         {:error, {:linear_upload_issue_attachment, "cannot resolve workspace `#{workspace}`: #{inspect(reason)}"}}
+    end
+  end
+
+  defp ensure_workspace_path_within_workspace(_path, nil, _tool, _field), do: :ok
+
+  defp ensure_workspace_path_within_workspace(path, workspace, tool, field)
+       when is_binary(path) and is_binary(workspace) do
+    case PathSafety.canonicalize(workspace) do
+      {:ok, canonical_workspace} ->
+        workspace_prefix = canonical_workspace <> "/"
+
+        if path == canonical_workspace or String.starts_with?(path, workspace_prefix) do
+          :ok
+        else
+          {:error, {tool, "`#{field}` must stay within workspace `#{canonical_workspace}`"}}
+        end
+
+      {:error, {:path_canonicalize_failed, _path, reason}} ->
+        {:error, {tool, "cannot resolve workspace `#{workspace}`: #{inspect(reason)}"}}
     end
   end
 
@@ -749,6 +1007,126 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp maybe_put_graphql_input(input, _key, nil), do: input
   defp maybe_put_graphql_input(input, key, value), do: Map.put(input, key, value)
+
+  defp fetch_handoff_issue_context(issue_id, linear_client) do
+    with {:ok, response} <- linear_client.(@symphony_handoff_check_issue_query, %{"issueId" => issue_id}, []),
+         issue when is_map(issue) <- get_in(response, ["data", "issue"]) do
+      {:ok,
+       %{
+         "id" => get_argument(issue, "id"),
+         "identifier" => get_argument(issue, "identifier"),
+         "state" => get_in(issue, ["state", "name"]),
+         "labels" => normalize_linear_issue_labels(get_in(issue, ["labels", "nodes"])),
+         "attachments" => normalize_linear_issue_attachments(get_in(issue, ["attachments", "nodes"]))
+       }}
+    else
+      {:error, reason} ->
+        {:error, reason}
+
+      _ ->
+        {:error, {:symphony_handoff_check, "issue query did not return a valid issue payload"}}
+    end
+  end
+
+  defp normalize_linear_issue_labels(labels) when is_list(labels) do
+    labels
+    |> Enum.map(fn
+      %{"name" => name} -> name
+      %{name: name} -> name
+      _ -> nil
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_linear_issue_labels(_labels), do: []
+
+  defp normalize_linear_issue_attachments(attachments) when is_list(attachments) do
+    attachments
+    |> Enum.map(fn
+      %{} = attachment ->
+        %{
+          "title" => get_argument(attachment, "title"),
+          "url" => get_argument(attachment, "url")
+        }
+
+      _ ->
+        %{}
+    end)
+    |> Enum.filter(fn attachment -> is_binary(attachment["title"]) and attachment["title"] != "" end)
+  end
+
+  defp normalize_linear_issue_attachments(_attachments), do: []
+
+  defp maybe_guard_review_ready_issue_update(query, variables, linear_client, opts) do
+    review_ready_states = Config.settings!().verification.review_ready_states
+
+    with true <- review_ready_issue_update_query?(query),
+         state_id when is_binary(state_id) <- possible_graphql_value(variables, ["stateId", "state_id"]),
+         issue_id when is_binary(issue_id) <- possible_graphql_value(variables, ["id", "issueId", "issue_id"]),
+         {:ok, state_name} <- resolve_issue_state_name(issue_id, state_id, linear_client),
+         true <- state_name in review_ready_states do
+      manifest_path = Config.settings!().verification.manifest_path
+      workspace = Keyword.get(opts, :workspace)
+      expected_manifest_path = expand_upload_path(manifest_path, workspace)
+
+      case HandoffCheck.review_ready_transition_allowed?(
+             expected_manifest_path,
+             issue_id,
+             state_name
+           ) do
+        :ok ->
+          :ok
+
+        {:error, reason, details} ->
+          {:error,
+           {:review_ready_transition_blocked,
+            Map.merge(details, %{
+              "reason_code" => to_string(reason),
+              "required_tool" => @symphony_handoff_check_tool,
+              "manifest_path" => Path.expand(expected_manifest_path)
+            })}}
+      end
+    else
+      false -> :ok
+      nil -> :ok
+      {:error, reason} -> {:error, reason}
+      _ -> :ok
+    end
+  end
+
+  defp review_ready_issue_update_query?(query) when is_binary(query) do
+    Regex.match?(~r/\bissueUpdate\s*\(/, query)
+  end
+
+  defp possible_graphql_value(variables, keys) when is_map(variables) and is_list(keys) do
+    Enum.find_value(keys, fn key ->
+      value = Map.get(variables, key) || Map.get(variables, String.to_atom(key))
+
+      if is_binary(value) and String.trim(value) != "" do
+        String.trim(value)
+      end
+    end)
+  rescue
+    ArgumentError -> Enum.find_value(keys, &Map.get(variables, &1))
+  end
+
+  defp resolve_issue_state_name(issue_id, state_id, linear_client) do
+    with {:ok, response} <- linear_client.(@symphony_handoff_check_state_query, %{"issueId" => issue_id}, []),
+         states when is_list(states) <- get_in(response, ["data", "issue", "team", "states", "nodes"]),
+         state when is_map(state) <-
+           Enum.find(states, fn state ->
+             get_argument(state, "id") == state_id
+           end),
+         state_name when is_binary(state_name) <- get_argument(state, "name") do
+      {:ok, state_name}
+    else
+      {:error, reason} ->
+        {:error, reason}
+
+      _ ->
+        {:error, {:review_ready_transition_blocked, %{"reason" => "cannot resolve the requested review-ready state"}}}
+    end
+  end
 
   defp normalize_linear_graphql_arguments(arguments) when is_binary(arguments) do
     case String.trim(arguments) do
@@ -1212,6 +1590,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{"error" => %{"message" => "sync_workpad: #{message}"}}
   end
 
+  defp tool_error_payload({:symphony_handoff_check, message}) do
+    %{"error" => %{"message" => "symphony_handoff_check: #{message}"}}
+  end
+
   defp tool_error_payload({:linear_upload_issue_attachment, message}) do
     %{"error" => %{"message" => "linear_upload_issue_attachment: #{message}"}}
   end
@@ -1246,6 +1628,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{
       "error" => %{
         "message" => "github_wait_for_checks: timed out before checks reached a terminal state.",
+        "details" => details
+      }
+    }
+  end
+
+  defp tool_error_payload({:review_ready_transition_blocked, details}) do
+    %{
+      "error" => %{
+        "message" => "review-ready issue transitions require a successful `symphony_handoff_check` in the current workspace.",
         "details" => details
       }
     }
