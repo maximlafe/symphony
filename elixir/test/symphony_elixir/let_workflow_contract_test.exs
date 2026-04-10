@@ -40,9 +40,22 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert research_skill =~ "name: research-mode"
     assert research_skill =~ "Do not edit product code as a shipped fix."
     assert research_skill =~ "root cause"
+    assert research_skill =~ "Separate symptoms from causes."
+    assert research_skill =~ "top hypotheses ranked by confidence"
+    assert research_skill =~ "Update Linear in Russian"
+    assert research_skill =~ "branch, PR, checks, and review context"
+    assert research_skill =~ "Apply `DRY`, `KISS`, and `YAGNI`"
+    assert research_skill =~ "The final research output should be ordered as follows"
+    assert research_skill =~ "exact problem location in code, data, and/or runtime"
+    assert research_skill =~ "risks, unknowns, and what still needs checking"
 
     assert plan_skill =~ "name: plan-mode"
     assert plan_skill =~ "Do not edit product code as a shipped fix."
     assert plan_skill =~ "implementation-ready"
+    assert plan_skill =~ "Apply `DRY`, `KISS`, and `YAGNI`"
+    assert plan_skill =~ "Ограничения и инварианты"
+    assert plan_skill =~ "План валидации"
+    assert plan_skill =~ "Update Linear in Russian"
+    assert plan_skill =~ "The final planning output should be ordered as follows"
   end
 end
