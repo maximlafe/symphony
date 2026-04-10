@@ -114,6 +114,7 @@ Instructions:
 - Sync the live workpad only at bootstrap, meaningful milestones, and final handoff.
 - Reproduce or capture the current signal before code changes when it materially improves confidence.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.
+- Treat `delivery:tdd` as an opt-in delivery label, not a routing label or verification profile.
 - Do not reread skill bodies in straightforward runs unless the workflow does not cover the needed behavior.
 - Move state only when the matching quality bar is satisfied.
 
@@ -182,6 +183,8 @@ Instructions:
    - If `Confusions` is non-empty, every bullet must be an actionable blocker in three parts: what is still unconfirmed, why it blocks execution or acceptance, and which exact artifact, signal, or human input will resolve it.
    - Prefer concrete terms such as `production bundle bytes`, `deploy manifest`, `literal copy`, or `screenshot baseline`; avoid vague statements that do not name the unblock condition.
    - Shape the plan with `DRY`, `KISS`, and `YAGNI`: reuse existing code paths before inventing new abstractions, choose the smallest coherent change that satisfies the acceptance criteria, and keep speculative cleanup or future-proofing out of scope unless the ticket explicitly requires it.
+   - When the issue has label `delivery:tdd`, capture a failing proof (`red`) for the changed core behavior before the fix, make the smallest change, use the required targeted tests as the `green` proof, and keep any refactor optional and behavior-preserving.
+   - If the ticket mixes testable core logic with a broader runtime or integration shell, keep `delivery:tdd` scoped to the cheapest deterministic core path and validate the rest with the normal matrix.
    - If the plan still needs a new abstraction, shared helper, or refactor, justify in `Notes` why reuse or a simpler localized change is insufficient.
 4. Before code edits, run the `pull` skill to sync with latest `origin/main`, then record the result in `Notes` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
 5. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before handoff.
@@ -340,6 +343,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Validation
 
 - [ ] preflight: `make symphony-preflight`
+- [ ] red proof: `<command>` (required when `delivery:tdd`)
 - [ ] targeted tests: `<command>`
 - [ ] repo validation: `make symphony-validate`
 

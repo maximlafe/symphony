@@ -45,6 +45,8 @@ The repo now ships a production-oriented CI/CD path:
   `/api/v1/state`, so post-release proof can be closed on the public observability surface.
 - `elixir/deploy/docker/README.md` documents the host env files, rollback flow, and deploy
   prerequisites.
+- In the repo's own LetterL workflow, `Spec Prep` can normalize an orthogonal `delivery:tdd` label
+  so execution and handoff enforce true `red -> green` proof only on tickets that justify it.
 
 ## How it works
 

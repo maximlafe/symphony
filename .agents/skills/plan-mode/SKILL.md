@@ -22,6 +22,7 @@ Turn a high-level issue into an implementation-ready engineering spec with a con
 - If the root cause is already known, state it clearly.
 - If the evidence is still incomplete, describe the most likely cause and the current confidence boundary without pretending certainty.
 - Convert the current issue into a stable engineering contract instead of leaving planning details implicit in chat context.
+- Decide whether execution should be opt-in TDD. Use `delivery:tdd` only when a cheap deterministic failing test or reproducer should be part of the fix contract; avoid it for docs, deploy, CI, visual-only UI work, and flaky integration/runtime-heavy tasks.
 
 ## Allowed
 
@@ -69,6 +70,7 @@ Preserve all material user facts, capture the observed behavior and expected beh
 
 - Update Linear in Russian with the planning worklog and note that the description/spec was brought to the current engineering state.
 - If the current issue description is stale, replace it with the updated task contract.
+- Normalize `delivery:tdd` through `linear_graphql`: add it when the planning result requires TDD, otherwise remove stale `delivery:tdd`.
 - If the original issue is closed or clearly no longer matches the real scope, reopen it or create a follow-up issue according to repo rules before treating the planning result as final.
 
 ## Final result format

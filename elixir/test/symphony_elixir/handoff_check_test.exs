@@ -232,6 +232,72 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "profile `ui` is missing a matching uploaded proof artifact" in ui_manifest["missing_items"]
   end
 
+  test "evaluate requires explicit red proof when delivery:tdd is enabled" do
+    workpad_without_tdd_evidence = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `notes.md` -> test notes
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Handoff summary is filled.
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad_without_tdd_evidence,
+               issue_id: "LET-431",
+               labels: ["delivery:tdd"],
+               attachments: [%{"title" => "notes.md"}],
+               pr_snapshot: green_pr_snapshot()
+             )
+
+    assert "validation checklist is missing a checked `red proof` item" in manifest["missing_items"]
+
+    workpad_with_tdd_evidence = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] red proof: `mix test test/symphony_elixir/handoff_check_test.exs:235`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log from the health check
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: TDD proof and validation are complete.
+    """
+
+    assert {:ok, passing_manifest} =
+             HandoffCheck.evaluate(
+               workpad_with_tdd_evidence,
+               issue_id: "LET-431",
+               labels: ["delivery:tdd", "verification:runtime"],
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot()
+             )
+
+    assert passing_manifest["missing_items"] == []
+    assert passing_manifest["profile"] == "runtime"
+  end
+
   test "review_ready_transition_allowed? fails when the workpad digest no longer matches the manifest" do
     workpad_path = Path.join(System.tmp_dir!(), "handoff-check-workpad-#{System.unique_integer([:positive])}.md")
     manifest_path = Path.join(System.tmp_dir!(), "handoff-check-manifest-#{System.unique_integer([:positive])}.json")
