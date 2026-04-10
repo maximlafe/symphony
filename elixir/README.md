@@ -257,6 +257,9 @@ codex:
 - `/api/v1/state` always includes a top-level `release` block that echoes the runtime
   `SYMPHONY_RELEASE_SHA`, `SYMPHONY_IMAGE_TAG`, and `SYMPHONY_IMAGE_DIGEST` values as
   `git_sha`, `image_tag`, and `image_digest`; missing env values are reported as `null`.
+- The production deploy path syncs the checked-in Docker Compose contract to the remote host on
+  every deploy, so runtime env additions in `deploy/docker/docker-compose.yml` no longer depend on
+  a manual host-side copy.
 - Set `server.path` when the dashboard is served behind a reverse-proxy path prefix such as
   `/proxy/symphony`; Symphony still serves upstream requests at `/` while generating prefixed
   LiveView and static asset URLs for the proxied mount point.

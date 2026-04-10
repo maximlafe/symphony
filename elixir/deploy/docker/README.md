@@ -30,13 +30,10 @@ application image locally; it only pulls a CI-validated image reference (`tag` +
      /etc/symphony/symphony.env
    ```
 
-3. Copy the versioned compose file:
-
-   ```bash
-   sudo install -D -m 0644 \
-     elixir/deploy/docker/docker-compose.yml \
-     /srv/symphony/deploy/docker-compose.yml
-   ```
+3. Ensure the deploy user can create or overwrite the configured compose path
+   (`SYMPHONY_DEPLOY_COMPOSE_FILE`). `deploy-production` now syncs the checked-in
+   `docker-compose.yml` to that remote path on every deploy, so you do not need a separate
+   manual copy step for contract updates.
 
 ## CI/CD flow
 
@@ -46,9 +43,10 @@ application image locally; it only pulls a CI-validated image reference (`tag` +
    `production-image-contract.json`.
 4. `deploy-production` downloads that contract, waits on the `production` GitHub Environment, and
    runs `scripts/symphony_deploy.sh`.
-5. The deploy script validates the checked-in workflow contract, syncs the active workflow file to
-   the host mount, pulls the digest-pinned image, recreates the Compose service, and verifies the
-   post-deploy health endpoint plus required `codex_accounts`.
+5. The deploy script validates the checked-in workflow contract, syncs both the active workflow
+   file and the checked-in compose contract to the host, pulls the digest-pinned image, recreates
+   the Compose service, and verifies the post-deploy health endpoint plus required
+   `codex_accounts`.
 6. The post-release proof is complete only after `/api/v1/state` echoes the deployed `release`
    block (`git_sha`, `image_tag`, `image_digest`) that matches the published image contract.
 
@@ -83,7 +81,8 @@ no-op.
 
 1. Review the `production-image-contract.json` artifact from the `release-image` workflow.
 2. Approve the `production` environment in GitHub.
-3. Let `deploy-production` pull the digest-pinned image and run `docker compose up -d`.
+3. Let `deploy-production` sync the checked-in compose contract, pull the digest-pinned image, and
+   run `docker compose up -d`.
 4. Confirm the workflow artifact shows a successful health response.
 5. Confirm `/api/v1/state` returns a `release` block that matches the deployed contract.
 6. If nginx fronts the dashboard, keep the versioned include from `../nginx/README.md` in sync.
