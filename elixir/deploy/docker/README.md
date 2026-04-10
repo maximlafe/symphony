@@ -49,6 +49,8 @@ application image locally; it only pulls a CI-validated image reference (`tag` +
 5. The deploy script validates the checked-in workflow contract, syncs the active workflow file to
    the host mount, pulls the digest-pinned image, recreates the Compose service, and verifies the
    post-deploy health endpoint plus required `codex_accounts`.
+6. The post-release proof is complete only after `/api/v1/state` echoes the deployed `release`
+   block (`git_sha`, `image_tag`, `image_digest`) that matches the published image contract.
 
 ## Environment approvals
 
@@ -83,7 +85,8 @@ no-op.
 2. Approve the `production` environment in GitHub.
 3. Let `deploy-production` pull the digest-pinned image and run `docker compose up -d`.
 4. Confirm the workflow artifact shows a successful health response.
-5. If nginx fronts the dashboard, keep the versioned include from `../nginx/README.md` in sync.
+5. Confirm `/api/v1/state` returns a `release` block that matches the deployed contract.
+6. If nginx fronts the dashboard, keep the versioned include from `../nginx/README.md` in sync.
 
 ## Rollback
 

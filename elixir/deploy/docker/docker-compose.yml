@@ -23,6 +23,9 @@ services:
       SYMPHONY_PORT: ${SYMPHONY_PORT:-4101}
       SYMPHONY_WORKSPACE_ROOT: ${SYMPHONY_WORKSPACE_ROOT:?Set SYMPHONY_WORKSPACE_ROOT to the in-container workspace path.}
       SYMPHONY_LOGS_ROOT: ${SYMPHONY_LOGS_ROOT:?Set SYMPHONY_LOGS_ROOT to the in-container logs path.}
+      SYMPHONY_RELEASE_SHA: ${SYMPHONY_RELEASE_SHA:-}
+      SYMPHONY_IMAGE_TAG: ${SYMPHONY_IMAGE_TAG:-}
+      SYMPHONY_IMAGE_DIGEST: ${SYMPHONY_IMAGE_DIGEST:-}
     volumes:
       - ${SYMPHONY_CODEX_HOME_HOST_PATH:?Set SYMPHONY_CODEX_HOME_HOST_PATH to the host CODEX_HOME directory.}:${CODEX_HOME:-/root/.codex}
       - ${SYMPHONY_WORKFLOW_HOST_PATH:?Set SYMPHONY_WORKFLOW_HOST_PATH to the host workflow directory.}:/srv/symphony/workflows:ro
