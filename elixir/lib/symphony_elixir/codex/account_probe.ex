@@ -63,23 +63,31 @@ defmodule SymphonyElixir.Codex.AccountProbe do
     case AppServer.open_client(cwd, command_env: [{"CODEX_HOME", codex_home}], account_id: id) do
       {:ok, client} ->
         try do
-          with {:ok, account_response} <-
-                 AppServer.request(client, "account/read", %{}, @account_read_request_id),
-               {:ok, rate_limits_response} <-
-                 AppServer.request(
-                   client,
-                   "account/rateLimits/read",
-                   nil,
-                   @rate_limits_read_request_id
-                 ) do
-            build_probe_status(
-              base_status,
-              account_response,
-              rate_limits_response,
-              monitored_windows_mins,
-              minimum_remaining_percent
-            )
-          else
+          case AppServer.request(client, "account/read", %{}, @account_read_request_id) do
+            {:ok, account_response} ->
+              case AppServer.request(
+                     client,
+                     "account/rateLimits/read",
+                     nil,
+                     @rate_limits_read_request_id
+                   ) do
+                {:ok, rate_limits_response} ->
+                  build_probe_status(
+                    base_status,
+                    account_response,
+                    rate_limits_response,
+                    monitored_windows_mins,
+                    minimum_remaining_percent
+                  )
+
+                {:error, reason} ->
+                  maybe_build_probe_status_without_rate_limits(
+                    base_status,
+                    account_response,
+                    reason
+                  )
+              end
+
             {:error, reason} ->
               %{base_status | health_reason: "probe failed: #{inspect(reason)}"}
           end
@@ -140,6 +148,39 @@ defmodule SymphonyElixir.Codex.AccountProbe do
         insufficient_windows_mins: health.insufficient_windows_mins
     }
   end
+
+  defp maybe_build_probe_status_without_rate_limits(base_status, account_response, reason) do
+    if rate_limits_auth_required?(reason) do
+      summary = Accounts.account_summary(account_response)
+      logged_in? = logged_in?(summary)
+
+      %{
+        base_status
+        | healthy: logged_in?,
+          health_reason: if(logged_in?, do: nil, else: "not logged in"),
+          auth_mode: summary.auth_mode,
+          email: summary.email,
+          plan_type: summary.plan_type,
+          requires_openai_auth: summary.requires_openai_auth,
+          rate_limits: nil,
+          account: summary.account,
+          missing_windows_mins: [],
+          insufficient_windows_mins: []
+      }
+    else
+      %{base_status | health_reason: "probe failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp rate_limits_auth_required?({:response_error, error}) when is_map(error) do
+    message = Map.get(error, "message") || Map.get(error, :message)
+
+    is_binary(message) and
+      String.contains?(String.downcase(message), "authentication required") and
+      String.contains?(String.downcase(message), "read rate limits")
+  end
+
+  defp rate_limits_auth_required?(_reason), do: false
 
   defp logged_in?(summary) when is_map(summary) do
     account = summary.account

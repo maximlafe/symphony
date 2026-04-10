@@ -2803,7 +2803,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp existing_logged_in?(_existing), do: true
 
   defp probe_confirms_broken_recovery?(account) when is_map(account) do
-    Map.get(account, :requires_openai_auth) == false and is_map(Map.get(account, :rate_limits))
+    Map.get(account, :requires_openai_auth) == false and Map.get(account, :probe_healthy) == true
   end
 
   defp codex_account_health(%State{} = state, account_id) when is_binary(account_id) do
