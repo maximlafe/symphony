@@ -122,4 +122,4 @@ Repo: maximlafe/symphony
 Base branch: main
 ```
 
-Use `mode:research` when the ticket still needs evidence-backed root-cause analysis before planning. Use `mode:plan` when the task is already understood conceptually but still needs an implementation-ready spec. Leave both labels absent when the issue description is already execution-ready.
+Use `mode:research` when the ticket still needs evidence-backed root-cause analysis, ranked hypotheses, and a normalized spec before planning or execution. Use `mode:plan` when the task is already understood conceptually but still needs a stable implementation-ready engineering spec, updated Linear description, and explicit validation plan. Leave both labels absent when the issue description is already execution-ready.
