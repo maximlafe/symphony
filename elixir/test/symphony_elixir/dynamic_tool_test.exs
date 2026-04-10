@@ -1232,6 +1232,46 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert blocked["success"] == false
     assert decode_tool_text(blocked)["error"]["message"] =~ "review-ready issue transitions require"
 
+    blocked_nested_input =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+          "variables" => %{"id" => "LET-416", "input" => %{"stateId" => "in-review-state-id"}}
+        },
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckState" do
+            state_catalog_response.()
+          else
+            flunk("unexpected nested-input mutation without manifest guard")
+          end
+        end
+      )
+
+    assert blocked_nested_input["success"] == false
+    assert decode_tool_text(blocked_nested_input)["error"]["message"] =~ "review-ready issue transitions require"
+
+    blocked_inline_literal =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation { issueUpdate(id: \"LET-416\", input: { stateId: \"in-review-state-id\" }) { success } }",
+          "variables" => %{}
+        },
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckState" do
+            state_catalog_response.()
+          else
+            flunk("unexpected inline-literal mutation without manifest guard")
+          end
+        end
+      )
+
+    assert blocked_inline_literal["success"] == false
+    assert decode_tool_text(blocked_inline_literal)["error"]["message"] =~ "review-ready issue transitions require"
+
     assert DynamicTool.execute(
              "symphony_handoff_check",
              %{
@@ -1315,5 +1355,58 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert allowed["success"] == true
     assert_received {:issue_update, %{"id" => "LET-416", "stateId" => "in-review-state-id"}}
+
+    allowed_nested_input =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+          "variables" => %{"id" => "LET-416", "input" => %{"stateId" => "in-review-state-id"}}
+        },
+        workspace: workspace,
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              state_catalog_response.()
+
+            query =~ "issueUpdate" ->
+              send(self(), {:issue_update_nested, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected nested-input GraphQL query: #{query}")
+          end
+        end
+      )
+
+    assert allowed_nested_input["success"] == true
+    assert_received {:issue_update_nested, %{"id" => "LET-416", "input" => %{"stateId" => "in-review-state-id"}}}
+
+    allowed_inline_literal =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation { issueUpdate(id: \"LET-416\", input: { stateId: \"in-review-state-id\" }) { success } }",
+          "variables" => %{}
+        },
+        workspace: workspace,
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              state_catalog_response.()
+
+            query =~ "issueUpdate" ->
+              send(self(), {:issue_update_literal, query, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected inline-literal GraphQL query: #{query}")
+          end
+        end
+      )
+
+    assert allowed_inline_literal["success"] == true
+
+    assert_received {:issue_update_literal, "mutation { issueUpdate(id: \"LET-416\", input: { stateId: \"in-review-state-id\" }) { success } }", %{}}
   end
 end

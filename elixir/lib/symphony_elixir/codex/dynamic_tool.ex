@@ -1061,8 +1061,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     review_ready_states = Config.settings!().verification.review_ready_states
 
     with true <- review_ready_issue_update_query?(query),
-         state_id when is_binary(state_id) <- possible_graphql_value(variables, ["stateId", "state_id"]),
-         issue_id when is_binary(issue_id) <- possible_graphql_value(variables, ["id", "issueId", "issue_id"]),
+         state_id when is_binary(state_id) <- review_ready_state_id(query, variables),
+         issue_id when is_binary(issue_id) <- review_ready_issue_id(query, variables),
          {:ok, state_name} <- resolve_issue_state_name(issue_id, state_id, linear_client),
          true <- state_name in review_ready_states do
       manifest_path = Config.settings!().verification.manifest_path
@@ -1098,16 +1098,88 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     Regex.match?(~r/\bissueUpdate\s*\(/, query)
   end
 
-  defp possible_graphql_value(variables, keys) when is_map(variables) and is_list(keys) do
-    Enum.find_value(keys, fn key ->
-      value = Map.get(variables, key) || Map.get(variables, String.to_atom(key))
+  defp review_ready_state_id(query, variables) do
+    possible_graphql_value(query, variables, [
+      ["stateId"],
+      ["state_id"],
+      ["input", "stateId"],
+      ["input", "state_id"]
+    ])
+  end
 
-      if is_binary(value) and String.trim(value) != "" do
-        String.trim(value)
+  defp review_ready_issue_id(query, variables) do
+    possible_graphql_value(query, variables, [
+      ["id"],
+      ["issueId"],
+      ["issue_id"],
+      ["input", "id"],
+      ["input", "issueId"],
+      ["input", "issue_id"]
+    ])
+  end
+
+  defp possible_graphql_value(query, variables, key_paths)
+       when is_binary(query) and is_map(variables) and is_list(key_paths) do
+    key_paths
+    |> Enum.find_value(&possible_graphql_value_at_path(variables, &1))
+    |> case do
+      nil -> possible_graphql_literal(query, key_paths)
+      value -> value
+    end
+  end
+
+  defp possible_graphql_value(query, _variables, key_paths)
+       when is_binary(query) and is_list(key_paths) do
+    possible_graphql_literal(query, key_paths)
+  end
+
+  defp possible_graphql_value(_query, _variables, _key_paths), do: nil
+
+  defp possible_graphql_value_at_path(variables, key_path) when is_map(variables) and is_list(key_path) do
+    value =
+      Enum.reduce_while(key_path, variables, fn key, current ->
+        case graphql_map_get(current, key) do
+          nil -> {:halt, nil}
+          nested -> {:cont, nested}
+        end
+      end)
+
+    if is_binary(value) and String.trim(value) != "" do
+      String.trim(value)
+    end
+  end
+
+  defp possible_graphql_literal(query, key_paths) do
+    key_paths
+    |> Enum.map(&List.last/1)
+    |> Enum.uniq()
+    |> Enum.find_value(fn key ->
+      pattern = ~r/\bissueUpdate\s*\([^)]*\b#{Regex.escape(key)}\s*:\s*"([^"]+)"/s
+
+      case Regex.run(pattern, query, capture: :all_but_first) do
+        [value] when is_binary(value) and value != "" -> String.trim(value)
+        _ -> nil
       end
     end)
-  rescue
-    ArgumentError -> Enum.find_value(keys, &Map.get(variables, &1))
+  end
+
+  defp graphql_map_get(%{} = map, key) when is_binary(key) do
+    map[key] || existing_atom_map_get(map, key)
+  end
+
+  defp graphql_map_get(_value, _key), do: nil
+
+  defp existing_atom_map_get(map, key) when is_map(map) and is_binary(key) do
+    Enum.find_value(map, fn
+      {map_key, value} when is_atom(map_key) ->
+        case Atom.to_string(map_key) do
+          ^key -> value
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end)
   end
 
   defp resolve_issue_state_name(issue_id, state_id, linear_client) do
