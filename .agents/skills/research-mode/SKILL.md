@@ -23,6 +23,7 @@ Turn a raw or underspecified issue into a stable Russian task-spec backed by evi
 - Separate symptoms from causes.
 - Confirm the root cause; or narrow the problem to the smallest evidence-backed set of plausible causes.
 - Check whether a partial fix, linked PR, unmerged branch, or recent regression already explains part of the signal.
+- Decide whether execution should be opt-in TDD. Use `delivery:tdd` only when a cheap deterministic failing test or reproducer can prove the changed behavior in a narrow core-logic path; avoid it for docs, deploy, CI, visual-only UI work, and flaky integration/runtime-heavy tasks.
 
 ## Required outcomes
 
@@ -75,6 +76,7 @@ Preserve all material user facts, capture the observed behavior and expected beh
 ## Linear expectations
 
 - Update Linear in Russian with what was checked, what was found, what is considered the cause, and what minimal next steps are recommended.
+- Normalize `delivery:tdd` through `linear_graphql`: add it when the research result shows true TDD is warranted, otherwise remove stale `delivery:tdd`.
 - If an external blocker remains after the workflow-required preflight, record the exact blocker evidence instead of a generic tooling complaint.
 
 ## Final result format

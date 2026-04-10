@@ -5,6 +5,7 @@ defmodule SymphonyElixir.HandoffCheck do
 
   @allowed_checkpoint_types ["human-verify", "decision", "human-action"]
   @allowed_risk_levels ["low", "medium", "high"]
+  @delivery_tdd_label "delivery:tdd"
   @supported_profiles ["ui", "data-extraction", "runtime", "generic"]
   @default_profile_labels %{
     "ui" => "verification:ui",
@@ -54,7 +55,10 @@ defmodule SymphonyElixir.HandoffCheck do
       )
 
     parsed_workpad = parse_workpad(workpad_body)
-    missing_items = collect_missing_items(parsed_workpad, attachments, pr_snapshot, profile, profile_errors)
+
+    missing_items =
+      collect_missing_items(parsed_workpad, issue_labels, attachments, pr_snapshot, profile, profile_errors)
+
     passed = missing_items == []
 
     manifest = %{
@@ -321,10 +325,10 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp strip_wrapping_backticks(value), do: value
 
-  defp collect_missing_items(parsed_workpad, attachments, pr_snapshot, profile, profile_errors) do
+  defp collect_missing_items(parsed_workpad, issue_labels, attachments, pr_snapshot, profile, profile_errors) do
     []
     |> Kernel.++(profile_errors)
-    |> Kernel.++(validation_missing_items(parsed_workpad["validation"]))
+    |> Kernel.++(validation_missing_items(parsed_workpad["validation"], issue_labels))
     |> Kernel.++(checkpoint_missing_items(parsed_workpad["checkpoint"]))
     |> Kernel.++(artifact_manifest_missing_items(parsed_workpad["artifacts"], attachments))
     |> Kernel.++(profile_missing_items(profile, parsed_workpad["artifacts"], attachments))
@@ -332,8 +336,10 @@ defmodule SymphonyElixir.HandoffCheck do
     |> Enum.uniq()
   end
 
-  defp validation_missing_items(validation_items) do
-    required_labels = ["preflight", "targeted tests", "repo validation"]
+  defp validation_missing_items(validation_items, issue_labels) do
+    required_labels =
+      ["preflight", "targeted tests", "repo validation"] ++
+        if delivery_tdd_enabled?(issue_labels), do: ["red proof"], else: []
 
     required_labels
     |> Enum.filter(fn label ->
@@ -344,6 +350,10 @@ defmodule SymphonyElixir.HandoffCheck do
     |> Enum.map(fn label ->
       "validation checklist is missing a checked `#{label}` item"
     end)
+  end
+
+  defp delivery_tdd_enabled?(issue_labels) when is_list(issue_labels) do
+    @delivery_tdd_label in issue_labels
   end
 
   defp checkpoint_missing_items(checkpoint) do

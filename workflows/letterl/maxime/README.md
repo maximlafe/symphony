@@ -41,6 +41,10 @@ Notes:
   - no `mode:*` -> `Todo -> In Progress`;
   - if both `mode:research` and `mode:plan` are present, `mode:research` wins;
   - once a ticket enters `In Progress`, `mode:*` labels no longer change the flow.
+- `delivery:tdd` is orthogonal to `mode:*` and `verification:*`:
+  - decide it during `Spec Prep`, not during execution routing;
+  - use it only when a cheap deterministic failing test or reproducer can prove the changed core behavior;
+  - remove stale `delivery:tdd` during planning/research when the task does not justify true TDD.
 - `Spec Prep` and `Spec Review` remain as the opt-in analysis-only path for `mode:research`, `mode:plan`, and legacy spec-prep tickets; implementation-ready issues should skip them.
 - `research-mode` and `plan-mode` are authored as repo-local Symphony skills and should be loaded from `.agents/skills/...` when present; for workspaces cloned from other LET-managed repos, fallback to the bundled copies under `$CODEX_HOME/skills/...`.
 - When a run creates a fresh working branch, use `Working branch:` exactly when it is set; otherwise name it `Symphony/<lowercase issue identifier>-<short-kebab-summary>` instead of reusing Linear `gitBranchName` values such as `cycloid-yips0i/...`, and record branch lineage as `Новая ветка <branch> создана от origin/<base>`.
@@ -124,3 +128,5 @@ Base branch: main
 ```
 
 Use `mode:research` when the ticket still needs evidence-backed root-cause analysis, ranked hypotheses, and a normalized spec before planning or execution. Use `mode:plan` when the task is already understood conceptually but still needs a stable implementation-ready engineering spec, updated Linear description, and explicit validation plan. Leave both labels absent when the issue description is already execution-ready.
+
+If the spec-prep result shows that the implementation should follow true TDD, normalize `delivery:tdd` on the issue during `Spec Prep`; otherwise leave it absent or remove it if it is stale.

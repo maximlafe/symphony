@@ -612,6 +612,15 @@ Instructions:
 - Если тикет уже попал в `Spec Prep` без `mode:*`, считай это legacy spec-prep path и веди его как `plan-mode`.
 - `mode:*` labels влияют только на routing из `Todo`. После входа в `In Progress` текущий state становится authoritative, и labels больше не меняют flow.
 
+## TDD delivery label
+
+- `delivery:tdd` — orthogonal delivery label, а не intake-routing label и не verification profile.
+- Во время `Spec Prep` агент обязан решить, нужен ли задаче opt-in TDD, и нормализовать `delivery:tdd`.
+- Используй `delivery:tdd` только когда cheap deterministic failing test или reproducer может доказать изменяемое поведение в узком core-logic path.
+- Не используй `delivery:tdd` для docs, deploy, CI, визуальной UI-полировки и flaky integration/runtime-heavy work.
+- Нормализовать `delivery:tdd` через `linear_graphql`: добавить label, когда TDD оправдан, и remove stale `delivery:tdd`, когда он не нужен.
+- После входа в `In Progress` `delivery:tdd` больше не влияет на routing; он меняет только delivery/handoff contract.
+
 ## Step 0: Determine current ticket state and route
 
 1. Fetch the issue by explicit ticket ID and read the current state.
@@ -658,10 +667,11 @@ Instructions:
    - if `.symphony-base-branch-note` exists, translate it into Russian in `Заметки` once before continuing;
    - do not edit product code, commit, or push;
    - determine the intake mode from labels before broad investigation:
-    - `mode:research` -> load and follow repo-local `.agents/skills/research-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/research-mode/SKILL.md`;
-    - `mode:plan` -> load and follow repo-local `.agents/skills/plan-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/plan-mode/SKILL.md`;
+   - `mode:research` -> load and follow repo-local `.agents/skills/research-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/research-mode/SKILL.md`;
+   - `mode:plan` -> load and follow repo-local `.agents/skills/plan-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/plan-mode/SKILL.md`;
      - if both labels exist, `mode:research` wins;
      - if neither label exists, treat the ticket as the legacy `plan-mode` path;
+   - before finalizing the spec, decide whether execution should carry `delivery:tdd` and нормализовать `delivery:tdd` через `linear_graphql`;
    - read the issue body, only the relevant comments and PR context, and inspect the codebase;
    - capture a reproduction or investigation signal only when it materially sharpens the task-spec.
 5. Keep local `workpad.md` as the spec-prep source of truth:
