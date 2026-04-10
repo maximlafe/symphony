@@ -322,6 +322,20 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do
+    previous_release_sha = System.get_env("SYMPHONY_RELEASE_SHA")
+    previous_image_tag = System.get_env("SYMPHONY_IMAGE_TAG")
+    previous_image_digest = System.get_env("SYMPHONY_IMAGE_DIGEST")
+
+    on_exit(fn ->
+      restore_env("SYMPHONY_RELEASE_SHA", previous_release_sha)
+      restore_env("SYMPHONY_IMAGE_TAG", previous_image_tag)
+      restore_env("SYMPHONY_IMAGE_DIGEST", previous_image_digest)
+    end)
+
+    System.put_env("SYMPHONY_RELEASE_SHA", "813314b9945164261dd9ff73cbb71c7280a19801")
+    System.put_env("SYMPHONY_IMAGE_TAG", "sha-813314b99451")
+    System.put_env("SYMPHONY_IMAGE_DIGEST", "sha256:deadbeef")
+
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :ObservabilityApiOrchestrator)
 
@@ -344,6 +358,11 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
+             "release" => %{
+               "git_sha" => "813314b9945164261dd9ff73cbb71c7280a19801",
+               "image_tag" => "sha-813314b99451",
+               "image_digest" => "sha256:deadbeef"
+             },
              "counts" => %{"running" => 1, "retrying" => 1},
              "active_codex_account_id" => "primary",
              "codex_accounts" => [
@@ -492,6 +511,20 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
+    previous_release_sha = System.get_env("SYMPHONY_RELEASE_SHA")
+    previous_image_tag = System.get_env("SYMPHONY_IMAGE_TAG")
+    previous_image_digest = System.get_env("SYMPHONY_IMAGE_DIGEST")
+
+    on_exit(fn ->
+      restore_env("SYMPHONY_RELEASE_SHA", previous_release_sha)
+      restore_env("SYMPHONY_IMAGE_TAG", previous_image_tag)
+      restore_env("SYMPHONY_IMAGE_DIGEST", previous_image_digest)
+    end)
+
+    System.delete_env("SYMPHONY_RELEASE_SHA")
+    System.delete_env("SYMPHONY_IMAGE_TAG")
+    System.delete_env("SYMPHONY_IMAGE_DIGEST")
+
     unavailable_orchestrator = Module.concat(__MODULE__, :UnavailableOrchestrator)
     start_test_endpoint(orchestrator: unavailable_orchestrator, snapshot_timeout_ms: 5)
 
@@ -515,6 +548,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert state_payload ==
              %{
                "generated_at" => state_payload["generated_at"],
+               "release" => %{
+                 "git_sha" => nil,
+                 "image_tag" => nil,
+                 "image_digest" => nil
+               },
                "error" => %{"code" => "snapshot_unavailable", "message" => "Snapshot unavailable"}
              }
 
@@ -528,6 +566,20 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "phoenix observability api preserves snapshot timeout behavior" do
+    previous_release_sha = System.get_env("SYMPHONY_RELEASE_SHA")
+    previous_image_tag = System.get_env("SYMPHONY_IMAGE_TAG")
+    previous_image_digest = System.get_env("SYMPHONY_IMAGE_DIGEST")
+
+    on_exit(fn ->
+      restore_env("SYMPHONY_RELEASE_SHA", previous_release_sha)
+      restore_env("SYMPHONY_IMAGE_TAG", previous_image_tag)
+      restore_env("SYMPHONY_IMAGE_DIGEST", previous_image_digest)
+    end)
+
+    System.delete_env("SYMPHONY_RELEASE_SHA")
+    System.delete_env("SYMPHONY_IMAGE_TAG")
+    System.delete_env("SYMPHONY_IMAGE_DIGEST")
+
     timeout_orchestrator = Module.concat(__MODULE__, :TimeoutOrchestrator)
     {:ok, _pid} = SlowOrchestrator.start_link(name: timeout_orchestrator)
     start_test_endpoint(orchestrator: timeout_orchestrator, snapshot_timeout_ms: 1)
@@ -537,6 +589,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert timeout_payload ==
              %{
                "generated_at" => timeout_payload["generated_at"],
+               "release" => %{
+                 "git_sha" => nil,
+                 "image_tag" => nil,
+                 "image_digest" => nil
+               },
                "error" => %{"code" => "snapshot_timeout", "message" => "Snapshot timed out"}
              }
   end

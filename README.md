@@ -41,6 +41,8 @@ The repo now ships a production-oriented CI/CD path:
   publishes a digest-pinned image contract on `main`.
 - `.github/workflows/deploy-production.yml` downloads that contract and performs an environment-gated
   production deploy.
+- The deployed runtime echoes `git_sha`, `image_tag`, and `image_digest` from that contract through
+  `/api/v1/state`, so post-release proof can be closed on the public observability surface.
 - `elixir/deploy/docker/README.md` documents the host env files, rollback flow, and deploy
   prerequisites.
 

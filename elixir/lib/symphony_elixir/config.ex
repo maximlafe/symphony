@@ -35,6 +35,12 @@ defmodule SymphonyElixir.Config do
           explicit?: boolean()
         }
 
+  @type release_metadata :: %{
+          git_sha: String.t() | nil,
+          image_tag: String.t() | nil,
+          image_digest: String.t() | nil
+        }
+
   @type linear_polling_scope :: {:project, String.t()} | {:team, String.t()} | nil
 
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
@@ -185,6 +191,15 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec release_metadata() :: release_metadata()
+  def release_metadata do
+    %{
+      git_sha: present_env("SYMPHONY_RELEASE_SHA"),
+      image_tag: present_env("SYMPHONY_IMAGE_TAG"),
+      image_digest: present_env("SYMPHONY_IMAGE_DIGEST")
+    }
+  end
+
   @spec codex_minimum_remaining_percent() :: non_neg_integer()
   def codex_minimum_remaining_percent do
     settings!().codex.minimum_remaining_percent
@@ -251,6 +266,21 @@ defmodule SymphonyElixir.Config do
   end
 
   defp present_codex_command(_command), do: nil
+
+  defp present_env(key) do
+    key
+    |> System.get_env()
+    |> case do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      _ ->
+        nil
+    end
+  end
 
   defp format_config_error(reason) do
     case reason do
