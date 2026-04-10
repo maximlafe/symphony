@@ -1,6 +1,6 @@
 ---
 name: plan-mode
-description: Use when the LET workflow routes a `Todo` issue with label `mode:plan` into `Planning`. Convert a high-level problem or solution outline into a concrete Russian engineering task-spec and execution plan without shipping product code.
+description: Use when the LET workflow routes a `Todo` issue with label `mode:plan` into `Spec Prep`. Convert a high-level problem or solution outline into a concrete Russian engineering task-spec and execution plan without shipping product code.
 ---
 
 # Plan Mode
@@ -45,7 +45,7 @@ Preserve all material user facts and always keep the final `## Symphony` block i
 
 ## Exit bar
 
-Before handing off to `Plan Review`:
+Before handing off to `Spec Review`:
 
 - The issue description is implementation-ready.
 - The workpad contains a concrete execution plan and validation outline.

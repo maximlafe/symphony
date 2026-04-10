@@ -2139,7 +2139,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     config = Config.settings!()
     assert config.codex.planning_command == "codex app-server --model gpt-5.4"
     assert config.codex.implementation_command == "codex app-server --model gpt-5.3-codex"
-    assert Config.codex_command(%Issue{state: "Planning"}) == "codex app-server --model gpt-5.4"
+    assert Config.codex_command(%Issue{state: "Spec Prep"}) == "codex app-server --model gpt-5.4"
 
     assert Config.codex_command(%Issue{state: "In Progress"}) ==
              "codex app-server --model gpt-5.3-codex"
@@ -2150,7 +2150,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.codex_command(%Issue{state: "Todo"}) ==
              "codex app-server --model gpt-5.3-codex"
 
-    assert Config.codex_command("  Plan Review  ") == "codex app-server --model gpt-5.4"
+    assert Config.codex_command("  Spec Review  ") == "codex app-server --model gpt-5.4"
 
     assert Config.codex_command(%{"state" => " rework "}) ==
              "codex app-server --model gpt-5.3-codex"
@@ -2161,7 +2161,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       codex_implementation_command: ""
     )
 
-    assert Config.codex_command("Planning") == "codex app-server --model gpt-5.3-codex"
+    assert Config.codex_command("Spec Prep") == "codex app-server --model gpt-5.3-codex"
 
     assert Config.codex_command(%{"state" => "In Progress"}) ==
              "codex app-server --model gpt-5.3-codex"

@@ -7,20 +7,20 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
   @research_skill_path Path.expand("../../../.agents/skills/research-mode/SKILL.md", __DIR__)
   @plan_skill_path Path.expand("../../../.agents/skills/plan-mode/SKILL.md", __DIR__)
 
-  test "LET workflow routes todo by mode labels and keeps planning optional" do
+  test "LET workflow routes todo by mode labels and keeps spec prep optional" do
     assert {:ok, %{config: config, prompt: prompt}} = Workflow.load(@let_workflow_path)
 
     assert get_in(config, ["tracker", "team_key"]) == "LET"
 
     assert get_in(config, ["tracker", "active_states"]) == [
              "Todo",
-             "Planning",
+             "Spec Prep",
              "In Progress",
              "Merging",
              "Rework"
            ]
 
-    refute "Plan Review" in get_in(config, ["tracker", "active_states"])
+    refute "Spec Review" in get_in(config, ["tracker", "active_states"])
 
     assert prompt =~ "`mode:research`"
     assert prompt =~ "`mode:plan`"
@@ -30,7 +30,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ ".agents/skills/plan-mode/SKILL.md"
     assert prompt =~ "$CODEX_HOME/skills/research-mode/SKILL.md"
     assert prompt =~ "$CODEX_HOME/skills/plan-mode/SKILL.md"
-    refute prompt =~ "`Todo` -> сразу переводи в `Planning`."
+    refute prompt =~ "`Todo` -> сразу переводи в `Spec Prep`."
   end
 
   test "research and plan mode skills exist with no-implementation guardrails" do

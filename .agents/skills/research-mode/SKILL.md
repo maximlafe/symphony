@@ -1,6 +1,6 @@
 ---
 name: research-mode
-description: Use when the LET workflow routes a `Todo` issue with label `mode:research` into `Planning`. Investigate first, confirm the root cause or rank hypotheses with evidence, and normalize the issue into an implementation-ready task-spec without shipping product code.
+description: Use when the LET workflow routes a `Todo` issue with label `mode:research` into `Spec Prep`. Investigate first, confirm the root cause or rank hypotheses with evidence, and normalize the issue into an implementation-ready task-spec without shipping product code.
 ---
 
 # Research Mode
@@ -52,7 +52,7 @@ Preserve all material user facts and always keep the final `## Symphony` block i
 
 ## Exit bar
 
-Before handing off to `Plan Review`:
+Before handing off to `Spec Review`:
 
 - The issue description is implementation-ready.
 - The workpad captures the evidence trail and the recommended fix contour.
