@@ -30,6 +30,7 @@ test:
 	$(MIX) test
 
 contracts:
+	python3 ../scripts/test_symphony_deploy_contract.py
 	python3 ../scripts/test_validate_codex_accounts_contract.py
 	python3 ../scripts/validate_codex_accounts_contract.py \
 		--workflow-file ../workflows/letterl/maxime/let.WORKFLOW.md \

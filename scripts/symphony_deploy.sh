@@ -3,13 +3,14 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/symphony_deploy.sh --image-repository <repo> --image-tag <tag> --image-digest <sha256:...> [--workflow-file <path>] [--required-codex-accounts-file <path>]
+Usage: scripts/symphony_deploy.sh --image-repository <repo> --image-tag <tag> --image-digest <sha256:...> [--compose-file <path>] [--workflow-file <path>] [--required-codex-accounts-file <path>]
 EOF
 }
 
 image_repository=""
 image_tag=""
 image_digest=""
+compose_file=""
 workflow_file=""
 required_codex_accounts_file=""
 
@@ -25,6 +26,10 @@ while [ $# -gt 0 ]; do
       ;;
     --image-digest)
       image_digest="${2:-}"
+      shift 2
+      ;;
+    --compose-file)
+      compose_file="${2:-}"
       shift 2
       ;;
     --workflow-file)
@@ -75,15 +80,33 @@ if [ -n "${workflow_file}" ] && [ ! -f "${workflow_file}" ]; then
   exit 1
 fi
 
+if [ -n "${compose_file}" ] && [ ! -f "${compose_file}" ]; then
+  echo "Compose file not found: ${compose_file}" >&2
+  exit 1
+fi
+
 if [ -n "${required_codex_accounts_file}" ] && [ ! -f "${required_codex_accounts_file}" ]; then
   echo "Required Codex accounts file not found: ${required_codex_accounts_file}" >&2
   exit 1
 fi
 
+sync_remote_file() {
+  local local_path="$1"
+  local remote_path="$2"
+
+  ssh "${ssh_common_opts[@]}" -p "${ssh_port}" "${remote}" "mkdir -p \"$(dirname "${remote_path}")\""
+  scp "${ssh_common_opts[@]}" -P "${ssh_port}" "${local_path}" "${remote}:${remote_path}"
+  printf 'synced file: %s -> %s\n' "${local_path}" "${remote_path}"
+}
+
 if [ -n "${workflow_file}" ] && [ -n "${required_codex_accounts_file}" ]; then
   python3 "${script_dir}/validate_codex_accounts_contract.py" \
     --workflow-file "${workflow_file}" \
     --required-accounts-file "${required_codex_accounts_file}"
+fi
+
+if [ -n "${compose_file}" ]; then
+  sync_remote_file "${compose_file}" "${SYMPHONY_DEPLOY_COMPOSE_FILE}"
 fi
 
 if [ -n "${workflow_file}" ]; then
@@ -99,9 +122,7 @@ workflow_basename="$(basename "${SYMPHONY_WORKFLOW_PATH:?Set SYMPHONY_WORKFLOW_P
 printf '%s\n' "${workflow_host_path%/}/${workflow_basename}"
 REMOTE
   )"
-  ssh "${ssh_common_opts[@]}" -p "${ssh_port}" "${remote}" "mkdir -p \"$(dirname "${remote_workflow_file}")\""
-  scp "${ssh_common_opts[@]}" -P "${ssh_port}" "${workflow_file}" "${remote}:${remote_workflow_file}"
-  printf 'synced workflow file: %s -> %s\n' "${workflow_file}" "${remote_workflow_file}"
+  sync_remote_file "${workflow_file}" "${remote_workflow_file}"
 fi
 
 ssh \
