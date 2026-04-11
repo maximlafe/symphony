@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Orchestrator do
   @continuation_base_delay_ms 5_000
   @continuation_max_delay_ms 300_000
   @failure_retry_base_ms 10_000
+  @idle_housekeeping_interval_ms 60_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -35,6 +36,7 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      :last_housekeeping_at_ms,
       :workspace_usage_bytes,
       :workspace_cleanup_ref,
       :workspace_usage_refresh_ref,
@@ -70,6 +72,7 @@ defmodule SymphonyElixir.Orchestrator do
       poll_check_in_progress: false,
       tick_timer_ref: nil,
       tick_token: nil,
+      last_housekeeping_at_ms: nil,
       workspace_usage_bytes: 0,
       workspace_cleanup_ref: nil,
       workspace_usage_refresh_ref: nil,
@@ -1168,10 +1171,36 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp run_workspace_housekeeping(%State{} = state, source) do
-    state = maybe_schedule_workspace_usage_refresh(state, source)
-    state = maybe_schedule_terminal_workspace_cleanup(state, source)
-    state
+    if should_run_workspace_housekeeping?(state, source) do
+      now_ms = System.monotonic_time(:millisecond)
+
+      state
+      |> maybe_schedule_workspace_usage_refresh(source)
+      |> maybe_schedule_terminal_workspace_cleanup(source)
+      |> Map.put(:last_housekeeping_at_ms, now_ms)
+    else
+      state
+    end
   end
+
+  defp should_run_workspace_housekeeping?(%State{} = state, source) do
+    source != :poll or active_housekeeping_required?(state) or idle_housekeeping_due?(state)
+  end
+
+  defp active_housekeeping_required?(%State{running: running}) when is_map(running) do
+    map_size(running) > 0
+  end
+
+  defp active_housekeeping_required?(_state), do: false
+
+  defp idle_housekeeping_due?(%State{last_housekeeping_at_ms: nil}), do: true
+
+  defp idle_housekeeping_due?(%State{last_housekeeping_at_ms: last_housekeeping_at_ms})
+       when is_integer(last_housekeeping_at_ms) do
+    System.monotonic_time(:millisecond) - last_housekeeping_at_ms >= @idle_housekeeping_interval_ms
+  end
+
+  defp idle_housekeeping_due?(_state), do: true
 
   defp maybe_schedule_workspace_usage_refresh(
          %State{workspace_usage_refresh_ref: refresh_ref} = state,
