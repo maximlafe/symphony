@@ -1793,6 +1793,113 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
   end
 
+  test "idle poll cycle throttles codex account probes while a healthy account is cached" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      poll_interval_ms: 50
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :IdleCodexProbeThrottleOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    stable_state =
+      wait_for_orchestrator_state(pid, fn state ->
+        state.poll_check_in_progress == false and state.workspace_usage_refresh_ref == nil and
+          state.workspace_cleanup_ref == nil
+      end)
+
+    if is_reference(stable_state.tick_timer_ref) do
+      Process.cancel_timer(stable_state.tick_timer_ref)
+    end
+
+    fresh_probe_at_ms = System.monotonic_time(:millisecond)
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | active_codex_account_id: "primary",
+          codex_accounts: %{
+            "primary" => %{
+              healthy: true,
+              health_reason: nil,
+              rate_limits: %{"limitId" => "codex"}
+            }
+          },
+          last_codex_account_probe_at_ms: fresh_probe_at_ms,
+          tick_timer_ref: nil,
+          tick_token: nil,
+          poll_check_in_progress: false
+      }
+    end)
+
+    send(pid, :run_poll_cycle)
+
+    throttled_state =
+      wait_for_orchestrator_state(pid, fn state ->
+        state.poll_check_in_progress == false and
+          state.last_codex_account_probe_at_ms == fresh_probe_at_ms
+      end)
+
+    assert throttled_state.last_codex_account_probe_at_ms == fresh_probe_at_ms
+  end
+
+  test "idle poll cycle refreshes codex probes when no active account is available" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      poll_interval_ms: 50
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :IdleCodexProbeRecoveryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    stable_state =
+      wait_for_orchestrator_state(pid, fn state ->
+        state.poll_check_in_progress == false and state.workspace_usage_refresh_ref == nil and
+          state.workspace_cleanup_ref == nil
+      end)
+
+    if is_reference(stable_state.tick_timer_ref) do
+      Process.cancel_timer(stable_state.tick_timer_ref)
+    end
+
+    fresh_probe_at_ms = System.monotonic_time(:millisecond)
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | active_codex_account_id: nil,
+          codex_accounts: %{},
+          last_codex_account_probe_at_ms: fresh_probe_at_ms,
+          tick_timer_ref: nil,
+          tick_token: nil,
+          poll_check_in_progress: false
+      }
+    end)
+
+    send(pid, :run_poll_cycle)
+
+    refreshed_state =
+      wait_for_orchestrator_state(pid, fn state ->
+        is_integer(state.last_codex_account_probe_at_ms) and
+          state.last_codex_account_probe_at_ms > fresh_probe_at_ms
+      end)
+
+    assert refreshed_state.last_codex_account_probe_at_ms > fresh_probe_at_ms
+    assert refreshed_state.active_codex_account_id == nil
+  end
+
   test "orchestrator restarts stalled workers with retry backoff" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
