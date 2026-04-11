@@ -2197,6 +2197,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute_receive {:render, _third_render_ms, _content}, 60
   end
 
+  test "status dashboard default runtime enablement requires an ANSI terminal outside tests" do
+    assert StatusDashboard.terminal_dashboard_enabled_for_test(true, :prod)
+    refute StatusDashboard.terminal_dashboard_enabled_for_test(false, :prod)
+    refute StatusDashboard.terminal_dashboard_enabled_for_test(true, :test)
+  end
+
   test "status dashboard computes rolling 5-second token throughput" do
     assert StatusDashboard.rolling_tps([], 10_000, 0) == 0.0
 

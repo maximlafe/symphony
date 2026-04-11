@@ -628,6 +628,11 @@ defmodule SymphonyElixir.StatusDashboard do
   def dashboard_url_for_test(host, configured_port, bound_port, path \\ nil),
     do: dashboard_url(host, configured_port, bound_port, path)
 
+  @doc false
+  @spec terminal_dashboard_enabled_for_test(boolean(), atom() | nil) :: boolean()
+  def terminal_dashboard_enabled_for_test(ansi_enabled, mix_env),
+    do: terminal_dashboard_enabled?(ansi_enabled, mix_env)
+
   defp dashboard_url_path(path) when path in [nil, "", "/"], do: "/"
   defp dashboard_url_path(path), do: path <> "/"
 
@@ -2177,14 +2182,28 @@ defmodule SymphonyElixir.StatusDashboard do
   defp truncate(value, _max), do: value
 
   defp dashboard_enabled? do
+    terminal_dashboard_enabled?(ansi_enabled?(), current_mix_env())
+  end
+
+  defp terminal_dashboard_enabled?(ansi_enabled, mix_env) do
+    ansi_enabled and mix_env != :test
+  end
+
+  defp ansi_enabled? do
+    IO.ANSI.enabled?()
+  rescue
+    _ -> false
+  end
+
+  defp current_mix_env do
     if Code.ensure_loaded?(Mix) and function_exported?(Mix, :env, 0) do
       try do
-        Mix.env() != :test
+        Mix.env()
       rescue
-        _ -> true
+        _ -> nil
       end
     else
-      true
+      nil
     end
   end
 

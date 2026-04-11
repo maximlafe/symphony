@@ -255,6 +255,8 @@ codex:
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+- The terminal dashboard renders only when Symphony has an ANSI-capable terminal. Non-TTY runtimes
+  still expose the web dashboard and JSON API without continuously writing ANSI frames to stdout.
 - `/api/v1/state` always includes a top-level `release` block that echoes the runtime
   `SYMPHONY_RELEASE_SHA`, `SYMPHONY_IMAGE_TAG`, and `SYMPHONY_IMAGE_DIGEST` values as
   `git_sha`, `image_tag`, and `image_digest`; missing env values are reported as `null`.
