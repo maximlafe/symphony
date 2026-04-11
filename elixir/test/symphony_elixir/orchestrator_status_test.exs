@@ -1702,6 +1702,97 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert next_poll_in_ms <= 50
   end
 
+  test "idle poll cycle throttles workspace housekeeping until the idle interval expires" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-idle-housekeeping-#{System.unique_integer([:positive])}"
+      )
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    orchestrator_name = Module.concat(__MODULE__, :IdleHousekeepingOrchestrator)
+
+    try do
+      File.mkdir_p!(test_root)
+      File.write!(Path.join(test_root, "marker.txt"), String.duplicate("x", 2_048))
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        poll_interval_ms: 50
+      )
+
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      initial_state =
+        wait_for_orchestrator_state(pid, fn state ->
+          is_integer(state.last_housekeeping_at_ms) and
+            state.workspace_usage_refresh_ref == nil and
+            state.workspace_cleanup_ref == nil and
+            state.poll_check_in_progress == false
+        end)
+
+      if is_reference(initial_state.tick_timer_ref) do
+        Process.cancel_timer(initial_state.tick_timer_ref)
+      end
+
+      initial_housekeeping_at_ms = initial_state.last_housekeeping_at_ms
+
+      send(pid, :run_poll_cycle)
+
+      throttled_state =
+        wait_for_orchestrator_state(pid, fn state ->
+          state.poll_check_in_progress == false and
+            state.last_housekeeping_at_ms == initial_housekeeping_at_ms
+        end)
+
+      assert throttled_state.last_housekeeping_at_ms == initial_housekeeping_at_ms
+
+      stale_housekeeping_at_ms = System.monotonic_time(:millisecond) - 61_000
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | last_housekeeping_at_ms: stale_housekeeping_at_ms,
+            workspace_usage_refresh_ref: nil,
+            workspace_cleanup_ref: nil
+        }
+      end)
+
+      send(pid, :run_poll_cycle)
+
+      refreshed_state =
+        wait_for_orchestrator_state(pid, fn state ->
+          is_integer(state.last_housekeeping_at_ms) and
+            state.last_housekeeping_at_ms > stale_housekeeping_at_ms
+        end)
+
+      assert refreshed_state.last_housekeeping_at_ms > stale_housekeeping_at_ms
+
+      if is_reference(refreshed_state.tick_timer_ref) do
+        Process.cancel_timer(refreshed_state.tick_timer_ref)
+      end
+
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    after
+      case Process.whereis(orchestrator_name) do
+        pid when is_pid(pid) -> Process.exit(pid, :normal)
+        _ -> :ok
+      end
+
+      if is_nil(previous_memory_issues) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_memory_issues)
+      end
+
+      File.rm_rf(test_root)
+    end
+  end
+
   test "orchestrator restarts stalled workers with retry backoff" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
