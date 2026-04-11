@@ -1900,6 +1900,244 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert refreshed_state.active_codex_account_id == nil
   end
 
+  test "idle poll cycle probes only the active codex account between full reconciles" do
+    orchestrator_name = Module.concat(__MODULE__, :IdleActiveAccountProbeOrchestrator)
+    parent = self()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      poll_interval_ms: 50,
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"},
+        %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+      ],
+      codex_monitored_windows_mins: [300, 10_080],
+      codex_minimum_remaining_percent: 5
+    )
+
+    probe_fun = fn accounts, _opts ->
+      send(parent, {:probed_accounts, Enum.map(accounts, &Map.get(&1, :id))})
+
+      Enum.map(accounts, fn account ->
+        account_id = Map.fetch!(account, :id)
+
+        %{
+          id: account_id,
+          codex_home: Map.get(account, :codex_home),
+          explicit?: true,
+          checked_at: DateTime.utc_now(),
+          healthy: true,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          email: "#{account_id}@example.com",
+          plan_type: "pro",
+          requires_openai_auth: false,
+          rate_limits: %{
+            "limitId" => "codex",
+            "primary" => %{"windowDurationMins" => 300, "usedPercent" => 20},
+            "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 35}
+          },
+          account: %{"email" => "#{account_id}@example.com"},
+          missing_windows_mins: [],
+          insufficient_windows_mins: []
+        }
+      end)
+    end
+
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, codex_account_probe_fun: probe_fun)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    assert_receive {:probed_accounts, ["primary", "secondary"]}, 1_000
+
+    stable_state =
+      wait_for_orchestrator_state(pid, fn state ->
+        is_integer(state.last_codex_account_probe_at_ms) and
+          state.active_codex_account_id == "primary" and
+          state.poll_check_in_progress == false
+      end)
+
+    if is_reference(stable_state.tick_timer_ref) do
+      Process.cancel_timer(stable_state.tick_timer_ref)
+    end
+
+    stale_probe_at_ms = System.monotonic_time(:millisecond) - 61_000
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | last_codex_account_probe_at_ms: stale_probe_at_ms,
+          tick_timer_ref: nil,
+          tick_token: nil,
+          poll_check_in_progress: false
+      }
+    end)
+
+    send(pid, :run_poll_cycle)
+
+    assert_receive {:probed_accounts, ["primary"]}, 1_000
+  end
+
+  test "idle poll cycle performs a full codex account reconcile after the long idle interval" do
+    orchestrator_name = Module.concat(__MODULE__, :IdleCodexFullReconcileOrchestrator)
+    parent = self()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      poll_interval_ms: 50,
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"},
+        %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+      ],
+      codex_monitored_windows_mins: [300, 10_080],
+      codex_minimum_remaining_percent: 5
+    )
+
+    probe_fun = fn accounts, _opts ->
+      send(parent, {:probed_accounts, Enum.map(accounts, &Map.get(&1, :id))})
+      Enum.map(accounts, &healthy_probe_status/1)
+    end
+
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, codex_account_probe_fun: probe_fun)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    assert_receive {:probed_accounts, ["primary", "secondary"]}, 1_000
+
+    stable_state =
+      wait_for_orchestrator_state(pid, fn state ->
+        is_integer(state.last_codex_account_probe_at_ms) and
+          is_integer(state.last_full_codex_account_probe_at_ms) and
+          state.active_codex_account_id == "primary" and
+          state.poll_check_in_progress == false
+      end)
+
+    if is_reference(stable_state.tick_timer_ref) do
+      Process.cancel_timer(stable_state.tick_timer_ref)
+    end
+
+    stale_probe_at_ms = System.monotonic_time(:millisecond) - 61_000
+    stale_full_probe_at_ms = System.monotonic_time(:millisecond) - 901_000
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | last_codex_account_probe_at_ms: stale_probe_at_ms,
+          last_full_codex_account_probe_at_ms: stale_full_probe_at_ms,
+          tick_timer_ref: nil,
+          tick_token: nil,
+          poll_check_in_progress: false
+      }
+    end)
+
+    send(pid, :run_poll_cycle)
+
+    assert_receive {:probed_accounts, ["primary", "secondary"]}, 1_000
+  end
+
+  test "idle poll cycle falls back to a full reconcile when the active codex account degrades" do
+    orchestrator_name = Module.concat(__MODULE__, :IdleCodexFallbackOrchestrator)
+    parent = self()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      poll_interval_ms: 50,
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"},
+        %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+      ],
+      codex_monitored_windows_mins: [300, 10_080],
+      codex_minimum_remaining_percent: 5
+    )
+
+    {:ok, probe_phase} = Agent.start_link(fn -> :startup end)
+
+    probe_fun = fn accounts, _opts ->
+      account_ids = Enum.map(accounts, &Map.get(&1, :id))
+      send(parent, {:probed_accounts, account_ids})
+
+      phase = Agent.get(probe_phase, & &1)
+
+      case {phase, account_ids} do
+        {:startup, _} ->
+          Agent.update(probe_phase, fn _ -> :idle_probe end)
+          Enum.map(accounts, &healthy_probe_status/1)
+
+        {:idle_probe, ["primary"]} ->
+          Agent.update(probe_phase, fn _ -> :full_reconcile end)
+          [degraded_probe_status(hd(accounts))]
+
+        {:full_reconcile, _} ->
+          Enum.map(accounts, fn account ->
+            case Map.get(account, :id) do
+              "primary" -> degraded_probe_status(account)
+              _ -> healthy_probe_status(account)
+            end
+          end)
+
+        _ ->
+          Enum.map(accounts, &healthy_probe_status/1)
+      end
+    end
+
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, codex_account_probe_fun: probe_fun)
+
+    on_exit(fn ->
+      if Process.alive?(probe_phase) do
+        Agent.stop(probe_phase)
+      end
+
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    assert_receive {:probed_accounts, ["primary", "secondary"]}, 1_000
+
+    stable_state =
+      wait_for_orchestrator_state(pid, fn state ->
+        is_integer(state.last_codex_account_probe_at_ms) and
+          state.active_codex_account_id == "primary" and
+          state.poll_check_in_progress == false
+      end)
+
+    if is_reference(stable_state.tick_timer_ref) do
+      Process.cancel_timer(stable_state.tick_timer_ref)
+    end
+
+    stale_probe_at_ms = System.monotonic_time(:millisecond) - 61_000
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | last_codex_account_probe_at_ms: stale_probe_at_ms,
+          tick_timer_ref: nil,
+          tick_token: nil,
+          poll_check_in_progress: false
+      }
+    end)
+
+    send(pid, :run_poll_cycle)
+
+    assert_receive {:probed_accounts, ["primary"]}, 1_000
+    assert_receive {:probed_accounts, ["primary", "secondary"]}, 1_000
+
+    fallback_state =
+      wait_for_orchestrator_state(pid, fn state ->
+        state.active_codex_account_id == "secondary" and state.poll_check_in_progress == false
+      end)
+
+    assert fallback_state.active_codex_account_id == "secondary"
+  end
+
   test "orchestrator restarts stalled workers with retry backoff" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -2966,4 +3204,39 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
+
+  defp healthy_probe_status(account) do
+    account_id = Map.fetch!(account, :id)
+
+    %{
+      id: account_id,
+      codex_home: Map.get(account, :codex_home),
+      explicit?: true,
+      checked_at: DateTime.utc_now(),
+      healthy: true,
+      health_reason: nil,
+      auth_mode: "chatgpt",
+      email: "#{account_id}@example.com",
+      plan_type: "pro",
+      requires_openai_auth: false,
+      rate_limits: %{
+        "limitId" => "codex",
+        "primary" => %{"windowDurationMins" => 300, "usedPercent" => 20},
+        "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 35}
+      },
+      account: %{"email" => "#{account_id}@example.com"},
+      missing_windows_mins: [],
+      insufficient_windows_mins: []
+    }
+  end
+
+  defp degraded_probe_status(account) do
+    account
+    |> healthy_probe_status()
+    |> Map.put(:healthy, false)
+    |> Map.put(:health_reason, "threshold exceeded 10080m=2.0%")
+    |> Map.update!(:rate_limits, fn rate_limits ->
+      put_in(rate_limits, ["secondary", "usedPercent"], 98)
+    end)
+  end
 end

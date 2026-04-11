@@ -208,9 +208,10 @@ Notes:
 - Multi-account Codex failover is optional. Keep one shared `codex.command`, and define account
   homes under `codex.accounts`. Each account is a pre-authenticated `CODEX_HOME`; Symphony does
   not copy or manage auth tokens.
-- When `codex.accounts` is configured, Symphony probes each account on startup and every poll cycle,
-  chooses the first healthy account in config order, and launches new Codex work under that
-  account's `CODEX_HOME`.
+- When `codex.accounts` is configured, Symphony probes all accounts on startup, when no active
+  account is available, and during rare idle full reconciles. Between those reconciles, idle poll
+  cycles re-check only the currently active account, then launch new Codex work under the first
+  healthy account in config order.
 - Health requires all configured `codex.monitored_windows_mins` to be present in the upstream Codex
   rate-limit payload and to have at least `codex.minimum_remaining_percent` remaining. Defaults:
   `5` percent minimum across `[300, 10080]` minute windows.

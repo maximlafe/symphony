@@ -15,6 +15,7 @@ defmodule SymphonyElixir.Orchestrator do
   @continuation_max_delay_ms 300_000
   @failure_retry_base_ms 10_000
   @idle_codex_account_probe_interval_ms 60_000
+  @idle_codex_account_full_reconcile_interval_ms 900_000
   @idle_housekeeping_interval_ms 60_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
@@ -37,7 +38,9 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      :codex_account_probe_fun,
       :last_codex_account_probe_at_ms,
+      :last_full_codex_account_probe_at_ms,
       :last_housekeeping_at_ms,
       :workspace_usage_bytes,
       :workspace_cleanup_ref,
@@ -63,7 +66,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
     now_ms = System.monotonic_time(:millisecond)
     config = Config.settings!()
 
@@ -74,7 +77,9 @@ defmodule SymphonyElixir.Orchestrator do
       poll_check_in_progress: false,
       tick_timer_ref: nil,
       tick_token: nil,
+      codex_account_probe_fun: Keyword.get(opts, :codex_account_probe_fun, &AccountProbe.probe_accounts/2),
       last_codex_account_probe_at_ms: nil,
+      last_full_codex_account_probe_at_ms: nil,
       last_housekeeping_at_ms: nil,
       workspace_usage_bytes: 0,
       workspace_cleanup_ref: nil,
@@ -1206,15 +1211,27 @@ defmodule SymphonyElixir.Orchestrator do
   defp idle_housekeeping_due?(_state), do: true
 
   defp maybe_refresh_codex_accounts(%State{} = state, source) do
-    if should_refresh_codex_accounts?(state, source) do
-      refresh_codex_accounts(state)
-    else
-      state
+    case codex_account_refresh_strategy(state, source) do
+      :skip -> state
+      :full -> refresh_codex_accounts(state)
+      :active_only -> refresh_active_codex_account(state)
     end
   end
 
-  defp should_refresh_codex_accounts?(%State{} = state, source) do
-    source != :poll or codex_account_refresh_required?(state) or idle_codex_account_probe_due?(state)
+  defp codex_account_refresh_strategy(%State{} = state, _source) do
+    cond do
+      codex_account_refresh_required?(state) ->
+        :full
+
+      not idle_codex_account_probe_due?(state) ->
+        :skip
+
+      idle_codex_account_full_reconcile_due?(state) ->
+        :full
+
+      true ->
+        :active_only
+    end
   end
 
   defp codex_account_refresh_required?(%State{} = state) do
@@ -1236,6 +1253,21 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp idle_codex_account_probe_due?(_state), do: true
+
+  defp idle_codex_account_full_reconcile_due?(%State{
+         last_full_codex_account_probe_at_ms: nil
+       }),
+       do: true
+
+  defp idle_codex_account_full_reconcile_due?(%State{
+         last_full_codex_account_probe_at_ms: last_probe_at_ms
+       })
+       when is_integer(last_probe_at_ms) do
+    System.monotonic_time(:millisecond) - last_probe_at_ms >=
+      @idle_codex_account_full_reconcile_interval_ms
+  end
+
+  defp idle_codex_account_full_reconcile_due?(_state), do: true
 
   defp maybe_schedule_workspace_usage_refresh(
          %State{workspace_usage_refresh_ref: refresh_ref} = state,
@@ -2435,39 +2467,99 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp refresh_codex_accounts(%State{} = state) do
     accounts = Config.codex_accounts()
+    refresh_selected_codex_accounts(state, accounts, replace_all?: true, full_reconcile?: true)
+  end
 
-    probed_accounts =
-      AccountProbe.probe_accounts(
-        accounts,
-        cwd: System.tmp_dir!(),
-        monitored_windows_mins: Config.codex_monitored_windows_mins(),
-        minimum_remaining_percent: Config.codex_minimum_remaining_percent(),
-        timeout_ms: max(Config.settings!().codex.read_timeout_ms * 2, 2_000)
-      )
+  defp refresh_active_codex_account(%State{} = state) do
+    case active_codex_account_config(state) do
+      nil ->
+        refresh_codex_accounts(state)
+
+      account ->
+        state
+        |> refresh_selected_codex_accounts([account])
+        |> maybe_refresh_all_codex_accounts_after_active_probe(account.id)
+    end
+  end
+
+  defp maybe_refresh_all_codex_accounts_after_active_probe(%State{} = state, account_id)
+       when is_binary(account_id) do
+    case Map.get(state.codex_accounts, account_id) do
+      %{probe_healthy: true} -> state
+      _ -> refresh_codex_accounts(state)
+    end
+  end
+
+  defp maybe_refresh_all_codex_accounts_after_active_probe(%State{} = state, _account_id),
+    do: refresh_codex_accounts(state)
+
+  defp refresh_selected_codex_accounts(%State{} = state, accounts, opts \\ [])
+       when is_list(accounts) do
+    now_ms = System.monotonic_time(:millisecond)
+    probed_accounts = probe_codex_accounts(state, accounts)
 
     codex_accounts =
-      probed_accounts
-      |> Enum.map(fn account_status ->
-        existing =
-          Map.get(
-            state.codex_accounts,
-            account_status.id,
-            default_codex_account_status(account_status.id)
-          )
+      Enum.reduce(
+        probed_accounts,
+        base_codex_accounts_after_refresh(state, opts),
+        fn account_status, acc ->
+          existing =
+            Map.get(
+              state.codex_accounts,
+              account_status.id,
+              default_codex_account_status(account_status.id)
+            )
 
-        incoming =
-          account_status
-          |> Map.put(:probe_healthy, Map.get(account_status, :healthy, false))
-          |> Map.put(:probe_health_reason, Map.get(account_status, :health_reason))
+          incoming =
+            account_status
+            |> Map.put(:probe_healthy, Map.get(account_status, :healthy, false))
+            |> Map.put(:probe_health_reason, Map.get(account_status, :health_reason))
 
-        {account_status.id, merge_codex_account_status(existing, incoming, :probe)}
-      end)
-      |> Map.new()
+          Map.put(acc, account_status.id, merge_codex_account_status(existing, incoming, :probe))
+        end
+      )
 
     state
     |> Map.put(:codex_accounts, codex_accounts)
     |> reselect_active_codex_account()
-    |> Map.put(:last_codex_account_probe_at_ms, System.monotonic_time(:millisecond))
+    |> Map.put(:last_codex_account_probe_at_ms, now_ms)
+    |> maybe_mark_full_codex_account_probe(now_ms, opts)
+  end
+
+  defp base_codex_accounts_after_refresh(%State{} = state, opts) do
+    if Keyword.get(opts, :replace_all?, false) do
+      %{}
+    else
+      state.codex_accounts
+    end
+  end
+
+  defp maybe_mark_full_codex_account_probe(%State{} = state, now_ms, opts)
+       when is_integer(now_ms) do
+    if Keyword.get(opts, :full_reconcile?, false) do
+      Map.put(state, :last_full_codex_account_probe_at_ms, now_ms)
+    else
+      state
+    end
+  end
+
+  defp active_codex_account_config(%State{active_codex_account_id: account_id})
+       when is_binary(account_id) do
+    Enum.find(Config.codex_accounts(), &(Map.get(&1, :id) == account_id))
+  end
+
+  defp active_codex_account_config(_state), do: nil
+
+  defp probe_codex_accounts(%State{codex_account_probe_fun: probe_fun}, accounts)
+       when is_list(accounts) do
+    probe_fun = if is_function(probe_fun, 2), do: probe_fun, else: &AccountProbe.probe_accounts/2
+
+    probe_fun.(accounts,
+      cwd: System.tmp_dir!(),
+      monitored_windows_mins: Config.codex_monitored_windows_mins(),
+      minimum_remaining_percent: Config.codex_minimum_remaining_percent(),
+      timeout_ms: max(Config.settings!().codex.read_timeout_ms * 2, 2_000)
+    )
   end
 
   defp retry_candidate_issue?(%Issue{} = issue, terminal_states) do
