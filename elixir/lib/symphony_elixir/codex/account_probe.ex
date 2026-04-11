@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Codex.AccountProbe do
   def probe_accounts(accounts, opts \\ []) when is_list(accounts) do
     cwd = Keyword.get(opts, :cwd, System.tmp_dir!())
     timeout_ms = Keyword.get(opts, :timeout_ms, 10_000)
+    probe_mode = normalize_probe_mode(Keyword.get(opts, :probe_mode, :full))
 
     accounts
     |> Task.async_stream(
@@ -17,7 +18,8 @@ defmodule SymphonyElixir.Codex.AccountProbe do
         &1,
         cwd: cwd,
         monitored_windows_mins: Keyword.get(opts, :monitored_windows_mins, []),
-        minimum_remaining_percent: Keyword.get(opts, :minimum_remaining_percent, 0)
+        minimum_remaining_percent: Keyword.get(opts, :minimum_remaining_percent, 0),
+        probe_mode: probe_mode
       ),
       ordered: true,
       timeout: timeout_ms,
@@ -57,6 +59,7 @@ defmodule SymphonyElixir.Codex.AccountProbe do
     cwd = Keyword.get(opts, :cwd, System.tmp_dir!())
     monitored_windows_mins = Keyword.get(opts, :monitored_windows_mins, [])
     minimum_remaining_percent = Keyword.get(opts, :minimum_remaining_percent, 0)
+    probe_mode = normalize_probe_mode(Keyword.get(opts, :probe_mode, :full))
 
     base_status = base_probe_status(account, id, codex_home, monitored_windows_mins)
 
@@ -65,28 +68,14 @@ defmodule SymphonyElixir.Codex.AccountProbe do
         try do
           case AppServer.request(client, "account/read", %{}, @account_read_request_id) do
             {:ok, account_response} ->
-              case AppServer.request(
-                     client,
-                     "account/rateLimits/read",
-                     nil,
-                     @rate_limits_read_request_id
-                   ) do
-                {:ok, rate_limits_response} ->
-                  build_probe_status(
-                    base_status,
-                    account_response,
-                    rate_limits_response,
-                    monitored_windows_mins,
-                    minimum_remaining_percent
-                  )
-
-                {:error, reason} ->
-                  maybe_build_probe_status_without_rate_limits(
-                    base_status,
-                    account_response,
-                    reason
-                  )
-              end
+              handle_account_probe_response(
+                probe_mode,
+                client,
+                base_status,
+                account_response,
+                monitored_windows_mins,
+                minimum_remaining_percent
+              )
 
             {:error, reason} ->
               %{base_status | health_reason: "probe failed: #{inspect(reason)}"}
@@ -117,6 +106,7 @@ defmodule SymphonyElixir.Codex.AccountProbe do
       requires_openai_auth: false,
       rate_limits: nil,
       account: nil,
+      probe_scope: :full,
       missing_windows_mins: monitored_windows_mins,
       insufficient_windows_mins: []
     }
@@ -146,6 +136,69 @@ defmodule SymphonyElixir.Codex.AccountProbe do
         account: summary.account,
         missing_windows_mins: health.missing_windows_mins,
         insufficient_windows_mins: health.insufficient_windows_mins
+    }
+  end
+
+  defp handle_account_probe_response(
+         :account_only,
+         _client,
+         base_status,
+         account_response,
+         _monitored_windows_mins,
+         _minimum_remaining_percent
+       ) do
+    build_account_only_probe_status(base_status, account_response)
+  end
+
+  defp handle_account_probe_response(
+         :full,
+         client,
+         base_status,
+         account_response,
+         monitored_windows_mins,
+         minimum_remaining_percent
+       ) do
+    case AppServer.request(
+           client,
+           "account/rateLimits/read",
+           nil,
+           @rate_limits_read_request_id
+         ) do
+      {:ok, rate_limits_response} ->
+        build_probe_status(
+          base_status,
+          account_response,
+          rate_limits_response,
+          monitored_windows_mins,
+          minimum_remaining_percent
+        )
+
+      {:error, reason} ->
+        maybe_build_probe_status_without_rate_limits(
+          base_status,
+          account_response,
+          reason
+        )
+    end
+  end
+
+  defp build_account_only_probe_status(base_status, account_response) do
+    summary = Accounts.account_summary(account_response)
+    logged_in? = logged_in?(summary)
+
+    %{
+      base_status
+      | healthy: logged_in?,
+        health_reason: if(logged_in?, do: nil, else: "not logged in"),
+        auth_mode: summary.auth_mode,
+        email: summary.email,
+        plan_type: summary.plan_type,
+        requires_openai_auth: summary.requires_openai_auth,
+        rate_limits: nil,
+        account: summary.account,
+        missing_windows_mins: [],
+        insufficient_windows_mins: [],
+        probe_scope: :account_only
     }
   end
 
@@ -201,4 +254,7 @@ defmodule SymphonyElixir.Codex.AccountProbe do
 
   defp populated_account?(account) when is_map(account), do: map_size(account) > 0
   defp populated_account?(_account), do: false
+
+  defp normalize_probe_mode(:account_only), do: :account_only
+  defp normalize_probe_mode(_mode), do: :full
 end

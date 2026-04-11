@@ -2477,7 +2477,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       account ->
         state
-        |> refresh_selected_codex_accounts([account])
+        |> refresh_selected_codex_accounts([account], probe_mode: :account_only)
         |> maybe_refresh_all_codex_accounts_after_active_probe(account.id)
     end
   end
@@ -2493,10 +2493,10 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_refresh_all_codex_accounts_after_active_probe(%State{} = state, _account_id),
     do: refresh_codex_accounts(state)
 
-  defp refresh_selected_codex_accounts(%State{} = state, accounts, opts \\ [])
+  defp refresh_selected_codex_accounts(%State{} = state, accounts, opts)
        when is_list(accounts) do
     now_ms = System.monotonic_time(:millisecond)
-    probed_accounts = probe_codex_accounts(state, accounts)
+    probed_accounts = probe_codex_accounts(state, accounts, opts)
 
     codex_accounts =
       Enum.reduce(
@@ -2511,9 +2511,7 @@ defmodule SymphonyElixir.Orchestrator do
             )
 
           incoming =
-            account_status
-            |> Map.put(:probe_healthy, Map.get(account_status, :healthy, false))
-            |> Map.put(:probe_health_reason, Map.get(account_status, :health_reason))
+            build_codex_account_probe_update(existing, account_status)
 
           Map.put(acc, account_status.id, merge_codex_account_status(existing, incoming, :probe))
         end
@@ -2550,7 +2548,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp active_codex_account_config(_state), do: nil
 
-  defp probe_codex_accounts(%State{codex_account_probe_fun: probe_fun}, accounts)
+  defp probe_codex_accounts(%State{codex_account_probe_fun: probe_fun}, accounts, opts)
        when is_list(accounts) do
     probe_fun = if is_function(probe_fun, 2), do: probe_fun, else: &AccountProbe.probe_accounts/2
 
@@ -2558,8 +2556,54 @@ defmodule SymphonyElixir.Orchestrator do
       cwd: System.tmp_dir!(),
       monitored_windows_mins: Config.codex_monitored_windows_mins(),
       minimum_remaining_percent: Config.codex_minimum_remaining_percent(),
-      timeout_ms: max(Config.settings!().codex.read_timeout_ms * 2, 2_000)
+      timeout_ms: max(Config.settings!().codex.read_timeout_ms * 2, 2_000),
+      probe_mode: Keyword.get(opts, :probe_mode, :full)
     )
+  end
+
+  defp build_codex_account_probe_update(existing, %{probe_scope: :account_only} = account_status)
+       when is_map(existing) do
+    logged_in? = Map.get(account_status, :healthy, false)
+
+    account_status
+    |> Map.drop([
+      :probe_scope,
+      :healthy,
+      :health_reason,
+      :rate_limits,
+      :missing_windows_mins,
+      :insufficient_windows_mins
+    ])
+    |> Map.put(:probe_healthy, account_only_probe_healthy(existing, logged_in?))
+    |> Map.put(
+      :probe_health_reason,
+      account_only_probe_health_reason(existing, account_status, logged_in?)
+    )
+    |> Map.put(:rate_limits, Map.get(existing, :rate_limits))
+    |> Map.put(:missing_windows_mins, Map.get(existing, :missing_windows_mins, []))
+    |> Map.put(:insufficient_windows_mins, Map.get(existing, :insufficient_windows_mins, []))
+  end
+
+  defp build_codex_account_probe_update(_existing, account_status) when is_map(account_status) do
+    account_status
+    |> Map.drop([:probe_scope])
+    |> Map.put(:probe_healthy, Map.get(account_status, :healthy, false))
+    |> Map.put(:probe_health_reason, Map.get(account_status, :health_reason))
+  end
+
+  defp account_only_probe_healthy(existing, true) when is_map(existing) do
+    Map.get(existing, :probe_healthy, Map.get(existing, :healthy, false))
+  end
+
+  defp account_only_probe_healthy(_existing, _logged_in?), do: false
+
+  defp account_only_probe_health_reason(existing, _account_status, true) when is_map(existing) do
+    Map.get(existing, :probe_health_reason, Map.get(existing, :health_reason))
+  end
+
+  defp account_only_probe_health_reason(_existing, account_status, _logged_in?)
+       when is_map(account_status) do
+    Map.get(account_status, :health_reason)
   end
 
   defp retry_candidate_issue?(%Issue{} = issue, terminal_states) do

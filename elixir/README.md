@@ -210,8 +210,9 @@ Notes:
   not copy or manage auth tokens.
 - When `codex.accounts` is configured, Symphony probes all accounts on startup, when no active
   account is available, and during rare idle full reconciles. Between those reconciles, idle poll
-  cycles re-check only the currently active account, then launch new Codex work under the first
-  healthy account in config order.
+  cycles re-check only the currently active account via `account/read`, preserve the last full
+  rate-limit snapshot, and then launch new Codex work under the first healthy account in config
+  order.
 - Health requires all configured `codex.monitored_windows_mins` to be present in the upstream Codex
   rate-limit payload and to have at least `codex.minimum_remaining_percent` remaining. Defaults:
   `5` percent minimum across `[300, 10080]` minute windows.

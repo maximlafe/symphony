@@ -1915,32 +1915,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       codex_minimum_remaining_percent: 5
     )
 
-    probe_fun = fn accounts, _opts ->
-      send(parent, {:probed_accounts, Enum.map(accounts, &Map.get(&1, :id))})
+    probe_fun = fn accounts, opts ->
+      probe_mode = Keyword.get(opts, :probe_mode, :full)
+      send(parent, {:probed_accounts, Enum.map(accounts, &Map.get(&1, :id)), probe_mode})
 
       Enum.map(accounts, fn account ->
-        account_id = Map.fetch!(account, :id)
-
-        %{
-          id: account_id,
-          codex_home: Map.get(account, :codex_home),
-          explicit?: true,
-          checked_at: DateTime.utc_now(),
-          healthy: true,
-          health_reason: nil,
-          auth_mode: "chatgpt",
-          email: "#{account_id}@example.com",
-          plan_type: "pro",
-          requires_openai_auth: false,
-          rate_limits: %{
-            "limitId" => "codex",
-            "primary" => %{"windowDurationMins" => 300, "usedPercent" => 20},
-            "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 35}
-          },
-          account: %{"email" => "#{account_id}@example.com"},
-          missing_windows_mins: [],
-          insufficient_windows_mins: []
-        }
+        case probe_mode do
+          :account_only -> account_only_probe_status(account)
+          _ -> healthy_probe_status(account)
+        end
       end)
     end
 
@@ -1952,7 +1935,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end)
 
-    assert_receive {:probed_accounts, ["primary", "secondary"]}, 1_000
+    assert_receive {:probed_accounts, ["primary", "secondary"], :full}, 1_000
 
     stable_state =
       wait_for_orchestrator_state(pid, fn state ->
@@ -1979,7 +1962,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(pid, :run_poll_cycle)
 
-    assert_receive {:probed_accounts, ["primary"]}, 1_000
+    assert_receive {:probed_accounts, ["primary"], :account_only}, 1_000
+    refute_receive {:probed_accounts, ["primary", "secondary"], :full}, 200
   end
 
   test "idle poll cycle performs a full codex account reconcile after the long idle interval" do
@@ -1997,8 +1981,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       codex_minimum_remaining_percent: 5
     )
 
-    probe_fun = fn accounts, _opts ->
-      send(parent, {:probed_accounts, Enum.map(accounts, &Map.get(&1, :id))})
+    probe_fun = fn accounts, opts ->
+      send(parent, {:probed_accounts, Enum.map(accounts, &Map.get(&1, :id)), Keyword.get(opts, :probe_mode, :full)})
       Enum.map(accounts, &healthy_probe_status/1)
     end
 
@@ -2010,7 +1994,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end)
 
-    assert_receive {:probed_accounts, ["primary", "secondary"]}, 1_000
+    assert_receive {:probed_accounts, ["primary", "secondary"], :full}, 1_000
 
     stable_state =
       wait_for_orchestrator_state(pid, fn state ->
@@ -2040,7 +2024,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(pid, :run_poll_cycle)
 
-    assert_receive {:probed_accounts, ["primary", "secondary"]}, 1_000
+    assert_receive {:probed_accounts, ["primary", "secondary"], :full}, 1_000
   end
 
   test "idle poll cycle falls back to a full reconcile when the active codex account degrades" do
@@ -2060,22 +2044,23 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     {:ok, probe_phase} = Agent.start_link(fn -> :startup end)
 
-    probe_fun = fn accounts, _opts ->
+    probe_fun = fn accounts, opts ->
       account_ids = Enum.map(accounts, &Map.get(&1, :id))
-      send(parent, {:probed_accounts, account_ids})
+      probe_mode = Keyword.get(opts, :probe_mode, :full)
+      send(parent, {:probed_accounts, account_ids, probe_mode})
 
       phase = Agent.get(probe_phase, & &1)
 
-      case {phase, account_ids} do
-        {:startup, _} ->
+      case {phase, account_ids, probe_mode} do
+        {:startup, _, :full} ->
           Agent.update(probe_phase, fn _ -> :idle_probe end)
           Enum.map(accounts, &healthy_probe_status/1)
 
-        {:idle_probe, ["primary"]} ->
+        {:idle_probe, ["primary"], :account_only} ->
           Agent.update(probe_phase, fn _ -> :full_reconcile end)
-          [degraded_probe_status(hd(accounts))]
+          [logged_out_account_only_probe_status(hd(accounts))]
 
-        {:full_reconcile, _} ->
+        {:full_reconcile, _, :full} ->
           Enum.map(accounts, fn account ->
             case Map.get(account, :id) do
               "primary" -> degraded_probe_status(account)
@@ -2100,7 +2085,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end)
 
-    assert_receive {:probed_accounts, ["primary", "secondary"]}, 1_000
+    assert_receive {:probed_accounts, ["primary", "secondary"], :full}, 1_000
 
     stable_state =
       wait_for_orchestrator_state(pid, fn state ->
@@ -2127,8 +2112,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(pid, :run_poll_cycle)
 
-    assert_receive {:probed_accounts, ["primary"]}, 1_000
-    assert_receive {:probed_accounts, ["primary", "secondary"]}, 1_000
+    assert_receive {:probed_accounts, ["primary"], :account_only}, 1_000
+    assert_receive {:probed_accounts, ["primary", "secondary"], :full}, 1_000
 
     fallback_state =
       wait_for_orchestrator_state(pid, fn state ->
@@ -3238,5 +3223,22 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     |> Map.update!(:rate_limits, fn rate_limits ->
       put_in(rate_limits, ["secondary", "usedPercent"], 98)
     end)
+  end
+
+  defp account_only_probe_status(account) do
+    account
+    |> healthy_probe_status()
+    |> Map.put(:rate_limits, nil)
+    |> Map.put(:missing_windows_mins, [])
+    |> Map.put(:insufficient_windows_mins, [])
+    |> Map.put(:probe_scope, :account_only)
+  end
+
+  defp logged_out_account_only_probe_status(account) do
+    account
+    |> account_only_probe_status()
+    |> Map.put(:healthy, false)
+    |> Map.put(:health_reason, "not logged in")
+    |> Map.put(:requires_openai_auth, true)
   end
 end
