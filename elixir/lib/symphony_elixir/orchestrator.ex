@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Orchestrator do
   @continuation_base_delay_ms 5_000
   @continuation_max_delay_ms 300_000
   @failure_retry_base_ms 10_000
+  @idle_codex_account_probe_interval_ms 60_000
   @idle_housekeeping_interval_ms 60_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
@@ -36,6 +37,7 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      :last_codex_account_probe_at_ms,
       :last_housekeeping_at_ms,
       :workspace_usage_bytes,
       :workspace_cleanup_ref,
@@ -72,6 +74,7 @@ defmodule SymphonyElixir.Orchestrator do
       poll_check_in_progress: false,
       tick_timer_ref: nil,
       tick_token: nil,
+      last_codex_account_probe_at_ms: nil,
       last_housekeeping_at_ms: nil,
       workspace_usage_bytes: 0,
       workspace_cleanup_ref: nil,
@@ -129,7 +132,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
-    state = refresh_codex_accounts(state)
+    state = maybe_refresh_codex_accounts(state, :poll)
     state = maybe_dispatch(state)
     state = run_workspace_housekeeping(state, :poll)
     state = schedule_tick(state, state.poll_interval_ms)
@@ -1201,6 +1204,38 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp idle_housekeeping_due?(_state), do: true
+
+  defp maybe_refresh_codex_accounts(%State{} = state, source) do
+    if should_refresh_codex_accounts?(state, source) do
+      refresh_codex_accounts(state)
+    else
+      state
+    end
+  end
+
+  defp should_refresh_codex_accounts?(%State{} = state, source) do
+    source != :poll or codex_account_refresh_required?(state) or idle_codex_account_probe_due?(state)
+  end
+
+  defp codex_account_refresh_required?(%State{} = state) do
+    orchestration_active?(state) or not active_codex_account_available?(state)
+  end
+
+  defp orchestration_active?(%State{running: running, retry_attempts: retry_attempts})
+       when is_map(running) and is_map(retry_attempts) do
+    map_size(running) > 0 or map_size(retry_attempts) > 0
+  end
+
+  defp orchestration_active?(_state), do: false
+
+  defp idle_codex_account_probe_due?(%State{last_codex_account_probe_at_ms: nil}), do: true
+
+  defp idle_codex_account_probe_due?(%State{last_codex_account_probe_at_ms: last_probe_at_ms})
+       when is_integer(last_probe_at_ms) do
+    System.monotonic_time(:millisecond) - last_probe_at_ms >= @idle_codex_account_probe_interval_ms
+  end
+
+  defp idle_codex_account_probe_due?(_state), do: true
 
   defp maybe_schedule_workspace_usage_refresh(
          %State{workspace_usage_refresh_ref: refresh_ref} = state,
@@ -2432,6 +2467,7 @@ defmodule SymphonyElixir.Orchestrator do
     state
     |> Map.put(:codex_accounts, codex_accounts)
     |> reselect_active_codex_account()
+    |> Map.put(:last_codex_account_probe_at_ms, System.monotonic_time(:millisecond))
   end
 
   defp retry_candidate_issue?(%Issue{} = issue, terminal_states) do
