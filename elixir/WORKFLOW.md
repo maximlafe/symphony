@@ -130,7 +130,8 @@ Instructions:
 - External task-scoped artifacts that should be eligible for automatic cleanup must be explicitly namespaced as `symphony-<ISSUE>-...` and validated against allowed roots.
 - `hooks.before_remove` is workspace-scoped only; it must not be treated as a hook for shared caches, logs, or broad external path cleanup.
 - `Merging` is an active state, not a terminal cleanup trigger.
-- Shared runtime areas such as `.codex-runtime/homes/*/.tmp` stay outside this per-task cleanup contract.
+- Shared runtime areas such as `.codex-runtime/homes/*/.tmp` stay outside this per-task cleanup contract and are excluded from workspace-root usage accounting.
+- Managed runtime-home reuse opportunistically prunes stale `.tmp/plugins-clone-*` directories inside the prepared shared runtime home via TTL-based cleanup.
 - Repo-local worker skills live in `.agents/skills/` and are part of the required target-repo contract.
 - When a fresh working branch is needed, use the exact `Working branch:` value from the issue description's final `## Symphony` section when it is present. Otherwise, do not reuse tracker-generated `branchName` values and create the branch yourself as `Symphony/<lowercase issue identifier>-<short-kebab-summary>`.
 - Keep the fallback summary slug ASCII, brief, and outcome-oriented. Prefer 2-6 meaningful English words, for example `Symphony/let-267-safe-task-cleanup`.
