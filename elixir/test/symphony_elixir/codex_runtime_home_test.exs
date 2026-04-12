@@ -111,6 +111,43 @@ defmodule SymphonyElixir.CodexRuntimeHomeTest do
     end
   end
 
+  test "prepare prunes stale plugin clone temp dirs from the managed runtime home" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-runtime-home-plugin-clones-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      source_home = Path.join(test_root, "source-home")
+
+      File.mkdir_p!(Path.join(source_home, "skills"))
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, runtime_home} = RuntimeHome.prepare(source_home)
+
+      stale_clone = Path.join([runtime_home, ".tmp", "plugins-clone-stale"])
+      recent_clone = Path.join([runtime_home, ".tmp", "plugins-clone-recent"])
+      clone_file = Path.join([runtime_home, ".tmp", "plugins-clone-file"])
+
+      File.mkdir_p!(stale_clone)
+      File.write!(Path.join(stale_clone, "SKILL.md"), "# old\n")
+      File.mkdir_p!(recent_clone)
+      File.write!(Path.join(recent_clone, "SKILL.md"), "# recent\n")
+      File.write!(clone_file, "keep\n")
+
+      assert {_, 0} = System.cmd("touch", ["-t", "202001010000", stale_clone])
+
+      assert {:ok, ^runtime_home} = RuntimeHome.prepare(source_home)
+      refute File.exists?(stale_clone)
+      assert File.exists?(recent_clone)
+      assert File.exists?(clone_file)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "prepare leaves managed files unchanged when source contents do not change" do
     test_root =
       Path.join(

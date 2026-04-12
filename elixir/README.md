@@ -189,7 +189,9 @@ Notes:
   general shared-path cleanup hook.
 - `Merging` remains an active state and does not trigger terminal cleanup.
 - Shared runtime areas such as `.codex-runtime/homes/*/.tmp` stay outside this per-task cleanup
-  scope and require separate TTL/GC or placement controls.
+  scope and are excluded from workspace-root usage accounting.
+- Managed runtime-home reuse opportunistically prunes stale `.tmp/plugins-clone-*` directories
+  inside the prepared shared runtime home via TTL-based cleanup.
 - `workspace.warning_threshold_bytes` sets the workspace-root disk-usage threshold that triggers a
   runtime warning and dashboard highlight. Default: `10737418240` bytes (`10 GiB`).
 - Workspace hooks receive issue metadata in environment variables such as

@@ -1496,6 +1496,31 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace root usage excludes shared codex runtime homes" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-root-usage-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace = Path.join(workspace_root, "LET-1")
+      runtime_clone = Path.join([workspace_root, ".codex-runtime", "homes", "shared-home", ".tmp", "plugins-clone-old"])
+
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "marker.txt"), "abcd")
+      File.mkdir_p!(runtime_clone)
+      File.write!(Path.join(runtime_clone, "payload.bin"), String.duplicate("x", 64))
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, 68} = Workspace.total_usage_bytes(workspace_root)
+      assert {:ok, 4} = Workspace.root_usage_bytes()
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "workspace cleanup keeps the five most recent completed workspaces" do
     workspace_root =
       Path.join(

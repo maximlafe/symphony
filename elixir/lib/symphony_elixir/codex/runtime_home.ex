@@ -7,12 +7,16 @@ defmodule SymphonyElixir.Codex.RuntimeHome do
   @auth_file "auth.json"
   @skills_dir "skills"
   @runtime_root_dir ".codex-runtime/homes"
+  @runtime_tmp_dir ".tmp"
+  @plugin_clone_prefix "plugins-clone-"
+  @stale_plugin_clone_ttl_seconds 3_600
 
   @spec prepare(Path.t()) :: {:ok, Path.t()} | {:error, term()}
   def prepare(source_home) when is_binary(source_home) do
     expanded_source_home = Path.expand(source_home)
 
     if runtime_home?(expanded_source_home) do
+      prune_stale_plugin_clones(expanded_source_home)
       {:ok, expanded_source_home}
     else
       runtime_home = runtime_home_path(expanded_source_home)
@@ -21,6 +25,7 @@ defmodule SymphonyElixir.Codex.RuntimeHome do
            :ok <- sync_auth(expanded_source_home, runtime_home),
            :ok <- sync_config(expanded_source_home, runtime_home),
            :ok <- sync_skills(expanded_source_home, runtime_home) do
+        prune_stale_plugin_clones(runtime_home)
         {:ok, runtime_home}
       end
     end
@@ -141,6 +146,29 @@ defmodule SymphonyElixir.Codex.RuntimeHome do
     |> Path.basename()
     |> sanitize_segment()
     |> Kernel.<>("-" <> short_hash(source_home))
+  end
+
+  defp prune_stale_plugin_clones(runtime_home) when is_binary(runtime_home) do
+    [runtime_home, @runtime_tmp_dir, "#{@plugin_clone_prefix}*"]
+    |> Path.join()
+    |> Path.wildcard(match_dot: true)
+    |> Enum.each(&maybe_remove_stale_plugin_clone/1)
+  end
+
+  defp maybe_remove_stale_plugin_clone(path) when is_binary(path) do
+    if stale_plugin_clone?(path) do
+      _ = file_system().rm_rf(path)
+    end
+  end
+
+  defp stale_plugin_clone?(path) when is_binary(path) do
+    case File.stat(path, time: :posix) do
+      {:ok, %File.Stat{type: :directory, mtime: mtime}} when is_integer(mtime) ->
+        System.os_time(:second) - mtime >= @stale_plugin_clone_ttl_seconds
+
+      _ ->
+        false
+    end
   end
 
   defp sanitize_segment(segment) when is_binary(segment) do

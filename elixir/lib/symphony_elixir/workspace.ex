@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Workspace do
   alias SymphonyElixir.{Config, PathSafety}
 
   @excluded_entries MapSet.new([".elixir_ls", "tmp"])
+  @workspace_usage_excluded_entries MapSet.new([".codex-runtime"])
   @fresh_attempt_states MapSet.new(["Rework"])
   @stale_bootstrap_markers [".symphony-base-branch-error"]
   @default_issue_cleanup_external_roots ["/tmp", "/var/tmp"]
@@ -175,14 +176,15 @@ defmodule SymphonyElixir.Workspace do
 
   @spec total_usage_bytes(Path.t()) :: {:ok, non_neg_integer()} | {:error, term()}
   def total_usage_bytes(workspace_root) when is_binary(workspace_root) do
-    usage_for_path(Path.expand(workspace_root))
+    usage_for_path(Path.expand(workspace_root), [])
   end
 
   def total_usage_bytes(_workspace_root), do: {:error, :invalid_workspace_root}
 
   @spec root_usage_bytes() :: {:ok, non_neg_integer()} | {:error, term()}
   def root_usage_bytes do
-    total_usage_bytes(Config.settings!().workspace.root)
+    workspace_root = Path.expand(Config.settings!().workspace.root)
+    usage_for_path(workspace_root, workspace_usage_excluded_paths(workspace_root))
   end
 
   @spec cleanup_completed_issue_workspaces([map()], keyword()) ::
@@ -516,29 +518,41 @@ defmodule SymphonyElixir.Workspace do
 
   defp completed_issue_sort_key(_issue), do: 0
 
-  defp usage_for_path(path) when is_binary(path) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :directory}} ->
-        usage_for_directory(path)
+  defp workspace_usage_excluded_paths(workspace_root) when is_binary(workspace_root) do
+    @workspace_usage_excluded_entries
+    |> Enum.map(&Path.join(workspace_root, &1))
+    |> Enum.map(&Path.expand/1)
+  end
 
-      {:ok, %File.Stat{type: :regular, size: size}} when is_integer(size) and size > 0 ->
-        {:ok, size}
+  defp usage_for_path(path, excluded_paths) when is_binary(path) do
+    expanded_path = Path.expand(path)
 
-      {:ok, %File.Stat{}} ->
-        {:ok, 0}
+    if expanded_path in excluded_paths do
+      {:ok, 0}
+    else
+      case File.lstat(expanded_path) do
+        {:ok, %File.Stat{type: :directory}} ->
+          usage_for_directory(expanded_path, excluded_paths)
 
-      {:error, :enoent} ->
-        {:ok, 0}
+        {:ok, %File.Stat{type: :regular, size: size}} when is_integer(size) and size > 0 ->
+          {:ok, size}
 
-      {:error, reason} ->
-        {:error, {:workspace_usage_scan_failed, path, reason}}
+        {:ok, %File.Stat{}} ->
+          {:ok, 0}
+
+        {:error, :enoent} ->
+          {:ok, 0}
+
+        {:error, reason} ->
+          {:error, {:workspace_usage_scan_failed, expanded_path, reason}}
+      end
     end
   end
 
-  defp usage_for_directory(path) do
+  defp usage_for_directory(path, excluded_paths) do
     case File.ls(path) do
       {:ok, entries} ->
-        Enum.reduce_while(entries, {:ok, 0}, &accumulate_directory_usage(path, &1, &2))
+        Enum.reduce_while(entries, {:ok, 0}, &accumulate_directory_usage(path, &1, &2, excluded_paths))
 
       {:error, :enoent} ->
         {:ok, 0}
@@ -548,8 +562,8 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp accumulate_directory_usage(path, entry, {:ok, acc}) do
-    case usage_for_path(Path.join(path, entry)) do
+  defp accumulate_directory_usage(path, entry, {:ok, acc}, excluded_paths) do
+    case usage_for_path(Path.join(path, entry), excluded_paths) do
       {:ok, size} -> {:cont, {:ok, acc + size}}
       {:error, reason} -> {:halt, {:error, reason}}
     end
