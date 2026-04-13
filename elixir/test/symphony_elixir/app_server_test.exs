@@ -210,12 +210,14 @@ defmodule SymphonyElixir.AppServerTest do
       fallback_codex = Path.join(test_root, "fake-codex-fallback")
       planning_codex = Path.join(test_root, "fake-codex-planning")
       implementation_codex = Path.join(test_root, "fake-codex-implementation")
+      handoff_codex = Path.join(test_root, "fake-codex-handoff")
 
       Enum.each(
         [
           {fallback_codex, "fallback"},
           {planning_codex, "planning"},
-          {implementation_codex, "implementation"}
+          {implementation_codex, "implementation"},
+          {handoff_codex, "handoff"}
         ],
         fn {path, kind} ->
           File.write!(path, """
@@ -257,10 +259,11 @@ defmodule SymphonyElixir.AppServerTest do
         workspace_root: workspace_root,
         codex_command: "#{fallback_codex} app-server",
         codex_planning_command: "#{planning_codex} app-server",
-        codex_implementation_command: "#{implementation_codex} app-server"
+        codex_implementation_command: "#{implementation_codex} app-server",
+        codex_handoff_command: "#{handoff_codex} app-server"
       )
 
-      assert_stage_command = fn state, expected_kind ->
+      assert_stage_command = fn state, expected_kind, labels ->
         File.rm(trace_file)
 
         issue = %Issue{
@@ -270,17 +273,20 @@ defmodule SymphonyElixir.AppServerTest do
           description: "Ensure issue state selects the expected codex command",
           state: state,
           url: "https://example.org/issues/stage-#{state}",
-          labels: ["backend"]
+          labels: labels
         }
 
         assert {:ok, _result} = AppServer.run(workspace, "Run stage-aware command", issue)
         assert File.read!(trace_file) =~ "KIND:#{expected_kind}"
       end
 
-      assert_stage_command.("Spec Prep", "planning")
-      assert_stage_command.("In Progress", "implementation")
-      assert_stage_command.("Rework", "implementation")
-      assert_stage_command.("Todo", "fallback")
+      assert_stage_command.("Spec Prep", "planning", ["backend"])
+      assert_stage_command.("In Progress", "implementation", ["backend"])
+      assert_stage_command.("In Progress", "planning", ["backend", "mode:research"])
+      assert_stage_command.("In Progress", "planning", ["backend", "reasoning:implementation-xhigh"])
+      assert_stage_command.("Rework", "implementation", ["backend"])
+      assert_stage_command.("Merging", "handoff", ["backend"])
+      assert_stage_command.("Todo", "fallback", ["backend"])
     after
       File.rm_rf(test_root)
     end

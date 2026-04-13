@@ -2171,6 +2171,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.codex.command == "codex app-server"
     assert config.codex.planning_command == nil
     assert config.codex.implementation_command == nil
+    assert Map.get(config.codex, :handoff_command) == nil
 
     assert config.codex.approval_policy == %{
              "reject" => %{
@@ -2204,38 +2205,55 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_command: "codex app-server --model gpt-5.3-codex",
       codex_planning_command: "codex app-server --model gpt-5.4",
-      codex_implementation_command: "codex app-server --model gpt-5.3-codex"
+      codex_implementation_command: "codex app-server --model gpt-5.3-codex --config model_reasoning_effort=high",
+      codex_handoff_command: "codex app-server --model gpt-5.3-codex --config model_reasoning_effort=medium"
     )
 
     config = Config.settings!()
     assert config.codex.planning_command == "codex app-server --model gpt-5.4"
-    assert config.codex.implementation_command == "codex app-server --model gpt-5.3-codex"
+    assert config.codex.implementation_command == "codex app-server --model gpt-5.3-codex --config model_reasoning_effort=high"
+    assert Map.get(config.codex, :handoff_command) == "codex app-server --model gpt-5.3-codex --config model_reasoning_effort=medium"
     assert Config.codex_command(%Issue{state: "Spec Prep"}) == "codex app-server --model gpt-5.4"
 
     assert Config.codex_command(%Issue{state: "In Progress"}) ==
-             "codex app-server --model gpt-5.3-codex"
+             "codex app-server --model gpt-5.3-codex --config model_reasoning_effort=high"
 
     assert Config.codex_command(%Issue{state: "Rework"}) ==
-             "codex app-server --model gpt-5.3-codex"
+             "codex app-server --model gpt-5.3-codex --config model_reasoning_effort=high"
+
+    assert Config.codex_command(%Issue{state: "Merging"}) ==
+             "codex app-server --model gpt-5.3-codex --config model_reasoning_effort=medium"
+
+    assert Config.codex_command(%Issue{state: "In Progress", labels: ["mode:research"]}) ==
+             "codex app-server --model gpt-5.4"
+
+    assert Config.codex_command(%Issue{state: "In Progress", labels: ["reasoning:implementation-xhigh"]}) ==
+             "codex app-server --model gpt-5.4"
 
     assert Config.codex_command(%Issue{state: "Todo"}) ==
              "codex app-server --model gpt-5.3-codex"
 
     assert Config.codex_command("  Spec Review  ") == "codex app-server --model gpt-5.4"
 
+    assert Config.codex_command(%{phase: :handoff}) ==
+             "codex app-server --model gpt-5.3-codex --config model_reasoning_effort=medium"
+
     assert Config.codex_command(%{"state" => " rework "}) ==
-             "codex app-server --model gpt-5.3-codex"
+             "codex app-server --model gpt-5.3-codex --config model_reasoning_effort=high"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_command: "codex app-server --model gpt-5.3-codex",
       codex_planning_command: "   ",
-      codex_implementation_command: ""
+      codex_implementation_command: "",
+      codex_handoff_command: " "
     )
 
     assert Config.codex_command("Spec Prep") == "codex app-server --model gpt-5.3-codex"
 
     assert Config.codex_command(%{"state" => "In Progress"}) ==
              "codex app-server --model gpt-5.3-codex"
+
+    assert Config.codex_command("Merging") == "codex app-server --model gpt-5.3-codex"
 
     explicit_root =
       Path.join(

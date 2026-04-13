@@ -42,7 +42,8 @@ agent:
 codex:
   command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
   planning_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.4 app-server
-  implementation_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
+  implementation_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=high --model gpt-5.3-codex app-server
+  handoff_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=medium --model gpt-5.3-codex app-server
   approval_policy: never
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
@@ -153,6 +154,14 @@ Instructions:
 - `Merging` -> approved by human; use the `land` skill and do not call `gh pr merge` directly.
 - `Rework` -> start a fresh attempt from updated review feedback.
 - `Done` -> terminal state; no further action required.
+
+## Reasoning profile contract
+
+- `planning_command` is the `xhigh` path and remains the default for planning/spec-prep work.
+- `implementation_command` is the default implementation path and should stay at `high` unless the issue explicitly needs the safe `xhigh` escalation below.
+- `handoff_command` is the default handoff/finalizer path and is used for `Merging`; if it is missing in an older workflow config, fall back to `codex.command`.
+- Issue label `mode:research` keeps implementation-phase command selection on the `planning_command` / `xhigh` path.
+- Issue label `reasoning:implementation-xhigh` is the explicit repo-owned opt-in for complex CI-debug or similarly hard implementation work that should escalate back to the `planning_command` / `xhigh` path.
 
 ## Step 0: Route and recover
 

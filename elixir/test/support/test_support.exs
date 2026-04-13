@@ -164,6 +164,7 @@ defmodule SymphonyElixir.TestSupport do
           codex_command: "codex app-server",
           codex_planning_command: nil,
           codex_implementation_command: nil,
+          codex_handoff_command: nil,
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
           codex_turn_sandbox_policy: nil,
@@ -209,6 +210,7 @@ defmodule SymphonyElixir.TestSupport do
     codex_command = Keyword.get(config, :codex_command)
     codex_planning_command = Keyword.get(config, :codex_planning_command)
     codex_implementation_command = Keyword.get(config, :codex_implementation_command)
+    codex_handoff_command = Keyword.get(config, :codex_handoff_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
     codex_turn_sandbox_policy = Keyword.get(config, :codex_turn_sandbox_policy)
@@ -259,6 +261,7 @@ defmodule SymphonyElixir.TestSupport do
         "  command: #{yaml_value(codex_command)}",
         "  planning_command: #{yaml_value(codex_planning_command)}",
         "  implementation_command: #{yaml_value(codex_implementation_command)}",
+        "  handoff_command: #{yaml_value(codex_handoff_command)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",
         "  thread_sandbox: #{yaml_value(codex_thread_sandbox)}",
         "  turn_sandbox_policy: #{yaml_value(codex_turn_sandbox_policy)}",

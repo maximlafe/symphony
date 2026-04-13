@@ -8,6 +8,8 @@ defmodule SymphonyElixir.Config do
 
   @planning_issue_states MapSet.new(["spec prep", "spec review"])
   @implementation_issue_states MapSet.new(["in progress", "rework"])
+  @handoff_issue_states MapSet.new(["merging"])
+  @implementation_xhigh_labels MapSet.new(["mode:research", "reasoning:implementation-xhigh"])
 
   @default_prompt_template """
   You are working on a Linear issue.
@@ -42,6 +44,7 @@ defmodule SymphonyElixir.Config do
         }
 
   @type linear_polling_scope :: {:project, String.t()} | {:team, String.t()} | nil
+  @type codex_phase :: :planning | :implementation | :handoff
 
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
@@ -78,17 +81,20 @@ defmodule SymphonyElixir.Config do
 
   def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents
 
-  @spec codex_command(map() | String.t() | nil) :: String.t()
+  @spec codex_command(map() | String.t() | atom() | nil) :: String.t()
   def codex_command(issue_or_state \\ nil) do
     settings = settings!()
     default_command = settings.codex.command
 
-    case codex_stage(issue_or_state) do
+    case codex_phase(issue_or_state) do
       :planning ->
         present_codex_command(settings.codex.planning_command) || default_command
 
       :implementation ->
         present_codex_command(settings.codex.implementation_command) || default_command
+
+      :handoff ->
+        present_codex_command(Map.get(settings.codex, :handoff_command)) || default_command
 
       _ ->
         default_command
@@ -238,10 +244,40 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  defp codex_stage(%{state: state}), do: codex_stage(state)
-  defp codex_stage(%{"state" => state}), do: codex_stage(state)
+  defp codex_phase(%{phase: phase} = context) do
+    phase
+    |> normalize_codex_phase()
+    |> maybe_escalate_phase(extract_labels(context))
+  end
 
-  defp codex_stage(state) when is_binary(state) do
+  defp codex_phase(%{"phase" => phase} = context) do
+    phase
+    |> normalize_codex_phase()
+    |> maybe_escalate_phase(extract_labels(context))
+  end
+
+  defp codex_phase(%{state: state} = context) do
+    state
+    |> phase_from_state()
+    |> maybe_escalate_phase(extract_labels(context))
+  end
+
+  defp codex_phase(%{"state" => state} = context) do
+    state
+    |> phase_from_state()
+    |> maybe_escalate_phase(extract_labels(context))
+  end
+
+  defp codex_phase(phase_or_state) do
+    phase_or_state
+    |> normalize_codex_phase()
+    |> case do
+      nil -> phase_from_state(phase_or_state)
+      phase -> phase
+    end
+  end
+
+  defp phase_from_state(state) when is_binary(state) do
     normalized_state =
       state
       |> String.trim()
@@ -254,12 +290,45 @@ defmodule SymphonyElixir.Config do
       MapSet.member?(@implementation_issue_states, normalized_state) ->
         :implementation
 
+      MapSet.member?(@handoff_issue_states, normalized_state) ->
+        :handoff
+
       true ->
         nil
     end
   end
 
-  defp codex_stage(_state), do: nil
+  defp phase_from_state(_state), do: nil
+
+  defp normalize_codex_phase(phase) when phase in [:planning, :implementation, :handoff], do: phase
+
+  defp normalize_codex_phase(phase) when is_binary(phase) do
+    case phase |> String.trim() |> String.downcase() do
+      "planning" -> :planning
+      "implementation" -> :implementation
+      "handoff" -> :handoff
+      _ -> nil
+    end
+  end
+
+  defp normalize_codex_phase(_phase), do: nil
+
+  defp maybe_escalate_phase(:implementation, labels) when is_list(labels) do
+    if Enum.any?(labels, &MapSet.member?(@implementation_xhigh_labels, normalize_label(&1))) do
+      :planning
+    else
+      :implementation
+    end
+  end
+
+  defp maybe_escalate_phase(phase, _labels), do: phase
+
+  defp extract_labels(%{labels: labels}) when is_list(labels), do: labels
+  defp extract_labels(%{"labels" => labels}) when is_list(labels), do: labels
+  defp extract_labels(_context), do: []
+
+  defp normalize_label(label) when is_binary(label), do: label |> String.trim() |> String.downcase()
+  defp normalize_label(_label), do: nil
 
   defp present_codex_command(command) when is_binary(command) do
     if String.trim(command) == "", do: nil, else: command
