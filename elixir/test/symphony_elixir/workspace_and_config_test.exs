@@ -1586,7 +1586,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "branchName" => "mt-1",
       "url" => "https://example.org/issues/MT-1",
       "assignee" => %{
-        "id" => "user-1"
+        "id" => "user-1",
+        "email" => "maximelafe@atomicmail.io",
+        "name" => "symphony"
       },
       "project" => %{"slugId" => "master-komand-dfbe2b1b972e", "name" => "Мастер команд"},
       "labels" => %{"nodes" => [%{"name" => "Backend"}]},
@@ -1622,6 +1624,44 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.project_slug == "master-komand-dfbe2b1b972e"
     assert issue.project_name == "Мастер команд"
     assert issue.state == "Todo"
+    assert issue.assignee_id == "user-1"
+    assert issue.assigned_to_worker
+  end
+
+  test "linear client matches configured assignee email" do
+    raw_issue = %{
+      "id" => "issue-email-1",
+      "identifier" => "LET-42",
+      "title" => "Email-routed task",
+      "state" => %{"name" => "Todo"},
+      "assignee" => %{
+        "id" => "user-1",
+        "email" => "maximelafe@atomicmail.io",
+        "name" => "symphony"
+      }
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue, "maximelafe@atomicmail.io")
+
+    assert issue.assignee_id == "user-1"
+    assert issue.assigned_to_worker
+  end
+
+  test "linear client matches configured assignee name" do
+    raw_issue = %{
+      "id" => "issue-name-1",
+      "identifier" => "LET-43",
+      "title" => "Name-routed task",
+      "state" => %{"name" => "Todo"},
+      "assignee" => %{
+        "id" => "user-1",
+        "email" => "maximelafe@atomicmail.io",
+        "name" => "symphony"
+      }
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue, "symphony")
+
     assert issue.assignee_id == "user-1"
     assert issue.assigned_to_worker
   end
@@ -1687,6 +1727,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert query =~ "SymphonyLinearTeamPoll"
     assert query =~ "team: {key: {eq: $teamKey}}"
+    assert query =~ "assignee {"
+    assert query =~ "email"
+    assert query =~ "name"
   end
 
   test "linear client pagination merge helper preserves issue ordering" do
@@ -1743,6 +1786,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert_receive {:fetch_issue_states_page, query, %{ids: ^first_batch_ids, first: 50, relationFirst: 50}}
     assert query =~ "SymphonyLinearIssuesById"
+    assert query =~ "assignee {"
+    assert query =~ "email"
+    assert query =~ "name"
 
     assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
   end

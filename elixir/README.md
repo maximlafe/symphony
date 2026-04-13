@@ -42,8 +42,8 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    - Set exactly one Linear polling scope: `tracker.project_slug` for project-scoped polling or
      `tracker.team_key` for team-scoped polling.
    - `tracker.assignee` is optional and narrows dispatch to issues assigned to a specific Linear
-     user (or `me` via `LINEAR_ASSIGNEE`). Use it when a team-scoped worker must ignore work owned
-     by other runners.
+     user id, email, or name (or `me` via `LINEAR_ASSIGNEE`). Use it when a team-scoped worker
+     must ignore work owned by other runners.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
@@ -155,8 +155,8 @@ Notes:
 - Linear polling scope is mutually exclusive: configure exactly one of `tracker.project_slug` or
   `tracker.team_key`.
 - `tracker.assignee` is independent from polling scope. When set, Symphony dispatches only issues
-  assigned to that Linear user (or the current viewer for `me`), and unassigned issues are skipped
-  by that worker.
+  assigned to that Linear user id/email/name (or the current viewer for `me`), and unassigned
+  issues are skipped by that worker.
 - The prompt body is the workflow contract. In production, make handoffs explicit with `checkpoint_type` and `risk_level`, define low-context behavior, and cap repeated auto-fix loops so the agent escalates instead of spinning.
 - Issue labels are available to both the workflow prompt and hooks, so routing labels can stay separate from orthogonal delivery policies such as `delivery:tdd`.
 - If unattended runs create branches or PRs, encode the naming convention explicitly in the prompt instead of relying on tracker-generated branch names; for example, honor an explicit `Working branch:` line in the issue description's final `## Symphony` section when present, otherwise fall back to `Symphony/<issue-id>-<short-kebab-summary>` for branches and `<ISSUE-ID>: <short outcome>` for PR titles.

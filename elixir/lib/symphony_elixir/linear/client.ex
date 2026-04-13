@@ -29,6 +29,8 @@ defmodule SymphonyElixir.Linear.Client do
         url
         assignee {
           id
+          email
+          name
         }
         labels {
           nodes {
@@ -78,6 +80,8 @@ defmodule SymphonyElixir.Linear.Client do
         url
         assignee {
           id
+          email
+          name
         }
         labels {
           nodes {
@@ -127,6 +131,8 @@ defmodule SymphonyElixir.Linear.Client do
         url
         assignee {
           id
+          email
+          name
         }
         labels {
           nodes {
@@ -578,16 +584,21 @@ defmodule SymphonyElixir.Linear.Client do
   defp assigned_to_worker?(%{} = assignee, %{match_values: match_values})
        when is_struct(match_values, MapSet) do
     assignee
-    |> assignee_id()
-    |> then(fn
-      nil -> false
-      assignee_id -> MapSet.member?(match_values, assignee_id)
-    end)
+    |> assignee_match_values()
+    |> MapSet.disjoint?(match_values)
+    |> Kernel.not()
   end
 
   defp assigned_to_worker?(_assignee, _assignee_filter), do: false
 
   defp assignee_id(%{} = assignee), do: normalize_assignee_match_value(assignee["id"])
+
+  defp assignee_match_values(%{} = assignee) do
+    [assignee["id"], assignee["email"], assignee["name"]]
+    |> Enum.map(&normalize_assignee_match_value/1)
+    |> Enum.reject(&is_nil/1)
+    |> MapSet.new()
+  end
 
   defp routing_assignee_filter do
     case Config.settings!().tracker.assignee do
@@ -633,8 +644,15 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp normalize_assignee_match_value(value) when is_binary(value) do
     case value |> String.trim() do
-      "" -> nil
-      normalized -> normalized
+      "" ->
+        nil
+
+      normalized ->
+        if String.contains?(normalized, "@") do
+          String.downcase(normalized)
+        else
+          normalized
+        end
     end
   end
 

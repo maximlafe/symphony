@@ -2,7 +2,7 @@
 tracker:
   kind: linear
   team_key: "LET"
-  assignee: "4eb8c4a3-8050-4af2-aa2b-da38d903c941"
+  assignee: "symphony"
   active_states:
     - Todo
     - Spec Prep
