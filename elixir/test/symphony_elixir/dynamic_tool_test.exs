@@ -413,6 +413,15 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     Jason.decode!(text)
   end
 
+  defp handoff_git_runner do
+    fn
+      ["rev-parse", "HEAD"], _opts -> {:ok, "abc123\n"}
+      ["rev-parse", "HEAD^{tree}"], _opts -> {:ok, "tree123\n"}
+      ["status", "--porcelain", "--untracked-files=no"], _opts -> {:ok, ""}
+      ["diff", "--name-only", "origin/main...HEAD"], _opts -> {:ok, "elixir/lib/symphony_elixir/handoff_check.ex\n"}
+    end
+  end
+
   test "sync_workpad creates a comment from file when no comment_id given" do
     test_pid = self()
     path = write_tmp_workpad("## Codex Workpad\n\nProgress.")
@@ -1181,7 +1190,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       ### Validation
 
       - [x] preflight: `make symphony-preflight`
+      - [x] cheap gate: `same HEAD targeted proof completed`
       - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+      - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
       - [x] repo validation: `make symphony-validate`
 
       ### Artifacts
@@ -1211,6 +1222,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
          }
        }}
     end
+
+    git_runner = handoff_git_runner()
 
     blocked =
       DynamicTool.execute(
@@ -1300,6 +1313,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                  flunk("unexpected handoff query: #{query}")
                end
              end,
+             git_runner: git_runner,
              gh_runner: fn args, _opts ->
                case args do
                  ["pr", "view", "52", "-R", "maximlafe/symphony", "--json", _] ->
@@ -1338,6 +1352,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "variables" => %{"id" => "LET-416", "stateId" => "in-review-state-id"}
         },
         workspace: workspace,
+        git_runner: git_runner,
         linear_client: fn query, variables, _opts ->
           cond do
             query =~ "SymphonyHandoffCheckState" ->
@@ -1364,6 +1379,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "variables" => %{"id" => "LET-416", "input" => %{"stateId" => "in-review-state-id"}}
         },
         workspace: workspace,
+        git_runner: git_runner,
         linear_client: fn query, variables, _opts ->
           cond do
             query =~ "SymphonyHandoffCheckState" ->
@@ -1390,6 +1406,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "variables" => %{}
         },
         workspace: workspace,
+        git_runner: git_runner,
         linear_client: fn query, variables, _opts ->
           cond do
             query =~ "SymphonyHandoffCheckState" ->
@@ -1408,5 +1425,107 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert allowed_inline_literal["success"] == true
 
     assert_received {:issue_update_literal, "mutation { issueUpdate(id: \"LET-416\", input: { stateId: \"in-review-state-id\" }) { success } }", %{}}
+  end
+
+  test "linear_graphql review-ready guard works without an injected git_runner" do
+    workspace = init_git_repo!()
+    workpad_path = write_tmp_file(workspace, "workpad.md", "unchanged")
+    manifest_path = Path.join(workspace, ".symphony/verification/handoff-manifest.json")
+
+    manifest =
+      %{
+        "passed" => true,
+        "issue" => %{"id" => "LET-416"},
+        "workpad" => %{
+          "file_path" => workpad_path,
+          "sha256" => sha256("unchanged")
+        },
+        "validation_gate" => %{
+          "gate" => "final",
+          "change_classes" => ["backend_only"],
+          "strictest_change_class" => "backend_only",
+          "requires_final_gate" => true,
+          "required_checks" => ["preflight", "cheap_gate", "targeted_tests", "repo_validation"],
+          "passed_checks" => ["preflight", "cheap_gate", "targeted_tests", "repo_validation"],
+          "remote_finalization_allowed" => true
+        },
+        "git" => git_metadata_for_repo!(workspace)
+      }
+
+    assert {:ok, _path} = SymphonyElixir.HandoffCheck.write_manifest(manifest, manifest_path)
+
+    state_catalog_response = fn ->
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "team" => %{
+               "states" => %{
+                 "nodes" => [
+                   %{"id" => "in-review-state-id", "name" => "In Review"}
+                 ]
+               }
+             }
+           }
+         }
+       }}
+    end
+
+    allowed =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-416", "stateId" => "in-review-state-id"}
+        },
+        workspace: workspace,
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              state_catalog_response.()
+
+            query =~ "issueUpdate" ->
+              send(self(), {:issue_update_without_git_runner, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected GraphQL query without injected git runner: #{query}")
+          end
+        end
+      )
+
+    assert allowed["success"] == true
+    assert_received {:issue_update_without_git_runner, %{"id" => "LET-416", "stateId" => "in-review-state-id"}}
+  end
+
+  defp init_git_repo! do
+    repo_path = Path.join(System.tmp_dir!(), "dynamic-tool-git-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(repo_path)
+    File.write!(Path.join(repo_path, "tracked.txt"), "tracked\n")
+
+    assert {_, 0} = System.cmd("git", ["init"], cd: repo_path, stderr_to_stdout: true)
+    assert {_, 0} = System.cmd("git", ["config", "user.name", "Symphony Tests"], cd: repo_path)
+    assert {_, 0} = System.cmd("git", ["config", "user.email", "symphony-tests@example.com"], cd: repo_path)
+    assert {_, 0} = System.cmd("git", ["add", "tracked.txt"], cd: repo_path)
+    assert {_, 0} = System.cmd("git", ["commit", "-m", "init"], cd: repo_path, stderr_to_stdout: true)
+
+    repo_path
+  end
+
+  defp git_metadata_for_repo!(repo_path) do
+    {head_sha, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: repo_path)
+    {tree_sha, 0} = System.cmd("git", ["rev-parse", "HEAD^{tree}"], cd: repo_path)
+    {status, 0} = System.cmd("git", ["status", "--porcelain", "--untracked-files=no"], cd: repo_path)
+
+    %{
+      "head_sha" => String.trim(head_sha),
+      "tree_sha" => String.trim(tree_sha),
+      "worktree_clean" => String.trim(status) == ""
+    }
+  end
+
+  defp sha256(body) do
+    :crypto.hash(:sha256, body)
+    |> Base.encode16(case: :lower)
   end
 end

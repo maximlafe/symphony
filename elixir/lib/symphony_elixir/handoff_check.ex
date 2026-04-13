@@ -3,6 +3,8 @@ defmodule SymphonyElixir.HandoffCheck do
   Evaluates the review-ready handoff contract and writes a machine-readable manifest.
   """
 
+  alias SymphonyElixir.ValidationGate
+
   @allowed_checkpoint_types ["human-verify", "decision", "human-action"]
   @allowed_risk_levels ["low", "medium", "high"]
   @delivery_tdd_label "delivery:tdd"
@@ -56,17 +58,36 @@ defmodule SymphonyElixir.HandoffCheck do
 
     parsed_workpad = parse_workpad(workpad_body)
 
+    {validation_gate, git_metadata, validation_gate_errors} =
+      resolve_validation_gate(parsed_workpad, opts)
+
+    validation_context = %{
+      "gate" => validation_gate,
+      "git" => git_metadata,
+      "errors" => validation_gate_errors
+    }
+
     missing_items =
-      collect_missing_items(parsed_workpad, issue_labels, attachments, pr_snapshot, profile, profile_errors)
+      collect_missing_items(
+        parsed_workpad,
+        issue_labels,
+        attachments,
+        pr_snapshot,
+        profile,
+        profile_errors,
+        validation_context
+      )
 
     passed = missing_items == []
 
     manifest = %{
-      "contract_version" => 1,
+      "contract_version" => 2,
       "checked_at" => DateTime.to_iso8601(checked_at),
       "passed" => passed,
       "profile" => profile,
       "profile_source" => profile_source,
+      "validation_gate" => validation_gate,
+      "git" => git_metadata,
       "summary" => summary_for_manifest(passed, profile, missing_items),
       "issue" => %{
         "id" => issue_id,
@@ -117,14 +138,22 @@ defmodule SymphonyElixir.HandoffCheck do
           :ok | {:error, atom(), map()}
   def review_ready_transition_allowed?(manifest_path, issue_id, state_name, expected_workpad_path)
       when is_binary(manifest_path) and is_binary(issue_id) do
-    with {:ok, manifest} <- load_manifest(manifest_path),
-         :ok <- validate_manifest_identity(manifest, issue_id, state_name) do
-      validate_manifest_workpad(manifest, expected_workpad_path)
-    end
+    review_ready_transition_allowed?(manifest_path, issue_id, state_name, expected_workpad_path, [])
   end
 
   def review_ready_transition_allowed?(_manifest_path, _issue_id, _state_name, _expected_workpad_path) do
     {:error, :handoff_manifest_invalid, %{"reason" => "issue_id is required"}}
+  end
+
+  @spec review_ready_transition_allowed?(Path.t(), String.t(), String.t() | nil, String.t() | nil, keyword()) ::
+          :ok | {:error, atom(), map()}
+  def review_ready_transition_allowed?(manifest_path, issue_id, state_name, expected_workpad_path, opts)
+      when is_binary(manifest_path) and is_binary(issue_id) and is_list(opts) do
+    with {:ok, manifest} <- load_manifest(manifest_path),
+         :ok <- validate_manifest_identity(manifest, issue_id, state_name),
+         :ok <- validate_manifest_validation_gate(manifest, opts) do
+      validate_manifest_workpad(manifest, expected_workpad_path)
+    end
   end
 
   defp load_manifest(path) do
@@ -192,6 +221,36 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
+  defp validate_manifest_validation_gate(manifest, opts) do
+    manifest =
+      if Map.has_key?(manifest, "validation_gate") do
+        manifest
+      else
+        Map.put(manifest, "validation_gate", %{})
+      end
+
+    with {:ok, current_git} <- current_git_metadata(opts),
+         :ok <- ValidationGate.validate_final_proof(manifest, current_git) do
+      :ok
+    else
+      {:error, reasons} when is_list(reasons) ->
+        {:error, :handoff_manifest_stale,
+         %{
+           "reason" => "validation gate final proof is stale or incomplete",
+           "details" => reasons,
+           "manifest" => manifest
+         }}
+
+      {:error, reason} ->
+        {:error, :handoff_manifest_invalid,
+         %{
+           "reason" => "cannot read current git metadata",
+           "details" => inspect(reason),
+           "manifest" => manifest
+         }}
+    end
+  end
+
   defp select_profile(explicit_profile, issue_labels, profile_labels, default_profile) do
     normalized_explicit = normalize_profile(explicit_profile)
     normalized_default = normalize_profile(default_profile) || "generic"
@@ -235,8 +294,8 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp parse_workpad(body) do
     sections = split_sections(body)
-    validation_items = parse_checkbox_items(Map.get(sections, "Validation", ""))
-    artifact_items = parse_artifact_items(Map.get(sections, "Artifacts", ""))
+    validation_items = parse_checkbox_items(section_body(sections, ["Validation", "Проверка"]))
+    artifact_items = parse_artifact_items(section_body(sections, ["Artifacts", "Артефакты"]))
     checkpoint = parse_checkpoint(Map.get(sections, "Checkpoint", ""))
 
     %{
@@ -245,6 +304,10 @@ defmodule SymphonyElixir.HandoffCheck do
       "artifacts" => artifact_items,
       "checkpoint" => checkpoint
     }
+  end
+
+  defp section_body(sections, titles) when is_map(sections) and is_list(titles) do
+    Enum.find_value(titles, "", &Map.get(sections, &1))
   end
 
   defp split_sections(body) do
@@ -325,10 +388,20 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp strip_wrapping_backticks(value), do: value
 
-  defp collect_missing_items(parsed_workpad, issue_labels, attachments, pr_snapshot, profile, profile_errors) do
+  defp collect_missing_items(
+         parsed_workpad,
+         issue_labels,
+         attachments,
+         pr_snapshot,
+         profile,
+         profile_errors,
+         validation_context
+       ) do
     []
     |> Kernel.++(profile_errors)
+    |> Kernel.++(validation_context["errors"])
     |> Kernel.++(validation_missing_items(parsed_workpad["validation"], issue_labels))
+    |> Kernel.++(validation_gate_missing_items(validation_context["gate"], validation_context["git"]))
     |> Kernel.++(checkpoint_missing_items(parsed_workpad["checkpoint"]))
     |> Kernel.++(artifact_manifest_missing_items(parsed_workpad["artifacts"], attachments))
     |> Kernel.++(profile_missing_items(profile, parsed_workpad["artifacts"], attachments))
@@ -350,6 +423,16 @@ defmodule SymphonyElixir.HandoffCheck do
     |> Enum.map(fn label ->
       "validation checklist is missing a checked `#{label}` item"
     end)
+  end
+
+  defp validation_gate_missing_items(validation_gate, git_metadata) do
+    case ValidationGate.validate_final_proof(%{"validation_gate" => validation_gate, "git" => git_metadata}, git_metadata) do
+      :ok ->
+        []
+
+      {:error, reasons} ->
+        Enum.map(reasons, &"validation gate final proof invalid: #{&1}")
+    end
   end
 
   defp delivery_tdd_enabled?(issue_labels) when is_list(issue_labels) do
@@ -493,13 +576,27 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp artifact_kind(text, title, _claim) do
+    normalized = String.downcase(text)
+
     cond do
-      String.starts_with?(String.downcase(text), "uploaded attachment:") -> "uploaded_attachment"
-      String.starts_with?(String.downcase(text), "missing expected artifact:") -> "missing_expected_artifact"
-      visual_file?(title) -> "visual_proof"
-      machine_readable_file?(title) -> "machine_readable"
-      runtime_proof_file?(title) -> "runtime_proof"
-      true -> "artifact"
+      String.starts_with?(normalized, "uploaded attachment:") or String.starts_with?(normalized, "вложение:") ->
+        "uploaded_attachment"
+
+      String.starts_with?(normalized, "missing expected artifact:") or
+          String.starts_with?(normalized, "ожидаемый, но не созданный артефакт:") ->
+        "missing_expected_artifact"
+
+      visual_file?(title) ->
+        "visual_proof"
+
+      machine_readable_file?(title) ->
+        "machine_readable"
+
+      runtime_proof_file?(title) ->
+        "runtime_proof"
+
+      true ->
+        "artifact"
     end
   end
 
@@ -529,6 +626,98 @@ defmodule SymphonyElixir.HandoffCheck do
     case Regex.run(~r/`([^`]+)`/, text) do
       [_, command] -> String.trim(command)
       _ -> text |> String.split(":", parts: 2) |> List.last() |> to_string() |> String.trim()
+    end
+  end
+
+  defp resolve_validation_gate(parsed_workpad, opts) do
+    explicit_errors = normalize_validation_gate_errors(Keyword.get(opts, :validation_gate_errors, []))
+    git_metadata = normalize_git_metadata(Keyword.get(opts, :git, %{}))
+    explicit_gate = Keyword.get(opts, :validation_gate)
+
+    cond do
+      is_map(explicit_gate) and map_size(explicit_gate) > 0 ->
+        {Map.drop(explicit_gate, ["git"]), normalize_git_metadata(Map.get(explicit_gate, "git") || git_metadata), explicit_errors}
+
+      Keyword.has_key?(opts, :change_classes) ->
+        passed_checks = passed_validation_checks(parsed_workpad["validation"])
+
+        case ValidationGate.final_proof(Keyword.get(opts, :change_classes), passed_checks, git_metadata) do
+          {:ok, proof} -> {Map.drop(proof, ["git"]), Map.get(proof, "git"), explicit_errors}
+          {:error, reasons} -> {%{}, git_metadata, explicit_errors ++ reasons}
+        end
+
+      true ->
+        {%{}, git_metadata, explicit_errors ++ ["validation gate final proof metadata is missing"]}
+    end
+  end
+
+  defp passed_validation_checks(validation_items) when is_list(validation_items) do
+    validation_items
+    |> Enum.filter(&(&1["checked"] == true and not placeholder_value?(&1["command"])))
+    |> Enum.map(& &1["label"])
+    |> ValidationGate.normalize_checks()
+  end
+
+  defp normalize_validation_gate_errors(errors) when is_list(errors) do
+    errors
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp normalize_validation_gate_errors(_errors), do: []
+
+  defp normalize_git_metadata(metadata) when is_map(metadata) do
+    %{
+      "head_sha" => metadata["head_sha"] || metadata[:head_sha],
+      "tree_sha" => metadata["tree_sha"] || metadata[:tree_sha],
+      "worktree_clean" => metadata["worktree_clean"] || metadata[:worktree_clean] || false,
+      "changed_paths" => normalize_string_list(metadata["changed_paths"] || metadata[:changed_paths] || [])
+    }
+  end
+
+  defp normalize_git_metadata(_metadata), do: %{}
+
+  defp normalize_string_list(values) when is_list(values) do
+    values
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp normalize_string_list(_values), do: []
+
+  defp current_git_metadata(opts) do
+    repo_path = Keyword.get(opts, :repo_path) || Keyword.get(opts, :workspace) || File.cwd!()
+    runner = Keyword.get(opts, :git_runner, &default_git_runner/2)
+
+    with {:ok, head_sha} <- run_git(runner, repo_path, ["rev-parse", "HEAD"]),
+         {:ok, tree_sha} <- run_git(runner, repo_path, ["rev-parse", "HEAD^{tree}"]),
+         {:ok, status} <- run_git(runner, repo_path, ["status", "--porcelain", "--untracked-files=no"]) do
+      {:ok,
+       %{
+         "head_sha" => String.trim(head_sha),
+         "tree_sha" => String.trim(tree_sha),
+         "worktree_clean" => String.trim(status) == ""
+       }}
+    end
+  end
+
+  defp run_git(runner, repo_path, args) when is_function(runner, 2) do
+    runner.(args, repo_path: repo_path)
+  end
+
+  defp default_git_runner(args, opts) do
+    repo_path = Keyword.get(opts, :repo_path) || File.cwd!()
+
+    try do
+      case System.cmd("git", ["-C", repo_path | args], stderr_to_stdout: true) do
+        {output, 0} -> {:ok, output}
+        {output, status} -> {:error, {:git_status, status, String.trim(output)}}
+      end
+    rescue
+      error in ErlangError ->
+        {:error, {:git_unavailable, error.original}}
     end
   end
 
