@@ -142,6 +142,9 @@ agent:
   max_turns: 20
 codex:
   command: codex app-server
+  planning_command: codex --config model_reasoning_effort=xhigh app-server
+  implementation_command: codex --config model_reasoning_effort=high app-server
+  handoff_command: codex --config model_reasoning_effort=medium app-server
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
@@ -159,6 +162,7 @@ Notes:
   issues are skipped by that worker.
 - The prompt body is the workflow contract. In production, make handoffs explicit with `checkpoint_type` and `risk_level`, define low-context behavior, and cap repeated auto-fix loops so the agent escalates instead of spinning.
 - Issue labels are available to both the workflow prompt and hooks, so routing labels can stay separate from orthogonal delivery policies such as `delivery:tdd`.
+- `codex.planning_command`, `codex.implementation_command`, and `codex.handoff_command` let the workflow choose different reasoning profiles per phase. In the repo's own workflow, planning stays on `xhigh`, implementation defaults to `high`, and `Merging`/handoff uses `medium`; label `reasoning:implementation-xhigh` is the explicit opt-in to escalate a hard implementation or CI-debug task back to the `xhigh` path.
 - If unattended runs create branches or PRs, encode the naming convention explicitly in the prompt instead of relying on tracker-generated branch names; for example, honor an explicit `Working branch:` line in the issue description's final `## Symphony` section when present, otherwise fall back to `Symphony/<issue-id>-<short-kebab-summary>` for branches and `<ISSUE-ID>: <short outcome>` for PR titles.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`

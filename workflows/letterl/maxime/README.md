@@ -131,4 +131,11 @@ Base branch: main
 
 Use `mode:research` when the ticket still needs evidence-backed root-cause analysis, ranked hypotheses, and a normalized spec before planning or execution. Use `mode:plan` when the task is already understood conceptually but still needs a stable implementation-ready engineering spec, updated Linear description, and explicit validation plan. Leave both labels absent when the issue description is already execution-ready.
 
+Reasoning profile contract:
+- `planning_command` stays on `xhigh`.
+- `implementation_command` defaults to `high`.
+- `Merging` / handoff uses `handoff_command` on `medium`, with fallback to `codex.command` for older workflow configs that do not define it yet.
+- `mode:research` keeps implementation-phase command selection on the `xhigh` path.
+- Add `reasoning:implementation-xhigh` only for explicit complex CI-debug or similarly hard implementation work that should escalate back to `xhigh`.
+
 If the spec-prep result shows that the implementation should follow true TDD, normalize `delivery:tdd` on the issue during `Spec Prep`; otherwise leave it absent or remove it if it is stale.

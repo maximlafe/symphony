@@ -500,7 +500,8 @@ agent:
 codex:
   command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
   planning_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.4 app-server
-  implementation_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
+  implementation_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=high --model gpt-5.3-codex app-server
+  handoff_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=medium --model gpt-5.3-codex app-server
   approval_policy: never
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
@@ -620,6 +621,14 @@ Instructions:
 - Не используй `delivery:tdd` для docs, deploy, CI, визуальной UI-полировки и flaky integration/runtime-heavy work.
 - Нормализовать `delivery:tdd` через `linear_graphql`: добавить label, когда TDD оправдан, и remove stale `delivery:tdd`, когда он не нужен.
 - После входа в `In Progress` `delivery:tdd` больше не влияет на routing; он меняет только delivery/handoff contract.
+
+## Reasoning profile contract
+
+- `planning_command` остаётся `xhigh` path для planning/spec-prep работы.
+- `implementation_command` по умолчанию идёт через `high`.
+- `handoff_command` по умолчанию идёт через `medium` и используется для `Merging`; если в старом workflow-конфиге он не задан, handoff/finalizer phase откатывается к `codex.command`.
+- Label `mode:research` сохраняет implementation-phase command selection на `planning_command` / `xhigh` path.
+- Label `reasoning:implementation-xhigh` — явный repo-owned opt-in для сложного CI-debug или другой implementation-heavy задачи, где безопаснее эскалировать обратно на `planning_command` / `xhigh`.
 
 ## Step 0: Determine current ticket state and route
 

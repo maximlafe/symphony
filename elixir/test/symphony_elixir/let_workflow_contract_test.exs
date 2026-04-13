@@ -4,6 +4,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
   alias SymphonyElixir.Workflow
 
   @let_workflow_path Path.expand("../../../workflows/letterl/maxime/let.WORKFLOW.md", __DIR__)
+  @default_workflow_path Path.expand("../../WORKFLOW.md", __DIR__)
   @research_skill_path Path.expand("../../../.agents/skills/research-mode/SKILL.md", __DIR__)
   @plan_skill_path Path.expand("../../../.agents/skills/plan-mode/SKILL.md", __DIR__)
 
@@ -32,7 +33,20 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ ".agents/skills/plan-mode/SKILL.md"
     assert prompt =~ "$CODEX_HOME/skills/research-mode/SKILL.md"
     assert prompt =~ "$CODEX_HOME/skills/plan-mode/SKILL.md"
+    assert prompt =~ "`reasoning:implementation-xhigh`"
+    assert get_in(config, ["codex", "planning_command"]) =~ "model_reasoning_effort=xhigh"
+    assert get_in(config, ["codex", "implementation_command"]) =~ "model_reasoning_effort=high"
+    assert get_in(config, ["codex", "handoff_command"]) =~ "model_reasoning_effort=medium"
     refute prompt =~ "`Todo` -> сразу переводи в `Spec Prep`."
+  end
+
+  test "default workflow documents the same phase-based reasoning contract" do
+    assert {:ok, %{config: config, prompt: prompt}} = Workflow.load(@default_workflow_path)
+
+    assert get_in(config, ["codex", "planning_command"]) =~ "model_reasoning_effort=xhigh"
+    assert get_in(config, ["codex", "implementation_command"]) =~ "model_reasoning_effort=high"
+    assert get_in(config, ["codex", "handoff_command"]) =~ "model_reasoning_effort=medium"
+    assert prompt =~ "`reasoning:implementation-xhigh`"
   end
 
   test "LET workflow keeps secondary codex homes under the mounted primary CODEX_HOME" do

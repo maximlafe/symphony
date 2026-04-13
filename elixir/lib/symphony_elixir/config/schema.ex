@@ -205,6 +205,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:command, :string, default: "codex app-server")
       field(:planning_command, :string)
       field(:implementation_command, :string)
+      field(:handoff_command, :string)
 
       field(:approval_policy, StringOrMap,
         default: %{
@@ -236,6 +237,7 @@ defmodule SymphonyElixir.Config.Schema do
           :command,
           :planning_command,
           :implementation_command,
+          :handoff_command,
           :approval_policy,
           :thread_sandbox,
           :turn_sandbox_policy,
