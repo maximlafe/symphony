@@ -15,6 +15,18 @@ Turn a high-level issue into an implementation-ready engineering spec with a con
 - Prefer the smallest coherent spec that makes execution safe and deterministic.
 - Apply `DRY`, `KISS`, and `YAGNI` throughout the planning pass.
 
+## Design policy (required)
+
+Apply [design policy](../../design-policy.md) to every planning pass.
+
+Minimum enforcement:
+
+- Choose one explicit MVP.
+- Run critique pass 1 and critique pass 2 on every spec before handoff.
+- For risky tasks, ground the spec in the real code before finalizing it and run critique pass 3 if material risk remains.
+- If the task introduces a new semantic axis, define where it lives, which layers read it, which layers write it, and which existing contract fields it replaces or complements.
+- If the task claims systemic improvement, define positive and negative proof cases before treating the plan as ready.
+
 ## Required planning flow
 
 - Start from the relevant repo instructions plus the current issue, branch, PR, and related context when that context materially affects the spec.
@@ -22,6 +34,11 @@ Turn a high-level issue into an implementation-ready engineering spec with a con
 - If the root cause is already known, state it clearly.
 - If the evidence is still incomplete, describe the most likely cause and the current confidence boundary without pretending certainty.
 - Convert the current issue into a stable engineering contract instead of leaving planning details implicit in chat context.
+- Choose one explicit MVP. If more than one credible path exists, include `Alternatives considered`, recommend one path, and explain briefly why it is the minimum sufficient route.
+- Run critique pass 1 against the current spec, revise it, then run critique pass 2 and revise it again.
+- For risky tasks, ground the spec in the real code before finalizing it: verify DTOs, call sites, persistence keys, existing invariants, dependencies, and whether each claimed routing or state signal is real in the current checkout.
+- If code grounding or critique reveals that the issue body and recent comments point to different solutions, rewrite the description so the canonical body reflects the current recommendation.
+- If the planned change simultaneously alters semantics, storage, runtime policy, diagnostics, or proof contracts, either justify why this is still one smallest coherent change or split the rest into follow-up tickets.
 - Decide whether execution should be opt-in TDD. Use `delivery:tdd` only when a cheap deterministic failing test or reproducer should be part of the fix contract; avoid it for docs, deploy, CI, visual-only UI work, and flaky integration/runtime-heavy tasks.
 
 ## Allowed
@@ -52,10 +69,13 @@ Include, when relevant:
 - `Риски`
 - `Зависимости`
 - `План валидации`
+- `Alternatives considered`
 - `Заметки`
 - final `## Symphony` section
 
 Preserve all material user facts, capture the observed behavior and expected behavior inside the task-spec where they belong, and always keep the final `## Symphony` block intact.
+
+For tasks about coverage, routing, classification, merge behavior, or quality changes, `План валидации` must name the regression dataset or case set, the baseline, the target delta or threshold, and the false-positive ceiling.
 
 ## Workpad expectations
 
@@ -65,6 +85,9 @@ Preserve all material user facts, capture the observed behavior and expected beh
 - Call out only the uncertainties that still change execution or acceptance.
 - If several implementation options exist, recommend one and explain briefly why it is the minimal sufficient path.
 - If important edge cases or minimum required tests exist, list them explicitly.
+- Record which MVP was chosen and why the alternatives were rejected or deferred.
+- If named runs, chats, IDs, or case pairs are referenced, map them to authoritative runtime artifacts or mark the mapping as inconclusive.
+- Do not claim a systemic fix unless the proof plan includes positive and negative proof cases.
 
 ## Linear expectations
 
@@ -78,15 +101,19 @@ Preserve all material user facts, capture the observed behavior and expected beh
 The final planning output should be ordered as follows:
 
 1. what was confirmed by prior research;
-2. ready engineering spec in Markdown;
-3. ready Linear description text in Russian;
-4. what exactly was updated in Linear;
-5. remaining risks and unknowns.
+2. chosen MVP and why;
+3. ready engineering spec in Markdown;
+4. ready Linear description text in Russian;
+5. what exactly was updated in Linear;
+6. remaining risks and unknowns.
 
 ## Exit bar
 
 Before handing off to `Spec Review`:
 
 - The issue description is implementation-ready.
+- One explicit MVP is chosen and reflected in the issue description.
+- The issue body and recent planning recommendation do not contradict each other.
 - The workpad contains a concrete execution plan, explicit validation outline, and any remaining uncertainties that still affect execution.
+- For quality or coverage tasks, the proof plan is operational and names positive and negative proof cases plus concrete datasets, cases, or thresholds.
 - No shipped product code changes remain in the workspace.
