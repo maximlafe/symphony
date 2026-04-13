@@ -15,6 +15,18 @@ Turn a raw or underspecified issue into a stable Russian task-spec backed by evi
 - Prefer the smallest coherent explanation and plan.
 - Apply `DRY`, `KISS`, and `YAGNI` throughout the investigation and the proposed fix contour.
 
+## Design policy (required)
+
+Apply [design policy](../../design-policy.md) to every research pass that ends in a fix contour or implementation-ready spec.
+
+Minimum enforcement:
+
+- Separate confirmed facts from hypotheses.
+- Choose one explicit MVP if the research ends in a proposed fix contour or spec.
+- Run critique pass 1 and critique pass 2 on every proposed contour or spec before handoff.
+- For risky tasks, ground the proposed contour in the real code before finalizing it.
+- If the task claims systemic improvement, define positive and negative proof cases before treating the result as ready.
+
 ## Required investigation flow
 
 - Start from the relevant repo instructions plus the current issue, branch, PR, checks, and review context when that context materially affects the investigation.
@@ -23,6 +35,10 @@ Turn a raw or underspecified issue into a stable Russian task-spec backed by evi
 - Separate symptoms from causes.
 - Confirm the root cause; or narrow the problem to the smallest evidence-backed set of plausible causes.
 - Check whether a partial fix, linked PR, unmerged branch, or recent regression already explains part of the signal.
+- If the investigation ends in a proposed fix contour or implementation-ready spec, choose one explicit MVP and reject or defer the alternatives explicitly.
+- Run critique pass 1 against the proposed contour, revise it, then run critique pass 2 and revise it again.
+- For risky tasks, ground the proposed contour in the real code: verify DTOs, call sites, persistence keys, invariants, dependencies, and whether each claimed routing or state signal is real in the current checkout.
+- If critique or grounding reveals that the issue body and the current recommendation disagree materially, rewrite the canonical description so the body reflects the current evidence-backed recommendation.
 - Decide whether execution should be opt-in TDD. Use `delivery:tdd` only when a cheap deterministic failing test or reproducer can prove the changed behavior in a narrow core-logic path; avoid it for docs, deploy, CI, visual-only UI work, and flaky integration/runtime-heavy tasks.
 
 ## Required outcomes
@@ -72,6 +88,9 @@ Preserve all material user facts, capture the observed behavior and expected beh
 - If the evidence is still incomplete, rank the hypotheses by confidence and explain what evidence supports each one.
 - Record whether a recent regression, linked PR, partial fix, or unmerged branch was checked and what that check proved.
 - Record the minimal recommended implementation contour and the minimum validation needed after the fix lands.
+- If several fix paths exist, record which one is recommended and why it is the minimum sufficient route.
+- If named runs, chats, IDs, or case pairs are referenced, map them to authoritative runtime artifacts or mark the mapping as inconclusive.
+- If the result claims systemic improvement, record positive and negative proof cases.
 
 ## Linear expectations
 
@@ -85,18 +104,22 @@ The final research output should be ordered as follows:
 
 1. confirmed root cause; or top hypotheses ranked by confidence with evidence;
 2. exact problem location in code, data, and/or runtime;
-3. minimal fix plan;
-4. risks, unknowns, and what still needs checking.
+3. recommended minimal fix contour or MVP and why;
+4. proof plan and minimum required validation;
+5. risks, unknowns, and what still needs checking.
 
 ## Exit bar
 
 Before handing off to `Spec Review`:
 
 - The issue description is implementation-ready.
+- If a fix contour is proposed, one explicit MVP is chosen.
+- The issue body and the current evidence-backed recommendation do not contradict each other.
 - The workpad captures the evidence trail and the recommended fix contour.
 - The final research result can be summarized as:
   - confirmed root cause or top hypotheses with evidence;
   - exact problem location in code, data, and/or runtime;
-  - minimal fix plan;
+  - recommended minimal fix contour or MVP and why;
+  - proof plan with positive and negative proof cases when systemic improvement is claimed;
   - risks, unknowns, and what still needs checking.
 - No shipped product code changes remain in the workspace.

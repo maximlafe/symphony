@@ -69,6 +69,11 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert research_skill =~ "The final research output should be ordered as follows"
     assert research_skill =~ "exact problem location in code, data, and/or runtime"
     assert research_skill =~ "risks, unknowns, and what still needs checking"
+    assert research_skill =~ "../../design-policy.md"
+    assert research_skill =~ "Choose one explicit MVP"
+    assert research_skill =~ "critique pass 1"
+    assert research_skill =~ "critique pass 2"
+    assert research_skill =~ "positive and negative proof cases"
 
     assert plan_skill =~ "name: plan-mode"
     assert plan_skill =~ "Do not edit product code as a shipped fix."
@@ -81,5 +86,10 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert plan_skill =~ "План валидации"
     assert plan_skill =~ "Update Linear in Russian"
     assert plan_skill =~ "The final planning output should be ordered as follows"
+    assert plan_skill =~ "../../design-policy.md"
+    assert plan_skill =~ "Choose one explicit MVP"
+    assert plan_skill =~ "critique pass 1"
+    assert plan_skill =~ "critique pass 2"
+    assert plan_skill =~ "positive and negative proof cases"
   end
 end
