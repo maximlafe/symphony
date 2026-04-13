@@ -194,19 +194,18 @@ defmodule SymphonyElixir.CodexAccountProbeTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      count=0
 
-      while IFS= read -r _line; do
-        count=$((count + 1))
-
-        case "$count" in
-          1)
+      while IFS= read -r line; do
+        case "$line" in
+          *'"method":"initialize"'*)
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
-          2)
+          *'"method":"initialized"'*)
+            ;;
+          *'"method":"account/read"'*)
             printf '%s\\n' '{"id":1001,"result":{"account":{"type":"chatgpt","email":"primary@example.com","planType":"pro"},"requiresOpenaiAuth":false}}'
             ;;
-          3)
+          *'"method":"account/rateLimits/read"'*)
             printf '%s\\n' '{"id":1002,"error":{"code":-32600,"message":"codex account authentication required to read rate limits"}}'
             ;;
           *)
