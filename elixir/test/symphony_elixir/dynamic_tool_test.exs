@@ -413,6 +413,15 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     Jason.decode!(text)
   end
 
+  defp handoff_git_runner do
+    fn
+      ["rev-parse", "HEAD"], _opts -> {:ok, "abc123\n"}
+      ["rev-parse", "HEAD^{tree}"], _opts -> {:ok, "tree123\n"}
+      ["status", "--porcelain", "--untracked-files=no"], _opts -> {:ok, ""}
+      ["diff", "--name-only", "origin/main...HEAD"], _opts -> {:ok, "elixir/lib/symphony_elixir/handoff_check.ex\n"}
+    end
+  end
+
   test "sync_workpad creates a comment from file when no comment_id given" do
     test_pid = self()
     path = write_tmp_workpad("## Codex Workpad\n\nProgress.")
@@ -1181,7 +1190,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       ### Validation
 
       - [x] preflight: `make symphony-preflight`
+      - [x] cheap gate: `same HEAD targeted proof completed`
       - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+      - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
       - [x] repo validation: `make symphony-validate`
 
       ### Artifacts
@@ -1211,6 +1222,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
          }
        }}
     end
+
+    git_runner = handoff_git_runner()
 
     blocked =
       DynamicTool.execute(
@@ -1300,6 +1313,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                  flunk("unexpected handoff query: #{query}")
                end
              end,
+             git_runner: git_runner,
              gh_runner: fn args, _opts ->
                case args do
                  ["pr", "view", "52", "-R", "maximlafe/symphony", "--json", _] ->
@@ -1338,6 +1352,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "variables" => %{"id" => "LET-416", "stateId" => "in-review-state-id"}
         },
         workspace: workspace,
+        git_runner: git_runner,
         linear_client: fn query, variables, _opts ->
           cond do
             query =~ "SymphonyHandoffCheckState" ->
@@ -1364,6 +1379,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "variables" => %{"id" => "LET-416", "input" => %{"stateId" => "in-review-state-id"}}
         },
         workspace: workspace,
+        git_runner: git_runner,
         linear_client: fn query, variables, _opts ->
           cond do
             query =~ "SymphonyHandoffCheckState" ->
@@ -1390,6 +1406,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "variables" => %{}
         },
         workspace: workspace,
+        git_runner: git_runner,
         linear_client: fn query, variables, _opts ->
           cond do
             query =~ "SymphonyHandoffCheckState" ->

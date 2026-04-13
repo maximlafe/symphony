@@ -266,17 +266,17 @@ defmodule SymphonyElixir.CodexAccountProbeTest do
       File.write!(codex_binary, """
       #!/bin/sh
       trace_file="#{trace_file}"
-      count=0
 
       while IFS= read -r line; do
-        count=$((count + 1))
         printf '%s\\n' "$line" >> "$trace_file"
 
-        case "$count" in
-          1)
+        case "$line" in
+          *'"method":"initialize"'*)
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
-          2)
+          *'"method":"initialized"'*)
+            ;;
+          *'"method":"account/read"'*)
             printf '%s\\n' '{"id":1001,"result":{"account":{"type":"chatgpt","email":"primary@example.com","planType":"pro"},"requiresOpenaiAuth":false}}'
             ;;
           *)

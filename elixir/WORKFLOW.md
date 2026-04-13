@@ -123,8 +123,14 @@ Instructions:
 - This workflow is reserved for the dedicated LetterL project `Symphony` (`symphony-bd5bc5b51675`). Do not retarget it to the shared platform project.
 - Fresh workspace bootstrap is `git clone` of `maximlafe/symphony` followed by `make symphony-bootstrap`.
 - Run `make symphony-preflight` once per run before treating auth or tooling gaps as blockers.
-- Default validation gate is `make symphony-validate`; run `make symphony-live-e2e` only for explicit smoke or end-to-end tasks that should exercise real Linear and Codex services.
+- The canonical local gates are `cheap gate` and `final gate`.
+- `cheap gate` is the local stabilization gate: it includes preflight once per run, the smallest deterministic proof of the changed behavior, and class-specific targeted checks. It may run on a dirty workspace, but it never permits `git push`, PR create/update, CI wait, `github_pr_snapshot`, `github_wait_for_checks`, or `symphony_handoff_check`.
+- `final gate` is the publish/review gate: run it only on the clean committed `HEAD` that is ready to publish or hand off. It includes a successful cheap proof on the same `HEAD`, `make symphony-validate`, and any class-specific runtime/UI/stateful proof.
+- Default repo-wide validation for the final gate is `make symphony-validate`; run `make symphony-live-e2e` only for explicit smoke or end-to-end tasks that should exercise real Linear and Codex services.
 - The repo-owned review-ready gate is `make symphony-handoff-check`, backed by the `symphony_handoff_check` runtime tool and the workspace manifest at `.symphony/verification/handoff-manifest.json`.
+- The handoff manifest must fail closed unless it contains fresh final-gate metadata for the current workspace: `validation_gate.gate`, `validation_gate.change_classes`, `validation_gate.required_checks`, `validation_gate.passed_checks`, `git.head_sha`, `git.tree_sha`, and `git.worktree_clean`.
+- `SymphonyElixir.RunPhase` is observability only; `SymphonyElixir.ValidationGate` and `SymphonyElixir.HandoffCheck` own acceptance proof.
+- Comment/workpad/description-only changes without shipped code/config diff do not require local final gate rerun, but workpad edits after `symphony_handoff_check` require rerunning handoff check because the workpad digest is part of the final proof.
 - Terminal-state per-task cleanup always removes issue-prefixed task artifacts such as `/tmp/symphony-<ISSUE>-*` and `/var/tmp/symphony-<ISSUE>-*`; exact issue workspaces inside `workspace.root` are deleted only when they fall outside the retained `workspace.cleanup_keep_recent` window.
 - `workspace.cleanup_keep_recent` remains a retention setting for workspaces inside `workspace.root`; do not use it as a shared `/tmp` cleanup policy.
 - External task-scoped artifacts that should be eligible for automatic cleanup must be explicitly namespaced as `symphony-<ISSUE>-...` and validated against allowed roots.
@@ -201,6 +207,26 @@ Instructions:
 7. Before every `git push`, rerun the required validation and confirm it passes.
 8. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
 9. Merge latest `origin/main` into the branch before final handoff, resolve conflicts, and rerun required validation.
+
+## Validation gate matrix
+
+Use deterministic change classes and the strictest affected class. `mixed` is not a downgraded runtime class; it is the union of non-empty `change_classes`.
+
+| Change class | Cheap gate | Final gate | Final gate is mandatory |
+| -- | -- | -- | -- |
+| Backend-only / pure logic | targeted unit/integration proof for the touched module | cheap proof on the same `HEAD` + `make symphony-validate` | before push/re-push with code diff and before review-ready handoff |
+| Stateful / DB / schema | targeted proof + stateful or migration proof | cheap proof on the same `HEAD` + mandatory stateful/migration proof + `make symphony-validate` | before any push |
+| Hosted UI / frontend | targeted UI or local runtime/visual proof | cheap proof on the same `HEAD` + UI runtime proof + `make symphony-validate` + visual artifact | before publish for human review and after any code-changing rework |
+| Runtime / infra / workflow-contract / handoff | parser/unit smoke for the changed contract + focused reproducer | cheap proof on the same `HEAD` + targeted runtime smoke + `make symphony-validate` | before any push |
+| Docs/prose-only without executable workflow/config contract | docs review or repo-owned format/spell check when present | local full gate is not required when shipped code/config did not change | not required |
+
+Invalidation and rerun rules:
+
+- Final proof is valid only when `head_sha` and `tree_sha` match current `HEAD` and shipped paths are clean.
+- Dirty-workspace proof can count as cheap proof only; after commit, repeat final gate on the clean committed `HEAD`.
+- Code/config/workflow-contract changes after an existing PR require a fresh final gate before the next push.
+- CI failure or review feedback starts with cheap gate for the concrete failing signal. If the fix changes shipped code/config/workflow contract, final gate is required before re-push.
+- Blind reruns are not proof and do not reset the auto-fix counter.
 
 ## PR handoff protocol (required before In Review)
 
@@ -344,8 +370,13 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Validation
 
 - [ ] preflight: `make symphony-preflight`
+- [ ] cheap gate: `<same-HEAD targeted proof>`
 - [ ] red proof: `<command>` (required when `delivery:tdd`)
 - [ ] targeted tests: `<command>`
+- [ ] runtime smoke: `<command>` (runtime/infra/workflow-contract/handoff changes)
+- [ ] stateful proof: `<command>` (DB/schema/stateful changes)
+- [ ] ui runtime proof: `<command>` (hosted UI/frontend changes)
+- [ ] visual artifact: `<artifact title>` (hosted UI/frontend changes)
 - [ ] repo validation: `make symphony-validate`
 
 ### Artifacts

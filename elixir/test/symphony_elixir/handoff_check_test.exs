@@ -57,7 +57,9 @@ defmodule SymphonyElixir.HandoffCheckTest do
     ### Validation
 
     - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
     - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
     - [x] repo validation: `make symphony-validate`
 
     ### Artifacts
@@ -87,12 +89,17 @@ defmodule SymphonyElixir.HandoffCheckTest do
                  "has_actionable_feedback" => false,
                  "merge_state_status" => "CLEAN",
                  "url" => "https://example.test/pr/52"
-               }
+               },
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
              )
 
     assert manifest["passed"]
+    assert manifest["contract_version"] == 2
     assert manifest["profile"] == "runtime"
     assert manifest["profile_source"] == "label"
+    assert manifest["validation_gate"]["gate"] == "final"
+    assert manifest["git"]["head_sha"] == "abc123"
     assert manifest["missing_items"] == []
     assert manifest["summary"] =~ "verification passed"
     assert manifest["workpad"]["sha256"]
@@ -172,7 +179,10 @@ defmodule SymphonyElixir.HandoffCheckTest do
     ### Validation
 
     - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD UI proof completed`
     - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] ui runtime proof: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] visual artifact: `notes.txt`
     - [x] repo validation: `make symphony-validate`
 
     ### Artifacts
@@ -205,7 +215,10 @@ defmodule SymphonyElixir.HandoffCheckTest do
     ### Validation
 
     - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD UI proof completed`
     - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] ui runtime proof: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] visual artifact: `notes.txt`
     - [x] repo validation: `make symphony-validate`
 
     ### Artifacts
@@ -225,7 +238,9 @@ defmodule SymphonyElixir.HandoffCheckTest do
                issue_id: "LET-416",
                profile: "ui",
                attachments: [%{"title" => "notes.txt"}],
-               pr_snapshot: green_pr_snapshot()
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["ui"],
+               git: git_metadata()
              )
 
     assert "artifact manifest entry must include an attachment title in backticks" in ui_manifest["missing_items"]
@@ -239,6 +254,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     ### Validation
 
     - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
     - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
     - [x] repo validation: `make symphony-validate`
 
@@ -270,8 +286,10 @@ defmodule SymphonyElixir.HandoffCheckTest do
     ### Validation
 
     - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
     - [x] red proof: `mix test test/symphony_elixir/handoff_check_test.exs:235`
     - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
     - [x] repo validation: `make symphony-validate`
 
     ### Artifacts
@@ -291,7 +309,9 @@ defmodule SymphonyElixir.HandoffCheckTest do
                issue_id: "LET-431",
                labels: ["delivery:tdd", "verification:runtime"],
                attachments: [%{"title" => "runtime-proof.log"}],
-               pr_snapshot: green_pr_snapshot()
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
              )
 
     assert passing_manifest["missing_items"] == []
@@ -304,20 +324,22 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     File.write!(workpad_path, "original")
 
-    manifest = %{
-      "passed" => true,
-      "issue" => %{"id" => "LET-416"},
-      "workpad" => %{
-        "file_path" => workpad_path,
-        "sha256" => :crypto.hash(:sha256, "original") |> Base.encode16(case: :lower)
+    manifest =
+      %{
+        "passed" => true,
+        "issue" => %{"id" => "LET-416"},
+        "workpad" => %{
+          "file_path" => workpad_path,
+          "sha256" => :crypto.hash(:sha256, "original") |> Base.encode16(case: :lower)
+        }
       }
-    }
+      |> Map.merge(valid_gate_manifest_fields())
 
     assert {:ok, _path} = HandoffCheck.write_manifest(manifest, manifest_path)
     File.write!(workpad_path, "changed")
 
     assert {:error, :handoff_manifest_stale, details} =
-             HandoffCheck.review_ready_transition_allowed?(manifest_path, "LET-416", "In Review")
+             HandoffCheck.review_ready_transition_allowed?(manifest_path, "LET-416", "In Review", nil, git_runner: git_runner())
 
     assert details["reason"] =~ "workpad changed"
   end
@@ -415,36 +437,141 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert {:ok, _path} =
              HandoffCheck.write_manifest(
-               %{
-                 "passed" => true,
-                 "issue" => %{"id" => "LET-416"},
-                 "workpad" => %{
-                   "file_path" => Path.join(manifest_dir, "missing-workpad.md"),
-                   "sha256" => sha256("missing")
-                 }
-               },
+               Map.merge(
+                 %{
+                   "passed" => true,
+                   "issue" => %{"id" => "LET-416"},
+                   "workpad" => %{
+                     "file_path" => Path.join(manifest_dir, "missing-workpad.md"),
+                     "sha256" => sha256("missing")
+                   }
+                 },
+                 valid_gate_manifest_fields()
+               ),
                unreadable_workpad_manifest_path
              )
 
     assert {:error, :handoff_manifest_invalid, details} =
-             HandoffCheck.review_ready_transition_allowed?(unreadable_workpad_manifest_path, "LET-416", "In Review")
+             HandoffCheck.review_ready_transition_allowed?(
+               unreadable_workpad_manifest_path,
+               "LET-416",
+               "In Review",
+               nil,
+               git_runner: git_runner()
+             )
 
     assert details["reason"] =~ "cannot read workpad referenced by manifest"
 
     assert {:ok, _path} =
              HandoffCheck.write_manifest(
-               %{
-                 "passed" => true,
-                 "issue" => %{"id" => "LET-416"},
-                 "workpad" => %{}
-               },
+               Map.merge(
+                 %{
+                   "passed" => true,
+                   "issue" => %{"id" => "LET-416"},
+                   "workpad" => %{}
+                 },
+                 valid_gate_manifest_fields()
+               ),
                no_workpad_manifest_path
              )
 
     assert {:error, :handoff_manifest_invalid, details} =
-             HandoffCheck.review_ready_transition_allowed?(no_workpad_manifest_path, "LET-416", "In Review")
+             HandoffCheck.review_ready_transition_allowed?(
+               no_workpad_manifest_path,
+               "LET-416",
+               "In Review",
+               nil,
+               git_runner: git_runner()
+             )
 
     assert details["reason"] =~ "does not point to a workpad file"
+  end
+
+  test "review_ready_transition_allowed? blocks missing or stale validation gate metadata" do
+    workpad_path = Path.join(System.tmp_dir!(), "handoff-check-gate-workpad-#{System.unique_integer([:positive])}.md")
+    missing_gate_manifest_path = Path.join(System.tmp_dir!(), "handoff-check-missing-gate-#{System.unique_integer([:positive])}.json")
+    stale_head_manifest_path = Path.join(System.tmp_dir!(), "handoff-check-stale-head-#{System.unique_integer([:positive])}.json")
+
+    File.write!(workpad_path, "unchanged")
+
+    base_manifest = %{
+      "passed" => true,
+      "issue" => %{"id" => "LET-416"},
+      "workpad" => %{
+        "file_path" => workpad_path,
+        "sha256" => sha256("unchanged")
+      }
+    }
+
+    assert {:ok, _path} = HandoffCheck.write_manifest(base_manifest, missing_gate_manifest_path)
+
+    assert {:error, :handoff_manifest_stale, missing_details} =
+             HandoffCheck.review_ready_transition_allowed?(
+               missing_gate_manifest_path,
+               "LET-416",
+               "In Review",
+               nil,
+               git_runner: git_runner()
+             )
+
+    assert "validation gate final proof metadata is missing" in missing_details["details"]
+
+    stale_gate =
+      valid_gate_manifest_fields()
+      |> put_in(["git", "head_sha"], "stale-head")
+
+    assert {:ok, _path} =
+             HandoffCheck.write_manifest(Map.merge(base_manifest, stale_gate), stale_head_manifest_path)
+
+    assert {:error, :handoff_manifest_stale, stale_details} =
+             HandoffCheck.review_ready_transition_allowed?(
+               stale_head_manifest_path,
+               "LET-416",
+               "In Review",
+               nil,
+               git_runner: git_runner()
+             )
+
+    assert "final proof HEAD does not match current HEAD" in stale_details["details"]
+  end
+
+  test "evaluate parses Russian workpad section aliases for validation and artifacts" do
+    workpad = """
+    ## Рабочий журнал Codex
+
+    ### Проверка
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Артефакты
+
+    - [x] вложение: `runtime-proof.log` -> runtime smoke log from the health check
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Runtime proof, tests, and repo validation are complete.
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-416",
+               profile: "runtime",
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert manifest["passed"]
+    assert "Проверка" in manifest["workpad"]["sections"]
+    assert "Артефакты" in manifest["workpad"]["sections"]
   end
 
   test "evaluate accepts ui and data-extraction proof claims and rejects bad PR snapshots" do
@@ -454,7 +581,10 @@ defmodule SymphonyElixir.HandoffCheckTest do
     ### Validation
 
     - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD UI proof completed`
     - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] ui runtime proof: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] visual artifact: `notes.txt`
     - [x] repo validation: `make symphony-validate`
 
     ### Artifacts
@@ -474,7 +604,9 @@ defmodule SymphonyElixir.HandoffCheckTest do
                issue_id: "LET-416",
                profile: "ui",
                attachments: [%{"title" => "notes.txt"}],
-               pr_snapshot: green_pr_snapshot()
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["ui"],
+               git: git_metadata()
              )
 
     assert ui_manifest["profile"] == "ui"
@@ -485,6 +617,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     ### Validation
 
     - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
     - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
     - [x] repo validation: `make symphony-validate`
 
@@ -505,7 +638,9 @@ defmodule SymphonyElixir.HandoffCheckTest do
                issue_id: "LET-416",
                profile: "data-extraction",
                attachments: [%{"title" => "notes.txt"}],
-               pr_snapshot: green_pr_snapshot()
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
              )
 
     assert data_manifest["profile"] == "data-extraction"
@@ -521,13 +656,114 @@ defmodule SymphonyElixir.HandoffCheckTest do
                  "has_pending_checks" => true,
                  "has_actionable_feedback" => true,
                  "merge_state_status" => "DIRTY"
-               }
+               },
+               change_classes: ["ui"],
+               git: git_metadata()
              )
 
     assert "pull request checks are not fully green" in pr_manifest["missing_items"]
     assert "pull request still has pending checks" in pr_manifest["missing_items"]
     assert "pull request still has actionable feedback" in pr_manifest["missing_items"]
     assert "pull request is not merge-ready" in pr_manifest["missing_items"]
+  end
+
+  test "evaluate accepts explicit validation gate metadata and normalizes gate option shapes" do
+    explicit_gate =
+      valid_gate_manifest_fields()
+      |> Map.fetch!("validation_gate")
+      |> Map.put("git", Map.put(git_metadata(), "changed_paths", :invalid))
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-416",
+               profile: "runtime",
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               validation_gate: explicit_gate,
+               validation_gate_errors: :invalid,
+               git: :invalid
+             )
+
+    assert manifest["passed"]
+    assert manifest["git"]["changed_paths"] == []
+  end
+
+  test "review_ready_transition_allowed? exercises default git runner success and failure paths" do
+    repo_path = init_git_repo!()
+    workpad_path = Path.join(repo_path, "workpad.md")
+    manifest_path = Path.join(repo_path, "handoff-manifest.json")
+    File.write!(workpad_path, "unchanged")
+
+    manifest =
+      %{
+        "passed" => true,
+        "issue" => %{"id" => "LET-416"},
+        "workpad" => %{
+          "file_path" => workpad_path,
+          "sha256" => sha256("unchanged")
+        }
+      }
+      |> Map.merge(valid_gate_manifest_fields(git_metadata_for_repo!(repo_path)))
+
+    assert {:ok, _path} = HandoffCheck.write_manifest(manifest, manifest_path)
+
+    assert :ok =
+             HandoffCheck.review_ready_transition_allowed?(
+               manifest_path,
+               "LET-416",
+               "In Review",
+               nil,
+               repo_path: repo_path
+             )
+
+    assert {:error, :handoff_manifest_invalid, details} =
+             HandoffCheck.review_ready_transition_allowed?(
+               manifest_path,
+               "LET-416",
+               "In Review",
+               nil,
+               repo_path: Path.join(repo_path, "missing-repo")
+             )
+
+    assert details["reason"] == "cannot read current git metadata"
+    assert details["details"] =~ "git_status"
+  end
+
+  test "review_ready_transition_allowed? surfaces missing git executable from the default runner" do
+    repo_path = init_git_repo!()
+    workpad_path = Path.join(repo_path, "workpad.md")
+    manifest_path = Path.join(repo_path, "handoff-manifest.json")
+    File.write!(workpad_path, "unchanged")
+
+    manifest =
+      %{
+        "passed" => true,
+        "issue" => %{"id" => "LET-416"},
+        "workpad" => %{
+          "file_path" => workpad_path,
+          "sha256" => sha256("unchanged")
+        }
+      }
+      |> Map.merge(valid_gate_manifest_fields(git_metadata_for_repo!(repo_path)))
+
+    assert {:ok, _path} = HandoffCheck.write_manifest(manifest, manifest_path)
+
+    previous_path = System.get_env("PATH")
+    on_exit(fn -> restore_env("PATH", previous_path) end)
+    System.put_env("PATH", "")
+
+    assert {:error, :handoff_manifest_invalid, details} =
+             HandoffCheck.review_ready_transition_allowed?(
+               manifest_path,
+               "LET-416",
+               "In Review",
+               nil,
+               repo_path: repo_path
+             )
+
+    assert details["reason"] == "cannot read current git metadata"
+    assert details["details"] =~ "git_unavailable"
   end
 
   test "evaluate normalizes loose artifact metadata and flags missing attachment claims" do
@@ -598,6 +834,30 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "uploaded attachment `evidence.txt` is missing a concrete proof claim" in claimless_manifest["missing_items"]
   end
 
+  defp runtime_workpad do
+    """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log from the health check
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Runtime proof, tests, and repo validation are complete.
+    """
+  end
+
   defp green_pr_snapshot do
     %{
       "all_checks_green" => true,
@@ -605,6 +865,63 @@ defmodule SymphonyElixir.HandoffCheckTest do
       "has_actionable_feedback" => false,
       "merge_state_status" => "CLEAN",
       "url" => "https://example.test/pr/52"
+    }
+  end
+
+  defp git_metadata do
+    %{
+      "head_sha" => "abc123",
+      "tree_sha" => "tree123",
+      "worktree_clean" => true
+    }
+  end
+
+  defp valid_gate_manifest_fields(git_metadata \\ git_metadata()) do
+    %{
+      "validation_gate" => %{
+        "gate" => "final",
+        "change_classes" => ["backend_only"],
+        "strictest_change_class" => "backend_only",
+        "requires_final_gate" => true,
+        "required_checks" => ["preflight", "cheap_gate", "targeted_tests", "repo_validation"],
+        "passed_checks" => ["preflight", "cheap_gate", "targeted_tests", "repo_validation"],
+        "remote_finalization_allowed" => true
+      },
+      "git" => git_metadata
+    }
+  end
+
+  defp git_runner do
+    fn
+      ["rev-parse", "HEAD"], _opts -> {:ok, "abc123\n"}
+      ["rev-parse", "HEAD^{tree}"], _opts -> {:ok, "tree123\n"}
+      ["status", "--porcelain", "--untracked-files=no"], _opts -> {:ok, ""}
+    end
+  end
+
+  defp init_git_repo! do
+    repo_path = Path.join(System.tmp_dir!(), "handoff-check-repo-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(repo_path)
+    File.write!(Path.join(repo_path, "tracked.txt"), "tracked\n")
+
+    assert {_, 0} = System.cmd("git", ["init"], cd: repo_path, stderr_to_stdout: true)
+    assert {_, 0} = System.cmd("git", ["config", "user.name", "Symphony Tests"], cd: repo_path)
+    assert {_, 0} = System.cmd("git", ["config", "user.email", "symphony-tests@example.com"], cd: repo_path)
+    assert {_, 0} = System.cmd("git", ["add", "tracked.txt"], cd: repo_path)
+    assert {_, 0} = System.cmd("git", ["commit", "-m", "init"], cd: repo_path, stderr_to_stdout: true)
+
+    repo_path
+  end
+
+  defp git_metadata_for_repo!(repo_path) do
+    {head_sha, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: repo_path)
+    {tree_sha, 0} = System.cmd("git", ["rev-parse", "HEAD^{tree}"], cd: repo_path)
+    {status, 0} = System.cmd("git", ["status", "--porcelain", "--untracked-files=no"], cd: repo_path)
+
+    %{
+      "head_sha" => String.trim(head_sha),
+      "tree_sha" => String.trim(tree_sha),
+      "worktree_clean" => String.trim(status) == ""
     }
   end
 

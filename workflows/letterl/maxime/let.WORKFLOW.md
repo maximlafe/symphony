@@ -718,6 +718,42 @@ Run `make symphony-preflight` once per run before treating auth/env/tooling gaps
 - Ticket-authored validation or test-plan steps are mandatory on top of this matrix.
 - Only move to `Blocked` when the task requires a matrix item that still cannot run after `make symphony-preflight` identifies the missing capability.
 
+## Two-tier validation contract
+
+Canonical validation terms:
+
+- `cheap gate` is the local stabilization gate. Run it during implementation and after each meaningful code-change batch. It may run on a dirty workspace and can prove the immediate fix, but it never unlocks `git push`, PR publication/update, CI wait, or review-ready handoff.
+- `final gate` is the publish/review gate. Run it only on the clean committed `HEAD` that is ready to publish or hand off. It must include the successful cheap proof for the same `HEAD`, repo validation, and any class-specific runtime/UI/stateful proof required by the matrix.
+- `RunPhase` is observability only. It can describe `targeted tests`, `runtime proof`, `full validate`, `waiting CI`, or `publishing PR`, but it is not acceptance truth.
+- `symphony_handoff_check` remains the final fail-closed review-ready gate. Do not replace it with agent judgment or a prompt-only heuristic.
+
+Decision matrix:
+
+| Change class | Cheap gate | Final gate | When final gate is mandatory |
+| -- | -- | -- | -- |
+| Backend-only / pure logic | targeted unit/integration tests or deterministic reproducer for the touched module | cheap gate on the same `HEAD` + repo validation | before the first push, every code-changing re-push, and review-ready handoff |
+| DB/schema/stateful | targeted tests + stateful or migration proof for the touched path | cheap gate on the same `HEAD` + mandatory stateful/migration proof + repo validation | before any push |
+| Hosted UI / frontend | targeted UI test or local runtime/visual proof for the touched flow | cheap gate on the same `HEAD` + UI runtime proof + repo validation + visual artifact | before publish for human review and after code-changing rework |
+| Runtime / infra / workflow-contract / handoff | parser/unit smoke for the changed contract + focused reproducer for the failure point | cheap gate on the same `HEAD` + repo validation + targeted runtime smoke | before any push |
+| Docs/prose-only without executable workflow/config contract | spell/format/manual review when repo-owned command exists | local full gate is not required when shipped code/config did not change | not required; executable workflow/config changes are runtime/contract changes |
+| Mixed changes | union of all affected cheap gates | union of final requirements with the strictest affected class | use the strictest affected class; never downgrade mixed/runtime-critical changes |
+
+Runtime contract:
+
+- `validation_gate` is the machine-readable gate axis. The runtime owner is `SymphonyElixir.ValidationGate`; the prose owners are this workflow and repo-local `WORKFLOW.md`.
+- `change_classes` is a non-empty list, not a downgraded `mixed` class. Deterministic path-based inference must fail closed to runtime/contract risk for unknown shipped paths.
+- `required_checks` is the union of class requirements; `passed_checks` records the proof kinds actually present in the workpad.
+- The final handoff manifest must include `validation_gate.gate`, `validation_gate.change_classes`, `validation_gate.required_checks`, `validation_gate.passed_checks`, `git.head_sha`, `git.tree_sha`, and `git.worktree_clean`.
+
+Invalidation and rerun policy:
+
+- Any product-code/config/workflow-contract diff invalidates cheap and final proof for the affected `HEAD`.
+- Final proof is valid only when `proof.head_sha == git rev-parse HEAD`, `proof.tree_sha == git rev-parse HEAD^{tree}`, and shipped paths are clean.
+- Tests that passed on a dirty workspace remain cheap/development proof after commit; final gate must rerun on clean committed `HEAD`.
+- Description/comment/workpad-only edits without shipped diff do not require local full gate rerun. If the workpad changes after `symphony_handoff_check`, rerun only handoff check so the digest is fresh.
+- After CI failure or review feedback, start local rework with cheap gate for the concrete failing signal. If the fix changes code/config/workflow contract, run final gate again before the next push.
+- Blind remote reruns do not count as proof and do not reset the auto-fix counter. Remote-only or external blockers should use the classified blocked/decision path instead of speculative full validation loops.
+
 ## PR feedback and checks protocol (required before In Review)
 
 1. Identify the PR number from issue links or attachments.
@@ -951,7 +987,14 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 ### Проверка
 
-- [ ] целевая проверка: `<command>`
+- [ ] preflight: `make symphony-preflight`
+- [ ] cheap gate: `<same-HEAD targeted proof>`
+- [ ] targeted tests: `<command>`
+- [ ] runtime smoke: `<command>` (для runtime/infra/workflow-contract/handoff изменений)
+- [ ] stateful proof: `<command>` (для DB/schema/stateful изменений)
+- [ ] ui runtime proof: `<command>` (для hosted UI/frontend изменений)
+- [ ] visual artifact: `<artifact title>` (для hosted UI/frontend изменений)
+- [ ] repo validation: `<repo-owned final validation command>`
 
 ### Артефакты
 

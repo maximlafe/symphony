@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.{Config, HandoffCheck, Linear.Client, PathSafety}
+  alias SymphonyElixir.{Config, HandoffCheck, Linear.Client, PathSafety, ValidationGate}
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
@@ -400,6 +400,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
          {:ok, workpad_body} <- read_workpad_file(workpad_path, :symphony_handoff_check),
          {:ok, issue_context} <- fetch_handoff_issue_context(issue_id, linear_client),
          {:ok, pr_snapshot} <- build_github_pr_snapshot(repo, pr_number, true, opts) do
+      validation_context = build_handoff_validation_context(opts)
+
       result =
         HandoffCheck.evaluate(
           workpad_body,
@@ -412,7 +414,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           labels: Map.get(issue_context, "labels", []),
           attachments: Map.get(issue_context, "attachments", []),
           pr_snapshot: pr_snapshot,
-          profile_labels: Config.settings!().verification.profile_labels
+          profile_labels: Config.settings!().verification.profile_labels,
+          change_classes: validation_context.change_classes,
+          git: validation_context.git,
+          validation_gate_errors: validation_context.errors
         )
 
       handoff_check_response(result, manifest_path)
@@ -475,6 +480,103 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     case HandoffCheck.write_manifest(manifest, manifest_path) do
       {:ok, persisted_path} -> {:ok, Map.put(manifest, "manifest_path", persisted_path)}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp build_handoff_validation_context(opts) do
+    workspace = Keyword.get(opts, :workspace) || File.cwd!()
+
+    {git_metadata, git_errors} = build_current_git_metadata(workspace, opts)
+    {changed_paths, path_errors} = build_changed_paths(workspace, opts)
+
+    {change_classes, class_errors} =
+      case ValidationGate.classify_paths(changed_paths) do
+        {:ok, classes} -> {classes, []}
+        {:error, reasons} -> {[], reasons}
+      end
+
+    %{
+      git: Map.put(git_metadata, "changed_paths", changed_paths),
+      change_classes: change_classes,
+      errors: Enum.uniq(git_errors ++ path_errors ++ class_errors)
+    }
+  end
+
+  defp build_current_git_metadata(workspace, opts) do
+    runner = Keyword.get(opts, :git_runner, &default_git_runner/2)
+
+    with {:ok, head_sha} <- run_git(runner, workspace, ["rev-parse", "HEAD"]),
+         {:ok, tree_sha} <- run_git(runner, workspace, ["rev-parse", "HEAD^{tree}"]),
+         {:ok, status} <- run_git(runner, workspace, ["status", "--porcelain", "--untracked-files=no"]) do
+      {
+        %{
+          "head_sha" => String.trim(head_sha),
+          "tree_sha" => String.trim(tree_sha),
+          "worktree_clean" => String.trim(status) == ""
+        },
+        []
+      }
+    else
+      {:error, reason} ->
+        {%{}, ["validation gate git metadata unavailable: #{inspect(reason)}"]}
+    end
+  end
+
+  defp build_changed_paths(workspace, opts) do
+    runner = Keyword.get(opts, :git_runner, &default_git_runner/2)
+    base_branch = base_branch(workspace)
+
+    case run_git(runner, workspace, ["diff", "--name-only", "origin/#{base_branch}...HEAD"]) do
+      {:ok, output} ->
+        paths = split_git_lines(output)
+        {paths, if(paths == [], do: ["validation gate changed_paths is empty"], else: [])}
+
+      {:error, reason} ->
+        {[], ["validation gate changed_paths unavailable: #{inspect(reason)}"]}
+    end
+  end
+
+  defp base_branch(workspace) do
+    case File.read(Path.join(workspace, ".symphony-base-branch")) do
+      {:ok, body} ->
+        body
+        |> String.trim()
+        |> case do
+          "" -> "main"
+          branch -> branch
+        end
+
+      _ ->
+        "main"
+    end
+  end
+
+  defp split_git_lines(output) when is_binary(output) do
+    output
+    |> String.split(~r/\R/, trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp run_git(runner, workspace, args) when is_function(runner, 2) do
+    runner.(args, workspace: workspace)
+  end
+
+  defp default_git_runner(args, opts) do
+    workspace = Keyword.get(opts, :workspace)
+
+    cmd_opts =
+      [stderr_to_stdout: true]
+      |> maybe_put_cd(workspace)
+
+    try do
+      case System.cmd("git", args, cmd_opts) do
+        {output, 0} -> {:ok, output}
+        {output, status} -> {:error, {:git_status, status, String.trim(output)}}
+      end
+    rescue
+      error in ErlangError ->
+        {:error, {:git_unavailable, error.original}}
     end
   end
 
@@ -1072,7 +1174,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       case HandoffCheck.review_ready_transition_allowed?(
              expected_manifest_path,
              issue_id,
-             state_name
+             state_name,
+             nil,
+             repo_path: workspace,
+             git_runner: Keyword.get(opts, :git_runner)
            ) do
         :ok ->
           :ok
