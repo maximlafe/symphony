@@ -1171,13 +1171,16 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       workspace = Keyword.get(opts, :workspace)
       expected_manifest_path = expand_upload_path(manifest_path, workspace)
 
+      handoff_opts =
+        [repo_path: workspace]
+        |> maybe_put_runner_opt(:git_runner, Keyword.get(opts, :git_runner))
+
       case HandoffCheck.review_ready_transition_allowed?(
              expected_manifest_path,
              issue_id,
              state_name,
              nil,
-             repo_path: workspace,
-             git_runner: Keyword.get(opts, :git_runner)
+             handoff_opts
            ) do
         :ok ->
           :ok
@@ -1202,6 +1205,12 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp review_ready_issue_update_query?(query) when is_binary(query) do
     Regex.match?(~r/\bissueUpdate\s*\(/, query)
   end
+
+  defp maybe_put_runner_opt(opts, key, runner) when is_function(runner, 2) do
+    Keyword.put(opts, key, runner)
+  end
+
+  defp maybe_put_runner_opt(opts, _key, _runner), do: opts
 
   defp review_ready_state_id(query, variables) do
     possible_graphql_value(query, variables, [
