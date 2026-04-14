@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.{
     AgentRunner,
     Config,
+    ControllerFinalizer,
     ErrorClassifier,
     ResumeCheckpoint,
     RunPhase,
@@ -52,6 +53,8 @@ defmodule SymphonyElixir.Orchestrator do
       :tick_timer_ref,
       :tick_token,
       :codex_account_probe_fun,
+      :controller_finalizer_fun,
+      :controller_finalizer_eligible_fun,
       :last_codex_account_probe_at_ms,
       :last_full_codex_account_probe_at_ms,
       :last_housekeeping_at_ms,
@@ -91,6 +94,8 @@ defmodule SymphonyElixir.Orchestrator do
       tick_timer_ref: nil,
       tick_token: nil,
       codex_account_probe_fun: Keyword.get(opts, :codex_account_probe_fun, &AccountProbe.probe_accounts/2),
+      controller_finalizer_fun: Keyword.get(opts, :controller_finalizer_fun, &ControllerFinalizer.run/3),
+      controller_finalizer_eligible_fun: Keyword.get(opts, :controller_finalizer_eligible_fun, &ControllerFinalizer.eligible?/2),
       last_codex_account_probe_at_ms: nil,
       last_full_codex_account_probe_at_ms: nil,
       last_housekeeping_at_ms: nil,
@@ -178,7 +183,7 @@ defmodule SymphonyElixir.Orchestrator do
 
         state =
           with_log_metadata(log_metadata, fn ->
-            handle_agent_exit_reason(
+            handle_running_entry_exit(
               state,
               issue_id,
               running_entry,
@@ -237,6 +242,39 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+
+  def handle_info({:controller_finalizer_result, issue_id, result}, %{running: running} = state) do
+    case Map.get(running, issue_id) do
+      %{worker_kind: :controller_finalizer} ->
+        {running_entry, state} = pop_running_entry(state, issue_id)
+        state = record_session_completion_totals(state, running_entry)
+
+        if is_reference(running_entry.ref) do
+          Process.demonitor(running_entry.ref, [:flush])
+        end
+
+        identifier = Map.get(running_entry, :identifier)
+        trace_id = running_entry_trace_id(running_entry)
+
+        state =
+          with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
+            handle_controller_finalizer_result(
+              state,
+              issue_id,
+              running_entry,
+              identifier,
+              trace_id,
+              result
+            )
+          end)
+
+        notify_dashboard()
+        {:noreply, state}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
 
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
@@ -545,6 +583,9 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp restart_stalled_issue(state, _issue_id, %{worker_kind: :controller_finalizer}, _now, _timeout_ms),
+    do: state
+
   defp restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
     elapsed_ms = stall_elapsed_ms(running_entry, now)
 
@@ -783,20 +824,36 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp do_dispatch_issue(%State{} = state, issue, attempt, trace_id, retry_delay_type, resume_checkpoint) do
-    case active_codex_account(state) do
-      nil ->
+    resolved_resume_checkpoint = resolve_resume_checkpoint(issue, resume_checkpoint)
+    trace_id = dispatch_trace_id(issue, trace_id)
+
+    case maybe_dispatch_controller_finalizer(
+           state,
+           issue,
+           attempt,
+           trace_id,
+           retry_delay_type,
+           resolved_resume_checkpoint
+         ) do
+      {:dispatched, state} ->
         state
 
-      codex_account ->
-        dispatch_issue_with_account(
-          state,
-          issue,
-          attempt,
-          codex_account,
-          dispatch_trace_id(issue, trace_id),
-          retry_delay_type,
-          resolve_resume_checkpoint(issue, resume_checkpoint)
-        )
+      :not_applicable ->
+        case active_codex_account(state) do
+          nil ->
+            state
+
+          codex_account ->
+            dispatch_issue_with_account(
+              state,
+              issue,
+              attempt,
+              codex_account,
+              trace_id,
+              retry_delay_type,
+              resolved_resume_checkpoint
+            )
+        end
     end
   end
 
@@ -1029,6 +1086,221 @@ defmodule SymphonyElixir.Orchestrator do
         resume_checkpoint: capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
       }
     )
+  end
+
+  defp handle_controller_finalizer_result(
+         state,
+         issue_id,
+         running_entry,
+         identifier,
+         trace_id,
+         result
+       ) do
+    issue = Map.get(running_entry, :issue)
+    continuation_attempt = next_continuation_attempt(running_entry)
+    fallback_attempt = next_failure_attempt_from_running(running_entry)
+
+    case result do
+      {:ok, %{checkpoint: checkpoint}} ->
+        Logger.info("Controller finalizer succeeded for issue_id=#{issue_id} issue_identifier=#{identifier}; releasing claim")
+
+        state
+        |> complete_issue(issue_id)
+        |> release_issue_claim(issue_id)
+        |> Map.update!(:retry_attempts, &Map.delete(&1, issue_id))
+        |> maybe_store_finalizer_checkpoint(issue_id, checkpoint)
+
+      {:retry, %{checkpoint: checkpoint, reason: reason}} ->
+        Logger.info("Controller finalizer requested retry for issue_id=#{issue_id} issue_identifier=#{identifier}: #{reason}")
+
+        state
+        |> complete_issue(issue_id)
+        |> maybe_store_finalizer_checkpoint(issue_id, checkpoint)
+        |> schedule_issue_retry(issue_id, continuation_attempt, %{
+          identifier: identifier,
+          trace_id: trace_id,
+          delay_type: :continuation,
+          resume_checkpoint: checkpoint,
+          error: reason,
+          error_class: ErrorClassifier.to_string(:transient)
+        })
+
+      {:fallback, %{checkpoint: checkpoint, reason: reason}} ->
+        Logger.info("Controller finalizer returned action-required fallback for issue_id=#{issue_id} issue_identifier=#{identifier}: #{reason}")
+
+        state
+        |> complete_issue(issue_id)
+        |> maybe_store_finalizer_checkpoint(issue_id, checkpoint)
+        |> schedule_issue_retry(issue_id, fallback_attempt, %{
+          identifier: identifier,
+          trace_id: trace_id,
+          delay_type: nil,
+          resume_checkpoint: checkpoint,
+          error: reason,
+          error_class: ErrorClassifier.to_string(:transient)
+        })
+
+      {:not_applicable, _payload} ->
+        Logger.info("Controller finalizer returned not_applicable for issue_id=#{issue_id} issue_identifier=#{identifier}; falling back to agent run")
+
+        dispatch_issue(
+          state |> complete_issue(issue_id),
+          issue,
+          fallback_attempt,
+          trace_id,
+          nil,
+          nil
+        )
+
+      _ ->
+        Logger.warning("Controller finalizer returned unexpected result for issue_id=#{issue_id} issue_identifier=#{identifier}: #{inspect(result)}")
+
+        state
+        |> complete_issue(issue_id)
+        |> schedule_issue_retry(issue_id, fallback_attempt, %{
+          identifier: identifier,
+          trace_id: trace_id,
+          error: "controller finalizer returned unexpected result",
+          error_class: ErrorClassifier.to_string(:transient),
+          delay_type: nil
+        })
+    end
+  end
+
+  defp handle_controller_finalizer_exit_reason(
+         state,
+         issue_id,
+         running_entry,
+         identifier,
+         trace_id,
+         reason
+       ) do
+    attempt = next_failure_attempt_from_running(running_entry)
+    checkpoint = Map.get(running_entry, :resume_checkpoint)
+
+    Logger.warning("Controller finalizer worker exited for issue_id=#{issue_id} issue_identifier=#{identifier} reason=#{inspect(reason)}")
+
+    state
+    |> complete_issue(issue_id)
+    |> schedule_issue_retry(issue_id, attempt, %{
+      identifier: identifier,
+      trace_id: trace_id,
+      error: "controller finalizer exited: #{inspect(reason)}",
+      error_class: ErrorClassifier.to_string(:transient),
+      delay_type: nil,
+      resume_checkpoint: checkpoint
+    })
+  end
+
+  defp maybe_store_finalizer_checkpoint(state, _issue_id, checkpoint) when not is_map(checkpoint), do: state
+
+  defp maybe_store_finalizer_checkpoint(state, issue_id, checkpoint) do
+    if Map.has_key?(state.retry_attempts, issue_id) do
+      update_in(state.retry_attempts[issue_id][:resume_checkpoint], fn _ -> checkpoint end)
+    else
+      state
+    end
+  end
+
+  defp maybe_dispatch_controller_finalizer(
+         %State{} = state,
+         %Issue{} = issue,
+         attempt,
+         trace_id,
+         retry_delay_type,
+         resume_checkpoint
+       ) do
+    eligible_fun = Map.get(state, :controller_finalizer_eligible_fun)
+
+    if is_function(eligible_fun, 2) and eligible_fun.(issue, resume_checkpoint) do
+      case dispatch_issue_with_controller_finalizer(
+             state,
+             issue,
+             attempt,
+             trace_id,
+             retry_delay_type,
+             resume_checkpoint
+           ) do
+        {:ok, updated_state} -> {:dispatched, updated_state}
+        {:error, _reason} -> :not_applicable
+      end
+    else
+      :not_applicable
+    end
+  end
+
+  defp dispatch_issue_with_controller_finalizer(
+         %State{} = state,
+         %Issue{} = issue,
+         attempt,
+         trace_id,
+         retry_delay_type,
+         resume_checkpoint
+       ) do
+    recipient = self()
+    finalizer_fun = Map.get(state, :controller_finalizer_fun, &ControllerFinalizer.run/3)
+
+    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+           result = finalizer_fun.(issue, resume_checkpoint, trace_id: trace_id)
+           send(recipient, {:controller_finalizer_result, issue.id, result})
+         end) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+        started_at = DateTime.utc_now()
+
+        running =
+          Map.put(
+            state.running,
+            issue.id,
+            RunPhase.initialize(
+              %{
+                pid: pid,
+                ref: ref,
+                identifier: issue.identifier,
+                issue: issue,
+                trace_id: trace_id,
+                session_id: nil,
+                codex_account_id: nil,
+                worker_kind: :controller_finalizer,
+                resume_checkpoint: resume_checkpoint,
+                last_codex_message: nil,
+                last_codex_timestamp: nil,
+                last_codex_event: nil,
+                codex_app_server_pid: nil,
+                codex_input_tokens: 0,
+                codex_output_tokens: 0,
+                codex_total_tokens: 0,
+                codex_last_reported_input_tokens: 0,
+                codex_last_reported_output_tokens: 0,
+                codex_last_reported_total_tokens: 0,
+                turn_count: 0,
+                retry_attempt: normalize_retry_attempt(attempt),
+                retry_delay_type: retry_delay_type,
+                started_at: started_at
+              },
+              started_at
+            )
+          )
+
+        with_log_metadata(issue_log_metadata(issue.id, issue.identifier, nil, trace_id), fn ->
+          Logger.info("Dispatching issue to controller finalizer: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}")
+        end)
+
+        {:ok,
+         %{
+           state
+           | running: running,
+             claimed: MapSet.put(state.claimed, issue.id),
+             retry_attempts: Map.delete(state.retry_attempts, issue.id)
+         }}
+
+      {:error, reason} ->
+        with_log_metadata(issue_log_metadata(issue.id, issue.identifier, nil, trace_id), fn ->
+          Logger.warning("Controller finalizer dispatch failed for #{issue_context(issue)}: #{inspect(reason)}")
+        end)
+
+        {:error, reason}
+    end
   end
 
   defp dispatch_issue_with_account(
@@ -1728,6 +2000,39 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp handle_running_entry_exit(
+         state,
+         issue_id,
+         running_entry,
+         identifier,
+         session_id,
+         trace_id,
+         reason
+       ) do
+    case running_entry_worker_kind(running_entry) do
+      :controller_finalizer ->
+        handle_controller_finalizer_exit_reason(
+          state,
+          issue_id,
+          running_entry,
+          identifier,
+          trace_id,
+          reason
+        )
+
+      _ ->
+        handle_agent_exit_reason(
+          state,
+          issue_id,
+          running_entry,
+          identifier,
+          session_id,
+          trace_id,
+          reason
+        )
+    end
+  end
+
   defp handle_worker_failure(
          state,
          issue,
@@ -2091,6 +2396,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp running_entry_trace_id(%{trace_id: trace_id}) when is_binary(trace_id), do: trace_id
   defp running_entry_trace_id(_running_entry), do: nil
+
+  defp running_entry_worker_kind(%{worker_kind: worker_kind}) when worker_kind in [:agent, :controller_finalizer],
+    do: worker_kind
+
+  defp running_entry_worker_kind(_running_entry), do: :agent
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"

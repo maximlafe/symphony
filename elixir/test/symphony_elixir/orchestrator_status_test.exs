@@ -275,6 +275,108 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert ended_entry.current_command == nil
   end
 
+  test "orchestrator dispatches controller finalizer when eligible and consumes its success result" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-controller-finalizer-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "issue-controller-finalizer"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-FINALIZER",
+      title: "Controller finalizer dispatch",
+      description: "Controller-side deterministic finalization",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-FINALIZER",
+      updated_at: DateTime.utc_now()
+    }
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_memory_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    parent = self()
+    orchestrator_name = Module.concat(__MODULE__, :ControllerFinalizerOrchestrator)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_active_states: ["Todo", "In Progress", "Merging", "Rework"],
+        poll_interval_ms: 25
+      )
+
+      {:ok, pid} =
+        Orchestrator.start_link(
+          name: orchestrator_name,
+          codex_account_probe_fun: fn accounts, _opts ->
+            Enum.map(accounts, fn account ->
+              %{
+                id: account.id,
+                codex_home: account.codex_home,
+                explicit?: Map.get(account, :explicit?, true),
+                checked_at: DateTime.utc_now(),
+                healthy: true,
+                health_reason: nil,
+                auth_mode: "device_code",
+                email: "worker@example.com",
+                plan_type: "plus",
+                requires_openai_auth: true,
+                rate_limits: nil,
+                account: nil,
+                missing_windows_mins: [],
+                insufficient_windows_mins: []
+              }
+            end)
+          end,
+          controller_finalizer_eligible_fun: fn _issue, _checkpoint -> true end,
+          controller_finalizer_fun: fn issue, checkpoint, _opts ->
+            send(parent, {:controller_finalizer_invoked, issue.id})
+            :ok = SymphonyElixir.Tracker.update_issue_state(issue.id, "In Review")
+
+            {:ok,
+             %{
+               checkpoint: Map.put(checkpoint || %{}, "controller_finalizer", %{"status" => "succeeded"})
+             }}
+          end
+        )
+
+      _ = Orchestrator.request_refresh(orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      assert_receive {:controller_finalizer_invoked, ^issue_id}, 5_000
+      assert_receive {:memory_tracker_state_update, ^issue_id, "In Review"}, 5_000
+    after
+      case Process.whereis(orchestrator_name) do
+        pid when is_pid(pid) -> Process.exit(pid, :normal)
+        _ -> :ok
+      end
+
+      if is_nil(previous_memory_issues) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_memory_issues)
+      end
+
+      if is_nil(previous_memory_recipient) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_recipient, previous_memory_recipient)
+      end
+
+      File.rm_rf(test_root)
+    end
+  end
+
   test "orchestrator publishes milestone-only run commentary and suppresses non-milestones" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     previous_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
