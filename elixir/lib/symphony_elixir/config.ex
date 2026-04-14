@@ -478,19 +478,29 @@ defmodule SymphonyElixir.Config do
   end
 
   defp map_get(map, key) when is_map(map) and is_atom(key) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
   end
 
   defp map_get(map, key) when is_map(map) and is_binary(key) do
-    Map.get(map, key) || map_get_existing_atom(map, key)
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> map_get_atom_string_key(map, key)
+    end
   end
 
   defp map_get(_map, _key), do: nil
 
-  defp map_get_existing_atom(map, key) do
-    Map.get(map, String.to_existing_atom(key))
-  rescue
-    ArgumentError -> nil
+  defp map_get_atom_string_key(map, key) do
+    Enum.find_value(map, fn
+      {map_key, value} when is_atom(map_key) ->
+        if Atom.to_string(map_key) == key, do: value
+
+      _ ->
+        nil
+    end)
   end
 
   defp extract_labels(%{labels: labels}) when is_list(labels), do: labels
