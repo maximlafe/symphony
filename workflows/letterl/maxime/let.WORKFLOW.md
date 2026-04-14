@@ -590,7 +590,7 @@ Instructions:
 - Keep the issue description as the canonical task-spec and exactly one persistent workpad comment as the implementation plan and execution log.
 - Use local `workpad.md` as the working copy and sync the live workpad only at bootstrap, milestone transitions, and final handoff.
 - For unattended execution commentary, use the terse milestone-only profile:
-  - allowed milestone updates: `start`, `code-ready`, `validation-running`, `PR-opened`, `CI-failed`, `handoff-ready`;
+  - allowed milestone updates: `code-ready`, `validation-running`, `PR-opened`, `CI-failed`, `handoff-ready`;
   - do not post non-milestone progress chatter;
   - keep each milestone comment compact and factual.
 - Keep workpad sync cadence aligned to the same milestone transitions.
