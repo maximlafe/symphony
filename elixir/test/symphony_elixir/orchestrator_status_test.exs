@@ -275,7 +275,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert ended_entry.current_command == nil
   end
 
-  test "orchestrator publishes reportable run phase transitions once per phase" do
+  test "orchestrator publishes milestone-only run commentary and suppresses non-milestones" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     previous_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
 
@@ -354,8 +354,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     )
 
     assert_receive {:memory_tracker_comment, ^issue_id, first_comment}, 2_000
-    assert first_comment =~ "full validate"
+    assert first_comment =~ "code-ready"
     assert first_comment =~ "make symphony-validate"
+
+    assert_receive {:memory_tracker_comment, ^issue_id, second_comment}, 2_000
+    assert second_comment =~ "validation-running"
 
     send(
       pid,
@@ -385,12 +388,35 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        }}
     )
 
-    assert_receive {:memory_tracker_comment, ^issue_id, second_comment}, 5_000
-    assert second_comment =~ "waiting CI"
-    assert second_comment =~ "github_wait_for_checks"
+    refute_receive {:memory_tracker_comment, ^issue_id, _non_milestone_comment}, 200
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :tool_call_failed,
+         payload: %{
+           "method" => "item/tool/call",
+           "params" => %{"tool" => "github_wait_for_checks"}
+         },
+         result: %{
+           "success" => false,
+           "contentItems" => [
+             %{
+               "type" => "inputText",
+               "text" => Jason.encode!(%{"all_green" => false})
+             }
+           ]
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    assert_receive {:memory_tracker_comment, ^issue_id, ci_failed_comment}, 5_000
+    assert ci_failed_comment =~ "CI-failed"
   end
 
-  test "orchestrator retries reportable run phase comments after transient tracker failures" do
+  test "orchestrator retries milestone commentary after transient tracker failures" do
     previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
     previous_recipient = Application.get_env(:symphony_elixir, :phase_comment_linear_recipient)
     previous_issues = Application.get_env(:symphony_elixir, :phase_comment_linear_issues)
@@ -501,11 +527,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert_receive {:phase_comment_graphql_called, create_comment_query, first_variables}, 2_000
     assert create_comment_query =~ "commentCreate"
     assert first_variables.issueId == issue_id
-    assert first_variables.body =~ "full validate"
+    assert first_variables.body =~ "code-ready"
 
     assert_eventually(fn ->
-      :sys.get_state(pid).running[issue_id].last_reported_phase == nil
+      current = :sys.get_state(pid).running[issue_id]
+      MapSet.member?(current.pending_milestones || MapSet.new(), :code_ready)
     end)
+
+    assert_receive {:phase_comment_graphql_called, ^create_comment_query, second_variables}, 2_000
+    assert second_variables.issueId == issue_id
+    assert second_variables.body =~ "validation-running"
 
     send(
       pid,
@@ -520,11 +551,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        }}
     )
 
-    assert_receive {:phase_comment_graphql_called, ^create_comment_query, second_variables}, 2_000
-    assert second_variables == first_variables
+    assert_receive {:phase_comment_graphql_called, ^create_comment_query, retry_variables}, 2_000
+    assert retry_variables == first_variables
 
     assert_eventually(fn ->
-      :sys.get_state(pid).running[issue_id].last_reported_phase == :full_validate
+      current = :sys.get_state(pid).running[issue_id]
+      pending = current.pending_milestones || MapSet.new()
+      reported = current.reported_milestones || MapSet.new()
+
+      MapSet.member?(reported, :code_ready) and MapSet.member?(reported, :validation_running) and
+        MapSet.size(pending) == 0
     end)
 
     send(

@@ -73,7 +73,21 @@ Continuation context:
 - This is retry attempt #{{ attempt }} because the ticket is still in an active state.
 - Resume from the current workspace state instead of restarting from scratch.
 - Do not repeat already-completed investigation or validation unless needed for new code changes.
-- Treat every retry as a context-budgeted continuation: prefer the current diff, `workpad.md`, and compact tool summaries over rereading full history.
+- Use the compact resume checkpoint as the default retry input before any broad reread:
+  - available: `{{ resume_checkpoint.available }}`
+  - ready: `{{ resume_checkpoint.resume_ready }}`
+  - branch: `{{ resume_checkpoint.branch }}`
+  - head: `{{ resume_checkpoint.head }}`
+  - changed_files: `{{ resume_checkpoint.changed_files }}`
+  - last_validation_status: `{{ resume_checkpoint.last_validation_status }}`
+  - open_pr: `{{ resume_checkpoint.open_pr }}`
+  - pending_checks: `{{ resume_checkpoint.pending_checks }}`
+  - open_feedback: `{{ resume_checkpoint.open_feedback }}`
+  - workpad_ref: `{{ resume_checkpoint.workpad_ref }}`
+  - workpad_digest: `{{ resume_checkpoint.workpad_digest }}`
+  - fallback_reasons: `{{ resume_checkpoint.fallback_reasons }}`
+- If `resume_checkpoint.resume_ready` is true, continue from that checkpoint and avoid full issue-comment history reread.
+- If `resume_checkpoint.resume_ready` is false, explicitly record the checkpoint mismatch/insufficiency and then fallback to a focused full reread.
 - If available context is already low (`low-context`), finish at most one atomic action, sync the workpad, and prepare a classified checkpoint instead of starting a broad new investigation.
 - Do not spend the remaining context budget restating prior work or retrying the same failing path without a materially new signal.
 - Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets or are making a classified `decision`/`human-action` handoff because further autonomous progress is no longer justified.
@@ -113,7 +127,12 @@ Instructions:
 - Keep exactly one persistent workpad comment (`## Codex Workpad`) and use local `workpad.md` as the working copy for the implementation checklist and execution log.
 - Treat the issue description as the tracker/task statement; do not turn it into a workpad, checklist, or marker-delimited plan block unless a repo-specific workflow explicitly requires a separate task-spec contract.
 - Treat user-uploaded files, screenshots, and inline media in the issue description as canonical task input; never delete, rewrite away, or relocate them when updating issue text. If a description edit would drop an existing upload or embed, leave the description unchanged and keep the extra structure in the workpad instead.
-- Sync the live workpad only at bootstrap, meaningful milestones, and final handoff.
+- Sync the live workpad only at bootstrap, milestone transitions, and final handoff.
+- For unattended execution commentary, use the terse milestone-only profile:
+  - allowed milestone updates: `start`, `code-ready`, `validation-running`, `PR-opened`, `CI-failed`, `handoff-ready`;
+  - do not post non-milestone progress chatter;
+  - keep each milestone comment compact and factual.
+- Keep workpad sync cadence aligned to the same milestone transitions.
 - Reproduce or capture the current signal before code changes when it materially improves confidence.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.
 - Treat `delivery:tdd` as an opt-in delivery label, not a routing label or verification profile.
@@ -204,7 +223,8 @@ Instructions:
    - If the ticket mixes testable core logic with a broader runtime or integration shell, keep `delivery:tdd` scoped to the cheapest deterministic core path and validate the rest with the normal matrix.
    - If the plan still needs a new abstraction, shared helper, or refactor, justify in `Notes` why reuse or a simpler localized change is insufficient.
 4. Before code edits, run the `pull` skill to sync with latest `origin/main`, then record the result in `Notes` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
-5. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before handoff.
+5. Implement against the checklist, keep completed items checked, and sync the live workpad only after milestone transitions or before handoff.
+   - milestone sync points in this stage are `code-ready`, `validation-running`, `PR-opened`, `CI-failed`, `handoff-ready`;
    - track repeated fix loops for the same failing signal in the workpad and follow the auto-fix limit below;
 6. Run the required validation for the scope:
    - run `make symphony-preflight` before concluding that auth or tooling is missing for the current task;

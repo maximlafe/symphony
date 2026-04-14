@@ -13,6 +13,13 @@ defmodule SymphonyElixir.RunPhase do
           | :waiting_ci
           | :publishing_pr
 
+  @type milestone ::
+          :code_ready
+          | :validation_running
+          | :pr_opened
+          | :ci_failed
+          | :handoff_ready
+
   @phase_labels %{
     editing: "editing",
     targeted_tests: "targeted tests",
@@ -23,6 +30,18 @@ defmodule SymphonyElixir.RunPhase do
     waiting_ci: "waiting CI",
     publishing_pr: "publishing PR"
   }
+
+  @milestone_labels %{
+    code_ready: "code-ready",
+    validation_running: "validation-running",
+    pr_opened: "PR-opened",
+    ci_failed: "CI-failed",
+    handoff_ready: "handoff-ready"
+  }
+
+  @milestone_order [:code_ready, :validation_running, :pr_opened, :ci_failed, :handoff_ready]
+  @milestone_rank Map.new(Enum.with_index(@milestone_order))
+  @validation_phases MapSet.new([:targeted_tests, :verification, :runtime_proof, :full_validate])
   @phase_keys Map.keys(@phase_labels)
 
   @reportable_phases MapSet.new([
@@ -48,6 +67,8 @@ defmodule SymphonyElixir.RunPhase do
     |> Map.put_new(:external_step, nil)
     |> Map.put_new(:operational_notice, nil)
     |> Map.put_new(:last_reported_phase, nil)
+    |> Map.put_new(:reported_milestones, MapSet.new())
+    |> Map.put_new(:pending_milestones, MapSet.new())
   end
 
   @spec apply_update(map(), map()) :: map()
@@ -142,6 +163,116 @@ defmodule SymphonyElixir.RunPhase do
     phase
     |> normalize_phase()
     |> then(&MapSet.member?(@reportable_phases, &1))
+  end
+
+  @spec transition_milestones(map(), map()) :: [milestone()]
+  def transition_milestones(previous_entry, current_entry)
+      when is_map(previous_entry) and is_map(current_entry) do
+    previous_phase = normalize_phase(Map.get(previous_entry, :run_phase))
+    current_phase = normalize_phase(Map.get(current_entry, :run_phase))
+
+    []
+    |> maybe_add_validation_milestones(previous_phase, current_phase)
+    |> maybe_add_pr_opened_milestone(previous_phase, current_phase)
+    |> Enum.uniq()
+  end
+
+  def transition_milestones(_previous_entry, _current_entry), do: []
+
+  @spec sort_milestones([milestone()]) :: [milestone()]
+  def sort_milestones(milestones) when is_list(milestones) do
+    milestones
+    |> Enum.filter(&(&1 in @milestone_order))
+    |> Enum.uniq()
+    |> Enum.sort_by(&Map.get(@milestone_rank, &1, 999))
+  end
+
+  def sort_milestones(_milestones), do: []
+
+  @spec milestone_label(milestone() | String.t() | nil) :: String.t() | nil
+  def milestone_label(nil), do: nil
+
+  def milestone_label(value) do
+    case normalize_milestone(value) do
+      nil -> nil
+      milestone -> Map.get(@milestone_labels, milestone)
+    end
+  end
+
+  @spec milestone_comment(milestone(), map()) :: String.t()
+  def milestone_comment(milestone, running_entry \\ %{}) do
+    label = milestone_label(milestone) || "unknown"
+
+    [
+      "### Symphony milestone",
+      "",
+      "- milestone: `#{label}`"
+    ]
+    |> maybe_append_labeled_detail("command", Map.get(running_entry, :current_command))
+    |> maybe_append_labeled_detail("external_step", Map.get(running_entry, :external_step))
+    |> maybe_append_labeled_detail("notice", Map.get(running_entry, :operational_notice))
+    |> Enum.join("\n")
+  end
+
+  @spec milestone_reported?(map(), milestone()) :: boolean()
+  def milestone_reported?(running_entry, milestone) when is_map(running_entry) do
+    normalized = normalize_milestone(milestone)
+
+    running_entry
+    |> Map.get(:reported_milestones, MapSet.new())
+    |> normalize_milestone_set()
+    |> MapSet.member?(normalized)
+  end
+
+  @spec mark_milestone_reported(map(), milestone()) :: map()
+  def mark_milestone_reported(running_entry, milestone) when is_map(running_entry) do
+    normalized = normalize_milestone(milestone)
+
+    if is_nil(normalized) do
+      running_entry
+    else
+      reported =
+        running_entry
+        |> Map.get(:reported_milestones, MapSet.new())
+        |> normalize_milestone_set()
+        |> MapSet.put(normalized)
+
+      Map.put(running_entry, :reported_milestones, reported)
+    end
+  end
+
+  @spec mark_milestone_pending(map(), milestone()) :: map()
+  def mark_milestone_pending(running_entry, milestone) when is_map(running_entry) do
+    normalized = normalize_milestone(milestone)
+
+    if is_nil(normalized) do
+      running_entry
+    else
+      pending =
+        running_entry
+        |> Map.get(:pending_milestones, MapSet.new())
+        |> normalize_milestone_set()
+        |> MapSet.put(normalized)
+
+      Map.put(running_entry, :pending_milestones, pending)
+    end
+  end
+
+  @spec clear_pending_milestone(map(), milestone()) :: map()
+  def clear_pending_milestone(running_entry, milestone) when is_map(running_entry) do
+    normalized = normalize_milestone(milestone)
+
+    if is_nil(normalized) do
+      running_entry
+    else
+      pending =
+        running_entry
+        |> Map.get(:pending_milestones, MapSet.new())
+        |> normalize_milestone_set()
+        |> MapSet.delete(normalized)
+
+      Map.put(running_entry, :pending_milestones, pending)
+    end
   end
 
   defp fallback_phase(nil, external_step) when is_binary(external_step),
@@ -355,6 +486,50 @@ defmodule SymphonyElixir.RunPhase do
   end
 
   defp operational_notice_from_text(_text), do: nil
+
+  defp maybe_add_validation_milestones(milestones, previous_phase, current_phase) do
+    cond do
+      validation_phase?(current_phase) and not validation_phase?(previous_phase) ->
+        milestones ++ [:code_ready, :validation_running]
+
+      validation_phase?(current_phase) and validation_phase?(previous_phase) ->
+        milestones ++ [:validation_running]
+
+      true ->
+        milestones
+    end
+  end
+
+  defp maybe_add_pr_opened_milestone(milestones, previous_phase, current_phase) do
+    if current_phase == :publishing_pr and previous_phase != :publishing_pr do
+      milestones ++ [:pr_opened]
+    else
+      milestones
+    end
+  end
+
+  defp validation_phase?(phase) do
+    MapSet.member?(@validation_phases, phase)
+  end
+
+  defp normalize_milestone(milestone) when milestone in @milestone_order, do: milestone
+
+  defp normalize_milestone(milestone) when is_binary(milestone) do
+    normalized =
+      milestone
+      |> String.trim()
+      |> String.downcase()
+
+    Enum.find_value(@milestone_labels, fn {key, label} ->
+      if String.downcase(label) == normalized, do: key
+    end)
+  end
+
+  defp normalize_milestone(_milestone), do: nil
+
+  defp normalize_milestone_set(%MapSet{} = milestones), do: milestones
+  defp normalize_milestone_set(milestones) when is_list(milestones), do: MapSet.new(milestones)
+  defp normalize_milestone_set(_milestones), do: MapSet.new()
 
   defp maybe_append_labeled_detail(lines, _label, value) when value in [nil, ""], do: lines
 
