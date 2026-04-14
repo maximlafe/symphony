@@ -1781,7 +1781,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       body == nil ->
         nil
 
-      author_login in @non_actionable_pr_comment_authors ->
+      non_actionable_author?(author_login) ->
         nil
 
       true ->
@@ -1804,17 +1804,18 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp normalize_review_feedback(_reviews), do: []
 
   defp normalize_review_feedback_item(review) do
+    author_login = extract_author_login(review)
     state = normalize_check_status(pick_first(review, ["state"]))
     body = normalize_feedback_body(pick_first(review, ["body"]))
 
     cond do
-      state == "APPROVED" and body == nil ->
+      non_actionable_author?(author_login) ->
         nil
 
-      state in ["COMMENTED", "CHANGES_REQUESTED"] or body != nil ->
+      state == "CHANGES_REQUESTED" ->
         %{
           "channel" => "review",
-          "author" => extract_author_login(review),
+          "author" => author_login,
           "state" => state,
           "body" => body,
           "submitted_at" => pick_first(review, ["submittedAt", "submitted_at"])
@@ -1834,12 +1835,14 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp normalize_inline_feedback(_comments), do: []
 
   defp normalize_inline_feedback_item(comment) when is_map(comment) do
+    author_login = extract_author_login(comment)
     body = normalize_feedback_body(pick_first(comment, ["body"]))
+    in_reply_to = pick_first(comment, ["in_reply_to_id", "inReplyToId"])
 
-    if body do
+    if body && is_nil(in_reply_to) && not non_actionable_author?(author_login) do
       %{
         "channel" => "inline_comment",
-        "author" => extract_author_login(comment),
+        "author" => author_login,
         "body" => body,
         "path" => pick_first(comment, ["path"]),
         "line" => pick_first(comment, ["line", "original_line"]),
@@ -1878,6 +1881,17 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp extract_author_login(_map), do: nil
+
+  defp non_actionable_author?(author_login) when is_binary(author_login) do
+    normalized =
+      author_login
+      |> String.trim()
+      |> String.downcase()
+
+    normalized in @non_actionable_pr_comment_authors or String.ends_with?(normalized, "[bot]")
+  end
+
+  defp non_actionable_author?(_author_login), do: false
 
   defp pick_first(data, [key]) do
     get_nested(data, key)

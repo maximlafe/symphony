@@ -94,6 +94,40 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert ControllerFinalizer.eligible?(issue, checkpoint)
   end
 
+  test "eligible?/2 blocks repeat finalization when head is missing but fallback fingerprint matches" do
+    issue = %Issue{id: "issue-fingerprint", identifier: "LET-462-FINGERPRINT", state: "In Progress"}
+
+    checkpoint = %{
+      "open_pr" => %{"number" => 42, "url" => "https://github.com/acme/symphony/pull/42"},
+      "controller_finalizer" => %{
+        "status" => "action_required",
+        "reason" => "pull request has actionable feedback",
+        "blocked_reason" => "pull request has actionable feedback",
+        "blocked_pr_number" => 42,
+        "blocked_head" => nil
+      }
+    }
+
+    refute ControllerFinalizer.eligible?(issue, checkpoint)
+  end
+
+  test "eligible?/2 allows rerun when head is missing but fallback fingerprint does not match PR" do
+    issue = %Issue{id: "issue-fingerprint-open", identifier: "LET-462-FINGERPRINT-OPEN", state: "In Progress"}
+
+    checkpoint = %{
+      "open_pr" => %{"number" => 42, "url" => "https://github.com/acme/symphony/pull/42"},
+      "controller_finalizer" => %{
+        "status" => "action_required",
+        "reason" => "pull request has actionable feedback",
+        "blocked_reason" => "pull request has actionable feedback",
+        "blocked_pr_number" => 41,
+        "blocked_head" => nil
+      }
+    }
+
+    assert ControllerFinalizer.eligible?(issue, checkpoint)
+  end
+
   test "run/3 completes deterministic finalization and transitions issue state on success" do
     issue = %Issue{id: "issue-success", identifier: "LET-462-SUCCESS", state: "In Progress"}
     _workspace = create_workspace!(issue.identifier)

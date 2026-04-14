@@ -121,9 +121,10 @@ defmodule SymphonyElixir.HandoffCheck do
   @spec write_manifest(map(), Path.t()) :: {:ok, Path.t()} | {:error, term()}
   def write_manifest(manifest, path) when is_map(manifest) and is_binary(path) do
     expanded_path = Path.expand(path)
+    sanitized_manifest = sanitize_manifest_utf8(manifest)
 
     with :ok <- File.mkdir_p(Path.dirname(expanded_path)),
-         :ok <- File.write(expanded_path, Jason.encode!(manifest, pretty: true)) do
+         :ok <- File.write(expanded_path, Jason.encode!(sanitized_manifest, pretty: true)) do
       {:ok, expanded_path}
     end
   end
@@ -806,4 +807,23 @@ defmodule SymphonyElixir.HandoffCheck do
     :crypto.hash(:sha256, body)
     |> Base.encode16(case: :lower)
   end
+
+  defp sanitize_manifest_utf8(value) when is_binary(value) do
+    if String.valid?(value), do: value, else: String.replace_invalid(value, " ")
+  end
+
+  defp sanitize_manifest_utf8(value) when is_list(value) do
+    Enum.map(value, &sanitize_manifest_utf8/1)
+  end
+
+  defp sanitize_manifest_utf8(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {key, item}, acc ->
+      Map.put(acc, sanitize_manifest_key(key), sanitize_manifest_utf8(item))
+    end)
+  end
+
+  defp sanitize_manifest_utf8(value), do: value
+
+  defp sanitize_manifest_key(key) when is_binary(key), do: sanitize_manifest_utf8(key)
+  defp sanitize_manifest_key(key), do: key
 end
