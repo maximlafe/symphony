@@ -129,7 +129,7 @@ Instructions:
 - Treat user-uploaded files, screenshots, and inline media in the issue description as canonical task input; never delete, rewrite away, or relocate them when updating issue text. If a description edit would drop an existing upload or embed, leave the description unchanged and keep the extra structure in the workpad instead.
 - Sync the live workpad only at bootstrap, milestone transitions, and final handoff.
 - For unattended execution commentary, use the terse milestone-only profile:
-  - allowed milestone updates: `start`, `code-ready`, `validation-running`, `PR-opened`, `CI-failed`, `handoff-ready`;
+  - allowed milestone updates: `code-ready`, `validation-running`, `PR-opened`, `CI-failed`, `handoff-ready`;
   - do not post non-milestone progress chatter;
   - keep each milestone comment compact and factual.
 - Keep workpad sync cadence aligned to the same milestone transitions.
