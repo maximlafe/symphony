@@ -1583,10 +1583,31 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp encode_payload(payload) when is_map(payload) or is_list(payload) do
-    Jason.encode!(payload, pretty: true)
+    payload
+    |> sanitize_payload_utf8()
+    |> Jason.encode!(pretty: true)
   end
 
   defp encode_payload(payload), do: inspect(payload)
+
+  defp sanitize_payload_utf8(value) when is_binary(value) do
+    if String.valid?(value), do: value, else: String.replace_invalid(value, " ")
+  end
+
+  defp sanitize_payload_utf8(value) when is_list(value) do
+    Enum.map(value, &sanitize_payload_utf8/1)
+  end
+
+  defp sanitize_payload_utf8(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {key, item}, acc ->
+      Map.put(acc, sanitize_payload_key(key), sanitize_payload_utf8(item))
+    end)
+  end
+
+  defp sanitize_payload_utf8(value), do: value
+
+  defp sanitize_payload_key(key) when is_binary(key), do: sanitize_payload_utf8(key)
+  defp sanitize_payload_key(key), do: key
 
   defp blank_to_nil(value) when is_binary(value) do
     case String.trim(value) do

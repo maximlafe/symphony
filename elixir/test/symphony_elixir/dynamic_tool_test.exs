@@ -1032,6 +1032,31 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert payload["actionable_feedback"] == []
   end
 
+  test "github_pr_snapshot sanitizes invalid UTF-8 in GitHub CLI error payloads" do
+    invalid_json = <<208, 189, 208, 181, 32, 209, 130, 209, 128, 208, 181, 208, 177, 209, 131, 208, 181, 209, 130, 209, 129, 209, 143, 44, 32, 208, 145, 208, 148, 47, 209, 129, 209>>
+
+    response =
+      DynamicTool.execute(
+        "github_pr_snapshot",
+        %{
+          "repo" => "maximlafe/lead_status",
+          "pr_number" => 73
+        },
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "73", "-R", "maximlafe/lead_status", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+              {:ok, invalid_json}
+          end
+        end
+      )
+
+    assert response["success"] == false
+    payload = decode_tool_text(response)
+    assert payload["error"]["message"] == "GitHub CLI returned invalid JSON."
+    assert is_binary(payload["error"]["output"])
+    assert String.valid?(payload["error"]["output"])
+  end
+
   test "github_wait_for_checks waits outside the model loop until checks are green" do
     {:ok, agent} =
       Agent.start_link(fn ->
