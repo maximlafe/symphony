@@ -33,20 +33,26 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ ".agents/skills/plan-mode/SKILL.md"
     assert prompt =~ "$CODEX_HOME/skills/research-mode/SKILL.md"
     assert prompt =~ "$CODEX_HOME/skills/plan-mode/SKILL.md"
-    assert prompt =~ "`reasoning:implementation-xhigh`"
-    assert get_in(config, ["codex", "planning_command"]) =~ "model_reasoning_effort=xhigh"
-    assert get_in(config, ["codex", "implementation_command"]) =~ "model_reasoning_effort=high"
-    assert get_in(config, ["codex", "handoff_command"]) =~ "model_reasoning_effort=medium"
+    assert prompt =~ "`codex.cost_profiles`"
+    assert get_in(config, ["codex", "command_template"]) =~ "{{effort}}"
+    assert get_in(config, ["codex", "command_template"]) =~ "{{model}}"
+    assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4-mini"
+    assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "medium"
+    assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
+    refute default_cost_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
+    assert get_in(config, ["codex", "cost_policy", "signal_escalations", "rework"]) == "escalated_implementation"
+    assert prompt =~ "`mode:research` и `reasoning:implementation-xhigh` не эскалируют"
     refute prompt =~ "`Todo` -> сразу переводи в `Spec Prep`."
   end
 
-  test "default workflow documents the same phase-based reasoning contract" do
+  test "default workflow documents the same stage-aware cost profile contract" do
     assert {:ok, %{config: config, prompt: prompt}} = Workflow.load(@default_workflow_path)
 
-    assert get_in(config, ["codex", "planning_command"]) =~ "model_reasoning_effort=xhigh"
-    assert get_in(config, ["codex", "implementation_command"]) =~ "model_reasoning_effort=high"
-    assert get_in(config, ["codex", "handoff_command"]) =~ "model_reasoning_effort=medium"
-    assert prompt =~ "`reasoning:implementation-xhigh`"
+    assert get_in(config, ["codex", "command_template"]) =~ "{{effort}}"
+    assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4-mini"
+    assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
+    refute default_cost_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
+    assert prompt =~ "`codex.cost_policy`"
   end
 
   test "LET workflow keeps secondary codex homes under the mounted primary CODEX_HOME" do
@@ -105,5 +111,9 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert plan_skill =~ "critique pass 1"
     assert plan_skill =~ "critique pass 2"
     assert plan_skill =~ "positive and negative proof cases"
+  end
+
+  defp default_cost_profiles_have_xhigh?(profiles) when is_map(profiles) do
+    Enum.any?(profiles, fn {_key, profile} -> Map.get(profile, "effort") == "xhigh" end)
   end
 end

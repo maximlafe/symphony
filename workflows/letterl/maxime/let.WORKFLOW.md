@@ -498,10 +498,32 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
-  planning_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.4 app-server
-  implementation_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=high --model gpt-5.3-codex app-server
-  handoff_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=medium --model gpt-5.3-codex app-server
+  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=medium --model gpt-5.3-codex app-server
+  command_template: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort={{effort}} --model {{model}} app-server
+  cost_profiles:
+    cheap_planning:
+      model: gpt-5.4-mini
+      effort: medium
+    cheap_implementation:
+      model: gpt-5.3-codex
+      effort: medium
+    escalated_implementation:
+      model: gpt-5.3-codex
+      effort: high
+    handoff:
+      model: gpt-5.3-codex
+      effort: medium
+  cost_policy:
+    stage_defaults:
+      planning: cheap_planning
+      implementation: cheap_implementation
+      rework: escalated_implementation
+      handoff: handoff
+    signal_escalations:
+      rework: escalated_implementation
+      repeated_auto_fix_failure: escalated_implementation
+      security_data_risk: escalated_implementation
+      unresolvable_ambiguity: escalated_implementation
   approval_policy: never
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
@@ -641,13 +663,14 @@ Instructions:
 - Нормализовать `delivery:tdd` через `linear_graphql`: добавить label, когда TDD оправдан, и remove stale `delivery:tdd`, когда он не нужен.
 - После входа в `In Progress` `delivery:tdd` больше не влияет на routing; он меняет только delivery/handoff contract.
 
-## Reasoning profile contract
+## Cost Profile Contract
 
-- `planning_command` остаётся `xhigh` path для planning/spec-prep работы.
-- `implementation_command` по умолчанию идёт через `high`.
-- `handoff_command` по умолчанию идёт через `medium` и используется для `Merging`; если в старом workflow-конфиге он не задан, handoff/finalizer phase откатывается к `codex.command`.
-- Label `mode:research` сохраняет implementation-phase command selection на `planning_command` / `xhigh` path.
-- Label `reasoning:implementation-xhigh` — явный repo-owned opt-in для сложного CI-debug или другой implementation-heavy задачи, где безопаснее эскалировать обратно на `planning_command` / `xhigh`.
+- Выбор Codex launch command резолвится из `codex.cost_profiles` и `codex.cost_policy` через `SymphonyElixir.Config.codex_cost_decision/1`.
+- `planning` по умолчанию использует `cheap_planning` (`gpt-5.4-mini`, `medium`); `implementation` использует `cheap_implementation` (`gpt-5.3-codex`, `medium`); `rework` и явные escalation signals используют `escalated_implementation` (`gpt-5.3-codex`, `high`); `handoff` использует `handoff` (`gpt-5.3-codex`, `medium`).
+- `xhigh` не используется по умолчанию. Репозиторий может включить его только явной правкой конкретного профиля в workflow config.
+- Escalation signals: `rework`, `repeated_auto_fix_failure`, `security_data_risk`, `unresolvable_ambiguity`; обычные retry/continuation turns не считаются escalation signal.
+- `mode:research` и `reasoning:implementation-xhigh` не эскалируют без явного label-to-signal mapping в `codex.cost_policy`.
+- Legacy `planning_command`, `implementation_command`, `handoff_command` остаются backward-compatible direct-command override только когда structured profiles не могут собрать команду.
 
 ## Step 0: Determine current ticket state and route
 

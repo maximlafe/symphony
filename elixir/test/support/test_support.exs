@@ -162,6 +162,9 @@ defmodule SymphonyElixir.TestSupport do
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
           codex_command: "codex app-server",
+          codex_command_template: nil,
+          codex_cost_profiles: nil,
+          codex_cost_policy: nil,
           codex_planning_command: nil,
           codex_implementation_command: nil,
           codex_handoff_command: nil,
@@ -208,6 +211,9 @@ defmodule SymphonyElixir.TestSupport do
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     codex_command = Keyword.get(config, :codex_command)
+    codex_command_template = Keyword.get(config, :codex_command_template)
+    codex_cost_profiles = Keyword.get(config, :codex_cost_profiles)
+    codex_cost_policy = Keyword.get(config, :codex_cost_policy)
     codex_planning_command = Keyword.get(config, :codex_planning_command)
     codex_implementation_command = Keyword.get(config, :codex_implementation_command)
     codex_handoff_command = Keyword.get(config, :codex_handoff_command)
@@ -259,6 +265,9 @@ defmodule SymphonyElixir.TestSupport do
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",
+        "  command_template: #{yaml_value(codex_command_template)}",
+        "  cost_profiles: #{yaml_value(codex_cost_profiles)}",
+        "  cost_policy: #{yaml_value(codex_cost_policy)}",
         "  planning_command: #{yaml_value(codex_planning_command)}",
         "  implementation_command: #{yaml_value(codex_implementation_command)}",
         "  handoff_command: #{yaml_value(codex_handoff_command)}",

@@ -40,10 +40,32 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
-  planning_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.4 app-server
-  implementation_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=high --model gpt-5.3-codex app-server
-  handoff_command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=medium --model gpt-5.3-codex app-server
+  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=medium --model gpt-5.3-codex app-server
+  command_template: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort={{effort}} --model {{model}} app-server
+  cost_profiles:
+    cheap_planning:
+      model: gpt-5.4-mini
+      effort: medium
+    cheap_implementation:
+      model: gpt-5.3-codex
+      effort: medium
+    escalated_implementation:
+      model: gpt-5.3-codex
+      effort: high
+    handoff:
+      model: gpt-5.3-codex
+      effort: medium
+  cost_policy:
+    stage_defaults:
+      planning: cheap_planning
+      implementation: cheap_implementation
+      rework: escalated_implementation
+      handoff: handoff
+    signal_escalations:
+      rework: escalated_implementation
+      repeated_auto_fix_failure: escalated_implementation
+      security_data_risk: escalated_implementation
+      unresolvable_ambiguity: escalated_implementation
   approval_policy: never
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
@@ -175,13 +197,14 @@ Instructions:
 - `Rework` -> start a fresh attempt from updated review feedback.
 - `Done` -> terminal state; no further action required.
 
-## Reasoning profile contract
+## Cost Profile Contract
 
-- `planning_command` is the `xhigh` path and remains the default for planning/spec-prep work.
-- `implementation_command` is the default implementation path and should stay at `high` unless the issue explicitly needs the safe `xhigh` escalation below.
-- `handoff_command` is the default handoff/finalizer path and is used for `Merging`; if it is missing in an older workflow config, fall back to `codex.command`.
-- Issue label `mode:research` keeps implementation-phase command selection on the `planning_command` / `xhigh` path.
-- Issue label `reasoning:implementation-xhigh` is the explicit repo-owned opt-in for complex CI-debug or similarly hard implementation work that should escalate back to the `planning_command` / `xhigh` path.
+- Codex launch selection is resolved from `codex.cost_profiles` and `codex.cost_policy` through `SymphonyElixir.Config.codex_cost_decision/1`.
+- `planning` defaults to `cheap_planning` (`gpt-5.4-mini`, `medium`); `implementation` defaults to `cheap_implementation` (`gpt-5.3-codex`, `medium`); `rework` and explicit escalation signals use `escalated_implementation` (`gpt-5.3-codex`, `high`); `handoff` uses `handoff` (`gpt-5.3-codex`, `medium`).
+- `xhigh` is not used by default. A repository may still opt into it only by changing an explicit profile in workflow config.
+- Escalation signals are `rework`, `repeated_auto_fix_failure`, `security_data_risk`, and `unresolvable_ambiguity`; ordinary retries and continuation turns do not imply escalation.
+- `mode:research` and `reasoning:implementation-xhigh` do not escalate unless the workflow defines an explicit label-to-signal mapping in `codex.cost_policy`.
+- Legacy `planning_command`, `implementation_command`, and `handoff_command` remain backward-compatible direct-command overrides only when structured cost profiles cannot render a command.
 
 ## Step 0: Route and recover
 

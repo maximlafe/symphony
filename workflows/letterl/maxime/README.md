@@ -131,11 +131,10 @@ Base branch: main
 
 Use `mode:research` when the ticket still needs evidence-backed root-cause analysis, ranked hypotheses, and a normalized spec before planning or execution. Use `mode:plan` when the task is already understood conceptually but still needs a stable implementation-ready engineering spec, updated Linear description, and explicit validation plan. Leave both labels absent when the issue description is already execution-ready.
 
-Reasoning profile contract:
-- `planning_command` stays on `xhigh`.
-- `implementation_command` defaults to `high`.
-- `Merging` / handoff uses `handoff_command` on `medium`, with fallback to `codex.command` for older workflow configs that do not define it yet.
-- `mode:research` keeps implementation-phase command selection on the `xhigh` path.
-- Add `reasoning:implementation-xhigh` only for explicit complex CI-debug or similarly hard implementation work that should escalate back to `xhigh`.
+Cost profile contract:
+- `codex.cost_profiles` and `codex.cost_policy` drive Codex launch selection through `SymphonyElixir.Config.codex_cost_decision/1`.
+- Planning defaults to `cheap_planning` (`gpt-5.4-mini`, `medium`); implementation defaults to `cheap_implementation` (`gpt-5.3-codex`, `medium`); rework and explicit escalation signals use `escalated_implementation` (`gpt-5.3-codex`, `high`); `Merging` / handoff uses `handoff` (`gpt-5.3-codex`, `medium`).
+- Default profiles do not use `xhigh`; repositories can opt into it only by editing a specific configured profile.
+- `mode:research` and `reasoning:implementation-xhigh` do not escalate unless the workflow defines an explicit label-to-signal mapping in `codex.cost_policy`.
 
 If the spec-prep result shows that the implementation should follow true TDD, normalize `delivery:tdd` on the issue during `Spec Prep`; otherwise leave it absent or remove it if it is stale.

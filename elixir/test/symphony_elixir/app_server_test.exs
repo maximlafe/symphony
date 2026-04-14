@@ -207,6 +207,7 @@ defmodule SymphonyElixir.AppServerTest do
       System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
+      profile_codex = Path.join(test_root, "fake-codex-profile")
       fallback_codex = Path.join(test_root, "fake-codex-fallback")
       planning_codex = Path.join(test_root, "fake-codex-planning")
       implementation_codex = Path.join(test_root, "fake-codex-implementation")
@@ -214,6 +215,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       Enum.each(
         [
+          {profile_codex, "profile"},
           {fallback_codex, "fallback"},
           {planning_codex, "planning"},
           {implementation_codex, "implementation"},
@@ -225,6 +227,7 @@ defmodule SymphonyElixir.AppServerTest do
           trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-stage-commands.trace}"
           count=0
           printf 'KIND:%s\\n' "#{kind}" >> "$trace_file"
+          printf 'ARGS:%s\\n' "$*" >> "$trace_file"
 
           while IFS= read -r line; do
             count=$((count + 1))
@@ -258,12 +261,30 @@ defmodule SymphonyElixir.AppServerTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         codex_command: "#{fallback_codex} app-server",
+        codex_command_template: "#{profile_codex} --config model_reasoning_effort={{effort}} --model {{model}} app-server",
+        codex_cost_profiles: %{
+          cheap_planning: %{model: "gpt-5.4-mini", effort: "medium"},
+          cheap_implementation: %{model: "gpt-5.3-codex", effort: "medium"},
+          escalated_implementation: %{model: "gpt-5.3-codex", effort: "high"},
+          handoff: %{model: "gpt-5.3-codex", effort: "medium"}
+        },
+        codex_cost_policy: %{
+          stage_defaults: %{
+            planning: "cheap_planning",
+            implementation: "cheap_implementation",
+            rework: "escalated_implementation",
+            handoff: "handoff"
+          },
+          signal_escalations: %{rework: "escalated_implementation"}
+        },
         codex_planning_command: "#{planning_codex} app-server",
         codex_implementation_command: "#{implementation_codex} app-server",
         codex_handoff_command: "#{handoff_codex} app-server"
       )
 
-      assert_stage_command = fn state, expected_kind, labels ->
+      test_pid = self()
+
+      assert_stage_command = fn state, expected_model, expected_effort, labels ->
         File.rm(trace_file)
 
         issue = %Issue{
@@ -276,17 +297,30 @@ defmodule SymphonyElixir.AppServerTest do
           labels: labels
         }
 
-        assert {:ok, _result} = AppServer.run(workspace, "Run stage-aware command", issue)
-        assert File.read!(trace_file) =~ "KIND:#{expected_kind}"
+        assert {:ok, _result} =
+                 AppServer.run(workspace, "Run stage-aware command", issue, on_message: fn message -> send(test_pid, {:codex_message, state, message}) end)
+
+        trace = File.read!(trace_file)
+        assert trace =~ "KIND:profile"
+        assert trace =~ "--model #{expected_model}"
+        assert trace =~ "model_reasoning_effort=#{expected_effort}"
+
+        assert_receive {:codex_message, ^state, %{event: :session_started} = message}
+        assert message.cost_profile_key
+        assert message.cost_profile_reason
+        assert message.cost_stage
+        assert is_list(message.cost_signals)
+        assert message.codex_model == expected_model
+        assert message.codex_effort == expected_effort
+        assert message.command_source == "cost_profile"
       end
 
-      assert_stage_command.("Spec Prep", "planning", ["backend"])
-      assert_stage_command.("In Progress", "implementation", ["backend"])
-      assert_stage_command.("In Progress", "planning", ["backend", "mode:research"])
-      assert_stage_command.("In Progress", "planning", ["backend", "reasoning:implementation-xhigh"])
-      assert_stage_command.("Rework", "implementation", ["backend"])
-      assert_stage_command.("Merging", "handoff", ["backend"])
-      assert_stage_command.("Todo", "fallback", ["backend"])
+      assert_stage_command.("Spec Prep", "gpt-5.4-mini", "medium", ["backend"])
+      assert_stage_command.("In Progress", "gpt-5.3-codex", "medium", ["backend"])
+      assert_stage_command.("In Progress", "gpt-5.3-codex", "medium", ["backend", "mode:research"])
+      assert_stage_command.("In Progress", "gpt-5.3-codex", "medium", ["backend", "reasoning:implementation-xhigh"])
+      assert_stage_command.("Rework", "gpt-5.3-codex", "high", ["backend"])
+      assert_stage_command.("Merging", "gpt-5.3-codex", "medium", ["backend"])
     after
       File.rm_rf(test_root)
     end

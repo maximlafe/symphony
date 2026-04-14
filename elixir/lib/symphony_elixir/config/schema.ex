@@ -203,6 +203,9 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:command, :string, default: "codex app-server")
+      field(:command_template, :string)
+      field(:cost_profiles, :map, default: %{})
+      field(:cost_policy, :map, default: %{})
       field(:planning_command, :string)
       field(:implementation_command, :string)
       field(:handoff_command, :string)
@@ -235,6 +238,9 @@ defmodule SymphonyElixir.Config.Schema do
         attrs,
         [
           :command,
+          :command_template,
+          :cost_profiles,
+          :cost_policy,
           :planning_command,
           :implementation_command,
           :handoff_command,

@@ -49,7 +49,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace),
-         {:ok, port} <-
+         {:ok, port, cost_decision} <-
            start_port(
              expanded_workspace,
              Keyword.get(opts, :command_env, []),
@@ -59,7 +59,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       metadata =
         port
-        |> session_metadata(opts)
+        |> session_metadata(opts, cost_decision)
         |> maybe_put_account_id(account_id)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace),
@@ -89,10 +89,14 @@ defmodule SymphonyElixir.Codex.AppServer do
     expanded_cwd = Path.expand(cwd)
 
     case start_port(expanded_cwd, Keyword.get(opts, :command_env, []), Keyword.get(opts, :issue)) do
-      {:ok, port} ->
+      {:ok, port, cost_decision} ->
         case send_initialize(port) do
           :ok ->
-            metadata = port_metadata(port) |> maybe_put_account_id(Keyword.get(opts, :account_id))
+            metadata =
+              port
+              |> session_metadata(opts, cost_decision)
+              |> maybe_put_account_id(Keyword.get(opts, :account_id))
+
             {:ok, %{port: port, metadata: metadata, cwd: expanded_cwd}}
 
           {:error, reason} ->
@@ -211,6 +215,10 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:error, :bash_not_found}
     else
       with {:ok, normalized_command_env} <- normalize_command_env(command_env) do
+        cost_decision = Config.codex_cost_decision(issue)
+        command = Map.fetch!(cost_decision, :command)
+        log_codex_cost_decision(issue, cost_decision)
+
         port =
           Port.open(
             {:spawn_executable, String.to_charlist(executable)},
@@ -218,14 +226,14 @@ defmodule SymphonyElixir.Codex.AppServer do
               :binary,
               :exit_status,
               :stderr_to_stdout,
-              args: [~c"-lc", String.to_charlist(Config.codex_command(issue))],
+              args: [~c"-lc", String.to_charlist(command)],
               cd: String.to_charlist(workspace),
               line: @port_line_bytes,
               env: port_env(normalized_command_env)
             ]
           )
 
-        {:ok, port}
+        {:ok, port, cost_decision}
       end
     end
   end
@@ -260,15 +268,47 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp session_metadata(port, opts) when is_list(opts) do
+  defp session_metadata(port, opts, cost_decision) when is_list(opts) do
     issue = Keyword.get(opts, :issue, %{})
     trace_id = Keyword.get(opts, :trace_id)
 
     port_metadata(port)
+    |> Map.merge(cost_metadata(cost_decision))
     |> maybe_put_metadata(:trace_id, trace_id)
     |> maybe_put_metadata(:issue_id, Map.get(issue, :id))
     |> maybe_put_metadata(:issue_identifier, Map.get(issue, :identifier))
   end
+
+  defp log_codex_cost_decision(issue, cost_decision) when is_map(cost_decision) do
+    metadata = cost_metadata(cost_decision)
+    previous_metadata = Logger.metadata()
+
+    Logger.metadata(Enum.into(metadata, []))
+
+    try do
+      Logger.info(
+        "Selected Codex cost profile for #{issue_context(issue)} cost_profile_key=#{metadata[:cost_profile_key]} cost_profile_reason=#{metadata[:cost_profile_reason]} cost_stage=#{metadata[:cost_stage]} cost_signals=#{Enum.join(metadata[:cost_signals], ",")} codex_model=#{metadata[:codex_model]} codex_effort=#{metadata[:codex_effort]} command_source=#{metadata[:command_source]}"
+      )
+    after
+      Logger.reset_metadata(previous_metadata)
+    end
+  end
+
+  defp cost_metadata(cost_decision) when is_map(cost_decision) do
+    %{
+      cost_profile_key: Map.get(cost_decision, :profile_key),
+      cost_profile_reason: Map.get(cost_decision, :reason),
+      cost_stage: stringify_metadata_value(Map.get(cost_decision, :stage)),
+      cost_signals: Enum.map(Map.get(cost_decision, :signals, []), &stringify_metadata_value/1),
+      codex_model: Map.get(cost_decision, :model),
+      codex_effort: Map.get(cost_decision, :effort),
+      command_source: Map.get(cost_decision, :command_source)
+    }
+  end
+
+  defp stringify_metadata_value(nil), do: nil
+  defp stringify_metadata_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp stringify_metadata_value(value), do: to_string(value)
 
   defp send_initialize(port) do
     payload = %{
@@ -1053,6 +1093,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
 
+  defp issue_context(_issue), do: "issue_id=unknown issue_identifier=unknown"
+
   defp stop_port(port) when is_port(port) do
     case :erlang.port_info(port) do
       :undefined ->
@@ -1112,6 +1154,13 @@ defmodule SymphonyElixir.Codex.AppServer do
       |> maybe_put_logger_metadata(:issue_id, Map.get(metadata, :issue_id))
       |> maybe_put_logger_metadata(:issue_identifier, Map.get(metadata, :issue_identifier))
       |> maybe_put_logger_metadata(:trace_id, Map.get(metadata, :trace_id))
+      |> maybe_put_logger_metadata(:cost_profile_key, Map.get(metadata, :cost_profile_key))
+      |> maybe_put_logger_metadata(:cost_profile_reason, Map.get(metadata, :cost_profile_reason))
+      |> maybe_put_logger_metadata(:cost_stage, Map.get(metadata, :cost_stage))
+      |> maybe_put_logger_metadata(:cost_signals, Map.get(metadata, :cost_signals))
+      |> maybe_put_logger_metadata(:codex_model, Map.get(metadata, :codex_model))
+      |> maybe_put_logger_metadata(:codex_effort, Map.get(metadata, :codex_effort))
+      |> maybe_put_logger_metadata(:command_source, Map.get(metadata, :command_source))
 
     if logger_metadata != [] do
       Logger.metadata(logger_metadata)

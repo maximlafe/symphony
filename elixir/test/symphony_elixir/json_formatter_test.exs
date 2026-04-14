@@ -63,6 +63,34 @@ defmodule SymphonyElixir.JsonFormatterTest do
     assert payload["workspace"] == "/tmp/from-message"
   end
 
+  test "agent logs include codex cost profile metadata" do
+    event = %{
+      level: :info,
+      msg: {:string, "Codex session started"},
+      meta: %{
+        time: 1_710_000_000_323_456,
+        mfa: {SymphonyElixir.Codex.AppServer, :start_session, 2},
+        cost_profile_key: "cheap_implementation",
+        cost_profile_reason: "stage_default:implementation",
+        cost_stage: "implementation",
+        cost_signals: [],
+        codex_model: "gpt-5.3-codex",
+        codex_effort: "medium",
+        command_source: "cost_profile"
+      }
+    }
+
+    payload = event |> JsonFormatter.format(%{}) |> decode_json_line()
+
+    assert payload["cost_profile_key"] == "cheap_implementation"
+    assert payload["cost_profile_reason"] == "stage_default:implementation"
+    assert payload["cost_stage"] == "implementation"
+    assert payload["cost_signals"] == []
+    assert payload["codex_model"] == "gpt-5.3-codex"
+    assert payload["codex_effort"] == "medium"
+    assert payload["command_source"] == "cost_profile"
+  end
+
   test "agent module logs include required context keys even when values are missing" do
     event = %{
       level: :info,
