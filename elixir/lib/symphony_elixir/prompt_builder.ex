@@ -5,12 +5,17 @@ defmodule SymphonyElixir.PromptBuilder do
 
   require Logger
 
-  alias SymphonyElixir.{Config, Workflow}
+  alias SymphonyElixir.{Config, ResumeCheckpoint, Workflow}
 
   @render_opts [strict_variables: true, strict_filters: true]
 
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
+    resume_checkpoint =
+      opts
+      |> Keyword.get(:resume_checkpoint)
+      |> ResumeCheckpoint.for_prompt()
+
     template =
       Workflow.current()
       |> prompt_template!()
@@ -20,7 +25,8 @@ defmodule SymphonyElixir.PromptBuilder do
     |> Solid.render!(
       %{
         "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
+        "issue" => issue |> Map.from_struct() |> to_solid_map(),
+        "resume_checkpoint" => to_solid_value(resume_checkpoint)
       },
       @render_opts
     )

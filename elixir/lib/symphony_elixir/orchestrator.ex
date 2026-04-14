@@ -7,7 +7,17 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, ErrorClassifier, RunPhase, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{
+    AgentRunner,
+    Config,
+    ErrorClassifier,
+    ResumeCheckpoint,
+    RunPhase,
+    StatusDashboard,
+    Tracker,
+    Workspace
+  }
+
   alias SymphonyElixir.Codex.{AccountProbe, Accounts}
   alias SymphonyElixir.Linear.Issue
 
@@ -19,6 +29,9 @@ defmodule SymphonyElixir.Orchestrator do
   @idle_housekeeping_interval_ms 60_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
+  @github_pr_snapshot_tool "github_pr_snapshot"
+  @github_wait_for_checks_tool "github_wait_for_checks"
+  @symphony_handoff_check_tool "symphony_handoff_check"
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -197,7 +210,7 @@ defmodule SymphonyElixir.Orchestrator do
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
 
         updated_running_entry =
-          maybe_publish_run_phase_transition(issue_id, running_entry, updated_running_entry)
+          maybe_publish_run_milestones(issue_id, running_entry, updated_running_entry, update)
 
         tracked_account_id = Map.get(updated_running_entry, :codex_account_id)
 
@@ -734,7 +747,8 @@ defmodule SymphonyElixir.Orchestrator do
          issue,
          attempt \\ nil,
          trace_id \\ nil,
-         retry_delay_type \\ nil
+         retry_delay_type \\ nil,
+         resume_checkpoint \\ nil
        ) do
     case revalidate_issue_for_dispatch(
            issue,
@@ -742,7 +756,14 @@ defmodule SymphonyElixir.Orchestrator do
            terminal_state_set()
          ) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, trace_id, retry_delay_type)
+        do_dispatch_issue(
+          state,
+          refreshed_issue,
+          attempt,
+          trace_id,
+          retry_delay_type,
+          resume_checkpoint
+        )
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -761,7 +782,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, trace_id, retry_delay_type) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, trace_id, retry_delay_type, resume_checkpoint) do
     case active_codex_account(state) do
       nil ->
         state
@@ -773,7 +794,8 @@ defmodule SymphonyElixir.Orchestrator do
           attempt,
           codex_account,
           dispatch_trace_id(issue, trace_id),
-          retry_delay_type
+          retry_delay_type,
+          resolve_resume_checkpoint(issue, resume_checkpoint)
         )
     end
   end
@@ -817,6 +839,7 @@ defmodule SymphonyElixir.Orchestrator do
     trace_id = pick_retry_trace_id(previous_retry, metadata)
     error = pick_retry_error(previous_retry, metadata)
     error_class = pick_retry_error_class(previous_retry, metadata)
+    resume_checkpoint = pick_retry_resume_checkpoint(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -843,7 +866,8 @@ defmodule SymphonyElixir.Orchestrator do
             trace_id: trace_id,
             error: error,
             error_class: error_class,
-            delay_type: metadata[:delay_type]
+            delay_type: metadata[:delay_type],
+            resume_checkpoint: resume_checkpoint
           })
     }
   end
@@ -857,7 +881,8 @@ defmodule SymphonyElixir.Orchestrator do
           trace_id: Map.get(retry_entry, :trace_id),
           error: Map.get(retry_entry, :error),
           error_class: Map.get(retry_entry, :error_class),
-          delay_type: Map.get(retry_entry, :delay_type)
+          delay_type: Map.get(retry_entry, :delay_type),
+          resume_checkpoint: Map.get(retry_entry, :resume_checkpoint)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -953,6 +978,7 @@ defmodule SymphonyElixir.Orchestrator do
          :normal
        ) do
     continuation_attempt = next_continuation_attempt(running_entry)
+    resume_checkpoint = capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
 
     Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check (attempt #{continuation_attempt})")
 
@@ -961,7 +987,8 @@ defmodule SymphonyElixir.Orchestrator do
     |> schedule_issue_retry(issue_id, continuation_attempt, %{
       identifier: identifier,
       trace_id: trace_id,
-      delay_type: :continuation
+      delay_type: :continuation,
+      resume_checkpoint: resume_checkpoint
     })
   end
 
@@ -998,7 +1025,8 @@ defmodule SymphonyElixir.Orchestrator do
         issue_id: issue_id,
         identifier: identifier,
         trace_id: trace_id,
-        codex_account_id: Map.get(running_entry, :codex_account_id)
+        codex_account_id: Map.get(running_entry, :codex_account_id),
+        resume_checkpoint: capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
       }
     )
   end
@@ -1009,7 +1037,8 @@ defmodule SymphonyElixir.Orchestrator do
          attempt,
          codex_account,
          trace_id,
-         retry_delay_type
+         retry_delay_type,
+         resume_checkpoint
        ) do
     recipient = self()
 
@@ -1019,7 +1048,8 @@ defmodule SymphonyElixir.Orchestrator do
              recipient,
              attempt: attempt,
              codex_account: codex_account,
-             trace_id: trace_id
+             trace_id: trace_id,
+             resume_checkpoint: resume_checkpoint
            )
          end) do
       {:ok, pid} ->
@@ -1082,7 +1112,8 @@ defmodule SymphonyElixir.Orchestrator do
           trace_id: trace_id,
           error: "failed to spawn agent: #{inspect(reason)}",
           error_class: ErrorClassifier.to_string(:transient),
-          delay_type: nil
+          delay_type: nil,
+          resume_checkpoint: resume_checkpoint
         })
     end
   end
@@ -1664,7 +1695,15 @@ defmodule SymphonyElixir.Orchestrator do
 
       retry_candidate_issue?(issue, terminal_state_set()) and
           dispatch_slots_available?(issue, state) ->
-        {:noreply, dispatch_issue(state, issue, attempt, metadata[:trace_id], metadata[:delay_type])}
+        {:noreply,
+         dispatch_issue(
+           state,
+           issue,
+           attempt,
+           metadata[:trace_id],
+           metadata[:delay_type],
+           metadata[:resume_checkpoint]
+         )}
 
       true ->
         with_log_metadata(
@@ -1725,7 +1764,8 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: identifier,
           trace_id: trace_id,
           error: "agent exited: #{failure.summary}",
-          error_class: error_class_label
+          error_class: error_class_label,
+          resume_checkpoint: context[:resume_checkpoint]
         })
 
       ErrorClassifier.retry_allowed?(failure.error_class, failure_attempt) ->
@@ -1733,7 +1773,8 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: identifier,
           trace_id: trace_id,
           error: "agent exited: #{failure.summary}",
-          error_class: error_class_label
+          error_class: error_class_label,
+          resume_checkpoint: context[:resume_checkpoint]
         })
 
       true ->
@@ -1824,7 +1865,8 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: context.identifier,
           trace_id: context.trace_id,
           error: "failed to escalate #{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
-          error_class: ErrorClassifier.to_string(:transient)
+          error_class: ErrorClassifier.to_string(:transient),
+          resume_checkpoint: context[:resume_checkpoint]
         })
     end
   end
@@ -1847,7 +1889,8 @@ defmodule SymphonyElixir.Orchestrator do
       identifier: context.identifier,
       trace_id: context.trace_id,
       error: "failed to escalate #{context.identifier} to #{manual_intervention_state()}: missing issue id",
-      error_class: ErrorClassifier.to_string(:transient)
+      error_class: ErrorClassifier.to_string(:transient),
+      resume_checkpoint: context[:resume_checkpoint]
     })
   end
 
@@ -1977,6 +2020,50 @@ defmodule SymphonyElixir.Orchestrator do
         else
           ErrorClassifier.to_string(:transient)
         end
+    end
+  end
+
+  defp pick_retry_resume_checkpoint(previous_retry, metadata) do
+    checkpoint = metadata[:resume_checkpoint] || Map.get(previous_retry, :resume_checkpoint)
+
+    if is_map(checkpoint), do: ResumeCheckpoint.for_prompt(checkpoint)
+  end
+
+  defp capture_resume_checkpoint(%Issue{} = issue, running_entry) when is_map(running_entry) do
+    ResumeCheckpoint.capture(issue, running_entry)
+  rescue
+    error ->
+      ResumeCheckpoint.for_prompt(%{
+        "fallback_reasons" => ["resume checkpoint capture failed: #{Exception.message(error)}"]
+      })
+  end
+
+  defp capture_resume_checkpoint(_issue, _running_entry), do: ResumeCheckpoint.for_prompt(nil)
+
+  defp resolve_resume_checkpoint(%Issue{} = issue, checkpoint) when is_map(checkpoint) do
+    checkpoint
+    |> ResumeCheckpoint.for_prompt()
+    |> merge_loaded_resume_checkpoint(issue)
+  end
+
+  defp resolve_resume_checkpoint(%Issue{} = issue, _checkpoint) do
+    issue
+    |> ResumeCheckpoint.load()
+    |> ResumeCheckpoint.for_prompt()
+  end
+
+  defp merge_loaded_resume_checkpoint(%{} = provided, %Issue{} = issue) do
+    loaded = ResumeCheckpoint.load(issue)
+    loaded_reasons = if loaded["available"] == true, do: Map.get(loaded, "fallback_reasons", []), else: []
+
+    if loaded_reasons == [] do
+      ResumeCheckpoint.for_prompt(provided)
+    else
+      provided
+      |> Map.update("fallback_reasons", loaded_reasons, fn reasons ->
+        (reasons || []) ++ loaded_reasons
+      end)
+      |> ResumeCheckpoint.for_prompt()
     end
   end
 
@@ -2208,6 +2295,7 @@ defmodule SymphonyElixir.Orchestrator do
         turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
       })
       |> apply_verification_update(update)
+      |> apply_pr_context_update(update)
       |> RunPhase.apply_update(update)
 
     {updated_running_entry, token_delta}
@@ -2229,42 +2317,125 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp verification_manifest_from_update(%{event: event, payload: payload})
-       when event in [:tool_call_completed, :tool_call_failed] and is_map(payload) do
+  defp apply_pr_context_update(running_entry, update) when is_map(running_entry) and is_map(update) do
+    running_entry
+    |> maybe_put_pr_snapshot(update)
+    |> maybe_put_ci_wait_result(update)
+  end
+
+  defp verification_manifest_from_update(update) when is_map(update) do
+    with {:ok, @symphony_handoff_check_tool, _result} <- dynamic_tool_result(update),
+         {:ok, payload} <- parse_dynamic_tool_result_payload(update),
+         manifest when is_map(manifest) <- extract_manifest_payload(payload) do
+      {:ok, manifest}
+    else
+      _ -> :error
+    end
+  end
+
+  defp maybe_put_pr_snapshot(running_entry, update) when is_map(running_entry) and is_map(update) do
+    with {:ok, @github_pr_snapshot_tool, _result} <- dynamic_tool_result(update),
+         {:ok, payload} <- parse_dynamic_tool_result_payload(update),
+         normalized when is_map(normalized) <- normalize_pr_snapshot_payload(payload) do
+      Map.put(running_entry, :latest_pr_snapshot, normalized)
+    else
+      _ -> running_entry
+    end
+  end
+
+  defp maybe_put_ci_wait_result(running_entry, update) when is_map(running_entry) and is_map(update) do
+    with {:ok, @github_wait_for_checks_tool, _result} <- dynamic_tool_result(update),
+         {:ok, payload} <- parse_dynamic_tool_result_payload(update),
+         normalized when is_map(normalized) <- normalize_ci_wait_payload(payload) do
+      Map.put(running_entry, :latest_ci_wait_result, normalized)
+    else
+      _ -> running_entry
+    end
+  end
+
+  defp maybe_put_ci_wait_result(running_entry, _update), do: running_entry
+
+  defp extract_manifest_payload(%{"manifest" => manifest}) when is_map(manifest), do: manifest
+  defp extract_manifest_payload(manifest) when is_map(manifest), do: manifest
+  defp extract_manifest_payload(_payload), do: nil
+
+  defp normalize_pr_snapshot_payload(payload) when is_map(payload) do
+    url = payload["url"]
+    state = payload["state"]
+    has_pending_checks = payload["has_pending_checks"]
+    has_actionable_feedback = payload["has_actionable_feedback"]
+
+    if is_binary(url) and String.trim(url) != "" do
+      %{
+        "url" => url,
+        "state" => state,
+        "number" => extract_pr_number(url),
+        "has_pending_checks" => normalize_optional_boolean(has_pending_checks),
+        "has_actionable_feedback" => normalize_optional_boolean(has_actionable_feedback)
+      }
+    end
+  end
+
+  defp normalize_pr_snapshot_payload(_payload), do: nil
+
+  defp normalize_ci_wait_payload(payload) when is_map(payload) do
+    all_green = normalize_optional_boolean(payload["all_green"])
+    pending_checks = payload["pending_checks"]
+    failed_checks = payload["failed_checks"]
+    checks = payload["checks"]
+
+    %{
+      "all_green" => all_green,
+      "pending_checks" => if(is_list(pending_checks), do: pending_checks, else: []),
+      "failed_checks" => if(is_list(failed_checks), do: failed_checks, else: []),
+      "checks" => if(is_list(checks), do: checks, else: [])
+    }
+  end
+
+  defp normalize_ci_wait_payload(_payload), do: nil
+
+  defp dynamic_tool_result(%{event: event, payload: payload} = update)
+       when event in [:tool_call_completed, :tool_call_failed, :unsupported_tool_call] and
+              is_map(payload) do
     tool_name =
       get_in(payload, ["params", "tool"]) ||
         get_in(payload, ["params", "name"])
 
-    if tool_name == "symphony_handoff_check" do
-      result =
-        Map.get(payload, :result) ||
-          Map.get(payload, "result")
+    result =
+      Map.get(update, :result) ||
+        Map.get(update, "result")
 
-      extract_verification_manifest(result)
+    if is_binary(tool_name), do: {:ok, tool_name, result}, else: :error
+  end
+
+  defp dynamic_tool_result(_update), do: :error
+
+  defp parse_dynamic_tool_result_payload(update) when is_map(update) do
+    with {:ok, _tool_name, result} <- dynamic_tool_result(update),
+         text when is_binary(text) <- result_payload_text(result),
+         {:ok, payload} <- Jason.decode(text),
+         true <- is_map(payload) do
+      {:ok, payload}
     else
-      :error
-    end
-  end
-
-  defp verification_manifest_from_update(_update), do: :error
-
-  defp extract_verification_manifest(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text) do
-    case Jason.decode(text) do
-      {:ok, %{"manifest" => manifest}} when is_map(manifest) -> {:ok, manifest}
-      {:ok, manifest} when is_map(manifest) -> {:ok, manifest}
       _ -> :error
     end
   end
 
-  defp extract_verification_manifest(%{contentItems: [%{text: text} | _]}) when is_binary(text) do
-    case Jason.decode(text) do
-      {:ok, %{"manifest" => manifest}} when is_map(manifest) -> {:ok, manifest}
-      {:ok, manifest} when is_map(manifest) -> {:ok, manifest}
-      _ -> :error
+  defp result_payload_text(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text), do: text
+  defp result_payload_text(%{contentItems: [%{text: text} | _]}) when is_binary(text), do: text
+  defp result_payload_text(_result), do: nil
+
+  defp extract_pr_number(url) when is_binary(url) do
+    case Regex.run(~r{/pull/(\d+)}, url, capture: :all_but_first) do
+      [value] -> String.to_integer(value)
+      _ -> nil
     end
   end
 
-  defp extract_verification_manifest(_result), do: :error
+  defp extract_pr_number(_url), do: nil
+
+  defp normalize_optional_boolean(value) when is_boolean(value), do: value
+  defp normalize_optional_boolean(_value), do: nil
 
   defp parse_manifest_checked_at(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
@@ -2275,36 +2446,92 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp parse_manifest_checked_at(_value), do: nil
 
-  defp maybe_publish_run_phase_transition(issue_id, previous_running_entry, current_running_entry) do
-    with true <- should_publish_run_phase_comment?(previous_running_entry, current_running_entry),
-         comment when is_binary(comment) <- RunPhase.phase_signal_comment(current_running_entry),
-         :ok <- Tracker.create_comment(issue_id, comment) do
-      RunPhase.mark_phase_reported(current_running_entry)
-    else
-      {:error, reason} ->
-        Logger.warning("Failed to publish run phase transition for issue_id=#{issue_id}: #{inspect(reason)}")
-        current_running_entry
+  defp maybe_publish_run_milestones(
+         issue_id,
+         previous_running_entry,
+         current_running_entry,
+         update
+       ) do
+    pending =
+      current_running_entry
+      |> Map.get(:pending_milestones, MapSet.new())
+      |> normalize_milestone_set()
 
-      _ ->
-        current_running_entry
+    transition_milestones = RunPhase.transition_milestones(previous_running_entry, current_running_entry)
+    tool_milestones = tool_update_milestones(update)
+
+    milestones_to_publish =
+      pending
+      |> MapSet.union(MapSet.new(transition_milestones))
+      |> MapSet.union(MapSet.new(tool_milestones))
+      |> MapSet.to_list()
+      |> RunPhase.sort_milestones()
+
+    Enum.reduce(milestones_to_publish, current_running_entry, fn milestone, entry ->
+      publish_single_milestone(issue_id, entry, milestone)
+    end)
+  end
+
+  defp publish_single_milestone(issue_id, running_entry, milestone) do
+    if RunPhase.milestone_reported?(running_entry, milestone) do
+      RunPhase.clear_pending_milestone(running_entry, milestone)
+    else
+      comment = RunPhase.milestone_comment(milestone, running_entry)
+
+      case Tracker.create_comment(issue_id, comment) do
+        :ok ->
+          running_entry
+          |> RunPhase.clear_pending_milestone(milestone)
+          |> RunPhase.mark_milestone_reported(milestone)
+
+        {:error, reason} ->
+          Logger.warning("Failed to publish run milestone #{RunPhase.milestone_label(milestone)} for issue_id=#{issue_id}: #{inspect(reason)}")
+          RunPhase.mark_milestone_pending(running_entry, milestone)
+      end
     end
   end
 
-  defp should_publish_run_phase_comment?(previous_running_entry, current_running_entry) do
-    phase_unreported?(current_running_entry) and
-      RunPhase.reportable_phase?(Map.get(current_running_entry, :run_phase)) and
-      (RunPhase.transition_reportable?(previous_running_entry, current_running_entry) or
-         retrying_unreported_phase_comment?(previous_running_entry, current_running_entry))
+  defp tool_update_milestones(update) when is_map(update) do
+    []
+    |> maybe_add_ci_failed_milestone(update)
+    |> maybe_add_handoff_ready_milestone(update)
+    |> Enum.uniq()
   end
 
-  defp retrying_unreported_phase_comment?(previous_running_entry, current_running_entry) do
-    RunPhase.phase_label(Map.get(previous_running_entry, :run_phase)) ==
-      RunPhase.phase_label(Map.get(current_running_entry, :run_phase))
+  defp maybe_add_ci_failed_milestone(milestones, update) do
+    case dynamic_tool_result(update) do
+      {:ok, @github_wait_for_checks_tool, _result} ->
+        if ci_failed_milestone?(update), do: milestones ++ [:ci_failed], else: milestones
+
+      _ ->
+        milestones
+    end
   end
 
-  defp phase_unreported?(running_entry) do
-    Map.get(running_entry, :last_reported_phase) != Map.get(running_entry, :run_phase)
+  defp ci_failed_milestone?(%{event: :tool_call_failed}), do: true
+
+  defp ci_failed_milestone?(update) do
+    case parse_dynamic_tool_result_payload(update) do
+      {:ok, %{"all_green" => false}} -> true
+      _ -> false
+    end
   end
+
+  defp maybe_add_handoff_ready_milestone(milestones, update) do
+    with {:ok, @symphony_handoff_check_tool, _result} <- dynamic_tool_result(update),
+         :tool_call_completed <- Map.get(update, :event),
+         {:ok, payload} <- parse_dynamic_tool_result_payload(update),
+         manifest when is_map(manifest) <- extract_manifest_payload(payload),
+         true <- manifest["passed"] == true do
+      milestones ++ [:handoff_ready]
+    else
+      _ -> milestones
+    end
+  end
+
+  defp normalize_milestone_set(%MapSet{} = milestones), do: milestones
+  defp normalize_milestone_set(milestones) when is_list(milestones), do: MapSet.new(milestones)
+  defp normalize_milestone_set(_milestones), do: MapSet.new()
 
   defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid})
        when is_binary(pid),

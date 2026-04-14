@@ -535,7 +535,21 @@ Continuation context:
 - This is retry attempt #{{ attempt }} because the ticket is still in an active state.
 - Resume from the current workspace state instead of restarting from scratch.
 - Do not repeat already-completed investigation or validation unless needed for new code changes.
-- Treat every retry as a context-budgeted continuation: prefer the current diff, `workpad.md`, and compact tool summaries over rereading full history.
+- Use the compact resume checkpoint as the default retry input before any broad reread:
+  - available: `{{ resume_checkpoint.available }}`
+  - ready: `{{ resume_checkpoint.resume_ready }}`
+  - branch: `{{ resume_checkpoint.branch }}`
+  - head: `{{ resume_checkpoint.head }}`
+  - changed_files: `{{ resume_checkpoint.changed_files }}`
+  - last_validation_status: `{{ resume_checkpoint.last_validation_status }}`
+  - open_pr: `{{ resume_checkpoint.open_pr }}`
+  - pending_checks: `{{ resume_checkpoint.pending_checks }}`
+  - open_feedback: `{{ resume_checkpoint.open_feedback }}`
+  - workpad_ref: `{{ resume_checkpoint.workpad_ref }}`
+  - workpad_digest: `{{ resume_checkpoint.workpad_digest }}`
+  - fallback_reasons: `{{ resume_checkpoint.fallback_reasons }}`
+- If `resume_checkpoint.resume_ready` is true, continue from that checkpoint and avoid full issue-comment history reread.
+- If `resume_checkpoint.resume_ready` is false, explicitly record the checkpoint mismatch/insufficiency and then fallback to a focused full reread.
 - If available context is already low (`low-context`), finish at most one atomic action, sync the workpad, and prepare a classified checkpoint instead of starting a broad new investigation.
 - Do not spend the remaining context budget restating prior work or retrying the same failing path without a materially new signal.
 - Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets or are making a classified `decision`/`human-action` handoff because further autonomous progress is no longer justified.
@@ -574,7 +588,12 @@ Instructions:
 
 - Start by determining the current state, then follow the matching flow.
 - Keep the issue description as the canonical task-spec and exactly one persistent workpad comment as the implementation plan and execution log.
-- Use local `workpad.md` as the working copy and sync the live workpad only at bootstrap, meaningful milestones, and final handoff.
+- Use local `workpad.md` as the working copy and sync the live workpad only at bootstrap, milestone transitions, and final handoff.
+- For unattended execution commentary, use the terse milestone-only profile:
+  - allowed milestone updates: `start`, `code-ready`, `validation-running`, `PR-opened`, `CI-failed`, `handoff-ready`;
+  - do not post non-milestone progress chatter;
+  - keep each milestone comment compact and factual.
+- Keep workpad sync cadence aligned to the same milestone transitions.
 - Before each automated stage (`Spec Prep`, `In Progress`, `Rework`, `Merging`), post one separate top-level stage-start comment before the first live workpad sync of that stage.
 - Before any Git sync or branch decision, treat `.symphony-source-repository`, `.symphony-base-branch`, and optional `.symphony-working-branch` as the authoritative workspace routing metadata when those files exist.
 - When a fresh working branch is needed, use `.symphony-working-branch` exactly when it exists. Otherwise, do not reuse Linear `gitBranchName` values and create the branch yourself as `Symphony/<lowercase issue identifier>-<short-kebab-summary>`.
@@ -799,6 +818,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - if the run resumes on an existing non-base branch and no lineage note exists yet, record `Текущая рабочая ветка <branch>; базовая ветка origin/<configured base branch>.` instead of inventing a creation event.
 6. Use the issue description as the canonical task contract and local `workpad.md` as the implementation plan and detailed execution log.
 7. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before final handoff.
+   - milestone sync points in this stage are `code-ready`, `validation-running`, `PR-opened`, `CI-failed`, `handoff-ready`;
    - фиксируй повторные попытки исправить один и тот же сигнал в workpad и соблюдай лимит auto-fix attempts ниже;
 8. Run the required validation for the scope:
    - run `make symphony-preflight` before concluding that auth/env/tooling is missing for the current task;

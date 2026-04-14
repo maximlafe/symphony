@@ -245,6 +245,64 @@ defmodule SymphonyElixir.RunPhaseTest do
     assert cleared_notice.operational_notice == nil
   end
 
+  test "milestone helpers classify transitions and normalize milestone inputs" do
+    assert RunPhase.transition_milestones(%{run_phase: :editing}, %{run_phase: :verification}) ==
+             [:code_ready, :validation_running]
+
+    assert RunPhase.transition_milestones(%{run_phase: :targeted_tests}, %{run_phase: :full_validate}) ==
+             [:validation_running]
+
+    assert RunPhase.transition_milestones(%{run_phase: :editing}, %{run_phase: :publishing_pr}) ==
+             [:pr_opened]
+
+    assert RunPhase.transition_milestones(:bad, :shape) == []
+
+    assert RunPhase.sort_milestones([:handoff_ready, :code_ready, :unknown, :code_ready]) ==
+             [:code_ready, :handoff_ready]
+
+    assert RunPhase.sort_milestones(:not_a_list) == []
+
+    assert RunPhase.milestone_label(nil) == nil
+    assert RunPhase.milestone_label("PR-opened") == "PR-opened"
+    assert RunPhase.milestone_label(123) == nil
+
+    milestone_comment = RunPhase.milestone_comment(:code_ready, %{current_command: "mix test"})
+    assert milestone_comment =~ "Symphony milestone"
+    assert milestone_comment =~ "code-ready"
+    assert milestone_comment =~ "mix test"
+
+    default_comment = RunPhase.milestone_comment(:validation_running)
+    assert default_comment =~ "validation-running"
+  end
+
+  test "milestone reported and pending sets handle invalid and legacy shapes" do
+    base = %{
+      reported_milestones: [:code_ready],
+      pending_milestones: [:validation_running]
+    }
+
+    assert RunPhase.milestone_reported?(base, :code_ready)
+    refute RunPhase.milestone_reported?(%{reported_milestones: :bad_shape}, :code_ready)
+
+    updated = RunPhase.mark_milestone_reported(base, :pr_opened)
+    assert RunPhase.milestone_reported?(updated, :pr_opened)
+
+    unchanged_reported = RunPhase.mark_milestone_reported(updated, :unknown)
+    assert unchanged_reported == updated
+
+    pending = RunPhase.mark_milestone_pending(base, :ci_failed)
+    assert MapSet.member?(pending.pending_milestones, :ci_failed)
+
+    unchanged_pending = RunPhase.mark_milestone_pending(pending, :unknown)
+    assert unchanged_pending == pending
+
+    cleared = RunPhase.clear_pending_milestone(pending, :validation_running)
+    refute MapSet.member?(cleared.pending_milestones, :validation_running)
+
+    unchanged_clear = RunPhase.clear_pending_milestone(cleared, :unknown)
+    assert unchanged_clear == cleared
+  end
+
   defp apply_update_for_command(command, timestamp) do
     RunPhase.apply_update(base_entry(), %{
       event: :notification,
