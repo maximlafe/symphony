@@ -102,6 +102,7 @@ Instructions:
 5. Use the compact runtime tools when available:
    - `linear_graphql` for narrowly scoped Linear reads/writes.
    - `sync_workpad` for the live workpad comment; do not inline the workpad body into raw `commentCreate`/`commentUpdate` when `sync_workpad` is available.
+   - `exec_background` + `exec_wait` for long-running local validation/diagnostic commands so waits happen outside the model loop with compact results.
    - `github_pr_snapshot` for compact PR status/feedback summaries.
    - `github_wait_for_checks` for CI waits outside the model loop.
    - `symphony_handoff_check` for the repo-owned, fail-closed review-ready contract.

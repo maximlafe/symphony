@@ -2737,6 +2737,8 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "never delete, rewrite away, or relocate them when updating issue text"
     assert prompt =~ "`github_pr_snapshot`"
     assert prompt =~ "`github_wait_for_checks`"
+    assert prompt =~ "`exec_background`"
+    assert prompt =~ "`exec_wait`"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
     assert prompt =~ "making a classified `decision`/`human-action` handoff"
