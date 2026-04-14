@@ -128,6 +128,54 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert ControllerFinalizer.eligible?(issue, checkpoint)
   end
 
+  test "eligible?/2 blocks repeat finalization when fallback fingerprint relies on reason" do
+    issue = %Issue{id: "issue-fingerprint-reason", identifier: "LET-462-FINGERPRINT-REASON", state: "In Progress"}
+
+    checkpoint = %{
+      "open_pr" => %{"url" => "https://github.com/acme/symphony/pull/42"},
+      "controller_finalizer" => %{
+        "status" => "action_required",
+        "reason" => "pull request has actionable feedback",
+        "blocked_pr_number" => 42,
+        "blocked_head" => nil
+      }
+    }
+
+    refute ControllerFinalizer.eligible?(issue, checkpoint)
+  end
+
+  test "eligible?/2 handles string PR numbers in fallback fingerprint" do
+    issue = %Issue{id: "issue-string-pr", identifier: "LET-462-STRING-PR", state: "In Progress"}
+
+    checkpoint = %{
+      "open_pr" => %{"number" => 42},
+      "controller_finalizer" => %{
+        "status" => "action_required",
+        "reason" => "pull request has actionable feedback",
+        "blocked_pr_number" => "42",
+        "blocked_head" => nil
+      }
+    }
+
+    refute ControllerFinalizer.eligible?(issue, checkpoint)
+  end
+
+  test "eligible?/2 ignores invalid string PR numbers in fallback fingerprint" do
+    issue = %Issue{id: "issue-invalid-string-pr", identifier: "LET-462-INVALID-STRING-PR", state: "In Progress"}
+
+    checkpoint = %{
+      "open_pr" => %{"number" => 42},
+      "controller_finalizer" => %{
+        "status" => "action_required",
+        "reason" => "pull request has actionable feedback",
+        "blocked_pr_number" => "not-a-number",
+        "blocked_head" => nil
+      }
+    }
+
+    assert ControllerFinalizer.eligible?(issue, checkpoint)
+  end
+
   test "run/3 completes deterministic finalization and transitions issue state on success" do
     issue = %Issue{id: "issue-success", identifier: "LET-462-SUCCESS", state: "In Progress"}
     _workspace = create_workspace!(issue.identifier)
