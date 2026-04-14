@@ -12,11 +12,13 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert graphql_spec["inputSchema"]["required"] == ["query"]
   end
 
-  test "tool_specs advertises GitHub runtime tools" do
+  test "tool_specs advertises runtime tools" do
     specs = DynamicTool.tool_specs()
     upload_spec = Enum.find(specs, &(&1["name"] == "linear_upload_issue_attachment"))
     snapshot_spec = Enum.find(specs, &(&1["name"] == "github_pr_snapshot"))
     wait_spec = Enum.find(specs, &(&1["name"] == "github_wait_for_checks"))
+    exec_background_spec = Enum.find(specs, &(&1["name"] == "exec_background"))
+    exec_wait_spec = Enum.find(specs, &(&1["name"] == "exec_wait"))
     handoff_spec = Enum.find(specs, &(&1["name"] == "symphony_handoff_check"))
 
     assert upload_spec["inputSchema"]["required"] == ["issue_id", "file_path"]
@@ -27,6 +29,12 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert wait_spec["inputSchema"]["required"] == ["repo", "pr_number"]
     assert wait_spec["description"] =~ "checks"
+
+    assert exec_background_spec["inputSchema"]["required"] == ["command"]
+    assert exec_background_spec["description"] =~ "background"
+
+    assert exec_wait_spec["inputSchema"]["required"] == ["result_ref"]
+    assert exec_wait_spec["description"] =~ "result"
 
     assert handoff_spec["inputSchema"]["required"] == ["issue_id", "file_path", "repo", "pr_number"]
     assert handoff_spec["description"] =~ "handoff"
@@ -53,6 +61,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                  "linear_upload_issue_attachment",
                  "github_pr_snapshot",
                  "github_wait_for_checks",
+                 "exec_background",
+                 "exec_wait",
                  "symphony_handoff_check"
                ]
              }
@@ -1092,6 +1102,144 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert payload["error"]["details"]["timeout_ms"] == 250
     assert payload["error"]["details"]["duration_ms"] >= 300
     assert length(payload["error"]["details"]["pending_checks"]) == 1
+  end
+
+  test "exec_background and exec_wait run long local commands outside the model loop" do
+    workspace = Path.join(System.tmp_dir!(), "exec_background_success_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+
+    started =
+      DynamicTool.execute(
+        "exec_background",
+        %{"command" => "sleep 0.05 && printf 'all good\\n'"},
+        workspace: workspace
+      )
+
+    assert started["success"] == true
+    started_payload = decode_tool_text(started)
+    assert started_payload["status"] == "running"
+    assert is_binary(started_payload["result_ref"])
+
+    completed =
+      DynamicTool.execute(
+        "exec_wait",
+        %{
+          "result_ref" => started_payload["result_ref"],
+          "timeout_ms" => 2_000,
+          "poll_interval_ms" => 10
+        },
+        workspace: workspace
+      )
+
+    assert completed["success"] == true
+    completed_payload = decode_tool_text(completed)
+
+    assert completed_payload["status"] == "succeeded"
+    assert completed_payload["exit_code"] == 0
+    assert completed_payload["failure_summary"] == nil
+    assert completed_payload["tail"] =~ "all good"
+    assert completed_payload["duration_ms"] >= 0
+
+    completed_again =
+      DynamicTool.execute(
+        "exec_wait",
+        %{"result_ref" => started_payload["result_ref"]},
+        workspace: workspace
+      )
+
+    assert completed_again["success"] == true
+
+    assert Map.take(decode_tool_text(completed_again), ["status", "exit_code", "tail"]) ==
+             Map.take(completed_payload, ["status", "exit_code", "tail"])
+  end
+
+  test "exec_wait returns compact failure and timeout results" do
+    workspace = Path.join(System.tmp_dir!(), "exec_background_failure_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+
+    failed_started =
+      DynamicTool.execute(
+        "exec_background",
+        %{"command" => "printf 'boom\\n' && exit 7"},
+        workspace: workspace
+      )
+
+    failed_result_ref = decode_tool_text(failed_started)["result_ref"]
+
+    failed =
+      DynamicTool.execute(
+        "exec_wait",
+        %{"result_ref" => failed_result_ref, "timeout_ms" => 2_000, "poll_interval_ms" => 10},
+        workspace: workspace
+      )
+
+    assert failed["success"] == true
+    failed_payload = decode_tool_text(failed)
+    assert failed_payload["status"] == "failed"
+    assert failed_payload["exit_code"] == 7
+    assert failed_payload["failure_summary"] =~ "7"
+    assert failed_payload["tail"] =~ "boom"
+
+    timed_out_started =
+      DynamicTool.execute(
+        "exec_background",
+        %{"command" => "sleep 0.3 && printf 'late\\n'", "timeout_ms" => 20},
+        workspace: workspace
+      )
+
+    timed_out_result_ref = decode_tool_text(timed_out_started)["result_ref"]
+
+    timed_out =
+      DynamicTool.execute(
+        "exec_wait",
+        %{"result_ref" => timed_out_result_ref, "timeout_ms" => 2_000, "poll_interval_ms" => 10},
+        workspace: workspace
+      )
+
+    assert timed_out["success"] == true
+    timed_out_payload = decode_tool_text(timed_out)
+    assert timed_out_payload["status"] == "timed_out"
+    assert timed_out_payload["exit_code"] == nil
+    assert timed_out_payload["failure_summary"] =~ "timed out"
+  end
+
+  test "exec_wait can return running status and cancel a long-running command" do
+    workspace =
+      Path.join(System.tmp_dir!(), "exec_background_cancellation_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(workspace)
+
+    started =
+      DynamicTool.execute(
+        "exec_background",
+        %{"command" => "sleep 5"},
+        workspace: workspace
+      )
+
+    result_ref = decode_tool_text(started)["result_ref"]
+
+    running =
+      DynamicTool.execute(
+        "exec_wait",
+        %{"result_ref" => result_ref, "timeout_ms" => 10, "poll_interval_ms" => 5},
+        workspace: workspace
+      )
+
+    assert running["success"] == true
+    assert decode_tool_text(running)["status"] == "running"
+
+    cancelled =
+      DynamicTool.execute(
+        "exec_wait",
+        %{"result_ref" => result_ref, "cancel" => true},
+        workspace: workspace
+      )
+
+    assert cancelled["success"] == true
+    cancelled_payload = decode_tool_text(cancelled)
+    assert cancelled_payload["status"] == "cancelled"
+    assert cancelled_payload["exit_code"] == nil
+    assert cancelled_payload["failure_summary"] =~ "cancelled"
   end
 
   test "symphony_handoff_check fails closed for an incomplete workpad and writes a manifest" do

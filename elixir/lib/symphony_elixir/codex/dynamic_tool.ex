@@ -167,6 +167,58 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   }
 
+  @exec_background_tool "exec_background"
+  @exec_background_description """
+  Run a local workspace command in the background and return a compact result reference for later waits.
+  """
+  @exec_background_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["command"],
+    "properties" => %{
+      "command" => %{
+        "type" => "string",
+        "description" => "Shell command to run in the current workspace."
+      },
+      "timeout_ms" => %{
+        "type" => ["integer", "null"],
+        "description" => "Maximum command runtime in milliseconds. Defaults to 3600000."
+      },
+      "tail_bytes" => %{
+        "type" => ["integer", "null"],
+        "description" => "Maximum UTF-8 tail size retained for compact diagnostics. Defaults to 12000."
+      }
+    }
+  }
+
+  @exec_wait_tool "exec_wait"
+  @exec_wait_description """
+  Wait for a background local command result outside the model loop using a result reference returned by exec_background.
+  """
+  @exec_wait_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["result_ref"],
+    "properties" => %{
+      "result_ref" => %{
+        "type" => "string",
+        "description" => "Result reference returned by exec_background."
+      },
+      "timeout_ms" => %{
+        "type" => ["integer", "null"],
+        "description" => "Maximum wait time for this call in milliseconds. Defaults to 30000."
+      },
+      "poll_interval_ms" => %{
+        "type" => ["integer", "null"],
+        "description" => "Polling interval in milliseconds while waiting. Defaults to 250."
+      },
+      "cancel" => %{
+        "type" => "boolean",
+        "description" => "When true, cancel the running command and return a cancelled terminal result."
+      }
+    }
+  }
+
   @symphony_handoff_check_tool "symphony_handoff_check"
   @symphony_handoff_check_description """
   Run Symphony's fail-closed handoff contract against the current workpad, issue attachments, and pull request state.
@@ -241,6 +293,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   @default_github_wait_timeout_ms 3_600_000
   @default_github_wait_poll_interval_ms 10_000
+  @default_exec_background_timeout_ms 3_600_000
+  @default_exec_wait_timeout_ms 30_000
+  @default_exec_wait_poll_interval_ms 250
+  @default_exec_tail_bytes 12_000
+  @exec_background_registry_table :symphony_exec_background_registry
+  @exec_background_registry_max_entries 128
+  @exec_background_result_retention_ms 21_600_000
   @success_check_conclusions MapSet.new(["SUCCESS", "SUCCESSFUL", "NEUTRAL", "SKIPPED"])
   @pending_check_statuses MapSet.new(["EXPECTED", "PENDING", "IN_PROGRESS", "QUEUED", "REQUESTED", "WAITING"])
   @failing_check_conclusions MapSet.new(["ACTION_REQUIRED", "CANCELLED", "ERROR", "FAILURE", "FAILED", "STALE", "STARTUP_FAILURE", "TIMED_OUT"])
@@ -248,34 +307,34 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
-    case tool do
-      @linear_graphql_tool ->
-        execute_linear_graphql(arguments, opts)
-
-      @sync_workpad_tool ->
-        execute_sync_workpad(arguments, opts)
-
-      @linear_upload_issue_attachment_tool ->
-        execute_linear_upload_issue_attachment(arguments, opts)
-
-      @github_pr_snapshot_tool ->
-        execute_github_pr_snapshot(arguments, opts)
-
-      @github_wait_for_checks_tool ->
-        execute_github_wait_for_checks(arguments, opts)
-
-      @symphony_handoff_check_tool ->
-        execute_symphony_handoff_check(arguments, opts)
-
-      other ->
-        failure_response(%{
-          "error" => %{
-            "message" => "Unsupported dynamic tool: #{inspect(other)}.",
-            "supportedTools" => supported_tool_names()
-          }
-        })
+    if tool in supported_tool_names() do
+      execute_supported_tool(tool, arguments, opts)
+    else
+      failure_response(%{
+        "error" => %{
+          "message" => "Unsupported dynamic tool: #{inspect(tool)}.",
+          "supportedTools" => supported_tool_names()
+        }
+      })
     end
   end
+
+  defp execute_supported_tool(@linear_graphql_tool, arguments, opts), do: execute_linear_graphql(arguments, opts)
+  defp execute_supported_tool(@sync_workpad_tool, arguments, opts), do: execute_sync_workpad(arguments, opts)
+
+  defp execute_supported_tool(@linear_upload_issue_attachment_tool, arguments, opts),
+    do: execute_linear_upload_issue_attachment(arguments, opts)
+
+  defp execute_supported_tool(@github_pr_snapshot_tool, arguments, opts), do: execute_github_pr_snapshot(arguments, opts)
+
+  defp execute_supported_tool(@github_wait_for_checks_tool, arguments, opts),
+    do: execute_github_wait_for_checks(arguments, opts)
+
+  defp execute_supported_tool(@exec_background_tool, arguments, opts), do: execute_exec_background(arguments, opts)
+  defp execute_supported_tool(@exec_wait_tool, arguments, opts), do: execute_exec_wait(arguments, opts)
+
+  defp execute_supported_tool(@symphony_handoff_check_tool, arguments, opts),
+    do: execute_symphony_handoff_check(arguments, opts)
 
   @spec tool_specs() :: [map()]
   def tool_specs do
@@ -304,6 +363,16 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "name" => @github_wait_for_checks_tool,
         "description" => @github_wait_for_checks_description,
         "inputSchema" => @github_wait_for_checks_input_schema
+      },
+      %{
+        "name" => @exec_background_tool,
+        "description" => @exec_background_description,
+        "inputSchema" => @exec_background_input_schema
+      },
+      %{
+        "name" => @exec_wait_tool,
+        "description" => @exec_wait_description,
+        "inputSchema" => @exec_wait_input_schema
       },
       %{
         "name" => @symphony_handoff_check_tool,
@@ -389,6 +458,55 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       success_response(result)
     else
       {:error, reason} -> failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp execute_exec_background(arguments, opts) do
+    with {:ok, command, timeout_ms, tail_bytes} <- normalize_exec_background_arguments(arguments),
+         {:ok, workspace} <- resolve_exec_workspace(opts, :exec_background) do
+      prune_exec_background_registry(opts)
+      result_ref = build_exec_result_ref(opts)
+      started_at_ms = monotonic_time_ms(opts)
+
+      put_exec_registry_entry(result_ref, %{
+        result_ref: result_ref,
+        command: command,
+        workspace: workspace,
+        status: :running,
+        started_at_ms: started_at_ms,
+        timeout_ms: timeout_ms,
+        tail_bytes: tail_bytes,
+        tail: "",
+        worker_pid: nil,
+        result: nil,
+        completed_at_ms: nil
+      })
+
+      worker_pid =
+        spawn(fn ->
+          run_exec_background_command(result_ref, command, workspace, timeout_ms, tail_bytes, started_at_ms, opts)
+        end)
+
+      :ok = update_exec_registry_entry(result_ref, fn entry -> %{entry | worker_pid: worker_pid} end)
+
+      success_response(%{
+        "result_ref" => result_ref,
+        "status" => "running",
+        "timeout_ms" => timeout_ms
+      })
+    else
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp execute_exec_wait(arguments, opts) do
+    with {:ok, result_ref, timeout_ms, poll_interval_ms, cancel?} <- normalize_exec_wait_arguments(arguments),
+         {:ok, result} <- wait_for_exec_result(result_ref, timeout_ms, poll_interval_ms, cancel?, opts) do
+      success_response(result)
+    else
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason))
     end
   end
 
@@ -702,6 +820,55 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     {:error, {:github_wait_for_checks, "`repo` and `pr_number` are required"}}
   end
 
+  defp normalize_exec_background_arguments(arguments) when is_map(arguments) do
+    with {:ok, command} <- required_tool_string_arg(arguments, "command", :exec_background),
+         {:ok, timeout_ms} <-
+           normalize_positive_integer(
+             arguments,
+             "timeout_ms",
+             @default_exec_background_timeout_ms,
+             :exec_background
+           ),
+         {:ok, tail_bytes} <-
+           normalize_positive_integer(
+             arguments,
+             "tail_bytes",
+             @default_exec_tail_bytes,
+             :exec_background
+           ) do
+      {:ok, command, timeout_ms, tail_bytes}
+    end
+  end
+
+  defp normalize_exec_background_arguments(_arguments) do
+    {:error, {:exec_background, "`command` is required"}}
+  end
+
+  defp normalize_exec_wait_arguments(arguments) when is_map(arguments) do
+    with {:ok, result_ref} <- required_tool_string_arg(arguments, "result_ref", :exec_wait),
+         {:ok, timeout_ms} <-
+           normalize_positive_integer(
+             arguments,
+             "timeout_ms",
+             @default_exec_wait_timeout_ms,
+             :exec_wait
+           ),
+         {:ok, poll_interval_ms} <-
+           normalize_positive_integer(
+             arguments,
+             "poll_interval_ms",
+             @default_exec_wait_poll_interval_ms,
+             :exec_wait
+           ),
+         {:ok, cancel?} <- normalize_boolean(arguments, "cancel", false, :exec_wait) do
+      {:ok, result_ref, timeout_ms, poll_interval_ms, cancel?}
+    end
+  end
+
+  defp normalize_exec_wait_arguments(_arguments) do
+    {:error, {:exec_wait, "`result_ref` is required"}}
+  end
+
   defp normalize_symphony_handoff_check_arguments(arguments, opts) when is_map(arguments) do
     workspace = Keyword.get(opts, :workspace)
     verification = Config.settings!().verification
@@ -756,6 +923,19 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
       _ ->
         {:error, {tool, "`pr_number` must be a positive integer"}}
+    end
+  end
+
+  defp required_tool_string_arg(arguments, key, tool) when is_map(arguments) and is_binary(key) do
+    case get_argument(arguments, key) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:error, {tool, "`#{key}` is required"}}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _ ->
+        {:error, {tool, "`#{key}` is required"}}
     end
   end
 
@@ -1772,6 +1952,391 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     sleep_fun.(duration_ms)
   end
 
+  defp resolve_exec_workspace(opts, tool) do
+    workspace = Keyword.get(opts, :workspace) || File.cwd!()
+
+    with {:ok, canonical_workspace} <- PathSafety.canonicalize(workspace),
+         true <- File.dir?(canonical_workspace) do
+      {:ok, canonical_workspace}
+    else
+      false ->
+        {:error, {tool, "workspace directory does not exist: `#{workspace}`"}}
+
+      {:error, {:path_canonicalize_failed, _path, reason}} ->
+        {:error, {tool, "cannot resolve workspace `#{workspace}`: #{inspect(reason)}"}}
+    end
+  end
+
+  defp wait_for_exec_result(result_ref, timeout_ms, poll_interval_ms, cancel?, opts) do
+    with {:ok, entry} <- fetch_exec_registry_entry(result_ref) do
+      entry =
+        if cancel?,
+          do: cancel_exec_background_command(entry, opts),
+          else: entry
+
+      wait_started_at_ms = monotonic_time_ms(opts)
+      do_wait_for_exec_result(entry.result_ref, timeout_ms, poll_interval_ms, wait_started_at_ms, opts)
+    end
+  end
+
+  defp do_wait_for_exec_result(result_ref, timeout_ms, poll_interval_ms, wait_started_at_ms, opts) do
+    with {:ok, entry} <- fetch_exec_registry_entry(result_ref) do
+      cond do
+        entry.status == :completed and is_map(entry.result) ->
+          {:ok, entry.result}
+
+        monotonic_time_ms(opts) - wait_started_at_ms >= timeout_ms ->
+          {:ok, running_exec_result(entry, opts)}
+
+        true ->
+          sleep_ms(opts, poll_interval_ms)
+          do_wait_for_exec_result(result_ref, timeout_ms, poll_interval_ms, wait_started_at_ms, opts)
+      end
+    end
+  end
+
+  defp cancel_exec_background_command(%{status: :completed} = entry, _opts), do: entry
+
+  defp cancel_exec_background_command(entry, opts) do
+    if is_pid(entry.worker_pid) and Process.alive?(entry.worker_pid) do
+      Process.exit(entry.worker_pid, :kill)
+    end
+
+    result = cancelled_exec_result(entry, opts)
+    :ok = finalize_exec_registry_entry(entry.result_ref, result, opts)
+
+    case fetch_exec_registry_entry(entry.result_ref) do
+      {:ok, refreshed} -> refreshed
+      {:error, _reason} -> entry
+    end
+  end
+
+  defp run_exec_background_command(result_ref, command, workspace, timeout_ms, tail_bytes, started_at_ms, opts) do
+    result =
+      case stream_local_command_output(
+             result_ref,
+             command,
+             workspace,
+             timeout_ms,
+             tail_bytes,
+             started_at_ms,
+             opts
+           ) do
+        {:ok, exit_code, duration_ms, tail} ->
+          terminal_exec_result(result_ref, exit_code, duration_ms, tail, timeout_ms)
+
+        {:timed_out, duration_ms, tail} ->
+          timed_out_exec_result(result_ref, duration_ms, tail, timeout_ms)
+
+        {:error, reason, duration_ms, tail} ->
+          failed_exec_result(result_ref, nil, duration_ms, tail, inspect(reason))
+      end
+
+    :ok = finalize_exec_registry_entry(result_ref, result, opts)
+  end
+
+  defp stream_local_command_output(result_ref, command, workspace, timeout_ms, tail_bytes, started_at_ms, opts) do
+    case System.find_executable("bash") do
+      nil ->
+        duration_ms = max(0, monotonic_time_ms(opts) - started_at_ms)
+        {:error, :bash_unavailable, duration_ms, ""}
+
+      executable ->
+        port =
+          Port.open(
+            {:spawn_executable, executable},
+            [
+              :binary,
+              :exit_status,
+              :hide,
+              :use_stdio,
+              :stderr_to_stdout,
+              {:args, ["-lc", command]},
+              {:cd, workspace}
+            ]
+          )
+
+        do_stream_local_command_output(
+          port,
+          result_ref,
+          timeout_ms,
+          tail_bytes,
+          started_at_ms,
+          "",
+          opts
+        )
+    end
+  rescue
+    error in ErlangError ->
+      duration_ms = max(0, monotonic_time_ms(opts) - started_at_ms)
+      {:error, error.original, duration_ms, ""}
+  end
+
+  defp do_stream_local_command_output(
+         port,
+         result_ref,
+         timeout_ms,
+         tail_bytes,
+         started_at_ms,
+         tail,
+         opts
+       ) do
+    elapsed_ms = monotonic_time_ms(opts) - started_at_ms
+    remaining_ms = timeout_ms - elapsed_ms
+
+    if remaining_ms <= 0 do
+      close_port_quietly(port)
+      {:timed_out, max(0, elapsed_ms), tail}
+    else
+      receive do
+        {^port, {:data, chunk}} ->
+          next_tail = keep_tail(tail, chunk, tail_bytes)
+          :ok = update_exec_registry_tail(result_ref, next_tail)
+          do_stream_local_command_output(port, result_ref, timeout_ms, tail_bytes, started_at_ms, next_tail, opts)
+
+        {^port, {:exit_status, exit_code}} ->
+          duration_ms = max(0, monotonic_time_ms(opts) - started_at_ms)
+          {:ok, exit_code, duration_ms, tail}
+      after
+        min(remaining_ms, poll_chunk_interval_ms(opts)) ->
+          do_stream_local_command_output(port, result_ref, timeout_ms, tail_bytes, started_at_ms, tail, opts)
+      end
+    end
+  end
+
+  defp poll_chunk_interval_ms(opts) do
+    case Keyword.get(opts, :exec_chunk_poll_interval_ms, 200) do
+      interval when is_integer(interval) and interval > 0 -> interval
+      _ -> 200
+    end
+  end
+
+  defp close_port_quietly(port) when is_port(port) do
+    Port.close(port)
+  rescue
+    _ -> :ok
+  end
+
+  defp keep_tail(existing, chunk, max_bytes) when is_binary(existing) do
+    next = existing <> to_string(chunk)
+
+    if byte_size(next) <= max_bytes do
+      next
+    else
+      binary_part(next, byte_size(next) - max_bytes, max_bytes)
+    end
+  end
+
+  defp terminal_exec_result(result_ref, exit_code, duration_ms, tail, _timeout_ms) do
+    if exit_code == 0 do
+      succeeded_exec_result(result_ref, exit_code, duration_ms, tail)
+    else
+      failed_exec_result(result_ref, exit_code, duration_ms, tail, "command exited with code #{exit_code}")
+    end
+  end
+
+  defp succeeded_exec_result(result_ref, exit_code, duration_ms, tail) do
+    %{
+      "result_ref" => result_ref,
+      "status" => "succeeded",
+      "exit_code" => exit_code,
+      "duration_ms" => duration_ms,
+      "tail" => normalize_tail_for_payload(tail),
+      "failure_summary" => nil,
+      "artifacts" => []
+    }
+  end
+
+  defp failed_exec_result(result_ref, exit_code, duration_ms, tail, prefix) do
+    tail = normalize_tail_for_payload(tail)
+    tail_line = compact_tail_summary_line(tail)
+
+    summary =
+      if tail_line do
+        "#{prefix}; tail: #{tail_line}"
+      else
+        prefix
+      end
+
+    %{
+      "result_ref" => result_ref,
+      "status" => "failed",
+      "exit_code" => exit_code,
+      "duration_ms" => duration_ms,
+      "tail" => tail,
+      "failure_summary" => summary,
+      "artifacts" => []
+    }
+  end
+
+  defp timed_out_exec_result(result_ref, duration_ms, tail, timeout_ms) do
+    %{
+      "result_ref" => result_ref,
+      "status" => "timed_out",
+      "exit_code" => nil,
+      "duration_ms" => duration_ms,
+      "tail" => normalize_tail_for_payload(tail),
+      "failure_summary" => "command timed out after #{timeout_ms}ms",
+      "artifacts" => []
+    }
+  end
+
+  defp cancelled_exec_result(entry, opts) do
+    duration_ms = max(0, monotonic_time_ms(opts) - entry.started_at_ms)
+
+    %{
+      "result_ref" => entry.result_ref,
+      "status" => "cancelled",
+      "exit_code" => nil,
+      "duration_ms" => duration_ms,
+      "tail" => normalize_tail_for_payload(entry.tail),
+      "failure_summary" => "command cancelled by exec_wait",
+      "artifacts" => []
+    }
+  end
+
+  defp running_exec_result(entry, opts) do
+    duration_ms = max(0, monotonic_time_ms(opts) - entry.started_at_ms)
+
+    %{
+      "result_ref" => entry.result_ref,
+      "status" => "running",
+      "exit_code" => nil,
+      "duration_ms" => duration_ms,
+      "tail" => normalize_tail_for_payload(entry.tail),
+      "failure_summary" => nil,
+      "artifacts" => []
+    }
+  end
+
+  defp compact_tail_summary_line(tail) when is_binary(tail) do
+    tail
+    |> String.split("\n")
+    |> Enum.reverse()
+    |> Enum.find_value(fn line ->
+      trimmed = String.trim(line)
+
+      if trimmed == "" do
+        nil
+      else
+        String.slice(trimmed, 0, 200)
+      end
+    end)
+  end
+
+  defp normalize_tail_for_payload(tail) when is_binary(tail) do
+    if String.valid?(tail) do
+      tail
+    else
+      tail
+      |> :binary.bin_to_list()
+      |> Enum.map(&sanitize_tail_byte/1)
+      |> to_string()
+    end
+  end
+
+  defp normalize_tail_for_payload(_tail), do: ""
+
+  defp sanitize_tail_byte(byte) when byte in [9, 10, 13], do: byte
+  defp sanitize_tail_byte(byte) when is_integer(byte) and byte >= 32, do: byte
+  defp sanitize_tail_byte(_byte), do: 32
+
+  defp build_exec_result_ref(opts) do
+    unique = System.unique_integer([:positive, :monotonic])
+    timestamp = monotonic_time_ms(opts)
+    "exec-#{timestamp}-#{unique}"
+  end
+
+  defp exec_registry_table do
+    case :ets.whereis(@exec_background_registry_table) do
+      :undefined ->
+        try do
+          :ets.new(@exec_background_registry_table, [:named_table, :set, :public, read_concurrency: true])
+        rescue
+          ArgumentError -> @exec_background_registry_table
+        end
+
+      _table ->
+        @exec_background_registry_table
+    end
+  end
+
+  defp put_exec_registry_entry(result_ref, entry) do
+    :ets.insert(exec_registry_table(), {result_ref, entry})
+    :ok
+  end
+
+  defp fetch_exec_registry_entry(result_ref) when is_binary(result_ref) do
+    case :ets.lookup(exec_registry_table(), result_ref) do
+      [{^result_ref, entry}] -> {:ok, entry}
+      [] -> {:error, {:exec_wait, "unknown `result_ref`: `#{result_ref}`"}}
+    end
+  end
+
+  defp update_exec_registry_entry(result_ref, updater) when is_function(updater, 1) do
+    with {:ok, entry} <- fetch_exec_registry_entry(result_ref) do
+      put_exec_registry_entry(result_ref, updater.(entry))
+    end
+  end
+
+  defp update_exec_registry_tail(result_ref, tail) do
+    update_exec_registry_entry(result_ref, fn
+      %{status: :running} = entry -> %{entry | tail: tail}
+      entry -> entry
+    end)
+  end
+
+  defp finalize_exec_registry_entry(result_ref, result, opts) when is_map(result) do
+    completed_at_ms = monotonic_time_ms(opts)
+
+    update_exec_registry_entry(result_ref, fn
+      %{status: :running} = entry ->
+        %{entry | status: :completed, worker_pid: nil, tail: Map.get(result, "tail", entry.tail), result: result, completed_at_ms: completed_at_ms}
+
+      entry ->
+        entry
+    end)
+  end
+
+  defp prune_exec_background_registry(opts) do
+    now_ms = monotonic_time_ms(opts)
+    table = exec_registry_table()
+    entries = :ets.tab2list(table)
+
+    stale_ids =
+      Enum.flat_map(entries, fn {result_ref, entry} ->
+        cond do
+          entry.status != :completed ->
+            []
+
+          not is_integer(entry.completed_at_ms) ->
+            []
+
+          now_ms - entry.completed_at_ms > @exec_background_result_retention_ms ->
+            [result_ref]
+
+          true ->
+            []
+        end
+      end)
+
+    Enum.each(stale_ids, &:ets.delete(table, &1))
+
+    remaining = :ets.tab2list(table)
+
+    if length(remaining) > @exec_background_registry_max_entries do
+      overflow_count = length(remaining) - @exec_background_registry_max_entries
+
+      remaining
+      |> Enum.filter(fn {_result_ref, entry} -> entry.status == :completed end)
+      |> Enum.sort_by(fn {_result_ref, entry} -> entry.completed_at_ms || entry.started_at_ms end)
+      |> Enum.take(overflow_count)
+      |> Enum.each(fn {result_ref, _entry} -> :ets.delete(table, result_ref) end)
+    end
+
+    :ok
+  end
+
   defp tool_error_payload({:sync_workpad, message}) do
     %{"error" => %{"message" => "sync_workpad: #{message}"}}
   end
@@ -1817,6 +2382,14 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "details" => details
       }
     }
+  end
+
+  defp tool_error_payload({:exec_background, message}) do
+    %{"error" => %{"message" => "exec_background: #{message}"}}
+  end
+
+  defp tool_error_payload({:exec_wait, message}) do
+    %{"error" => %{"message" => "exec_wait: #{message}"}}
   end
 
   defp tool_error_payload({:review_ready_transition_blocked, details}) do

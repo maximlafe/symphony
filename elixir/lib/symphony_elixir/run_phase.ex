@@ -248,6 +248,9 @@ defmodule SymphonyElixir.RunPhase do
       normalized == "symphony_handoff_check" ->
         :verification
 
+      normalized == "exec_wait" ->
+        :waiting_external
+
       String.ends_with?(normalized, "browser_wait_for") ->
         :waiting_external
 

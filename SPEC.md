@@ -1077,7 +1077,7 @@ Unsupported dynamic tool calls:
 Optional client-side tool extension:
 
 - An implementation may expose a limited set of client-side tools to the app-server session.
-- Current optional standardized tool: `linear_graphql`.
+- Current optional standardized tools: `linear_graphql`, `exec_background`, `exec_wait`.
 - If implemented, supported tools should be advertised to the app-server session during startup
   using the protocol mechanism supported by the targeted Codex app-server version.
 - Unsupported tool names should still return a failure result and continue the session.
@@ -1114,6 +1114,48 @@ Optional client-side tool extension:
   - invalid input, missing auth, or transport failure -> `success=false` with an error payload
 - Return the GraphQL response or error payload as structured tool output that the model can inspect
   in-session.
+
+`exec_background` extension contract:
+
+- Purpose: launch a local workspace command in the runtime/controller process and return quickly with
+  a compact `result_ref`, so long-running command execution leaves the model loop.
+- Preferred input shape:
+
+  ```json
+  {
+    "command": "make test",
+    "timeout_ms": 3600000,
+    "tail_bytes": 12000
+  }
+  ```
+
+- `command` is required and must be non-empty.
+- Runtime executes in the current issue workspace cwd.
+- `timeout_ms` limits command runtime; a timeout yields a terminal timeout result.
+- `tail_bytes` bounds retained diagnostic output.
+- Response must include at least `result_ref` and initial `status=running`.
+
+`exec_wait` extension contract:
+
+- Purpose: wait for a prior `exec_background` run outside the model loop and return compact status.
+- Preferred input shape:
+
+  ```json
+  {
+    "result_ref": "exec-...",
+    "timeout_ms": 30000,
+    "poll_interval_ms": 250,
+    "cancel": false
+  }
+  ```
+
+- `result_ref` is required.
+- Safe repeated polling is required: repeated `exec_wait` calls for a completed result return the
+  same terminal payload.
+- `cancel=true` must deterministically terminate or mark the command as cancelled and return a
+  terminal cancellation result.
+- Compact terminal payload should include `status`, `exit_code` (or `null`), `duration_ms`,
+  `tail`, and `failure_summary`.
 
 Illustrative responses (equivalent payload shapes are acceptable if they preserve the same outcome):
 
@@ -2088,6 +2130,12 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   - top-level GraphQL `errors` produce `success=false` while preserving the GraphQL body
   - invalid arguments, missing auth, and transport failures return structured failure payloads
   - unsupported tool names still fail without stalling the session
+- If optional `exec_background` / `exec_wait` client-side tool extensions are implemented:
+  - both tools are advertised to the session
+  - long local commands can run and be waited outside the model loop via `result_ref`
+  - terminal payloads are compact (`status`, `exit_code`, `duration_ms`, `tail`, `failure_summary`)
+  - timeout and cancellation paths are explicit and deterministic
+  - repeated status checks are idempotent for completed `result_ref` values
 
 ### 17.6 Observability
 

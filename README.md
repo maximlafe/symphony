@@ -57,6 +57,7 @@ The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatt
 ## What's different from upstream
 
 - **Cheaper Linear calls** — agents no longer burn tokens on schema introspection before every GraphQL call, and workpad sync is a single dynamic tool instead of a hand-rolled mutation
+- **Cheaper long local waits** — long-running workspace commands can run through `exec_background`/`exec_wait`, so the model does not poll `write_stdin` loops and only receives compact completion payloads
 - **Correct sandbox** — the workflow is git + GitHub PR centric. Upstream's default sandbox blocks `.git/` writes, which silently breaks the entire flow. Fixed.
 - **Durable Linear attachments for handoff artifacts** — upstream references a GitHub media upload skill that doesn't ship. This repo now exposes a compact `linear_upload_issue_attachment` runtime tool so screenshots, recordings, runtime evidence, exports, and validation artifacts land in Linear issue attachments instead of expiring raw upload URLs
 - **Multi-account Codex failover** — Symphony can rotate between multiple pre-authenticated `CODEX_HOME` directories and stop starting new work on an account when its 5-hour or weekly Codex budget is nearly exhausted

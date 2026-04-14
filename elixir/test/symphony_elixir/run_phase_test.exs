@@ -169,6 +169,12 @@ defmodule SymphonyElixir.RunPhaseTest do
            ).run_phase == "verification"
 
     assert RunPhase.snapshot_fields(
+             %{started_at: now, external_step: "exec_wait"},
+             now,
+             1_000
+           ).run_phase == "waiting external"
+
+    assert RunPhase.snapshot_fields(
              %{started_at: now, external_step: "linear_graphql"},
              now,
              1_000
