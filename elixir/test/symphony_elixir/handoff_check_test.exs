@@ -344,6 +344,23 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert details["reason"] =~ "workpad changed"
   end
 
+  test "write_manifest sanitizes invalid UTF-8 strings instead of crashing" do
+    manifest_path = Path.join(System.tmp_dir!(), "handoff-check-invalid-utf8-#{System.unique_integer([:positive])}.json")
+    invalid_tail = <<208, 189, 208, 181, 32, 209>>
+
+    manifest = %{
+      "passed" => false,
+      "summary" => invalid_tail,
+      "missing_items" => [invalid_tail]
+    }
+
+    assert {:ok, written_path} = HandoffCheck.write_manifest(manifest, manifest_path)
+    assert {:ok, encoded} = File.read(written_path)
+    assert {:ok, decoded} = Jason.decode(encoded)
+    assert String.valid?(decoded["summary"])
+    assert String.valid?(List.first(decoded["missing_items"]))
+  end
+
   test "review_ready_transition_allowed? rejects invalid manifest states and missing workpad references" do
     manifest_dir = Path.join(System.tmp_dir!(), "handoff-check-manifest-dir-#{System.unique_integer([:positive])}")
     missing_workpad = Path.join(System.tmp_dir!(), "handoff-check-review-#{System.unique_integer([:positive])}.md")

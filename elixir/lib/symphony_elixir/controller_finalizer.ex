@@ -453,6 +453,8 @@ defmodule SymphonyElixir.ControllerFinalizer do
       %{
         "status" => status,
         "reason" => reason,
+        "blocked_reason" => reason,
+        "blocked_pr_number" => checkpoint_pr_number(checkpoint),
         "blocked_head" => blocked_head,
         "checked_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
       }
@@ -553,11 +555,24 @@ defmodule SymphonyElixir.ControllerFinalizer do
 
   defp blocked_for_current_head?(checkpoint) when is_map(checkpoint) do
     head = normalize_string(checkpoint["head"])
+    current_pr_number = normalize_pr_number(checkpoint_pr_number(checkpoint))
 
     case checkpoint["controller_finalizer"] do
-      %{"status" => "action_required", "blocked_head" => blocked_head}
-      when is_binary(head) and is_binary(blocked_head) ->
-        head == blocked_head
+      %{"status" => "action_required"} = finalizer ->
+        blocked_head = normalize_string(finalizer["blocked_head"])
+        blocked_reason = normalize_string(finalizer["blocked_reason"] || finalizer["reason"])
+        blocked_pr_number = normalize_pr_number(finalizer["blocked_pr_number"])
+
+        cond do
+          is_binary(head) and is_binary(blocked_head) ->
+            head == blocked_head
+
+          is_nil(head) and is_nil(blocked_head) ->
+            not is_nil(blocked_reason) and blocked_pr_number == current_pr_number
+
+          true ->
+            false
+        end
 
       _ ->
         false
@@ -605,6 +620,17 @@ defmodule SymphonyElixir.ControllerFinalizer do
   end
 
   defp normalize_string(_value), do: nil
+
+  defp normalize_pr_number(value) when is_integer(value) and value > 0, do: value
+
+  defp normalize_pr_number(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} when parsed > 0 -> parsed
+      _ -> nil
+    end
+  end
+
+  defp normalize_pr_number(_value), do: nil
 
   defp non_empty_binary?(value), do: is_binary(value) and String.trim(value) != ""
 end

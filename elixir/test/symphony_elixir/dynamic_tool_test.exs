@@ -955,6 +955,83 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            end)
   end
 
+  test "github_pr_snapshot ignores bot review chatter and inline replies" do
+    response =
+      DynamicTool.execute(
+        "github_pr_snapshot",
+        %{
+          "repo" => "maximlafe/lead_status",
+          "pr_number" => 73,
+          "include_feedback_details" => true
+        },
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "73", "-R", "maximlafe/lead_status", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://github.com/maximlafe/lead_status/pull/73",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "",
+                 "mergeStateStatus" => "CLEAN",
+                 "statusCheckRollup" => [
+                   %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/lead_status/issues/73/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/lead_status/pulls/73/reviews?per_page=100"] ->
+              {:ok,
+               Jason.encode!([
+                 %{
+                   "user" => %{"login" => "chatgpt-codex-connector[bot]"},
+                   "state" => "COMMENTED",
+                   "body" => "Automated review suggestions",
+                   "submittedAt" => "2026-04-14T11:25:48Z"
+                 }
+               ])}
+
+            ["api", "repos/maximlafe/lead_status/pulls/73/comments?per_page=100"] ->
+              {:ok,
+               Jason.encode!([
+                 %{
+                   "id" => 1,
+                   "user" => %{"login" => "chatgpt-codex-connector[bot]"},
+                   "body" => "Avoid exception-driven lookup",
+                   "path" => "elixir/lib/symphony_elixir/config.ex",
+                   "line" => 40,
+                   "html_url" => "https://example.test/inline/1",
+                   "created_at" => "2026-04-14T11:25:48Z"
+                 },
+                 %{
+                   "id" => 2,
+                   "user" => %{"login" => "maximlafe"},
+                   "in_reply_to_id" => 1,
+                   "body" => "Updated in e076cc3",
+                   "path" => "elixir/lib/symphony_elixir/config.ex",
+                   "line" => 40,
+                   "html_url" => "https://example.test/inline/2",
+                   "created_at" => "2026-04-14T11:38:05Z"
+                 }
+               ])}
+          end
+        end
+      )
+
+    assert response["success"] == true
+    payload = decode_tool_text(response)
+
+    assert payload["all_checks_green"] == true
+    assert payload["has_pending_checks"] == false
+    assert payload["has_actionable_feedback"] == false
+    assert payload["top_level_comment_count"] == 0
+    assert payload["review_count"] == 0
+    assert payload["inline_comment_count"] == 0
+    assert payload["actionable_feedback"] == []
+  end
+
   test "github_wait_for_checks waits outside the model loop until checks are green" do
     {:ok, agent} =
       Agent.start_link(fn ->
