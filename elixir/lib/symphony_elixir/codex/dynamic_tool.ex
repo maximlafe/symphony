@@ -1644,6 +1644,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           "inline_comment_count" => length(inline_feedback),
           "has_actionable_feedback" => actionable_feedback != []
         }
+        |> maybe_put_feedback_digest(actionable_feedback)
         |> maybe_put_actionable_feedback(include_feedback_details, actionable_feedback)
 
       {:ok, snapshot}
@@ -1880,6 +1881,39 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp maybe_put_actionable_feedback(snapshot, false, _actionable_feedback), do: snapshot
+
+  defp maybe_put_feedback_digest(snapshot, actionable_feedback) when is_list(actionable_feedback) do
+    case feedback_digest(actionable_feedback) do
+      nil -> snapshot
+      digest -> Map.put(snapshot, "feedback_digest", digest)
+    end
+  end
+
+  defp feedback_digest([]), do: nil
+
+  defp feedback_digest(actionable_feedback) when is_list(actionable_feedback) do
+    actionable_feedback
+    |> Enum.map(&feedback_digest_entry/1)
+    |> Enum.sort()
+    |> Jason.encode!()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp feedback_digest_entry(item) when is_map(item) do
+    [
+      Map.get(item, "channel"),
+      Map.get(item, "author"),
+      Map.get(item, "state"),
+      Map.get(item, "path"),
+      Map.get(item, "line"),
+      Map.get(item, "url"),
+      Map.get(item, "created_at") || Map.get(item, "submitted_at"),
+      Map.get(item, "body")
+    ]
+  end
+
+  defp feedback_digest_entry(item), do: [item]
 
   defp normalize_feedback_body(body) when is_binary(body) do
     case String.trim(body) do

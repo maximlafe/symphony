@@ -66,6 +66,7 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
+      retry_dedupe_keys: %{},
       codex_accounts: %{},
       preferred_codex_account_id: nil,
       active_codex_account_id: nil,
@@ -550,7 +551,8 @@ defmodule SymphonyElixir.Orchestrator do
           state
           | running: Map.delete(state.running, issue_id),
             claimed: MapSet.delete(state.claimed, issue_id),
-            retry_attempts: Map.delete(state.retry_attempts, issue_id)
+            retry_attempts: Map.delete(state.retry_attempts, issue_id),
+            retry_dedupe_keys: Map.delete(state.retry_dedupe_keys, issue_id)
         }
 
         if cleanup_workspace do
@@ -960,6 +962,7 @@ defmodule SymphonyElixir.Orchestrator do
     expected_head_sha = pick_retry_expected_head_sha(previous_retry, metadata)
     execution_branch = pick_retry_execution_branch(previous_retry, metadata)
     error_signature = pick_retry_error_signature(previous_retry, metadata, error)
+    feedback_digest = pick_retry_feedback_digest(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -991,7 +994,8 @@ defmodule SymphonyElixir.Orchestrator do
             runtime_head_sha: runtime_head_sha,
             expected_head_sha: expected_head_sha,
             execution_branch: execution_branch,
-            error_signature: error_signature
+            error_signature: error_signature,
+            feedback_digest: feedback_digest
           })
     }
   end
@@ -1010,7 +1014,8 @@ defmodule SymphonyElixir.Orchestrator do
           runtime_head_sha: Map.get(retry_entry, :runtime_head_sha),
           expected_head_sha: Map.get(retry_entry, :expected_head_sha),
           execution_branch: Map.get(retry_entry, :execution_branch),
-          error_signature: Map.get(retry_entry, :error_signature)
+          error_signature: Map.get(retry_entry, :error_signature),
+          feedback_digest: Map.get(retry_entry, :feedback_digest)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1213,8 +1218,8 @@ defmodule SymphonyElixir.Orchestrator do
         state
         |> complete_issue(issue_id)
         |> maybe_store_finalizer_checkpoint(issue_id, checkpoint)
-        |> schedule_issue_retry(
-          issue_id,
+        |> schedule_failure_retry_or_dedupe_hit(
+          issue,
           fallback_attempt,
           %{
             identifier: identifier,
@@ -2160,7 +2165,6 @@ defmodule SymphonyElixir.Orchestrator do
          failure_attempt,
          context
        ) do
-    issue_id = context.issue_id
     identifier = context.identifier
     trace_id = context.trace_id
     codex_account_id = context.codex_account_id
@@ -2184,9 +2188,9 @@ defmodule SymphonyElixir.Orchestrator do
         )
 
       failure.retry_action == :switch_account ->
-        schedule_issue_retry(
+        schedule_failure_retry_or_dedupe_hit(
           state,
-          issue_id,
+          issue,
           failure_attempt,
           %{
             identifier: identifier,
@@ -2199,9 +2203,9 @@ defmodule SymphonyElixir.Orchestrator do
         )
 
       ErrorClassifier.retry_allowed?(failure.error_class, failure_attempt) ->
-        schedule_issue_retry(
+        schedule_failure_retry_or_dedupe_hit(
           state,
-          issue_id,
+          issue,
           failure_attempt,
           %{
             identifier: identifier,
@@ -2251,6 +2255,43 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_apply_account_runtime_failure(state, _codex_account_id, _failure, _failure_attempt),
     do: state
+
+  defp schedule_failure_retry_or_dedupe_hit(
+         %State{} = state,
+         %Issue{id: issue_id} = issue,
+         attempt,
+         metadata
+       )
+       when is_binary(issue_id) and is_integer(attempt) and attempt > 0 and is_map(metadata) do
+    case retry_dedupe_key(metadata) do
+      nil ->
+        schedule_issue_retry(state, issue_id, attempt, metadata)
+
+      key ->
+        if Map.get(state.retry_dedupe_keys, issue_id) == key do
+          escalate_issue_for_manual_intervention(
+            state,
+            issue,
+            retry_dedupe_reason(metadata),
+            attempt,
+            %{
+              issue_id: issue_id,
+              identifier: issue.identifier,
+              trace_id: metadata[:trace_id],
+              codex_account_id: metadata[:codex_account_id],
+              error_class: ErrorClassifier.to_string(:permanent),
+              failure_class: "retry_dedupe_hit",
+              retry_action: :stop,
+              resume_checkpoint: metadata[:resume_checkpoint]
+            }
+          )
+        else
+          state
+          |> schedule_issue_retry(issue_id, attempt, metadata)
+          |> remember_retry_dedupe_key(issue_id, key)
+        end
+    end
+  end
 
   defp escalate_issue_for_manual_intervention(
          state,
@@ -2387,7 +2428,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp release_issue_claim(%State{} = state, issue_id) do
-    %{state | claimed: MapSet.delete(state.claimed, issue_id)}
+    %{
+      state
+      | claimed: MapSet.delete(state.claimed, issue_id),
+        retry_dedupe_keys: Map.delete(state.retry_dedupe_keys, issue_id)
+    }
   end
 
   defp manual_intervention_state do
@@ -2495,6 +2540,10 @@ defmodule SymphonyElixir.Orchestrator do
       normalize_error_signature(error)
   end
 
+  defp pick_retry_feedback_digest(previous_retry, metadata) do
+    metadata[:feedback_digest] || Map.get(previous_retry, :feedback_digest)
+  end
+
   defp retry_execution_metadata(source, resume_checkpoint \\ nil)
 
   defp retry_execution_metadata(source, resume_checkpoint)
@@ -2503,6 +2552,7 @@ defmodule SymphonyElixir.Orchestrator do
     |> maybe_put_retry_metadata(:runtime_head_sha, retry_runtime_head_sha(source, resume_checkpoint))
     |> maybe_put_retry_metadata(:expected_head_sha, Map.get(source, :expected_head_sha))
     |> maybe_put_retry_metadata(:execution_branch, Map.get(source, :execution_branch))
+    |> maybe_put_retry_metadata(:feedback_digest, retry_feedback_digest(source, resume_checkpoint))
   end
 
   defp retry_execution_metadata(_source, _resume_checkpoint), do: %{}
@@ -2524,6 +2574,19 @@ defmodule SymphonyElixir.Orchestrator do
   defp checkpoint_head(%{"head" => head}) when is_binary(head) and head != "", do: head
   defp checkpoint_head(_resume_checkpoint), do: nil
 
+  defp checkpoint_feedback_digest(%{"feedback_digest" => feedback_digest})
+       when is_binary(feedback_digest) and feedback_digest != "",
+       do: feedback_digest
+
+  defp checkpoint_feedback_digest(_resume_checkpoint), do: nil
+
+  defp retry_feedback_digest(source, resume_checkpoint) when is_map(source) do
+    case Map.get(source, :feedback_digest) do
+      value when is_binary(value) and value != "" -> value
+      _ -> checkpoint_feedback_digest(resume_checkpoint)
+    end
+  end
+
   defp normalize_error_signature(value) when is_binary(value) do
     value
     |> String.downcase()
@@ -2536,6 +2599,33 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp normalize_error_signature(_value), do: nil
+
+  defp retry_dedupe_key(metadata) when is_map(metadata) do
+    with false <- metadata[:delay_type] == :continuation,
+         error_signature when is_binary(error_signature) and error_signature != "" <-
+           metadata[:error_signature] || normalize_error_signature(metadata[:error]),
+         runtime_head_sha when is_binary(runtime_head_sha) and runtime_head_sha != "" <-
+           metadata[:runtime_head_sha],
+         feedback_digest when is_binary(feedback_digest) and feedback_digest != "" <-
+           metadata[:feedback_digest] do
+      Enum.join([error_signature, runtime_head_sha, feedback_digest], "::")
+    else
+      _ -> nil
+    end
+  end
+
+  defp retry_dedupe_reason(metadata) when is_map(metadata) do
+    error_signature = metadata[:error_signature] || normalize_error_signature(metadata[:error]) || "unknown"
+    runtime_head_sha = metadata[:runtime_head_sha] || "unknown"
+    feedback_digest = metadata[:feedback_digest] || "unknown"
+
+    "retry_dedupe_hit: identical failure surface repeated after one queued retry (error_signature=#{error_signature} runtime_head_sha=#{runtime_head_sha} feedback_digest=#{feedback_digest})"
+  end
+
+  defp remember_retry_dedupe_key(%State{} = state, issue_id, key)
+       when is_binary(issue_id) and is_binary(key) do
+    %{state | retry_dedupe_keys: Map.put(state.retry_dedupe_keys, issue_id, key)}
+  end
 
   defp capture_execution_head(issue) do
     workspace = issue_workspace_path(issue)
@@ -3021,6 +3111,7 @@ defmodule SymphonyElixir.Orchestrator do
     state = payload["state"]
     has_pending_checks = payload["has_pending_checks"]
     has_actionable_feedback = payload["has_actionable_feedback"]
+    feedback_digest = payload["feedback_digest"]
 
     if is_binary(url) and String.trim(url) != "" do
       %{
@@ -3028,7 +3119,8 @@ defmodule SymphonyElixir.Orchestrator do
         "state" => state,
         "number" => extract_pr_number(url),
         "has_pending_checks" => normalize_optional_boolean(has_pending_checks),
-        "has_actionable_feedback" => normalize_optional_boolean(has_actionable_feedback)
+        "has_actionable_feedback" => normalize_optional_boolean(has_actionable_feedback),
+        "feedback_digest" => normalize_optional_string(feedback_digest)
       }
     end
   end
@@ -3093,6 +3185,15 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp normalize_optional_boolean(value) when is_boolean(value), do: value
   defp normalize_optional_boolean(_value), do: nil
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_optional_string(_value), do: nil
 
   defp parse_manifest_checked_at(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do

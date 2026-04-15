@@ -250,6 +250,12 @@ Fields:
 - `due_at_ms` (monotonic clock timestamp)
 - `timer_handle` (runtime-specific timer reference)
 - `error` (string or null)
+- `error_signature` (string or null)
+  - Normalized failure fingerprint used for retry policy and observability.
+- `runtime_head_sha` (string or null)
+  - Best-effort git head captured from the issue workspace at failure time.
+- `feedback_digest` (string or null)
+  - Compact digest of actionable PR feedback associated with the failure surface.
 
 #### 4.1.8 Orchestrator Runtime State
 
@@ -262,6 +268,8 @@ Fields:
 - `running` (map `issue_id -> running entry`)
 - `claimed` (set of issue IDs reserved/running/retrying)
 - `retry_attempts` (map `issue_id -> RetryEntry`)
+- `retry_dedupe_keys` (map `issue_id -> string`)
+  - Tracks the last failure-driven dedupe key remembered for that issue.
 - `completed` (set of issue IDs; bookkeeping only, not dispatch gating)
 - `codex_accounts` (map `account_id -> account health/status`)
 - `active_codex_account_id` (string or null)
@@ -752,6 +760,8 @@ Retry entry creation:
 - Cancel any existing retry timer for the same issue.
 - Store `attempt`, `identifier`, `error`, optional `error_class`, `due_at_ms`, and new timer
   handle.
+- Preserve retry metadata needed for subsequent policy decisions, including `error_signature`,
+  `runtime_head_sha`, and `feedback_digest` when known.
 
 Backoff formula:
 
@@ -766,6 +776,19 @@ Failure classification:
 - `semi_permanent` failures retry only a small bounded number of times before escalation.
 - `permanent` failures do not retry and should move the issue into a manual-review state with an
   explanatory tracker comment.
+
+Failure-surface dedupe:
+
+- This rule applies only to failure-driven retries, never to continuation retries after a clean
+  worker exit.
+- When all of `error_signature`, `runtime_head_sha`, and `feedback_digest` are present, the
+  orchestrator may remember the composite key `<error_signature>::<runtime_head_sha>::<feedback_digest>`.
+- At most one queued retry is allowed for the same composite key on the same issue.
+- If the same composite key appears again after one queued retry has already been scheduled, the
+  orchestrator should stop retrying and move the issue into the configured manual-intervention
+  state with an explanatory comment instead of scheduling another full rerun.
+- Any change to `error_signature`, `runtime_head_sha`, or `feedback_digest` makes the failure
+  surface distinct and allows retry policy to evaluate it as a new failure.
 
 Retry handling behavior:
 

@@ -470,13 +470,15 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
            "url" => "https://github.com/acme/symphony/pull/102",
            "state" => "OPEN",
            "has_pending_checks" => false,
-           "has_actionable_feedback" => true
+           "has_actionable_feedback" => true,
+           "feedback_digest" => "feedback-digest-102"
          }}
     }
 
     assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
     assert payload.reason == "pull request has actionable feedback"
     assert payload.checkpoint["controller_finalizer"]["status"] == "action_required"
+    assert payload.checkpoint["feedback_digest"] == "feedback-digest-102"
   end
 
   test "run/3 returns fallback when handoff tool execution fails" do

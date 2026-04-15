@@ -936,6 +936,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert payload["has_pending_checks"] == true
     assert payload["all_checks_green"] == false
     assert payload["has_actionable_feedback"] == true
+    assert payload["feedback_digest"] == feedback_digest(payload["actionable_feedback"])
     assert payload["top_level_comment_count"] == 1
     assert payload["review_count"] == 1
     assert payload["inline_comment_count"] == 1
@@ -953,6 +954,13 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Enum.any?(payload["actionable_feedback"], fn item ->
              item["channel"] == "inline_comment" and item["path"] == "WORKFLOW.md"
            end)
+
+    changed_feedback =
+      List.update_at(payload["actionable_feedback"], 0, fn item ->
+        Map.put(item, "body", item["body"] <> " changed")
+      end)
+
+    refute payload["feedback_digest"] == feedback_digest(changed_feedback)
   end
 
   test "github_pr_snapshot ignores bot review chatter and inline replies" do
@@ -1812,5 +1820,24 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   defp sha256(body) do
     :crypto.hash(:sha256, body)
     |> Base.encode16(case: :lower)
+  end
+
+  defp feedback_digest(items) when is_list(items) do
+    items
+    |> Enum.map(fn item ->
+      [
+        item["channel"],
+        item["author"],
+        item["state"],
+        item["path"],
+        item["line"],
+        item["url"],
+        item["created_at"] || item["submitted_at"],
+        item["body"]
+      ]
+    end)
+    |> Enum.sort()
+    |> Jason.encode!()
+    |> sha256()
   end
 end

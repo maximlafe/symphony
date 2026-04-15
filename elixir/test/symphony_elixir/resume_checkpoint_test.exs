@@ -34,7 +34,8 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
         "url" => "https://github.com/maximlafe/symphony/pull/77",
         "state" => "OPEN",
         "has_pending_checks" => false,
-        "has_actionable_feedback" => false
+        "has_actionable_feedback" => false,
+        "feedback_digest" => "feedback-digest-77"
       }
     }
 
@@ -51,6 +52,7 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert checkpoint["open_pr"]["number"] == 77
     assert checkpoint["pending_checks"] == false
     assert checkpoint["open_feedback"] == false
+    assert checkpoint["feedback_digest"] == "feedback-digest-77"
     assert File.exists?(checkpoint["manifest_path"])
 
     File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nChanged")
@@ -59,6 +61,52 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert loaded["available"] == true
     assert loaded["resume_ready"] == false
     assert Enum.any?(loaded["fallback_reasons"], &String.contains?(&1, "workpad_digest"))
+  end
+
+  test "capture preserves feedback_digest from resume checkpoint when fresh PR snapshot is missing" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-resume-checkpoint-feedback-fallback-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    issue = %Issue{id: "issue-resume-feedback", identifier: "LET-461-FB", state: "In Progress"}
+    workspace = Path.join(workspace_root, issue.identifier)
+
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nFeedback retry state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-feedback-fallback")
+    File.write!(Path.join(workspace, "tracked.txt"), "tracked\n")
+    init_git_repo!(workspace)
+
+    running_entry = %{
+      resume_checkpoint: %{
+        "open_pr" => %{
+          "number" => 78,
+          "url" => "https://github.com/maximlafe/symphony/pull/78",
+          "state" => "OPEN"
+        },
+        "pending_checks" => false,
+        "open_feedback" => true,
+        "feedback_digest" => "checkpoint-feedback-digest"
+      }
+    }
+
+    checkpoint = ResumeCheckpoint.capture(issue, running_entry, workspace_root: workspace_root)
+
+    assert checkpoint["open_pr"]["number"] == 78
+    assert checkpoint["pending_checks"] == false
+    assert checkpoint["open_feedback"] == true
+    assert checkpoint["feedback_digest"] == "checkpoint-feedback-digest"
+  end
+
+  test "for_prompt trims blank feedback_digest to nil" do
+    checkpoint = ResumeCheckpoint.for_prompt(%{"feedback_digest" => "   "})
+
+    assert checkpoint["feedback_digest"] == nil
   end
 
   test "capture returns fallback checkpoint when workspace is missing" do
