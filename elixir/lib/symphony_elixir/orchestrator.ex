@@ -2596,8 +2596,6 @@ defmodule SymphonyElixir.Orchestrator do
       git_status_success?(workspace, ["merge-base", "--is-ancestor", runtime_head_sha, expected_head_sha])
   end
 
-  defp stale_execution_head?(_execution_head), do: false
-
   defp stale_workspace_head_reason(execution_head) do
     branch_suffix =
       case Map.get(execution_head, :execution_branch) do
@@ -2669,8 +2667,6 @@ defmodule SymphonyElixir.Orchestrator do
         nil
     end
   end
-
-  defp read_trimmed(_path), do: nil
 
   defp known_git_sha?(value) when is_binary(value) do
     String.match?(value, ~r/^[0-9a-f]{7,40}$/)
