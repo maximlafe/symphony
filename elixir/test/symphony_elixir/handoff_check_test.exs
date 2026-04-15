@@ -350,8 +350,8 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     manifest = %{
       "passed" => false,
-      "summary" => invalid_tail,
-      "missing_items" => [invalid_tail]
+      "missing_items" => [invalid_tail],
+      summary: invalid_tail
     }
 
     assert {:ok, written_path} = HandoffCheck.write_manifest(manifest, manifest_path)

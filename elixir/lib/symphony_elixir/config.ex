@@ -7,9 +7,15 @@ defmodule SymphonyElixir.Config do
   alias SymphonyElixir.Workflow
 
   @planning_issue_states MapSet.new(["spec prep", "spec review"])
-  @implementation_issue_states MapSet.new(["in progress", "rework"])
+  @implementation_issue_states MapSet.new(["in progress"])
+  @rework_issue_states MapSet.new(["rework"])
   @handoff_issue_states MapSet.new(["merging"])
-  @implementation_xhigh_labels MapSet.new(["mode:research", "reasoning:implementation-xhigh"])
+  @cost_signal_priority [
+    :rework,
+    :repeated_auto_fix_failure,
+    :security_data_risk,
+    :unresolvable_ambiguity
+  ]
 
   @default_prompt_template """
   You are working on a Linear issue.
@@ -44,7 +50,7 @@ defmodule SymphonyElixir.Config do
         }
 
   @type linear_polling_scope :: {:project, String.t()} | {:team, String.t()} | nil
-  @type codex_phase :: :planning | :implementation | :handoff
+  @type codex_stage :: :planning | :implementation | :rework | :handoff
 
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
@@ -83,21 +89,33 @@ defmodule SymphonyElixir.Config do
 
   @spec codex_command(map() | String.t() | atom() | nil) :: String.t()
   def codex_command(issue_or_state \\ nil) do
+    issue_or_state
+    |> codex_cost_decision()
+    |> Map.fetch!(:command)
+  end
+
+  @spec codex_cost_decision(map() | String.t() | atom() | nil) :: map()
+  def codex_cost_decision(issue_or_state \\ nil) do
     settings = settings!()
-    default_command = settings.codex.command
+    stage = codex_stage(issue_or_state)
+    signals = cost_signals(issue_or_state, stage, settings.codex.cost_policy)
 
-    case codex_phase(issue_or_state) do
-      :planning ->
-        present_codex_command(settings.codex.planning_command) || default_command
-
-      :implementation ->
-        present_codex_command(settings.codex.implementation_command) || default_command
-
-      :handoff ->
-        present_codex_command(Map.get(settings.codex, :handoff_command)) || default_command
-
+    with template when is_binary(template) <- present_codex_command(Map.get(settings.codex, :command_template)),
+         {:ok, profile_key, profile, reason} <- resolve_cost_profile(settings.codex, stage, signals),
+         {:ok, model, effort} <- profile_model_effort(profile) do
+      %{
+        stage: stage,
+        signals: signals,
+        profile_key: profile_key,
+        model: model,
+        effort: effort,
+        reason: reason,
+        command_source: "cost_profile",
+        command: render_codex_command_template(template, model, effort)
+      }
+    else
       _ ->
-        default_command
+        legacy_or_fallback_cost_decision(settings.codex, stage, signals)
     end
   end
 
@@ -244,40 +262,21 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  defp codex_phase(%{phase: phase} = context) do
-    phase
-    |> normalize_codex_phase()
-    |> maybe_escalate_phase(extract_labels(context))
-  end
+  defp codex_stage(%{phase: phase}), do: normalize_codex_stage(phase)
+  defp codex_stage(%{"phase" => phase}), do: normalize_codex_stage(phase)
+  defp codex_stage(%{state: state}), do: stage_from_state(state)
+  defp codex_stage(%{"state" => state}), do: stage_from_state(state)
 
-  defp codex_phase(%{"phase" => phase} = context) do
-    phase
-    |> normalize_codex_phase()
-    |> maybe_escalate_phase(extract_labels(context))
-  end
-
-  defp codex_phase(%{state: state} = context) do
-    state
-    |> phase_from_state()
-    |> maybe_escalate_phase(extract_labels(context))
-  end
-
-  defp codex_phase(%{"state" => state} = context) do
-    state
-    |> phase_from_state()
-    |> maybe_escalate_phase(extract_labels(context))
-  end
-
-  defp codex_phase(phase_or_state) do
-    phase_or_state
-    |> normalize_codex_phase()
+  defp codex_stage(stage_or_state) do
+    stage_or_state
+    |> normalize_codex_stage()
     |> case do
-      nil -> phase_from_state(phase_or_state)
-      phase -> phase
+      nil -> stage_from_state(stage_or_state)
+      stage -> stage
     end
   end
 
-  defp phase_from_state(state) when is_binary(state) do
+  defp stage_from_state(state) when is_binary(state) do
     normalized_state =
       state
       |> String.trim()
@@ -290,6 +289,9 @@ defmodule SymphonyElixir.Config do
       MapSet.member?(@implementation_issue_states, normalized_state) ->
         :implementation
 
+      MapSet.member?(@rework_issue_states, normalized_state) ->
+        :rework
+
       MapSet.member?(@handoff_issue_states, normalized_state) ->
         :handoff
 
@@ -298,30 +300,208 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  defp phase_from_state(_state), do: nil
+  defp stage_from_state(_state), do: nil
 
-  defp normalize_codex_phase(phase) when phase in [:planning, :implementation, :handoff], do: phase
+  defp normalize_codex_stage(stage) when stage in [:planning, :implementation, :rework, :handoff], do: stage
 
-  defp normalize_codex_phase(phase) when is_binary(phase) do
-    case phase |> String.trim() |> String.downcase() do
+  defp normalize_codex_stage(stage) when is_binary(stage) do
+    case stage |> String.trim() |> String.downcase() do
       "planning" -> :planning
       "implementation" -> :implementation
+      "rework" -> :rework
       "handoff" -> :handoff
       _ -> nil
     end
   end
 
-  defp normalize_codex_phase(_phase), do: nil
+  defp normalize_codex_stage(_stage), do: nil
 
-  defp maybe_escalate_phase(:implementation, labels) when is_list(labels) do
-    if Enum.any?(labels, &MapSet.member?(@implementation_xhigh_labels, normalize_label(&1))) do
-      :planning
+  defp resolve_cost_profile(codex_config, stage, signals) do
+    signal_escalations = nested_map(codex_config.cost_policy, "signal_escalations")
+    stage_defaults = nested_map(codex_config.cost_policy, "stage_defaults")
+
+    with {signal, profile_key} <- first_signal_profile(signals, signal_escalations),
+         {:ok, profile} <- fetch_cost_profile(codex_config.cost_profiles, profile_key) do
+      {:ok, profile_key, profile, "signal:#{signal}"}
     else
-      :implementation
+      _ ->
+        with profile_key when is_binary(profile_key) <- map_get(stage_defaults, stage),
+             {:ok, profile} <- fetch_cost_profile(codex_config.cost_profiles, profile_key) do
+          {:ok, profile_key, profile, "stage_default:#{stage}"}
+        else
+          _ -> :error
+        end
     end
   end
 
-  defp maybe_escalate_phase(phase, _labels), do: phase
+  defp first_signal_profile(signals, signal_escalations) do
+    Enum.find_value(signals, fn signal ->
+      case map_get(signal_escalations, signal) do
+        profile_key when is_binary(profile_key) -> {signal, profile_key}
+        _ -> nil
+      end
+    end)
+  end
+
+  defp fetch_cost_profile(profiles, profile_key) when is_binary(profile_key) do
+    case map_get(profiles, profile_key) do
+      profile when is_map(profile) -> {:ok, profile}
+      _ -> :error
+    end
+  end
+
+  defp profile_model_effort(profile) when is_map(profile) do
+    case {map_get(profile, "model"), map_get(profile, "effort")} do
+      {model, effort} when is_binary(model) and is_binary(effort) -> {:ok, model, effort}
+      _ -> :error
+    end
+  end
+
+  defp render_codex_command_template(template, model, effort) do
+    template
+    |> String.replace("{{model}}", model)
+    |> String.replace("{{effort}}", effort)
+  end
+
+  defp legacy_or_fallback_cost_decision(codex_config, stage, signals) do
+    case legacy_command(codex_config, stage) do
+      {field, command} ->
+        %{
+          stage: stage,
+          signals: signals,
+          profile_key: nil,
+          model: nil,
+          effort: nil,
+          reason: "legacy_direct_command:#{stage}",
+          command_source: "legacy_direct_command:#{field}",
+          command: command
+        }
+
+      nil ->
+        %{
+          stage: stage,
+          signals: signals,
+          profile_key: nil,
+          model: nil,
+          effort: nil,
+          reason: "fallback:codex.command",
+          command_source: "codex.command",
+          command: codex_config.command
+        }
+    end
+  end
+
+  defp legacy_command(_codex_config, nil), do: nil
+
+  defp legacy_command(codex_config, stage) do
+    field =
+      case stage do
+        :planning -> :planning_command
+        :implementation -> :implementation_command
+        :rework -> :implementation_command
+        :handoff -> :handoff_command
+      end
+
+    case present_codex_command(Map.get(codex_config, field)) do
+      command when is_binary(command) -> {field, command}
+      _ -> nil
+    end
+  end
+
+  defp cost_signals(context, stage, cost_policy) do
+    explicit_signals = extract_cost_signals(context)
+    label_signals = signals_from_labels(extract_labels(context), cost_policy)
+    stage_signals = if stage == :rework, do: [:rework], else: []
+
+    (stage_signals ++ explicit_signals ++ label_signals)
+    |> Enum.map(&normalize_signal/1)
+    |> Enum.reject(&is_nil/1)
+    |> prioritize_signals()
+  end
+
+  defp extract_cost_signals(%{cost_signals: signals}) when is_list(signals), do: signals
+  defp extract_cost_signals(%{"cost_signals" => signals}) when is_list(signals), do: signals
+  defp extract_cost_signals(%{signals: signals}) when is_list(signals), do: signals
+  defp extract_cost_signals(%{"signals" => signals}) when is_list(signals), do: signals
+  defp extract_cost_signals(_context), do: []
+
+  defp signals_from_labels(labels, cost_policy) when is_list(labels) do
+    label_signals = nested_map(cost_policy, "label_signals")
+
+    labels
+    |> Enum.map(&normalize_label/1)
+    |> Enum.flat_map(fn
+      nil ->
+        []
+
+      label ->
+        case map_get(label_signals, label) do
+          signal when is_binary(signal) or is_atom(signal) -> [signal]
+          signals when is_list(signals) -> signals
+          _ -> []
+        end
+    end)
+  end
+
+  defp signals_from_labels(_labels, _cost_policy), do: []
+
+  defp prioritize_signals(signals) do
+    unique_signals = Enum.uniq(signals)
+    priority = Enum.filter(@cost_signal_priority, &(&1 in unique_signals))
+    rest = Enum.reject(unique_signals, &(&1 in priority))
+    priority ++ rest
+  end
+
+  defp normalize_signal(signal) when is_atom(signal), do: signal
+
+  defp normalize_signal(signal) when is_binary(signal) do
+    signal
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace("-", "_")
+    |> case do
+      "rework" -> :rework
+      "repeated_auto_fix_failure" -> :repeated_auto_fix_failure
+      "security_data_risk" -> :security_data_risk
+      "unresolvable_ambiguity" -> :unresolvable_ambiguity
+      _ -> nil
+    end
+  end
+
+  defp normalize_signal(_signal), do: nil
+
+  defp nested_map(map, key) do
+    case map_get(map, key) do
+      value when is_map(value) -> value
+      _ -> %{}
+    end
+  end
+
+  defp map_get(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
+
+  defp map_get(map, key) when is_map(map) and is_binary(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> map_get_atom_string_key(map, key)
+    end
+  end
+
+  defp map_get(_map, _key), do: nil
+
+  defp map_get_atom_string_key(map, key) do
+    Enum.find_value(map, fn
+      {map_key, value} when is_atom(map_key) ->
+        if Atom.to_string(map_key) == key, do: value
+
+      _ ->
+        nil
+    end)
+  end
 
   defp extract_labels(%{labels: labels}) when is_list(labels), do: labels
   defp extract_labels(%{"labels" => labels}) when is_list(labels), do: labels

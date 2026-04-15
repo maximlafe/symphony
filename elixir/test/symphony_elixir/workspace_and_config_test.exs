@@ -2172,6 +2172,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.codex.planning_command == nil
     assert config.codex.implementation_command == nil
     assert Map.get(config.codex, :handoff_command) == nil
+    assert config.codex.command_template == nil
+    assert config.codex.cost_profiles == %{}
+    assert config.codex.cost_policy == %{}
 
     assert config.codex.approval_policy == %{
              "reject" => %{
@@ -2199,6 +2202,119 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.codex.read_timeout_ms == 5_000
     assert config.codex.stall_timeout_ms == 300_000
 
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command_template: "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort={{effort}} --model {{model}} app-server",
+      codex_cost_profiles: %{
+        cheap_planning: %{model: "gpt-5.4", effort: "xhigh"},
+        cheap_implementation: %{model: "gpt-5.3-codex", effort: "medium"},
+        escalated_implementation: %{model: "gpt-5.3-codex", effort: "high"},
+        handoff: %{model: "gpt-5.3-codex", effort: "medium"}
+      },
+      codex_cost_policy: %{
+        stage_defaults: %{
+          planning: "cheap_planning",
+          implementation: "cheap_implementation",
+          rework: "escalated_implementation",
+          handoff: "handoff"
+        },
+        signal_escalations: %{
+          rework: "escalated_implementation",
+          repeated_auto_fix_failure: "escalated_implementation",
+          security_data_risk: "escalated_implementation",
+          unresolvable_ambiguity: "escalated_implementation"
+        }
+      }
+    )
+
+    planning_decision = Config.codex_cost_decision(%Issue{state: "Spec Prep"})
+    assert planning_decision.stage == :planning
+    assert planning_decision.signals == []
+    assert planning_decision.profile_key == "cheap_planning"
+    assert planning_decision.model == "gpt-5.4"
+    assert planning_decision.effort == "xhigh"
+    assert planning_decision.reason == "stage_default:planning"
+    assert planning_decision.command_source == "cost_profile"
+
+    assert Config.codex_command(%Issue{state: "Spec Prep"}) ==
+             "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.4 app-server"
+
+    implementation_decision = Config.codex_cost_decision(%Issue{state: "In Progress"})
+    assert implementation_decision.profile_key == "cheap_implementation"
+    assert implementation_decision.model == "gpt-5.3-codex"
+    assert implementation_decision.effort == "medium"
+    assert implementation_decision.reason == "stage_default:implementation"
+
+    rework_decision = Config.codex_cost_decision(%Issue{state: "Rework"})
+    assert rework_decision.stage == :rework
+    assert rework_decision.signals == [:rework]
+    assert rework_decision.profile_key == "escalated_implementation"
+    assert rework_decision.reason == "signal:rework"
+
+    for signal <- [:repeated_auto_fix_failure, :security_data_risk, :unresolvable_ambiguity] do
+      decision = Config.codex_cost_decision(%{state: "In Progress", cost_signals: [signal]})
+      assert decision.signals == [signal]
+      assert decision.profile_key == "escalated_implementation"
+      assert decision.model == "gpt-5.3-codex"
+      assert decision.effort == "high"
+      assert decision.reason == "signal:#{signal}"
+    end
+
+    for {profile_key, profile} <- Config.settings!().codex.cost_profiles do
+      if profile_key != "cheap_planning" do
+        refute profile["effort"] == "xhigh"
+      end
+    end
+
+    assert Config.codex_cost_decision(%Issue{state: "In Progress", labels: ["mode:research"]}).profile_key ==
+             "cheap_implementation"
+
+    assert Config.codex_cost_decision(%Issue{state: "In Progress", labels: ["reasoning:implementation-xhigh"]}).profile_key ==
+             "cheap_implementation"
+
+    assert Config.codex_cost_decision(%{state: "In Progress", retry_attempt: 2}).profile_key ==
+             "cheap_implementation"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command_template: "codex --config model_reasoning_effort={{effort}} --model {{model}} app-server",
+      codex_cost_profiles: %{
+        custom_implementation: %{model: "gpt-override", effort: "low"},
+        security_review: %{model: "gpt-security", effort: "high"}
+      },
+      codex_cost_policy: %{
+        stage_defaults: %{implementation: "custom_implementation"},
+        signal_escalations: %{security_data_risk: "security_review"}
+      }
+    )
+
+    assert Config.codex_cost_decision(%Issue{state: "In Progress"}).profile_key == "custom_implementation"
+    assert Config.codex_cost_decision(%Issue{state: "In Progress"}).model == "gpt-override"
+
+    assert Config.codex_cost_decision(%{state: "In Progress", cost_signals: [:security_data_risk]}).profile_key ==
+             "security_review"
+
+    assert Config.codex_cost_decision(%{state: "In Progress", cost_signals: [:security_data_risk]}).model ==
+             "gpt-security"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command_template: "codex --config model_reasoning_effort={{effort}} --model {{model}} app-server",
+      codex_cost_profiles: %{
+        cheap_implementation: %{model: "gpt-5.3-codex", effort: "medium"},
+        security_review: %{model: "gpt-security", effort: "high"}
+      },
+      codex_cost_policy: %{
+        stage_defaults: %{implementation: "cheap_implementation"},
+        signal_escalations: %{security_data_risk: "security_review"},
+        label_signals: %{"reasoning:implementation-xhigh" => "security_data_risk"}
+      }
+    )
+
+    label_mapped_decision =
+      Config.codex_cost_decision(%Issue{state: "In Progress", labels: ["reasoning:implementation-xhigh"]})
+
+    assert label_mapped_decision.signals == [:security_data_risk]
+    assert label_mapped_decision.profile_key == "security_review"
+    assert label_mapped_decision.reason == "signal:security_data_risk"
+
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server --model gpt-5.3-codex")
     assert Config.settings!().codex.command == "codex app-server --model gpt-5.3-codex"
 
@@ -2225,10 +2341,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "codex app-server --model gpt-5.3-codex --config model_reasoning_effort=medium"
 
     assert Config.codex_command(%Issue{state: "In Progress", labels: ["mode:research"]}) ==
-             "codex app-server --model gpt-5.4"
+             "codex app-server --model gpt-5.3-codex --config model_reasoning_effort=high"
 
     assert Config.codex_command(%Issue{state: "In Progress", labels: ["reasoning:implementation-xhigh"]}) ==
-             "codex app-server --model gpt-5.4"
+             "codex app-server --model gpt-5.3-codex --config model_reasoning_effort=high"
 
     assert Config.codex_command(%Issue{state: "Todo"}) ==
              "codex app-server --model gpt-5.3-codex"

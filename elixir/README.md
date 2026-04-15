@@ -141,10 +141,32 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
-  command: codex app-server
-  planning_command: codex --config model_reasoning_effort=xhigh app-server
-  implementation_command: codex --config model_reasoning_effort=high app-server
-  handoff_command: codex --config model_reasoning_effort=medium app-server
+  command: codex --config model_reasoning_effort=medium --model gpt-5.3-codex app-server
+  command_template: codex --config model_reasoning_effort={{effort}} --model {{model}} app-server
+  cost_profiles:
+    cheap_planning:
+      model: gpt-5.4
+      effort: xhigh
+    cheap_implementation:
+      model: gpt-5.3-codex
+      effort: medium
+    escalated_implementation:
+      model: gpt-5.3-codex
+      effort: high
+    handoff:
+      model: gpt-5.3-codex
+      effort: medium
+  cost_policy:
+    stage_defaults:
+      planning: cheap_planning
+      implementation: cheap_implementation
+      rework: escalated_implementation
+      handoff: handoff
+    signal_escalations:
+      rework: escalated_implementation
+      repeated_auto_fix_failure: escalated_implementation
+      security_data_risk: escalated_implementation
+      unresolvable_ambiguity: escalated_implementation
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
@@ -162,7 +184,7 @@ Notes:
   issues are skipped by that worker.
 - The prompt body is the workflow contract. In production, make handoffs explicit with `checkpoint_type` and `risk_level`, define low-context behavior, and cap repeated auto-fix loops so the agent escalates instead of spinning.
 - Issue labels are available to both the workflow prompt and hooks, so routing labels can stay separate from orthogonal delivery policies such as `delivery:tdd`.
-- `codex.planning_command`, `codex.implementation_command`, and `codex.handoff_command` let the workflow choose different reasoning profiles per phase. In the repo's own workflow, planning stays on `xhigh`, implementation defaults to `high`, and `Merging`/handoff uses `medium`; label `reasoning:implementation-xhigh` is the explicit opt-in to escalate a hard implementation or CI-debug task back to the `xhigh` path.
+- `codex.command_template`, `codex.cost_profiles`, and `codex.cost_policy` let the workflow choose a stage-aware `model` + `effort` through `SymphonyElixir.Config.codex_cost_decision/1`. In the repo's own workflow, planning uses `gpt-5.4`/`xhigh`, implementation uses `gpt-5.3-codex`/`medium`, and rework or explicit escalation signals use `gpt-5.3-codex`/`high`; labels such as `reasoning:implementation-xhigh` do not escalate unless the workflow maps them to an explicit cost signal.
 - If unattended runs create branches or PRs, encode the naming convention explicitly in the prompt instead of relying on tracker-generated branch names; for example, honor an explicit `Working branch:` line in the issue description's final `## Symphony` section when present, otherwise fall back to `Symphony/<issue-id>-<short-kebab-summary>` for branches and `<ISSUE-ID>: <short outcome>` for PR titles.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`

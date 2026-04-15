@@ -14,6 +14,16 @@ defmodule SymphonyElixir.JsonFormatter do
 
   @context_fields ~w(issue_id issue_identifier session_id trace_id workspace)
   @context_field_atoms [:issue_id, :issue_identifier, :session_id, :trace_id, :workspace]
+  @cost_fields ~w(cost_profile_key cost_profile_reason cost_stage cost_signals codex_model codex_effort command_source)
+  @cost_field_atoms [
+    :cost_profile_key,
+    :cost_profile_reason,
+    :cost_stage,
+    :cost_signals,
+    :codex_model,
+    :codex_effort,
+    :command_source
+  ]
 
   @impl true
   @spec check_config(term()) :: :ok | {:error, term()}
@@ -108,8 +118,8 @@ defmodule SymphonyElixir.JsonFormatter do
     message_fields = message_context_fields(message)
 
     metadata_fields =
-      @context_field_atoms
-      |> Enum.zip(@context_fields)
+      (@context_field_atoms ++ @cost_field_atoms)
+      |> Enum.zip(@context_fields ++ @cost_fields)
       |> Enum.reduce(%{}, fn {metadata_key, output_key}, acc ->
         case Map.get(metadata, metadata_key) do
           nil ->
@@ -145,6 +155,7 @@ defmodule SymphonyElixir.JsonFormatter do
 
   defp normalize_context_value(value) when is_binary(value), do: value
   defp normalize_context_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_context_value(value) when is_list(value), do: Enum.map(value, &normalize_context_value/1)
   defp normalize_context_value(value), do: to_string(value)
 
   defp optional_context_fields(module, context_fields) do
@@ -152,6 +163,7 @@ defmodule SymphonyElixir.JsonFormatter do
       Enum.reduce(@context_fields, %{}, fn field, acc ->
         Map.put(acc, field, Map.get(context_fields, field))
       end)
+      |> Map.merge(Map.take(context_fields, @cost_fields))
     else
       context_fields
     end
