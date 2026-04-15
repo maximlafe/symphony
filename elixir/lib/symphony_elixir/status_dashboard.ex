@@ -1253,6 +1253,34 @@ defmodule SymphonyElixir.StatusDashboard do
     if is_binary(decision), do: "#{base}: #{decision}", else: base
   end
 
+  defp humanize_codex_event(:approval_auto_denied, message, payload) do
+    method =
+      map_value(payload, ["method", :method]) ||
+        map_path(message, ["payload", "method"]) ||
+        map_path(message, [:payload, :method])
+
+    decision = map_value(message, ["decision", :decision])
+    wait_routing_decision = map_value(message, ["wait_routing_decision", :wait_routing_decision])
+    suggested_tool_path = map_value(message, ["suggested_tool_path", :suggested_tool_path])
+
+    base =
+      if is_binary(method) do
+        "#{humanize_codex_method(method, payload)} (auto-denied)"
+      else
+        "approval request auto-denied"
+      end
+
+    routing_suffix =
+      if wait_routing_decision == "background_required" and is_binary(suggested_tool_path) do
+        ": background wait required via #{suggested_tool_path}"
+      else
+        ""
+      end
+
+    decision_suffix = if is_binary(decision), do: " [#{decision}]", else: ""
+    base <> routing_suffix <> decision_suffix
+  end
+
   defp humanize_codex_event(:tool_input_auto_answered, message, payload) do
     answer = map_value(message, ["answer", :answer])
 

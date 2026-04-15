@@ -603,6 +603,218 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server routes long-running foreground command approvals to background wait and leaves scoped commands in foreground" do
+    positive_cases = [
+      "make symphony-validate",
+      "make test",
+      "mix test",
+      "mix test --cover",
+      "pytest",
+      "npm run test:e2e",
+      "make symphony-live-e2e",
+      "team-master-ui-e2e",
+      "mix dialyzer",
+      "echo ok && make test",
+      "cd elixir && make all"
+    ]
+
+    negative_cases = [
+      "git status",
+      "rg -n exec_wait elixir/lib",
+      "sed -n '1,40p' elixir/lib/symphony_elixir/codex/app_server.ex",
+      "ls",
+      "cat README.md",
+      "gh pr view 69",
+      "mix test test/symphony_elixir/app_server_test.exs",
+      "mix test --only dashboard",
+      "pytest tests/test_app.py -q",
+      "pytest -k foreground_wait"
+    ]
+
+    Enum.each(positive_cases, fn command ->
+      trace_lines =
+        run_command_approval_trace!(command,
+          available_decisions: ["acceptForSession", "denied", "abort"]
+        )
+
+      assert approval_trace_decision(trace_lines) == "denied",
+             "expected #{inspect(command)} to require background wait"
+    end)
+
+    Enum.each(negative_cases, fn command ->
+      trace_lines =
+        run_command_approval_trace!(command,
+          available_decisions: ["acceptForSession", "denied", "abort"]
+        )
+
+      assert approval_trace_decision(trace_lines) == "acceptForSession",
+             "expected #{inspect(command)} to stay foreground-allowed"
+    end)
+  end
+
+  test "app server falls back to abort when denied is unavailable for a background-required foreground command" do
+    trace_lines =
+      run_command_approval_trace!("make symphony-validate",
+        method: "execCommandApproval",
+        command_key: :parsed_cmd,
+        available_decisions: ["approved_for_session", "abort"]
+      )
+
+    assert approval_trace_decision(trace_lines) == "abort"
+  end
+
+  test "app server can continue the same turn through exec_background and exec_wait after denying a long foreground wait" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-background-routing-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-479")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-background-routing.trace")
+      approval_payload_file = Path.join(test_root, "approval-request.json")
+      background_tool_file = Path.join(test_root, "exec-background-tool.json")
+      wait_tool_file = Path.join(test_root, "exec-wait-tool.json")
+      parent = self()
+
+      File.mkdir_p!(workspace)
+
+      File.write!(
+        approval_payload_file,
+        Jason.encode!(%{
+          "id" => 99,
+          "method" => "execCommandApproval",
+          "params" => %{
+            "parsedCmd" => "make symphony-validate",
+            "cwd" => "/tmp",
+            "reason" => "need approval",
+            "available_decisions" => ["approved_for_session", "denied", "abort"]
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        background_tool_file,
+        Jason.encode!(%{
+          "id" => 100,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_background",
+            "arguments" => %{"command" => "make symphony-validate"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        wait_tool_file,
+        Jason.encode!(%{
+          "id" => 101,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_wait",
+            "arguments" => %{"result_ref" => "exec-123"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-479"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-479"}}}'
+            cat "#{approval_payload_file}"
+            ;;
+          5)
+            cat "#{background_tool_file}"
+            ;;
+          6)
+            cat "#{wait_tool_file}"
+            ;;
+          7)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never"
+      )
+
+      issue = %Issue{
+        id: "issue-background-routing",
+        identifier: "MT-479",
+        title: "Route foreground waits through background tools",
+        description: "Ensure long foreground waits can continue through exec_background and exec_wait",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-479",
+        labels: ["backend"]
+      }
+
+      tool_executor = fn
+        "exec_background", %{"command" => "make symphony-validate"} = arguments ->
+          send(parent, {:tool_call, "exec_background", arguments})
+          %{"success" => true, "result_ref" => "exec-123", "status" => "running"}
+
+        "exec_wait", %{"result_ref" => "exec-123"} = arguments ->
+          send(parent, {:tool_call, "exec_wait", arguments})
+
+          %{
+            "success" => true,
+            "status" => "completed",
+            "duration_ms" => 123,
+            "tail" => "validation finished",
+            "failure_summary" => nil
+          }
+
+        tool_name, arguments ->
+          send(parent, {:tool_call, tool_name, arguments})
+          %{"success" => false, "error" => "unexpected tool call"}
+      end
+
+      on_message = fn message -> send(parent, {:app_server_message, message}) end
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "Use background tools after denial", issue,
+                 tool_executor: tool_executor,
+                 on_message: on_message
+               )
+
+      assert approval_trace_decision(trace_json_lines(trace_file)) == "denied"
+      assert_receive {:app_server_message, %{event: :approval_auto_denied, decision: "denied", wait_routing_decision: "background_required"}}
+      assert_receive {:tool_call, "exec_background", %{"command" => "make symphony-validate"}}
+      assert_receive {:tool_call, "exec_wait", %{"result_ref" => "exec-123"}}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server auto-approves MCP tool approval prompts when approval policy is never" do
     test_root =
       Path.join(
@@ -1445,5 +1657,125 @@ defmodule SymphonyElixir.AppServerTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp run_command_approval_trace!(command, opts) do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-command-routing-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-918")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-command-routing.trace")
+      approval_payload_file = Path.join(test_root, "approval-request.json")
+      method = Keyword.get(opts, :method, "item/commandExecution/requestApproval")
+      command_key = Keyword.get(opts, :command_key, :command)
+      available_decisions = Keyword.get(opts, :available_decisions, [])
+
+      File.mkdir_p!(workspace)
+
+      File.write!(
+        approval_payload_file,
+        Jason.encode!(build_command_approval_payload(method, command_key, command, available_decisions)) <> "\n"
+      )
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-918"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-918"}}}'
+            cat "#{approval_payload_file}"
+            ;;
+          5)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never"
+      )
+
+      issue = %Issue{
+        id: "issue-command-routing",
+        identifier: "MT-918",
+        title: "Route command approvals",
+        description: "Capture app-server approval decisions for long-running command routing",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-918",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Handle command approval", issue)
+
+      trace_json_lines(trace_file)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp build_command_approval_payload(method, command_key, command, available_decisions) do
+    params =
+      %{
+        "cwd" => "/tmp",
+        "reason" => "need approval",
+        "available_decisions" => available_decisions
+      }
+      |> Map.merge(command_payload(command_key, command))
+
+    %{"id" => 99, "method" => method, "params" => params}
+  end
+
+  defp command_payload(:command, command), do: %{"command" => command}
+  defp command_payload(:parsed_cmd, command), do: %{"parsedCmd" => command}
+  defp command_payload(:command_map, command), do: %{"command" => %{"command" => command}}
+
+  defp trace_json_lines(path) do
+    path
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+    |> Enum.map(fn line ->
+      line
+      |> String.trim_leading("JSON:")
+      |> Jason.decode!()
+    end)
+  end
+
+  defp approval_trace_decision(trace_lines) do
+    trace_lines
+    |> Enum.find_value(fn payload ->
+      if payload["id"] == 99 do
+        get_in(payload, ["result", "decision"])
+      end
+    end)
   end
 end

@@ -2133,6 +2133,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - If optional `exec_background` / `exec_wait` client-side tool extensions are implemented:
   - both tools are advertised to the session
   - long local commands can run and be waited outside the model loop via `result_ref`
+  - unattended runtimes may refuse foreground approval for deterministic repo-wide validation/test/lint/build/e2e commands when the wait must leave the model loop; in that case the session should continue via `exec_background` + `exec_wait` instead of foreground polling
   - terminal payloads are compact (`status`, `exit_code`, `duration_ms`, `tail`, `failure_summary`)
   - timeout and cancellation paths are explicit and deterministic
   - repeated status checks are idempotent for completed `result_ref` values
