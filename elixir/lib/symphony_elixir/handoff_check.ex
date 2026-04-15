@@ -3,7 +3,7 @@ defmodule SymphonyElixir.HandoffCheck do
   Evaluates the review-ready handoff contract and writes a machine-readable manifest.
   """
 
-  alias SymphonyElixir.ValidationGate
+  alias SymphonyElixir.{TelemetrySchema, ValidationGate}
 
   @allowed_checkpoint_types ["human-verify", "decision", "human-action"]
   @allowed_risk_levels ["low", "medium", "high"]
@@ -80,40 +80,48 @@ defmodule SymphonyElixir.HandoffCheck do
 
     passed = missing_items == []
 
-    manifest = %{
-      "contract_version" => 2,
-      "checked_at" => DateTime.to_iso8601(checked_at),
-      "passed" => passed,
-      "profile" => profile,
-      "profile_source" => profile_source,
-      "validation_gate" => validation_gate,
-      "git" => git_metadata,
-      "summary" => summary_for_manifest(passed, profile, missing_items),
-      "issue" => %{
-        "id" => issue_id,
-        "identifier" => issue_identifier,
-        "labels" => issue_labels,
-        "attachment_titles" => Enum.map(attachments, & &1["title"])
-      },
-      "pull_request" => %{
-        "repo" => repo,
-        "number" => pr_number,
-        "all_checks_green" => Map.get(pr_snapshot, "all_checks_green"),
-        "has_pending_checks" => Map.get(pr_snapshot, "has_pending_checks"),
-        "has_actionable_feedback" => Map.get(pr_snapshot, "has_actionable_feedback"),
-        "merge_state_status" => Map.get(pr_snapshot, "merge_state_status"),
-        "url" => Map.get(pr_snapshot, "url")
-      },
-      "workpad" => %{
-        "file_path" => workpad_path,
-        "sha256" => sha256(workpad_body),
-        "sections" => parsed_workpad["sections"],
-        "validation" => parsed_workpad["validation"],
-        "artifacts" => parsed_workpad["artifacts"],
-        "checkpoint" => parsed_workpad["checkpoint"]
-      },
-      "missing_items" => missing_items
-    }
+    manifest =
+      %{
+        "contract_version" => 2,
+        "checked_at" => DateTime.to_iso8601(checked_at),
+        "passed" => passed,
+        "profile" => profile,
+        "profile_source" => profile_source,
+        "validation_gate" => validation_gate,
+        "git" => git_metadata,
+        "summary" => summary_for_manifest(passed, profile, missing_items),
+        "issue" => %{
+          "id" => issue_id,
+          "identifier" => issue_identifier,
+          "labels" => issue_labels,
+          "attachment_titles" => Enum.map(attachments, & &1["title"])
+        },
+        "pull_request" => %{
+          "repo" => repo,
+          "number" => pr_number,
+          "all_checks_green" => Map.get(pr_snapshot, "all_checks_green"),
+          "has_pending_checks" => Map.get(pr_snapshot, "has_pending_checks"),
+          "has_actionable_feedback" => Map.get(pr_snapshot, "has_actionable_feedback"),
+          "merge_state_status" => Map.get(pr_snapshot, "merge_state_status"),
+          "url" => Map.get(pr_snapshot, "url")
+        },
+        "workpad" => %{
+          "file_path" => workpad_path,
+          "sha256" => sha256(workpad_body),
+          "sections" => parsed_workpad["sections"],
+          "validation" => parsed_workpad["validation"],
+          "artifacts" => parsed_workpad["artifacts"],
+          "checkpoint" => parsed_workpad["checkpoint"]
+        },
+        "missing_items" => missing_items
+      }
+      |> Map.merge(
+        TelemetrySchema.validation_guard_payload(%{
+          validation_guard_name: profile,
+          validation_guard_result: if(passed, do: "passed", else: "failed"),
+          validation_guard_reason: summary_for_manifest(passed, profile, missing_items)
+        })
+      )
 
     if passed, do: {:ok, manifest}, else: {:error, manifest}
   end

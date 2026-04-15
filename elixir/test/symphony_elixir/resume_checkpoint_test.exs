@@ -53,6 +53,10 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert checkpoint["pending_checks"] == false
     assert checkpoint["open_feedback"] == false
     assert checkpoint["feedback_digest"] == "feedback-digest-77"
+    assert checkpoint["checkpoint_quality"] == "ready"
+    assert checkpoint["checkpoint_origin"] == "resume_checkpoint"
+    assert checkpoint["checkpoint_fallback_reasons"] == []
+    assert checkpoint["validation_guard_result"] == "passed"
     assert File.exists?(checkpoint["manifest_path"])
 
     File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nChanged")
@@ -60,6 +64,7 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
 
     assert loaded["available"] == true
     assert loaded["resume_ready"] == false
+    assert loaded["checkpoint_quality"] == "fallback"
     assert Enum.any?(loaded["fallback_reasons"], &String.contains?(&1, "workpad_digest"))
   end
 
@@ -101,6 +106,7 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert checkpoint["pending_checks"] == false
     assert checkpoint["open_feedback"] == true
     assert checkpoint["feedback_digest"] == "checkpoint-feedback-digest"
+    assert checkpoint["checkpoint_quality"] == "pending_review"
   end
 
   test "for_prompt trims blank feedback_digest to nil" do
@@ -213,6 +219,7 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert checkpoint["pending_checks"] == nil
     assert checkpoint["open_feedback"] == nil
     assert checkpoint["resume_ready"] == false
+    assert checkpoint["checkpoint_quality"] == "fallback"
   end
 
   test "for_prompt normalizes missing checkpoint shape" do
@@ -257,6 +264,7 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert checkpoint["open_pr"] == nil
     assert checkpoint["pending_checks"] == true
     assert checkpoint["open_feedback"] == nil
+    assert checkpoint["checkpoint_quality"] == "fallback"
     assert Enum.any?(checkpoint["fallback_reasons"], &String.contains?(&1, "missing `branch`"))
   end
 

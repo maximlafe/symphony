@@ -33,9 +33,11 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
                issue_tokens_before_attempt: 75
              })
 
-    assert decision.reason == :max_total_tokens_exceeded
-    assert decision.threshold == 100
-    assert decision.observed_total == 125
+    assert decision.budget_reason == :max_total_tokens_exceeded
+    assert decision.budget_threshold == 100
+    assert decision.budget_observed_total == 125
+    assert decision.budget_issue_total_tokens == 125
+    assert decision.budget_decision == "handoff"
     assert decision.checkpoint_type == "decision"
     assert decision.risk_level == "medium"
   end
@@ -63,10 +65,11 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
                issue_tokens_before_attempt: 0
              })
 
-    assert decision.reason == :max_tokens_per_attempt_exceeded
-    assert decision.threshold == 10
-    assert decision.observed_total == 12
-    assert decision.cost_profile_key == "cheap_implementation"
+    assert decision.budget_reason == :max_tokens_per_attempt_exceeded
+    assert decision.budget_threshold == 10
+    assert decision.budget_observed_total == 12
+    assert decision.budget_next_cost_profile_key == "cheap_implementation"
+    assert decision.budget_decision == "downshift"
   end
 
   test "normal continuation exit over per-attempt budget blocks without retrying" do
@@ -177,8 +180,8 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
       send(pid, {:DOWN, ref, :process, self(), :boom})
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 1_500
-      assert blocker_body =~ "max_total_tokens_exceeded"
-      assert blocker_body =~ "observed_total: `22`"
+      assert blocker_body =~ "budget_reason: `max_total_tokens_exceeded`"
+      assert blocker_body =~ "budget_observed_total: `22`"
       assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
 
       state =
