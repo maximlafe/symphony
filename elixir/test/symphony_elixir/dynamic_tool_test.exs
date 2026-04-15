@@ -1032,6 +1032,71 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert payload["actionable_feedback"] == []
   end
 
+  test "github_pr_snapshot keeps human commented reviews with body text as actionable feedback" do
+    response =
+      DynamicTool.execute(
+        "github_pr_snapshot",
+        %{
+          "repo" => "maximlafe/lead_status",
+          "pr_number" => 74,
+          "include_feedback_details" => true
+        },
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "74", "-R", "maximlafe/lead_status", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://github.com/maximlafe/lead_status/pull/74",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "",
+                 "mergeStateStatus" => "CLEAN",
+                 "statusCheckRollup" => [
+                   %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/lead_status/issues/74/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/lead_status/pulls/74/reviews?per_page=100"] ->
+              {:ok,
+               Jason.encode!([
+                 %{
+                   "user" => %{"login" => "reviewer"},
+                   "state" => "COMMENTED",
+                   "body" => "Please address the finalizer retry case before merge.",
+                   "submittedAt" => "2026-04-14T18:10:00Z"
+                 }
+               ])}
+
+            ["api", "repos/maximlafe/lead_status/pulls/74/comments?per_page=100"] ->
+              {:ok, "[]"}
+          end
+        end
+      )
+
+    assert response["success"] == true
+    payload = decode_tool_text(response)
+
+    assert payload["all_checks_green"] == true
+    assert payload["has_pending_checks"] == false
+    assert payload["has_actionable_feedback"] == true
+    assert payload["review_count"] == 1
+    assert payload["top_level_comment_count"] == 0
+    assert payload["inline_comment_count"] == 0
+
+    assert payload["actionable_feedback"] == [
+             %{
+               "author" => "reviewer",
+               "body" => "Please address the finalizer retry case before merge.",
+               "channel" => "review",
+               "state" => "COMMENTED",
+               "submitted_at" => "2026-04-14T18:10:00Z"
+             }
+           ]
+  end
+
   test "github_pr_snapshot sanitizes invalid UTF-8 in GitHub CLI error payloads" do
     invalid_json = <<208, 189, 208, 181, 32, 209, 130, 209, 128, 208, 181, 208, 177, 209, 131, 208, 181, 209, 130, 209, 129, 209, 143, 44, 32, 208, 145, 208, 148, 47, 209, 129, 209>>
 
