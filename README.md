@@ -27,7 +27,7 @@ Fresh worker clones use the contract that lives in this repo:
 - `make symphony-handoff-check` runs the repo-owned review-ready contract against the current workpad, issue attachments, and PR state.
 - `make symphony-nginx-proxy-contract` validates the committed `stream.cash` nginx include without requiring a local `nginx` binary.
 - `make symphony-nginx-proxy-smoke` replays the `/proxy/symphony/` plus websocket upgrade flow through a disposable local nginx runtime when `nginx` is installed or `NGINX_BIN` is set.
-- `make symphony-validate` runs the main quality gate for this repo (`make -C elixir all`).
+- `make symphony-validate` runs the main quality gate for this repo (`make -C elixir validate`) with a dedicated validation-env check before the longer Elixir gate starts.
 - `make symphony-live-e2e` runs the disposable live smoke test (`make -C elixir e2e`) when you explicitly want a real Linear/Codex end-to-end run.
 
 That means a clean Symphony workspace no longer depends on hidden setup from other repos: the workflow, worker skills, bootstrap, and validation path all live here.

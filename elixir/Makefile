@@ -1,9 +1,13 @@
-.PHONY: help all setup deps build fmt fmt-check lint test dashboard coverage ci dialyzer e2e contracts
+.PHONY: help all setup deps build fmt fmt-check lint test dashboard coverage ci dialyzer e2e contracts validate validation-env-check
 
 MIX ?= mix
+VALIDATION_MIX_ENV ?= dev
+VALIDATION_TEST_MIX_ENV ?= test
+VALIDATION_MIX = MIX_ENV=$(VALIDATION_MIX_ENV) $(MIX)
+VALIDATION_TEST_MIX = MIX_ENV=$(VALIDATION_TEST_MIX_ENV) $(MIX)
 
 help:
-	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, dashboard, coverage, dialyzer, e2e, ci"
+	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, dashboard, coverage, dialyzer, e2e, ci, validate"
 
 setup:
 	$(MIX) setup
@@ -30,11 +34,26 @@ test:
 	$(MIX) test
 
 contracts:
+	python3 ../scripts/test_symphony_validation_contract.py
 	python3 ../scripts/test_symphony_deploy_contract.py
 	python3 ../scripts/test_validate_codex_accounts_contract.py
 	python3 ../scripts/validate_codex_accounts_contract.py \
 		--workflow-file ../workflows/letterl/maxime/let.WORKFLOW.md \
 		--required-accounts-file ../workflows/letterl/maxime/let.required_codex_accounts.txt
+
+validation-env-check:
+	@$(VALIDATION_MIX) deps | grep -F "* credo " >/dev/null
+	@$(VALIDATION_MIX) deps | grep -F "* dialyxir " >/dev/null
+
+validate:
+	$(MAKE) validation-env-check
+	$(MAKE) contracts
+	$(VALIDATION_MIX) build
+	$(VALIDATION_MIX) format --check-formatted
+	$(VALIDATION_MIX) lint
+	$(VALIDATION_TEST_MIX) test --cover
+	$(VALIDATION_MIX) deps.get
+	$(VALIDATION_MIX) dialyzer --format short
 
 dashboard:
 	$(MIX) test --only dashboard
