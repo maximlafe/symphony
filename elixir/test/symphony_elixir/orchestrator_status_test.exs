@@ -2940,6 +2940,28 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert humanized =~ "auto-approved"
   end
 
+  test "status dashboard formats auto-denied foreground wait updates from codex" do
+    message = %{
+      event: :approval_auto_denied,
+      message: %{
+        payload: %{
+          "method" => "item/commandExecution/requestApproval",
+          "params" => %{"parsedCmd" => "make symphony-validate"}
+        },
+        decision: "denied",
+        wait_routing_decision: "background_required",
+        suggested_tool_path: "use exec_background + exec_wait"
+      }
+    }
+
+    humanized = StatusDashboard.humanize_codex_message(message)
+    assert humanized =~ "command approval requested"
+    assert humanized =~ "auto-denied"
+    assert humanized =~ "background wait required"
+    assert humanized =~ "exec_background + exec_wait"
+    assert humanized =~ "[denied]"
+  end
+
   test "status dashboard formats auto-answered tool input updates from codex" do
     message = %{
       event: :tool_input_auto_answered,

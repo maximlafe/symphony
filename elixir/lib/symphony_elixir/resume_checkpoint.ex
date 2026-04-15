@@ -18,7 +18,8 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     "summary" => :summary,
     "checked_at" => :checked_at,
     "has_pending_checks" => :has_pending_checks,
-    "has_actionable_feedback" => :has_actionable_feedback
+    "has_actionable_feedback" => :has_actionable_feedback,
+    "feedback_digest" => :feedback_digest
   }
 
   @spec manifest_path(map() | nil, keyword()) :: String.t() | nil
@@ -121,9 +122,12 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     |> Map.update("fallback_reasons", [], &normalize_reasons/1)
     |> Map.update("last_validation_status", base["last_validation_status"], &normalize_validation_status/1)
     |> Map.put("open_pr", normalize_open_pr(Map.get(checkpoint, "open_pr")))
+    |> Map.put("feedback_digest", normalize_optional_string(Map.get(checkpoint, "feedback_digest")))
     |> normalize_boolean("pending_checks")
     |> normalize_boolean("open_feedback")
   end
+
+  defp normalize_checkpoint(_checkpoint), do: base_checkpoint(nil)
 
   defp revalidate(%{} = checkpoint, workspace) when is_binary(workspace) do
     current_branch = git_trimmed(workspace, ["rev-parse", "--abbrev-ref", "HEAD"])
@@ -221,14 +225,16 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       |> normalize_open_pr_snapshot()
 
     ci_wait_result = Map.get(running_entry, :latest_ci_wait_result)
+    resume_checkpoint = normalize_checkpoint(Map.get(running_entry, :resume_checkpoint))
 
     checkpoint
-    |> Map.put("open_pr", open_pr_from_snapshot(snapshot))
-    |> Map.put("pending_checks", pending_checks_from_context(snapshot, ci_wait_result))
-    |> Map.put("open_feedback", open_feedback_from_snapshot(snapshot))
+    |> Map.put("open_pr", open_pr_from_context(snapshot, resume_checkpoint))
+    |> Map.put("pending_checks", pending_checks_from_context(snapshot, ci_wait_result, resume_checkpoint))
+    |> Map.put("open_feedback", open_feedback_from_context(snapshot, resume_checkpoint))
+    |> Map.put("feedback_digest", feedback_digest_from_context(snapshot, resume_checkpoint))
   end
 
-  defp open_pr_from_snapshot(%{"url" => url} = snapshot) when is_binary(url) do
+  defp open_pr_from_context(%{"url" => url} = snapshot, _resume_checkpoint) when is_binary(url) do
     %{
       "number" => Map.get(snapshot, "number"),
       "url" => url,
@@ -236,19 +242,28 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     }
   end
 
-  defp open_pr_from_snapshot(_snapshot), do: nil
+  defp open_pr_from_context(_snapshot, %{"open_pr" => %{} = open_pr}) do
+    normalize_open_pr(open_pr)
+  end
 
-  defp pending_checks_from_context(%{} = snapshot, _ci_wait_result) do
+  defp open_pr_from_context(_snapshot, %{}), do: nil
+
+  defp pending_checks_from_context(%{} = snapshot, _ci_wait_result, _resume_checkpoint) do
     value = snapshot["has_pending_checks"]
 
     if is_boolean(value), do: value
   end
 
-  defp pending_checks_from_context(_snapshot, %{} = ci_wait_result) do
+  defp pending_checks_from_context(_snapshot, %{} = ci_wait_result, _resume_checkpoint) do
     if is_list(ci_wait_result["pending_checks"]), do: ci_wait_result["pending_checks"] != []
   end
 
-  defp pending_checks_from_context(_snapshot, _ci_wait_result), do: nil
+  defp pending_checks_from_context(_snapshot, _ci_wait_result, %{} = resume_checkpoint) do
+    case Map.get(resume_checkpoint, "pending_checks") do
+      value when is_boolean(value) -> value
+      _ -> nil
+    end
+  end
 
   defp open_feedback_from_snapshot(%{} = snapshot) do
     value = snapshot["has_actionable_feedback"]
@@ -256,7 +271,22 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     if is_boolean(value), do: value
   end
 
-  defp open_feedback_from_snapshot(_snapshot), do: nil
+  defp open_feedback_from_context(%{} = snapshot, _resume_checkpoint), do: open_feedback_from_snapshot(snapshot)
+
+  defp open_feedback_from_context(_snapshot, %{} = resume_checkpoint) do
+    case Map.get(resume_checkpoint, "open_feedback") do
+      value when is_boolean(value) -> value
+      _ -> nil
+    end
+  end
+
+  defp feedback_digest_from_context(%{} = snapshot, _resume_checkpoint) do
+    normalize_optional_string(snapshot["feedback_digest"])
+  end
+
+  defp feedback_digest_from_context(_snapshot, %{} = resume_checkpoint) do
+    normalize_optional_string(Map.get(resume_checkpoint, "feedback_digest"))
+  end
 
   defp normalize_open_pr_snapshot(%{} = snapshot) do
     url = map_get(snapshot, "url")
@@ -264,6 +294,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     number = extract_pr_number(url)
     has_pending_checks = map_get(snapshot, "has_pending_checks")
     has_actionable_feedback = map_get(snapshot, "has_actionable_feedback")
+    feedback_digest = normalize_optional_string(map_get(snapshot, "feedback_digest"))
 
     if is_binary(url) and String.trim(url) != "" do
       %{
@@ -271,7 +302,8 @@ defmodule SymphonyElixir.ResumeCheckpoint do
         "url" => url,
         "state" => state,
         "has_pending_checks" => has_pending_checks,
-        "has_actionable_feedback" => has_actionable_feedback
+        "has_actionable_feedback" => has_actionable_feedback,
+        "feedback_digest" => feedback_digest
       }
     end
   end
@@ -346,6 +378,15 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       Map.put(checkpoint, key, nil)
     end
   end
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_optional_string(_value), do: nil
 
   defp git_trimmed(workspace, args) do
     case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
@@ -458,6 +499,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       "open_pr" => nil,
       "pending_checks" => nil,
       "open_feedback" => nil,
+      "feedback_digest" => nil,
       "workpad_ref" => nil,
       "workpad_digest" => nil
     }

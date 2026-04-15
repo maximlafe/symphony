@@ -172,7 +172,7 @@ defmodule SymphonyElixir.CoreTest do
     assert makefile =~ "$(MISE) exec -- $(MAKE) dashboard"
     assert makefile =~ "python3 scripts/symphony_nginx_proxy_smoke.py --contract-only"
     assert makefile =~ "python3 scripts/symphony_nginx_proxy_smoke.py"
-    assert makefile =~ "$(MISE) exec -- $(MAKE) all"
+    assert makefile =~ "$(MISE) exec -- $(MAKE) validate"
   end
 
   test "linear api token resolves from LINEAR_API_KEY env var" do
@@ -889,6 +889,129 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 17_000, 20_500)
   end
 
+  test "failover retry prefers a loaded ready checkpoint over a queued fallback checkpoint" do
+    issue_id = "issue-failover-spawn-reload-checkpoint"
+    retry_token = make_ref()
+    task_supervisor = install_failing_task_supervisor_for_test()
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-failover-reload-checkpoint-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+
+    on_exit(fn ->
+      restore_task_supervisor_for_test(task_supervisor)
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      File.rm_rf(test_root)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      codex_accounts: [%{id: "primary", codex_home: "/tmp/codex-primary"}]
+    )
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-558E",
+      title: "Failover spawn reload checkpoint",
+      state: "In Progress"
+    }
+
+    workspace = init_workspace_repo!(workspace_root, issue.identifier)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nReloaded state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-789")
+
+    loaded_checkpoint =
+      SymphonyElixir.ResumeCheckpoint.capture(
+        issue,
+        %{
+          latest_pr_snapshot: %{
+            "url" => "https://github.com/maximlafe/symphony/pull/78",
+            "state" => "OPEN",
+            "has_pending_checks" => false,
+            "has_actionable_feedback" => false
+          }
+        },
+        workspace_root: workspace_root
+      )
+
+    assert loaded_checkpoint["resume_ready"] == true
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    queued_fallback =
+      SymphonyElixir.ResumeCheckpoint.for_prompt(%{
+        "fallback_reasons" => ["resume checkpoint capture failed: boom"]
+      })
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{},
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{
+        issue_id => %{
+          attempt: 1,
+          retry_token: retry_token,
+          due_at_ms: System.monotonic_time(:millisecond),
+          identifier: issue.identifier,
+          trace_id: "trace-failover-spawn-reload",
+          error: "account failover: threshold exceeded",
+          error_class: "transient",
+          delay_type: :failover,
+          resume_checkpoint: queued_fallback
+        }
+      },
+      codex_accounts: %{
+        "primary" => %{
+          id: "primary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: %{"limitId" => "codex"}
+        }
+      },
+      active_codex_account_id: "primary",
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: %{"limitId" => "codex"},
+      codex_dispatch_reason: nil
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:retry_issue, issue_id, retry_token}, state)
+
+    assert %{
+             attempt: 2,
+             due_at_ms: due_at_ms,
+             error: error,
+             error_class: "transient",
+             delay_type: nil,
+             resume_checkpoint: reloaded_checkpoint
+           } = updated_state.retry_attempts[issue_id]
+
+    assert error =~ "failed to spawn agent:"
+    assert_due_in_range(due_at_ms, 17_000, 20_500)
+    assert reloaded_checkpoint["resume_ready"] == true
+    assert reloaded_checkpoint["workpad_ref"] == "comment-789"
+    assert reloaded_checkpoint["open_pr"]["number"] == 78
+
+    refute Enum.any?(
+             reloaded_checkpoint["fallback_reasons"],
+             &String.contains?(&1, "capture failed")
+           )
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()
@@ -1510,6 +1633,417 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "same failure key after one queued retry blocks the issue" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-feedback-dedupe-block"
+    issue_identifier = "MT-FEEDBACK-DEDUPE-BLOCK"
+    trace_id = "trace-feedback-dedupe-block"
+    runtime_head_sha = "runtime-head-feedback-dedupe"
+    feedback_digest = "feedback-digest-stable"
+    test_root = Path.join(System.tmp_dir!(), "symphony-elixir-feedback-dedupe-block-#{System.unique_integer([:positive])}")
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      issue = prepare_feedback_dedupe_issue!(issue_id, issue_identifier, workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeBlockOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      first_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              feedback_digest: feedback_digest
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      state_after_first_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(
+            %{
+              attempt: 1,
+              feedback_digest: ^feedback_digest,
+              runtime_head_sha: ^runtime_head_sha
+            },
+            state.retry_attempts[issue_id]
+          )
+        end)
+
+      assert %{
+               attempt: 1,
+               feedback_digest: ^feedback_digest,
+               runtime_head_sha: ^runtime_head_sha,
+               error_signature: first_error_signature
+             } = state_after_first_failure.retry_attempts[issue_id]
+
+      second_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn current_state ->
+        current_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              feedback_digest: feedback_digest,
+              retry_attempt: 1
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "failure_class: `retry_dedupe_hit`"
+      assert blocker_body =~ "retry_action: `stop`"
+      assert blocker_body =~ first_error_signature
+      assert blocker_body =~ runtime_head_sha
+      assert blocker_body =~ feedback_digest
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+
+      final_state =
+        wait_for_orchestrator_state(pid, fn state ->
+          state.running == %{} and
+            not Map.has_key?(state.retry_attempts, issue_id) and
+            not MapSet.member?(state.claimed, issue_id)
+        end)
+
+      assert final_state.running == %{}
+      refute Map.has_key?(final_state.retry_attempts, issue_id)
+      refute MapSet.member?(final_state.claimed, issue_id)
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "changed feedback digest allows another failure-driven retry" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-feedback-dedupe-feedback-change"
+    issue_identifier = "MT-FEEDBACK-DEDUPE-FEEDBACK"
+    trace_id = "trace-feedback-dedupe-feedback-change"
+    runtime_head_sha = "runtime-head-feedback-change"
+    test_root = Path.join(System.tmp_dir!(), "symphony-elixir-feedback-dedupe-feedback-change-#{System.unique_integer([:positive])}")
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      issue = prepare_feedback_dedupe_issue!(issue_id, issue_identifier, workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeFeedbackChangeOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      first_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              feedback_digest: "feedback-digest-a"
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      _state_after_first_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 1, feedback_digest: "feedback-digest-a"}, state.retry_attempts[issue_id])
+        end)
+
+      second_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn current_state ->
+        current_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              feedback_digest: "feedback-digest-b",
+              retry_attempt: 1
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      state_after_second_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 2, feedback_digest: "feedback-digest-b"}, state.retry_attempts[issue_id])
+        end)
+
+      assert %{attempt: 2, feedback_digest: "feedback-digest-b"} =
+               state_after_second_failure.retry_attempts[issue_id]
+
+      refute_received {:memory_tracker_comment, ^issue_id, _body}
+      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "changed runtime head allows another failure-driven retry" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-feedback-dedupe-head-change"
+    issue_identifier = "MT-FEEDBACK-DEDUPE-HEAD"
+    trace_id = "trace-feedback-dedupe-head-change"
+    feedback_digest = "feedback-digest-stable"
+    test_root = Path.join(System.tmp_dir!(), "symphony-elixir-feedback-dedupe-head-change-#{System.unique_integer([:positive])}")
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      issue = prepare_feedback_dedupe_issue!(issue_id, issue_identifier, workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeHeadChangeOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      first_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: "runtime-head-a",
+              feedback_digest: feedback_digest
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      _state_after_first_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 1, runtime_head_sha: "runtime-head-a"}, state.retry_attempts[issue_id])
+        end)
+
+      second_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn current_state ->
+        current_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: "runtime-head-b",
+              feedback_digest: feedback_digest,
+              retry_attempt: 1
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      state_after_second_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 2, runtime_head_sha: "runtime-head-b"}, state.retry_attempts[issue_id])
+        end)
+
+      assert %{attempt: 2, runtime_head_sha: "runtime-head-b"} =
+               state_after_second_failure.retry_attempts[issue_id]
+
+      refute_received {:memory_tracker_comment, ^issue_id, _body}
+      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "changed error signature allows another failure-driven retry" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-feedback-dedupe-error-change"
+    issue_identifier = "MT-FEEDBACK-DEDUPE-ERROR"
+    trace_id = "trace-feedback-dedupe-error-change"
+    runtime_head_sha = "runtime-head-error-change"
+    feedback_digest = "feedback-digest-error-change"
+    test_root = Path.join(System.tmp_dir!(), "symphony-elixir-feedback-dedupe-error-change-#{System.unique_integer([:positive])}")
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      issue = prepare_feedback_dedupe_issue!(issue_id, issue_identifier, workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeErrorChangeOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      first_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              feedback_digest: feedback_digest
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      state_after_first_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 1}, state.retry_attempts[issue_id])
+        end)
+
+      assert %{error_signature: first_error_signature} = state_after_first_failure.retry_attempts[issue_id]
+
+      second_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn current_state ->
+        current_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              feedback_digest: feedback_digest,
+              retry_attempt: 1
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "connection reset by peer"}})
+
+      state_after_second_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 2}, state.retry_attempts[issue_id])
+        end)
+
+      assert %{attempt: 2, error_signature: second_error_signature} =
+               state_after_second_failure.retry_attempts[issue_id]
+
+      refute first_error_signature == second_error_signature
+      refute_received {:memory_tracker_comment, ^issue_id, _body}
+      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "untrusted turn_failed text does not mark the codex account unhealthy" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     issue_id = "issue-turn-failed-untrusted-auth-text"
@@ -1909,6 +2443,332 @@ defmodule SymphonyElixir.CoreTest do
 
     assert %{attempt: 1, delay_type: :failover, error_class: "transient"} =
              after_second_failover.retry_attempts[issue_b_id]
+  end
+
+  test "live rate-limit exhaustion preserves ready resume checkpoint across failover retry" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-failover-resume-ready-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    issue_id = "issue-live-rate-limit-resume-ready"
+    issue = %Issue{id: issue_id, identifier: "MT-LIVE-RESUME", state: "In Progress"}
+    workspace = init_workspace_repo!(workspace_root, issue.identifier)
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+    verification_checked_at = DateTime.utc_now()
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+
+      File.rm_rf(test_root)
+    end)
+
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nResume state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-123")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"},
+        %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+      ],
+      codex_minimum_remaining_percent: 5,
+      codex_monitored_windows_mins: [300, 10_080]
+    )
+
+    healthy_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 20},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    exhausted_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 96},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      next_poll_due_at_ms: nil,
+      poll_check_in_progress: false,
+      tick_timer_ref: nil,
+      tick_token: nil,
+      workspace_usage_bytes: 0,
+      workspace_cleanup_ref: nil,
+      workspace_usage_refresh_ref: nil,
+      workspace_threshold_exceeded?: false,
+      running: %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: make_ref(),
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-failover-resume",
+          session_id: "thread-failover-resume",
+          codex_account_id: "primary",
+          latest_pr_snapshot: %{
+            "url" => "https://github.com/maximlafe/symphony/pull/77",
+            "state" => "OPEN",
+            "has_pending_checks" => false,
+            "has_actionable_feedback" => false
+          },
+          latest_ci_wait_result: %{"pending_checks" => []},
+          verification_result: "passed",
+          verification_summary: "handoff check passed",
+          verification_checked_at: verification_checked_at,
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          started_at: DateTime.utc_now()
+        }
+      },
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{
+        "primary" => %{
+          id: "primary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        },
+        "secondary" => %{
+          id: "secondary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        }
+      },
+      active_codex_account_id: "primary",
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: healthy_rate_limits,
+      codex_dispatch_reason: nil
+    }
+
+    update = %{
+      event: :notification,
+      codex_account_id: "primary",
+      payload: %{
+        "method" => "codex/event/token_count",
+        "params" => %{
+          "msg" => %{
+            "type" => "event_msg",
+            "payload" => %{
+              "type" => "token_count",
+              "rate_limits" => exhausted_rate_limits
+            }
+          }
+        }
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+    assert_receive {:retry_issue, ^issue_id, _retry_token}, 200
+
+    assert %{
+             attempt: 1,
+             delay_type: :failover,
+             error_class: "transient",
+             resume_checkpoint: checkpoint
+           } = updated_state.retry_attempts[issue_id]
+
+    assert checkpoint["available"] == true
+    assert checkpoint["resume_ready"] == true
+    assert checkpoint["branch"] == "main"
+    assert is_binary(checkpoint["head"])
+    assert checkpoint["workpad_ref"] == "comment-123"
+    assert is_binary(checkpoint["workpad_digest"])
+    assert checkpoint["last_validation_status"]["result"] == "passed"
+    assert checkpoint["last_validation_status"]["summary"] == "handoff check passed"
+    assert checkpoint["last_validation_status"]["checked_at"] == DateTime.to_iso8601(verification_checked_at)
+    assert checkpoint["open_pr"]["number"] == 77
+    assert checkpoint["pending_checks"] == false
+    assert checkpoint["open_feedback"] == false
+  end
+
+  test "live rate-limit exhaustion keeps fallback checkpoint when workspace is unavailable" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-failover-resume-fallback-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    issue_id = "issue-live-rate-limit-resume-fallback"
+    issue = %Issue{id: issue_id, identifier: "MT-LIVE-RESUME-FALLBACK", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+
+      File.rm_rf(test_root)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"},
+        %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+      ],
+      codex_minimum_remaining_percent: 5,
+      codex_monitored_windows_mins: [300, 10_080]
+    )
+
+    healthy_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 20},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    exhausted_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 96},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      next_poll_due_at_ms: nil,
+      poll_check_in_progress: false,
+      tick_timer_ref: nil,
+      tick_token: nil,
+      workspace_usage_bytes: 0,
+      workspace_cleanup_ref: nil,
+      workspace_usage_refresh_ref: nil,
+      workspace_threshold_exceeded?: false,
+      running: %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: make_ref(),
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-failover-resume-fallback",
+          session_id: "thread-failover-resume-fallback",
+          codex_account_id: "primary",
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          started_at: DateTime.utc_now()
+        }
+      },
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{
+        "primary" => %{
+          id: "primary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        },
+        "secondary" => %{
+          id: "secondary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        }
+      },
+      active_codex_account_id: "primary",
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: healthy_rate_limits,
+      codex_dispatch_reason: nil
+    }
+
+    update = %{
+      event: :notification,
+      codex_account_id: "primary",
+      payload: %{
+        "method" => "codex/event/token_count",
+        "params" => %{
+          "msg" => %{
+            "type" => "event_msg",
+            "payload" => %{
+              "type" => "token_count",
+              "rate_limits" => exhausted_rate_limits
+            }
+          }
+        }
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+    assert_receive {:retry_issue, ^issue_id, _retry_token}, 200
+
+    assert %{
+             attempt: 1,
+             delay_type: :failover,
+             error_class: "transient",
+             resume_checkpoint: checkpoint
+           } = updated_state.retry_attempts[issue_id]
+
+    assert checkpoint["available"] == false
+    assert checkpoint["resume_ready"] == false
+
+    assert Enum.any?(
+             checkpoint["fallback_reasons"],
+             &String.contains?(&1, "workspace is unavailable for retry checkpoint capture")
+           )
   end
 
   test "live rate-limit exhaustion does not preempt the run when no healthy replacement exists" do
@@ -3066,6 +3926,8 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "`github_wait_for_checks`"
     assert prompt =~ "`exec_background`"
     assert prompt =~ "`exec_wait`"
+    assert prompt =~ "background_required"
+    assert prompt =~ "do not retry the same command in foreground"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
     assert prompt =~ "making a classified `decision`/`human-action` handoff"
@@ -4005,6 +4867,48 @@ defmodule SymphonyElixir.CoreTest do
       {:error, {:already_started, _pid}} -> :ok
       other -> raise "failed to restart TaskSupervisor: #{inspect(other)}"
     end
+  end
+
+  defp prepare_feedback_dedupe_issue!(issue_id, issue_identifier, workspace_root) do
+    workspace = Path.join(workspace_root, issue_identifier)
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nFeedback dedupe state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-#{issue_id}")
+
+    %Issue{
+      id: issue_id,
+      identifier: issue_identifier,
+      title: "Feedback retry dedupe",
+      description: "Track retry dedupe for identical feedback",
+      state: "In Progress",
+      url: "https://example.org/issues/#{issue_identifier}",
+      labels: []
+    }
+  end
+
+  defp feedback_dedupe_running_entry(issue, ref, opts) do
+    %{
+      pid: self(),
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      trace_id: Keyword.get(opts, :trace_id),
+      retry_attempt: Keyword.get(opts, :retry_attempt),
+      runtime_head_sha: Keyword.fetch!(opts, :runtime_head_sha),
+      latest_pr_snapshot: %{
+        "url" => "https://github.com/acme/symphony/pull/480",
+        "state" => "OPEN",
+        "has_pending_checks" => false,
+        "has_actionable_feedback" => true,
+        "feedback_digest" => Keyword.fetch!(opts, :feedback_digest)
+      },
+      started_at: DateTime.utc_now()
+    }
+  end
+
+  defp replace_orchestrator_state!(pid, fun, timeout \\ 15_000)
+       when is_pid(pid) and is_function(fun, 1) and is_integer(timeout) and timeout > 0 do
+    :sys.replace_state(pid, fun, timeout)
   end
 
   defp wait_for_orchestrator_state(pid, predicate, attempts \\ 40)

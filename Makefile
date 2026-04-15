@@ -84,7 +84,7 @@ symphony-nginx-proxy-smoke:
 	python3 scripts/symphony_nginx_proxy_smoke.py
 
 symphony-validate:
-	cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) all
+	cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) validate
 
 symphony-live-e2e:
 	cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) e2e
