@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   alias SymphonyElixir.{
     AgentRunner,
+    BudgetGuardrails,
     Config,
     ControllerFinalizer,
     ErrorClassifier,
@@ -227,17 +228,29 @@ defmodule SymphonyElixir.Orchestrator do
 
         notify_dashboard()
 
-        case maybe_failover_running_issue(
-               state,
-               issue_id,
-               updated_running_entry,
-               tracked_account_id
-             ) do
+        budget_result =
+          case maybe_enforce_running_budget(state, issue_id, updated_running_entry, :token_update) do
+            {:budget_stop, state} ->
+              {:noreply, state}
+
+            {:keep_running, state} ->
+              maybe_failover_running_issue(
+                state,
+                issue_id,
+                updated_running_entry,
+                tracked_account_id
+              )
+          end
+
+        case budget_result do
           {:failover, state} ->
             {:noreply, state}
 
           {:keep_running, state} ->
             {:noreply, %{state | running: Map.put(state.running, issue_id, updated_running_entry)}}
+
+          {:noreply, state} ->
+            {:noreply, state}
         end
     end
   end
@@ -962,6 +975,9 @@ defmodule SymphonyElixir.Orchestrator do
     expected_head_sha = pick_retry_expected_head_sha(previous_retry, metadata)
     execution_branch = pick_retry_execution_branch(previous_retry, metadata)
     error_signature = pick_retry_error_signature(previous_retry, metadata, error)
+    issue_token_total = pick_retry_issue_token_total(previous_retry, metadata)
+    cost_profile_key = pick_retry_cost_profile_key(previous_retry, metadata)
+    budget_decision = pick_retry_budget_decision(previous_retry, metadata)
     feedback_digest = pick_retry_feedback_digest(previous_retry, metadata)
 
     if is_reference(old_timer) do
@@ -995,6 +1011,9 @@ defmodule SymphonyElixir.Orchestrator do
             expected_head_sha: expected_head_sha,
             execution_branch: execution_branch,
             error_signature: error_signature,
+            issue_token_total: issue_token_total,
+            cost_profile_key: cost_profile_key,
+            budget_decision: budget_decision,
             feedback_digest: feedback_digest
           })
     }
@@ -1015,6 +1034,9 @@ defmodule SymphonyElixir.Orchestrator do
           expected_head_sha: Map.get(retry_entry, :expected_head_sha),
           execution_branch: Map.get(retry_entry, :execution_branch),
           error_signature: Map.get(retry_entry, :error_signature),
+          issue_token_total: Map.get(retry_entry, :issue_token_total),
+          cost_profile_key: Map.get(retry_entry, :cost_profile_key),
+          budget_decision: Map.get(retry_entry, :budget_decision),
           feedback_digest: Map.get(retry_entry, :feedback_digest)
         }
 
@@ -1112,22 +1134,56 @@ defmodule SymphonyElixir.Orchestrator do
        ) do
     continuation_attempt = next_continuation_attempt(running_entry)
     resume_checkpoint = capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
+    budget_context = budget_context_from_running(running_entry, continuation_attempt, :continuation)
 
-    Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check (attempt #{continuation_attempt})")
+    case BudgetGuardrails.decide(budget_context) do
+      {:allow, budget_totals} ->
+        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check (attempt #{continuation_attempt})")
 
-    state
-    |> complete_issue(issue_id)
-    |> schedule_issue_retry(
-      issue_id,
-      continuation_attempt,
-      %{
-        identifier: identifier,
-        trace_id: trace_id,
-        delay_type: :continuation,
-        resume_checkpoint: resume_checkpoint
-      }
-      |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
-    )
+        state
+        |> complete_issue(issue_id)
+        |> schedule_issue_retry(
+          issue_id,
+          continuation_attempt,
+          %{
+            identifier: identifier,
+            trace_id: trace_id,
+            delay_type: :continuation,
+            resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_totals),
+            issue_token_total: budget_totals.issue_total_tokens
+          }
+          |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
+        )
+
+      {:downshift, decision} ->
+        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, decision)
+
+        state
+        |> complete_issue(issue_id)
+        |> schedule_issue_retry(
+          issue_id,
+          continuation_attempt,
+          %{
+            identifier: identifier,
+            trace_id: trace_id,
+            delay_type: :continuation,
+            resume_checkpoint: put_budget_checkpoint(resume_checkpoint, decision),
+            issue_token_total: decision.issue_total_tokens,
+            cost_profile_key: decision.cost_profile_key,
+            budget_decision: decision,
+            error: "budget downshift: #{decision.reason}",
+            error_class: ErrorClassifier.to_string(:transient)
+          }
+          |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
+        )
+
+      {:handoff, decision} ->
+        log_budget_decision(issue_id, identifier, session_id, trace_id, :handoff, decision)
+
+        state
+        |> complete_issue(issue_id)
+        |> escalate_issue_for_budget_handoff(Map.get(running_entry, :issue), decision, trace_id)
+    end
   end
 
   defp handle_agent_exit_reason(
@@ -1153,21 +1209,52 @@ defmodule SymphonyElixir.Orchestrator do
       "Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)} error_class=#{error_class_label} failure_class=#{failure_class_label} next_retry_attempt=#{failure_attempt}"
     )
 
-    handle_worker_failure(
-      state,
-      Map.get(running_entry, :issue),
-      reason,
-      failure,
-      failure_attempt,
-      %{
-        issue_id: issue_id,
-        identifier: identifier,
-        trace_id: trace_id,
-        codex_account_id: Map.get(running_entry, :codex_account_id),
-        resume_checkpoint: capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
-      }
-      |> Map.merge(retry_execution_metadata(running_entry))
-    )
+    resume_checkpoint = capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
+    budget_context = budget_context_from_running(running_entry, failure_attempt, Map.get(running_entry, :retry_delay_type))
+
+    case BudgetGuardrails.decide(budget_context) do
+      {:allow, budget_totals} ->
+        handle_worker_failure(
+          state,
+          Map.get(running_entry, :issue),
+          reason,
+          failure,
+          failure_attempt,
+          %{
+            issue_id: issue_id,
+            identifier: identifier,
+            trace_id: trace_id,
+            codex_account_id: Map.get(running_entry, :codex_account_id),
+            resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_totals),
+            issue_token_total: budget_totals.issue_total_tokens
+          }
+          |> Map.merge(retry_execution_metadata(running_entry))
+        )
+
+      {:downshift, decision} ->
+        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, decision)
+
+        schedule_issue_retry(
+          state,
+          issue_id,
+          failure_attempt,
+          %{
+            identifier: identifier,
+            trace_id: trace_id,
+            error: "budget downshift: #{decision.reason}",
+            error_class: error_class_label,
+            resume_checkpoint: put_budget_checkpoint(resume_checkpoint, decision),
+            issue_token_total: decision.issue_total_tokens,
+            cost_profile_key: decision.cost_profile_key,
+            budget_decision: decision
+          }
+          |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
+        )
+
+      {:handoff, decision} ->
+        log_budget_decision(issue_id, identifier, session_id, trace_id, :handoff, decision)
+        escalate_issue_for_budget_handoff(state, Map.get(running_entry, :issue), decision, trace_id)
+    end
   end
 
   defp handle_controller_finalizer_result(
@@ -1371,6 +1458,8 @@ defmodule SymphonyElixir.Orchestrator do
                 runtime_head_sha: Map.get(execution_head, :runtime_head_sha),
                 expected_head_sha: Map.get(execution_head, :expected_head_sha),
                 execution_branch: Map.get(execution_head, :execution_branch),
+                issue_token_total: budget_issue_total(resume_checkpoint),
+                budget_cost_profile_key: budget_cost_profile_key(resume_checkpoint),
                 last_codex_message: nil,
                 last_codex_timestamp: nil,
                 last_codex_event: nil,
@@ -1430,7 +1519,8 @@ defmodule SymphonyElixir.Orchestrator do
              attempt: attempt,
              codex_account: codex_account,
              trace_id: trace_id,
-             resume_checkpoint: resume_checkpoint
+             resume_checkpoint: resume_checkpoint,
+             cost_profile_key: budget_cost_profile_key(resume_checkpoint)
            )
          end) do
       {:ok, pid} ->
@@ -1458,6 +1548,8 @@ defmodule SymphonyElixir.Orchestrator do
                 runtime_head_sha: Map.get(execution_head, :runtime_head_sha),
                 expected_head_sha: Map.get(execution_head, :expected_head_sha),
                 execution_branch: Map.get(execution_head, :execution_branch),
+                issue_token_total: budget_issue_total(resume_checkpoint),
+                budget_cost_profile_key: budget_cost_profile_key(resume_checkpoint),
                 last_codex_message: nil,
                 last_codex_timestamp: nil,
                 last_codex_event: nil,
@@ -2258,6 +2350,234 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_apply_account_runtime_failure(state, _codex_account_id, _failure, _failure_attempt),
     do: state
 
+  defp maybe_enforce_running_budget(%State{} = state, issue_id, running_entry, source)
+       when is_binary(issue_id) and is_map(running_entry) do
+    attempt = running_budget_attempt(running_entry)
+    delay_type = running_budget_delay_type(running_entry, source)
+    context = budget_context_from_running(running_entry, attempt, delay_type)
+
+    case BudgetGuardrails.decide(context) do
+      {:allow, _budget_totals} ->
+        {:keep_running, state}
+
+      {:downshift, decision} ->
+        identifier = Map.get(running_entry, :identifier, issue_id)
+        session_id = running_entry_session_id(running_entry)
+        trace_id = running_entry_trace_id(running_entry)
+
+        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, decision)
+
+        checkpoint =
+          running_entry
+          |> Map.get(:issue)
+          |> capture_resume_checkpoint(running_entry)
+          |> put_budget_checkpoint(decision)
+
+        state =
+          state
+          |> Map.put(:running, Map.put(state.running, issue_id, running_entry))
+          |> terminate_running_issue(issue_id, false)
+          |> schedule_issue_retry(
+            issue_id,
+            attempt,
+            %{
+              identifier: identifier,
+              trace_id: trace_id,
+              delay_type: delay_type,
+              resume_checkpoint: checkpoint,
+              issue_token_total: decision.issue_total_tokens,
+              cost_profile_key: decision.cost_profile_key,
+              budget_decision: decision,
+              error: "budget downshift: #{decision.reason}",
+              error_class: ErrorClassifier.to_string(:transient)
+            }
+            |> Map.merge(retry_execution_metadata(running_entry, checkpoint))
+          )
+
+        {:budget_stop, state}
+
+      {:handoff, decision} ->
+        identifier = Map.get(running_entry, :identifier, issue_id)
+        session_id = running_entry_session_id(running_entry)
+        trace_id = running_entry_trace_id(running_entry)
+
+        log_budget_decision(issue_id, identifier, session_id, trace_id, :handoff, decision)
+
+        state =
+          state
+          |> Map.put(:running, Map.put(state.running, issue_id, running_entry))
+          |> terminate_running_issue(issue_id, false)
+          |> escalate_issue_for_budget_handoff(Map.get(running_entry, :issue), decision, trace_id)
+
+        {:budget_stop, state}
+    end
+  end
+
+  defp maybe_enforce_running_budget(state, _issue_id, _running_entry, _source), do: {:keep_running, state}
+
+  defp running_budget_attempt(%{retry_delay_type: :continuation} = running_entry),
+    do: next_continuation_attempt(running_entry)
+
+  defp running_budget_attempt(running_entry), do: next_failure_attempt_from_running(running_entry)
+
+  defp running_budget_delay_type(%{retry_delay_type: delay_type}, _source), do: delay_type
+  defp running_budget_delay_type(_running_entry, :token_update), do: nil
+
+  defp budget_context_from_running(running_entry, attempt, delay_type) when is_map(running_entry) do
+    %{
+      issue: Map.get(running_entry, :issue),
+      attempt: attempt,
+      delay_type: delay_type,
+      attempt_tokens: Map.get(running_entry, :codex_total_tokens, 0),
+      issue_tokens_before_attempt: issue_token_total_before_attempt(running_entry),
+      current_cost_profile_key: Map.get(running_entry, :budget_cost_profile_key)
+    }
+  end
+
+  defp issue_token_total_before_attempt(running_entry) when is_map(running_entry) do
+    case Map.get(running_entry, :issue_token_total) do
+      value when is_integer(value) and value >= 0 -> value
+      _ -> 0
+    end
+  end
+
+  defp put_budget_checkpoint(checkpoint, budget) when is_map(checkpoint) and is_map(budget) do
+    Map.put(checkpoint, "token_budget", %{
+      "issue_total_tokens" => budget_value(budget, :issue_total_tokens),
+      "attempt_tokens" => budget_value(budget, :attempt_tokens),
+      "reason" => budget_value(budget, :reason),
+      "threshold" => budget_value(budget, :threshold),
+      "observed_total" => budget_value(budget, :observed_total),
+      "decision" => budget_value(budget, :decision),
+      "cost_profile_key" => budget_value(budget, :cost_profile_key)
+    })
+  end
+
+  defp put_budget_checkpoint(checkpoint, _budget), do: checkpoint
+
+  defp budget_value(map, key) when is_map(map) do
+    case Map.get(map, key) do
+      value when is_atom(value) -> Atom.to_string(value)
+      value -> value
+    end
+  end
+
+  defp budget_issue_total(%{"token_budget" => %{"issue_total_tokens" => value}})
+       when is_integer(value) and value >= 0,
+       do: value
+
+  defp budget_issue_total(%{"token_budget" => %{"issue_total_tokens" => value}}) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, ""} when integer >= 0 -> integer
+      _ -> 0
+    end
+  end
+
+  defp budget_issue_total(_checkpoint), do: 0
+
+  defp budget_cost_profile_key(%{"token_budget" => %{"cost_profile_key" => profile_key}})
+       when is_binary(profile_key) and profile_key != "",
+       do: profile_key
+
+  defp budget_cost_profile_key(_checkpoint), do: nil
+
+  defp log_budget_decision(issue_id, identifier, session_id, trace_id, decision, budget) do
+    with_log_metadata(issue_log_metadata(issue_id, identifier, session_id, trace_id), fn ->
+      Logger.warning(
+        "Budget decision issue_id=#{issue_id} issue_identifier=#{identifier} attempt=#{inspect(Map.get(budget, :attempt))} delay_type=#{inspect(Map.get(budget, :delay_type))} threshold=#{inspect(Map.get(budget, :threshold))} observed_total=#{inspect(Map.get(budget, :observed_total))} decision=#{decision} reason=#{Map.get(budget, :reason)}"
+      )
+    end)
+  end
+
+  defp escalate_issue_for_budget_handoff(
+         state,
+         %Issue{id: tracker_issue_id} = issue,
+         decision,
+         trace_id
+       )
+       when is_binary(tracker_issue_id) and is_map(decision) do
+    intervention_state = manual_intervention_state()
+    body = budget_handoff_comment_body(issue, decision, trace_id)
+
+    with :ok <- Tracker.create_comment(tracker_issue_id, body),
+         :ok <- Tracker.update_issue_state(tracker_issue_id, intervention_state) do
+      state
+      |> complete_issue(issue.id)
+      |> release_issue_claim(issue.id)
+    else
+      {:error, reason} ->
+        schedule_issue_retry(
+          state,
+          issue.id,
+          budget_retry_attempt(decision),
+          %{
+            identifier: issue.identifier,
+            trace_id: trace_id,
+            error: "failed to escalate budget handoff to #{intervention_state}: #{inspect(reason)}",
+            error_class: ErrorClassifier.to_string(:transient),
+            issue_token_total: Map.get(decision, :issue_total_tokens)
+          }
+        )
+    end
+  end
+
+  defp escalate_issue_for_budget_handoff(state, issue, decision, trace_id) do
+    issue_id = Map.get(decision, :issue_id) || Map.get(issue || %{}, :id)
+    identifier = Map.get(decision, :issue_identifier) || Map.get(issue || %{}, :identifier) || issue_id
+
+    if is_binary(issue_id) do
+      schedule_issue_retry(
+        state,
+        issue_id,
+        budget_retry_attempt(decision),
+        %{
+          identifier: identifier,
+          trace_id: trace_id,
+          error: "failed to escalate budget handoff: missing issue id",
+          error_class: ErrorClassifier.to_string(:transient),
+          issue_token_total: Map.get(decision, :issue_total_tokens)
+        }
+      )
+    else
+      state
+    end
+  end
+
+  defp budget_retry_attempt(%{attempt: attempt}) when is_integer(attempt) and attempt > 0, do: attempt
+  defp budget_retry_attempt(_decision), do: 1
+
+  defp budget_handoff_comment_body(%Issue{} = issue, decision, trace_id) do
+    trace_id_line =
+      if is_binary(trace_id) and trace_id != "" do
+        "- trace_id: `#{trace_id}`\n"
+      else
+        ""
+      end
+
+    cost_profile_line =
+      case Map.get(decision, :cost_profile_key) do
+        profile_key when is_binary(profile_key) and profile_key != "" ->
+          "- cost_profile_key: `#{profile_key}`\n"
+
+        _ ->
+          ""
+      end
+
+    """
+    ### Budget handoff (auto-classified)
+
+    - checkpoint_type: `#{Map.get(decision, :checkpoint_type, "decision")}`
+    - risk_level: `#{Map.get(decision, :risk_level, "medium")}`
+    - issue: `#{issue.identifier || issue.id}`
+    #{trace_id_line}- reason: `#{Map.get(decision, :reason)}`
+    - threshold: `#{Map.get(decision, :threshold)}`
+    - observed_total: `#{Map.get(decision, :observed_total)}`
+    - attempt_tokens: `#{Map.get(decision, :attempt_tokens)}`
+    - issue_total_tokens: `#{Map.get(decision, :issue_total_tokens)}`
+    #{cost_profile_line}- summary: #{Map.get(decision, :summary)}
+    """
+  end
+
   defp schedule_failure_retry_or_dedupe_hit(
          %State{} = state,
          %Issue{id: issue_id} = issue,
@@ -2540,6 +2860,27 @@ defmodule SymphonyElixir.Orchestrator do
     metadata[:error_signature] ||
       Map.get(previous_retry, :error_signature) ||
       normalize_error_signature(error)
+  end
+
+  defp pick_retry_issue_token_total(previous_retry, metadata) do
+    case metadata[:issue_token_total] || Map.get(previous_retry, :issue_token_total) do
+      value when is_integer(value) and value >= 0 -> value
+      _ -> nil
+    end
+  end
+
+  defp pick_retry_cost_profile_key(previous_retry, metadata) do
+    case metadata[:cost_profile_key] || Map.get(previous_retry, :cost_profile_key) do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp pick_retry_budget_decision(previous_retry, metadata) do
+    case metadata[:budget_decision] || Map.get(previous_retry, :budget_decision) do
+      value when is_map(value) -> value
+      _ -> nil
+    end
   end
 
   defp pick_retry_feedback_digest(previous_retry, metadata) do

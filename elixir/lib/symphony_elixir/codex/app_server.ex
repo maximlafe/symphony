@@ -54,7 +54,8 @@ defmodule SymphonyElixir.Codex.AppServer do
            start_port(
              expanded_workspace,
              Keyword.get(opts, :command_env, []),
-             Keyword.get(opts, :issue)
+             Keyword.get(opts, :issue),
+             Keyword.get(opts, :cost_profile_key)
            ) do
       account_id = Keyword.get(opts, :account_id)
 
@@ -89,7 +90,12 @@ defmodule SymphonyElixir.Codex.AppServer do
   def open_client(cwd \\ System.tmp_dir!(), opts \\ []) do
     expanded_cwd = Path.expand(cwd)
 
-    case start_port(expanded_cwd, Keyword.get(opts, :command_env, []), Keyword.get(opts, :issue)) do
+    case start_port(
+           expanded_cwd,
+           Keyword.get(opts, :command_env, []),
+           Keyword.get(opts, :issue),
+           Keyword.get(opts, :cost_profile_key)
+         ) do
       {:ok, port, cost_decision} ->
         case send_initialize(port) do
           :ok ->
@@ -209,14 +215,14 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, command_env, issue) do
+  defp start_port(workspace, command_env, issue, cost_profile_key) do
     executable = System.find_executable("bash")
 
     if is_nil(executable) do
       {:error, :bash_not_found}
     else
       with {:ok, normalized_command_env} <- normalize_command_env(command_env) do
-        cost_decision = Config.codex_cost_decision(issue)
+        cost_decision = Config.codex_cost_decision(cost_decision_context(issue, cost_profile_key))
         command = Map.fetch!(cost_decision, :command)
         log_codex_cost_decision(issue, cost_decision)
 
@@ -238,6 +244,18 @@ defmodule SymphonyElixir.Codex.AppServer do
       end
     end
   end
+
+  defp cost_decision_context(issue, profile_key) when is_binary(profile_key) and profile_key != "" do
+    issue
+    |> cost_context_map()
+    |> Map.put(:cost_profile_key, profile_key)
+  end
+
+  defp cost_decision_context(issue, _profile_key), do: issue
+
+  defp cost_context_map(%_{} = struct), do: Map.from_struct(struct)
+  defp cost_context_map(%{} = map), do: map
+  defp cost_context_map(_issue), do: %{}
 
   defp normalize_command_env(command_env) when is_list(command_env) do
     {source_homes, remaining_env} =

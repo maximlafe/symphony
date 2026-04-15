@@ -1938,7 +1938,29 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     )
 
     orchestrator_name = Module.concat(__MODULE__, :IdleCodexProbeThrottleOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    probe_fun = fn accounts, _opts ->
+      Enum.map(accounts, fn account ->
+        %{
+          id: Map.get(account, :id),
+          explicit?: Map.get(account, :explicit?, true),
+          codex_home: Map.get(account, :codex_home),
+          checked_at: DateTime.utc_now(),
+          healthy: false,
+          health_reason: "test probe should stay throttled",
+          auth_mode: "unknown",
+          email: nil,
+          plan_type: nil,
+          requires_openai_auth: true,
+          rate_limits: nil,
+          account: nil,
+          missing_windows_mins: [],
+          insufficient_windows_mins: []
+        }
+      end)
+    end
+
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, codex_account_probe_fun: probe_fun)
 
     on_exit(fn ->
       if Process.alive?(pid) do
@@ -1994,7 +2016,29 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     )
 
     orchestrator_name = Module.concat(__MODULE__, :IdleCodexProbeRecoveryOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    probe_fun = fn accounts, _opts ->
+      Enum.map(accounts, fn account ->
+        %{
+          id: Map.get(account, :id),
+          explicit?: Map.get(account, :explicit?, true),
+          codex_home: Map.get(account, :codex_home),
+          checked_at: DateTime.utc_now(),
+          healthy: false,
+          health_reason: "test no active account",
+          auth_mode: "unknown",
+          email: nil,
+          plan_type: nil,
+          requires_openai_auth: true,
+          rate_limits: nil,
+          account: nil,
+          missing_windows_mins: [],
+          insufficient_windows_mins: []
+        }
+      end)
+    end
+
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, codex_account_probe_fun: probe_fun)
 
     on_exit(fn ->
       if Process.alive?(pid) do
