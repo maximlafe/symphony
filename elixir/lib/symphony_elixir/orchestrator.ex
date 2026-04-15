@@ -2700,17 +2700,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp merge_loaded_resume_checkpoint(%{} = provided, %Issue{} = issue) do
-    loaded = ResumeCheckpoint.load(issue)
+    provided = ResumeCheckpoint.for_prompt(provided)
+    loaded = issue |> ResumeCheckpoint.load() |> ResumeCheckpoint.for_prompt()
     loaded_reasons = if loaded["available"] == true, do: Map.get(loaded, "fallback_reasons", []), else: []
 
-    if loaded_reasons == [] do
-      ResumeCheckpoint.for_prompt(provided)
-    else
-      provided
-      |> Map.update("fallback_reasons", loaded_reasons, fn reasons ->
-        (reasons || []) ++ loaded_reasons
-      end)
-      |> ResumeCheckpoint.for_prompt()
+    cond do
+      loaded["resume_ready"] == true and provided["resume_ready"] != true ->
+        loaded
+
+      loaded_reasons == [] ->
+        provided
+
+      true ->
+        provided
+        |> Map.update("fallback_reasons", loaded_reasons, fn reasons ->
+          (reasons || []) ++ loaded_reasons
+        end)
+        |> ResumeCheckpoint.for_prompt()
     end
   end
 

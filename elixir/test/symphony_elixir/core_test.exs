@@ -889,6 +889,129 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 17_000, 20_500)
   end
 
+  test "failover retry prefers a loaded ready checkpoint over a queued fallback checkpoint" do
+    issue_id = "issue-failover-spawn-reload-checkpoint"
+    retry_token = make_ref()
+    task_supervisor = install_failing_task_supervisor_for_test()
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-failover-reload-checkpoint-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+
+    on_exit(fn ->
+      restore_task_supervisor_for_test(task_supervisor)
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      File.rm_rf(test_root)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      codex_accounts: [%{id: "primary", codex_home: "/tmp/codex-primary"}]
+    )
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-558E",
+      title: "Failover spawn reload checkpoint",
+      state: "In Progress"
+    }
+
+    workspace = init_workspace_repo!(workspace_root, issue.identifier)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nReloaded state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-789")
+
+    loaded_checkpoint =
+      SymphonyElixir.ResumeCheckpoint.capture(
+        issue,
+        %{
+          latest_pr_snapshot: %{
+            "url" => "https://github.com/maximlafe/symphony/pull/78",
+            "state" => "OPEN",
+            "has_pending_checks" => false,
+            "has_actionable_feedback" => false
+          }
+        },
+        workspace_root: workspace_root
+      )
+
+    assert loaded_checkpoint["resume_ready"] == true
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    queued_fallback =
+      SymphonyElixir.ResumeCheckpoint.for_prompt(%{
+        "fallback_reasons" => ["resume checkpoint capture failed: boom"]
+      })
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{},
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{
+        issue_id => %{
+          attempt: 1,
+          retry_token: retry_token,
+          due_at_ms: System.monotonic_time(:millisecond),
+          identifier: issue.identifier,
+          trace_id: "trace-failover-spawn-reload",
+          error: "account failover: threshold exceeded",
+          error_class: "transient",
+          delay_type: :failover,
+          resume_checkpoint: queued_fallback
+        }
+      },
+      codex_accounts: %{
+        "primary" => %{
+          id: "primary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: %{"limitId" => "codex"}
+        }
+      },
+      active_codex_account_id: "primary",
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: %{"limitId" => "codex"},
+      codex_dispatch_reason: nil
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:retry_issue, issue_id, retry_token}, state)
+
+    assert %{
+             attempt: 2,
+             due_at_ms: due_at_ms,
+             error: error,
+             error_class: "transient",
+             delay_type: nil,
+             resume_checkpoint: reloaded_checkpoint
+           } = updated_state.retry_attempts[issue_id]
+
+    assert error =~ "failed to spawn agent:"
+    assert_due_in_range(due_at_ms, 17_000, 20_500)
+    assert reloaded_checkpoint["resume_ready"] == true
+    assert reloaded_checkpoint["workpad_ref"] == "comment-789"
+    assert reloaded_checkpoint["open_pr"]["number"] == 78
+
+    refute Enum.any?(
+             reloaded_checkpoint["fallback_reasons"],
+             &String.contains?(&1, "capture failed")
+           )
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()
