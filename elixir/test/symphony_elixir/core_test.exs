@@ -172,7 +172,7 @@ defmodule SymphonyElixir.CoreTest do
     assert makefile =~ "$(MISE) exec -- $(MAKE) dashboard"
     assert makefile =~ "python3 scripts/symphony_nginx_proxy_smoke.py --contract-only"
     assert makefile =~ "python3 scripts/symphony_nginx_proxy_smoke.py"
-    assert makefile =~ "$(MISE) exec -- $(MAKE) all"
+    assert makefile =~ "$(MISE) exec -- $(MAKE) validate"
   end
 
   test "linear api token resolves from LINEAR_API_KEY env var" do
