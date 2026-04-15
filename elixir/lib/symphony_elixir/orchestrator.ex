@@ -2463,22 +2463,32 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp budget_issue_total(%{"token_budget" => %{"budget_issue_total_tokens" => value}})
-       when is_integer(value) and value >= 0,
-       do: value
+  defp budget_issue_total(%{"token_budget" => budget}) when is_map(budget) do
+    budget
+    |> TelemetrySchema.runtime_payload()
+    |> Map.get("budget_issue_total_tokens")
+    |> normalize_budget_issue_total()
+  end
 
-  defp budget_issue_total(%{"token_budget" => %{"budget_issue_total_tokens" => value}}) when is_binary(value) do
+  defp budget_issue_total(_checkpoint), do: 0
+
+  defp normalize_budget_issue_total(value) when is_integer(value) and value >= 0, do: value
+
+  defp normalize_budget_issue_total(value) when is_binary(value) do
     case Integer.parse(value) do
       {integer, ""} when integer >= 0 -> integer
       _ -> 0
     end
   end
 
-  defp budget_issue_total(_checkpoint), do: 0
+  defp normalize_budget_issue_total(_value), do: 0
 
-  defp budget_cost_profile_key(%{"token_budget" => %{"budget_next_cost_profile_key" => profile_key}})
-       when is_binary(profile_key) and profile_key != "",
-       do: profile_key
+  defp budget_cost_profile_key(%{"token_budget" => budget}) when is_map(budget) do
+    case Map.get(TelemetrySchema.runtime_payload(budget), "budget_next_cost_profile_key") do
+      profile_key when is_binary(profile_key) and profile_key != "" -> profile_key
+      _ -> nil
+    end
+  end
 
   defp budget_cost_profile_key(_checkpoint), do: nil
 

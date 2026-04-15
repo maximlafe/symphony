@@ -49,16 +49,18 @@ defmodule SymphonyElixir.BudgetGuardrails do
         budget_reason: :max_tokens_per_attempt_exceeded,
         budget_threshold: settings.codex.max_tokens_per_attempt,
         budget_observed_total: attempt_tokens,
-        budget_issue_total_tokens: issue_total,
-        budget_decision: "downshift"
+        budget_issue_total_tokens: issue_total
       })
 
     case cheaper_profile(context, settings) do
       {:ok, profile_key} ->
-        {:downshift, Map.put(base, :budget_next_cost_profile_key, profile_key)}
+        {:downshift,
+         base
+         |> Map.put(:budget_decision, "downshift")
+         |> Map.put(:budget_next_cost_profile_key, profile_key)}
 
       :error ->
-        {:handoff, base}
+        {:handoff, Map.put(base, :budget_decision, "handoff")}
     end
   end
 

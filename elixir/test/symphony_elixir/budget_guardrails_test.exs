@@ -72,6 +72,33 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
     assert decision.budget_decision == "downshift"
   end
 
+  test "per-attempt budget handoff fallback is not mislabeled as downshift" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command_template: "codex --config model_reasoning_effort={{effort}} --model {{model}} app-server",
+      codex_max_tokens_per_attempt: 10,
+      codex_cost_profiles: %{
+        cheap_implementation: %{model: "gpt-5.3-codex", effort: "medium"}
+      },
+      codex_cost_policy: %{
+        stage_defaults: %{implementation: "cheap_implementation"}
+      }
+    )
+
+    assert {:handoff, decision} =
+             BudgetGuardrails.decide(%{
+               issue: %Issue{id: "issue-budget", identifier: "LET-472", state: "In Progress"},
+               attempt: 1,
+               delay_type: nil,
+               attempt_tokens: 12,
+               issue_tokens_before_attempt: 0,
+               current_cost_profile_key: "cheap_implementation"
+             })
+
+    assert decision.budget_reason == :max_tokens_per_attempt_exceeded
+    assert decision.budget_decision == "handoff"
+    refute Map.has_key?(decision, :budget_next_cost_profile_key)
+  end
+
   test "normal continuation exit over per-attempt budget blocks without retrying" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     issue_id = "issue-budget-continuation"

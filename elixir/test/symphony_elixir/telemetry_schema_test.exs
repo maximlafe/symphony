@@ -89,6 +89,23 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
     refute Map.has_key?(payload, "retry_dedupe_key")
   end
 
+  test "runtime_payload normalizes legacy budget aliases for checkpoint readers" do
+    assert TelemetrySchema.runtime_payload(%{
+             "issue_total_tokens" => "42",
+             "attempt_tokens" => 12,
+             "cost_profile_key" => "cheap_implementation",
+             "reason" => :max_tokens_per_attempt_exceeded,
+             "decision" => :downshift
+           }) == %{
+             "budget_attempt_tokens" => 12,
+             "budget_decision" => "downshift",
+             "budget_issue_total_tokens" => "42",
+             "budget_next_cost_profile_key" => "cheap_implementation",
+             "budget_reason" => "max_tokens_per_attempt_exceeded",
+             "cost_profile_key" => "cheap_implementation"
+           }
+  end
+
   test "checkpoint_payload computes canonical quality states" do
     assert TelemetrySchema.checkpoint_payload(%{"resume_ready" => true}, "resume_checkpoint") == %{
              "checkpoint_origin" => "resume_checkpoint",
