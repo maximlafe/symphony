@@ -133,8 +133,8 @@ Use `mode:research` when the ticket still needs evidence-backed root-cause analy
 
 Cost profile contract:
 - `codex.cost_profiles` and `codex.cost_policy` drive Codex launch selection through `SymphonyElixir.Config.codex_cost_decision/1`.
-- Planning defaults to `cheap_planning` (`gpt-5.4-mini`, `medium`); implementation defaults to `cheap_implementation` (`gpt-5.3-codex`, `medium`); rework and explicit escalation signals use `escalated_implementation` (`gpt-5.3-codex`, `high`); `Merging` / handoff uses `handoff` (`gpt-5.3-codex`, `medium`).
-- Default profiles do not use `xhigh`; repositories can opt into it only by editing a specific configured profile.
+- Planning defaults to `cheap_planning` (`gpt-5.4`, `xhigh`); implementation defaults to `cheap_implementation` (`gpt-5.3-codex`, `medium`); rework and explicit escalation signals use `escalated_implementation` (`gpt-5.3-codex`, `high`); `Merging` / handoff uses `handoff` (`gpt-5.3-codex`, `medium`).
+- `xhigh` is default only for planning; repositories can still override any profile explicitly in workflow config.
 - `mode:research` and `reasoning:implementation-xhigh` do not escalate unless the workflow defines an explicit label-to-signal mapping in `codex.cost_policy`.
 
 If the spec-prep result shows that the implementation should follow true TDD, normalize `delivery:tdd` on the issue during `Spec Prep`; otherwise leave it absent or remove it if it is stale.

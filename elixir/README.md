@@ -145,8 +145,8 @@ codex:
   command_template: codex --config model_reasoning_effort={{effort}} --model {{model}} app-server
   cost_profiles:
     cheap_planning:
-      model: gpt-5.4-mini
-      effort: medium
+      model: gpt-5.4
+      effort: xhigh
     cheap_implementation:
       model: gpt-5.3-codex
       effort: medium
@@ -184,7 +184,7 @@ Notes:
   issues are skipped by that worker.
 - The prompt body is the workflow contract. In production, make handoffs explicit with `checkpoint_type` and `risk_level`, define low-context behavior, and cap repeated auto-fix loops so the agent escalates instead of spinning.
 - Issue labels are available to both the workflow prompt and hooks, so routing labels can stay separate from orthogonal delivery policies such as `delivery:tdd`.
-- `codex.command_template`, `codex.cost_profiles`, and `codex.cost_policy` let the workflow choose a stage-aware `model` + `effort` through `SymphonyElixir.Config.codex_cost_decision/1`. In the repo's own workflow, planning uses `gpt-5.4-mini`/`medium`, implementation uses `gpt-5.3-codex`/`medium`, and rework or explicit escalation signals use `gpt-5.3-codex`/`high`; labels such as `reasoning:implementation-xhigh` do not escalate unless the workflow maps them to an explicit cost signal.
+- `codex.command_template`, `codex.cost_profiles`, and `codex.cost_policy` let the workflow choose a stage-aware `model` + `effort` through `SymphonyElixir.Config.codex_cost_decision/1`. In the repo's own workflow, planning uses `gpt-5.4`/`xhigh`, implementation uses `gpt-5.3-codex`/`medium`, and rework or explicit escalation signals use `gpt-5.3-codex`/`high`; labels such as `reasoning:implementation-xhigh` do not escalate unless the workflow maps them to an explicit cost signal.
 - If unattended runs create branches or PRs, encode the naming convention explicitly in the prompt instead of relying on tracker-generated branch names; for example, honor an explicit `Working branch:` line in the issue description's final `## Symphony` section when present, otherwise fall back to `Symphony/<issue-id>-<short-kebab-summary>` for branches and `<ISSUE-ID>: <short outcome>` for PR titles.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`

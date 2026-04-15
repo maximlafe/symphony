@@ -263,7 +263,7 @@ defmodule SymphonyElixir.AppServerTest do
         codex_command: "#{fallback_codex} app-server",
         codex_command_template: "#{profile_codex} --config model_reasoning_effort={{effort}} --model {{model}} app-server",
         codex_cost_profiles: %{
-          cheap_planning: %{model: "gpt-5.4-mini", effort: "medium"},
+          cheap_planning: %{model: "gpt-5.4", effort: "xhigh"},
           cheap_implementation: %{model: "gpt-5.3-codex", effort: "medium"},
           escalated_implementation: %{model: "gpt-5.3-codex", effort: "high"},
           handoff: %{model: "gpt-5.3-codex", effort: "medium"}
@@ -315,7 +315,7 @@ defmodule SymphonyElixir.AppServerTest do
         assert message.command_source == "cost_profile"
       end
 
-      assert_stage_command.("Spec Prep", "gpt-5.4-mini", "medium", ["backend"])
+      assert_stage_command.("Spec Prep", "gpt-5.4", "xhigh", ["backend"])
       assert_stage_command.("In Progress", "gpt-5.3-codex", "medium", ["backend"])
       assert_stage_command.("In Progress", "gpt-5.3-codex", "medium", ["backend", "mode:research"])
       assert_stage_command.("In Progress", "gpt-5.3-codex", "medium", ["backend", "reasoning:implementation-xhigh"])

@@ -2205,7 +2205,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_command_template: "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort={{effort}} --model {{model}} app-server",
       codex_cost_profiles: %{
-        cheap_planning: %{model: "gpt-5.4-mini", effort: "medium"},
+        cheap_planning: %{model: "gpt-5.4", effort: "xhigh"},
         cheap_implementation: %{model: "gpt-5.3-codex", effort: "medium"},
         escalated_implementation: %{model: "gpt-5.3-codex", effort: "high"},
         handoff: %{model: "gpt-5.3-codex", effort: "medium"}
@@ -2230,13 +2230,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert planning_decision.stage == :planning
     assert planning_decision.signals == []
     assert planning_decision.profile_key == "cheap_planning"
-    assert planning_decision.model == "gpt-5.4-mini"
-    assert planning_decision.effort == "medium"
+    assert planning_decision.model == "gpt-5.4"
+    assert planning_decision.effort == "xhigh"
     assert planning_decision.reason == "stage_default:planning"
     assert planning_decision.command_source == "cost_profile"
 
     assert Config.codex_command(%Issue{state: "Spec Prep"}) ==
-             "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=medium --model gpt-5.4-mini app-server"
+             "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.4 app-server"
 
     implementation_decision = Config.codex_cost_decision(%Issue{state: "In Progress"})
     assert implementation_decision.profile_key == "cheap_implementation"
@@ -2259,8 +2259,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert decision.reason == "signal:#{signal}"
     end
 
-    for {_profile_key, profile} <- Config.settings!().codex.cost_profiles do
-      refute profile["effort"] == "xhigh"
+    for {profile_key, profile} <- Config.settings!().codex.cost_profiles do
+      if profile_key != "cheap_planning" do
+        refute profile["effort"] == "xhigh"
+      end
     end
 
     assert Config.codex_cost_decision(%Issue{state: "In Progress", labels: ["mode:research"]}).profile_key ==

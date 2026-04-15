@@ -44,8 +44,8 @@ codex:
   command_template: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort={{effort}} --model {{model}} app-server
   cost_profiles:
     cheap_planning:
-      model: gpt-5.4-mini
-      effort: medium
+      model: gpt-5.4
+      effort: xhigh
     cheap_implementation:
       model: gpt-5.3-codex
       effort: medium
@@ -200,8 +200,8 @@ Instructions:
 ## Cost Profile Contract
 
 - Codex launch selection is resolved from `codex.cost_profiles` and `codex.cost_policy` through `SymphonyElixir.Config.codex_cost_decision/1`.
-- `planning` defaults to `cheap_planning` (`gpt-5.4-mini`, `medium`); `implementation` defaults to `cheap_implementation` (`gpt-5.3-codex`, `medium`); `rework` and explicit escalation signals use `escalated_implementation` (`gpt-5.3-codex`, `high`); `handoff` uses `handoff` (`gpt-5.3-codex`, `medium`).
-- `xhigh` is not used by default. A repository may still opt into it only by changing an explicit profile in workflow config.
+- `planning` defaults to `cheap_planning` (`gpt-5.4`, `xhigh`); `implementation` defaults to `cheap_implementation` (`gpt-5.3-codex`, `medium`); `rework` and explicit escalation signals use `escalated_implementation` (`gpt-5.3-codex`, `high`); `handoff` uses `handoff` (`gpt-5.3-codex`, `medium`).
+- `xhigh` is the default for planning only. Non-planning defaults stay below `xhigh` unless a repository explicitly changes a profile in workflow config.
 - Escalation signals are `rework`, `repeated_auto_fix_failure`, `security_data_risk`, and `unresolvable_ambiguity`; ordinary retries and continuation turns do not imply escalation.
 - `mode:research` and `reasoning:implementation-xhigh` do not escalate unless the workflow defines an explicit label-to-signal mapping in `codex.cost_policy`.
 - Legacy `planning_command`, `implementation_command`, and `handoff_command` remain backward-compatible direct-command overrides only when structured cost profiles cannot render a command.

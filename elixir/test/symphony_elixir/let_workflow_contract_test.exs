@@ -36,10 +36,10 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "`codex.cost_profiles`"
     assert get_in(config, ["codex", "command_template"]) =~ "{{effort}}"
     assert get_in(config, ["codex", "command_template"]) =~ "{{model}}"
-    assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4-mini"
-    assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "medium"
+    assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4"
+    assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "xhigh"
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
-    refute default_cost_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
+    refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert get_in(config, ["codex", "cost_policy", "signal_escalations", "rework"]) == "escalated_implementation"
     assert prompt =~ "`mode:research` и `reasoning:implementation-xhigh` не эскалируют"
     refute prompt =~ "`Todo` -> сразу переводи в `Spec Prep`."
@@ -49,9 +49,10 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert {:ok, %{config: config, prompt: prompt}} = Workflow.load(@default_workflow_path)
 
     assert get_in(config, ["codex", "command_template"]) =~ "{{effort}}"
-    assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4-mini"
+    assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4"
+    assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "xhigh"
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
-    refute default_cost_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
+    refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert prompt =~ "`codex.cost_policy`"
   end
 
@@ -113,7 +114,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert plan_skill =~ "positive and negative proof cases"
   end
 
-  defp default_cost_profiles_have_xhigh?(profiles) when is_map(profiles) do
-    Enum.any?(profiles, fn {_key, profile} -> Map.get(profile, "effort") == "xhigh" end)
+  defp non_planning_default_profiles_have_xhigh?(profiles) when is_map(profiles) do
+    Enum.any?(profiles, fn {key, profile} -> key != "cheap_planning" and Map.get(profile, "effort") == "xhigh" end)
   end
 end
