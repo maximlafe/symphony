@@ -559,22 +559,26 @@ defmodule SymphonyElixir.ControllerFinalizer do
 
     case checkpoint["controller_finalizer"] do
       %{"status" => "action_required"} = finalizer ->
-        blocked_head = normalize_string(finalizer["blocked_head"])
-        blocked_reason = normalize_string(finalizer["blocked_reason"] || finalizer["reason"])
-        blocked_pr_number = normalize_pr_number(finalizer["blocked_pr_number"])
-
-        cond do
-          is_binary(head) and is_binary(blocked_head) ->
-            head == blocked_head
-
-          is_nil(head) and is_nil(blocked_head) ->
-            not is_nil(blocked_reason) and blocked_pr_number == current_pr_number
-
-          true ->
-            false
-        end
+        blocked_for_current_head_state?(head, current_pr_number, finalizer)
 
       _ ->
+        false
+    end
+  end
+
+  defp blocked_for_current_head_state?(head, current_pr_number, finalizer) do
+    blocked_head = normalize_string(finalizer["blocked_head"])
+    blocked_reason = normalize_string(finalizer["blocked_reason"] || finalizer["reason"])
+    blocked_pr_number = normalize_pr_number(finalizer["blocked_pr_number"])
+
+    cond do
+      is_binary(head) and is_binary(blocked_head) ->
+        head == blocked_head
+
+      is_nil(head) and is_nil(blocked_head) ->
+        not is_nil(blocked_reason) and blocked_pr_number == current_pr_number
+
+      true ->
         false
     end
   end
