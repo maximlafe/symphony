@@ -1785,6 +1785,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   defp init_git_repo! do
     repo_path = Path.join(System.tmp_dir!(), "dynamic-tool-git-#{System.unique_integer([:positive])}")
+    File.rm_rf!(repo_path)
     File.mkdir_p!(repo_path)
     File.write!(Path.join(repo_path, "tracked.txt"), "tracked\n")
 

@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
+  @foreground_wait_refusal_tools "use exec_background + exec_wait"
 
   @type session :: %{
           port: port(),
@@ -682,7 +683,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          _tool_executor,
          auto_approve_requests
        ) do
-    approve_or_require(
+    maybe_handle_command_execution_approval_request(
       port,
       id,
       "acceptForSession",
@@ -738,7 +739,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          _tool_executor,
          auto_approve_requests
        ) do
-    approve_or_require(
+    maybe_handle_command_execution_approval_request(
       port,
       id,
       "approved_for_session",
@@ -829,6 +830,63 @@ defmodule SymphonyElixir.Codex.AppServer do
     :unhandled
   end
 
+  defp maybe_handle_command_execution_approval_request(
+         port,
+         id,
+         approval_decision,
+         payload,
+         payload_string,
+         on_message,
+         metadata,
+         true
+       ) do
+    case command_wait_routing_decision(payload) do
+      :background_required ->
+        decision = command_execution_refusal_decision(payload)
+        send_message(port, %{"id" => id, "result" => %{"decision" => decision}})
+
+        emit_message(
+          on_message,
+          :approval_auto_denied,
+          %{
+            payload: payload,
+            raw: payload_string,
+            decision: decision,
+            wait_routing_decision: "background_required",
+            suggested_tool_path: @foreground_wait_refusal_tools
+          },
+          metadata
+        )
+
+        :approved
+
+      :foreground_allowed ->
+        approve_or_require(
+          port,
+          id,
+          approval_decision,
+          payload,
+          payload_string,
+          on_message,
+          metadata,
+          true
+        )
+    end
+  end
+
+  defp maybe_handle_command_execution_approval_request(
+         _port,
+         _id,
+         _approval_decision,
+         _payload,
+         _payload_string,
+         _on_message,
+         _metadata,
+         false
+       ) do
+    :approval_required
+  end
+
   defp approve_or_require(
          port,
          id,
@@ -863,6 +921,247 @@ defmodule SymphonyElixir.Codex.AppServer do
        ) do
     :approval_required
   end
+
+  defp command_wait_routing_decision(payload) when is_map(payload) do
+    payload
+    |> approval_command()
+    |> command_wait_routing_decision_for_command()
+  end
+
+  defp command_wait_routing_decision_for_command(command) when is_binary(command) do
+    normalized = String.trim(command)
+
+    cond do
+      normalized == "" ->
+        :foreground_allowed
+
+      background_required_command?(normalized) ->
+        :background_required
+
+      true ->
+        :foreground_allowed
+    end
+  end
+
+  defp command_wait_routing_decision_for_command(_command), do: :foreground_allowed
+
+  defp background_required_command?(command) do
+    command
+    |> command_segments()
+    |> Enum.any?(&background_required_segment?/1)
+  end
+
+  defp command_segments(command) when is_binary(command) do
+    Regex.split(~r/\s*(?:&&|\|\||;|\|)\s*/, command, trim: true)
+  end
+
+  defp background_required_segment?(segment) when is_binary(segment) do
+    case split_command_segment(segment) do
+      [] ->
+        false
+
+      argv ->
+        background_required_argv?(argv)
+    end
+  end
+
+  defp background_required_segment?(_segment), do: false
+
+  defp background_required_argv?(argv) do
+    broad_make_gate?(argv) or
+      broad_mix_test_command?(argv) or
+      broad_pytest_command?(argv) or
+      broad_npm_test_e2e_command?(argv) or
+      broad_team_master_ui_e2e_command?(argv) or
+      broad_lint_or_build_gate?(argv)
+  end
+
+  defp broad_make_gate?(["make", "symphony-validate" | _rest]), do: true
+  defp broad_make_gate?(["make", "symphony-live-e2e" | _rest]), do: true
+  defp broad_make_gate?(["make", "test" | _rest]), do: true
+  defp broad_make_gate?(["make", flag, "elixir", "all" | _rest]) when flag in ["-C", "-c"], do: true
+  defp broad_make_gate?(["make", "all" | _rest]), do: true
+  defp broad_make_gate?(["make", "team-master-ui-e2e" | _rest]), do: true
+  defp broad_make_gate?(_argv), do: false
+
+  defp broad_mix_test_command?(["mix", "test" | rest]), do: not scoped_command_args?(rest)
+  defp broad_mix_test_command?(_argv), do: false
+
+  defp broad_pytest_command?(["pytest" | rest]), do: not scoped_command_args?(rest)
+  defp broad_pytest_command?(_argv), do: false
+
+  defp broad_npm_test_e2e_command?(["npm", "run", "test:e2e" | _rest]), do: true
+  defp broad_npm_test_e2e_command?(_argv), do: false
+
+  defp broad_team_master_ui_e2e_command?(["team-master-ui-e2e" | _rest]), do: true
+  defp broad_team_master_ui_e2e_command?(_argv), do: false
+
+  defp broad_lint_or_build_gate?(["mix", "dialyzer" | _rest]), do: true
+  defp broad_lint_or_build_gate?(_argv), do: false
+
+  defp scoped_command_args?(args) when is_list(args) do
+    {_previous, scoped?} =
+      Enum.reduce(args, {nil, false}, fn arg, {previous, scoped?} ->
+        cond do
+          scoped? ->
+            {arg, true}
+
+          explicit_scope_option?(previous) and is_binary(arg) and String.trim(arg) != "" ->
+            {arg, true}
+
+          scope_path_or_selector?(arg) ->
+            {arg, true}
+
+          true ->
+            {arg, false}
+        end
+      end)
+
+    scoped?
+  end
+
+  defp explicit_scope_option?(option) when option in ["--only", "--exclude", "--include", "-k", "-m"],
+    do: true
+
+  defp explicit_scope_option?(_option), do: false
+
+  defp scope_path_or_selector?(arg) when is_binary(arg) do
+    trimmed = String.trim(arg)
+
+    trimmed != "" and
+      not String.starts_with?(trimmed, "-") and
+      (String.contains?(trimmed, "/") or
+         String.contains?(trimmed, "::") or
+         String.ends_with?(trimmed, ".exs") or
+         String.ends_with?(trimmed, ".py"))
+  end
+
+  defp scope_path_or_selector?(_arg), do: false
+
+  defp split_command_segment(segment) when is_binary(segment) do
+    OptionParser.split(segment)
+  rescue
+    _ -> [segment]
+  end
+
+  defp command_execution_refusal_decision(payload) do
+    payload
+    |> available_approval_decisions()
+    |> choose_refusal_decision()
+  end
+
+  defp available_approval_decisions(payload) when is_map(payload) do
+    payload
+    |> approval_params()
+    |> approval_available_decisions_value()
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp approval_available_decisions_value(nil), do: []
+
+  defp approval_available_decisions_value(params) when is_map(params) do
+    fetch_first(params, ["available_decisions", :available_decisions, "availableDecisions", :availableDecisions]) || []
+  end
+
+  defp choose_refusal_decision(decisions) when is_list(decisions) do
+    Enum.find(decisions, &(normalize_decision(&1) == "denied")) ||
+      Enum.find(decisions, &(normalize_decision(&1) == "abort")) ||
+      Enum.find(decisions, &(not approval_allow_decision?(&1))) ||
+      "abort"
+  end
+
+  defp approval_allow_decision?(decision) when is_binary(decision) do
+    normalized = normalize_decision(decision)
+    String.starts_with?(normalized, "accept") or String.starts_with?(normalized, "approve") or String.starts_with?(normalized, "allow")
+  end
+
+  defp approval_allow_decision?(_decision), do: false
+
+  defp normalize_decision(decision) when is_binary(decision) do
+    decision
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace(~r/[_\-\s]/, "")
+  end
+
+  defp normalize_decision(_decision), do: ""
+
+  defp approval_command(payload) when is_map(payload) do
+    payload
+    |> approval_params()
+    |> approval_command_value()
+    |> normalize_approval_command()
+  end
+
+  defp approval_command_value(nil), do: nil
+
+  defp approval_command_value(params) when is_map(params) do
+    fetch_first(params, [
+      "parsedCmd",
+      :parsedCmd,
+      "command",
+      :command,
+      "cmd",
+      :cmd,
+      "argv",
+      :argv,
+      "args",
+      :args
+    ])
+  end
+
+  defp approval_params(payload) when is_map(payload) do
+    Map.get(payload, "params") || Map.get(payload, :params)
+  end
+
+  defp normalize_approval_command(%{} = command) do
+    command
+    |> approval_command_parts()
+    |> normalize_approval_command()
+  end
+
+  defp normalize_approval_command(command) when is_binary(command) do
+    case String.trim(command) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_approval_command(command) when is_list(command) do
+    if Enum.all?(command, &is_binary/1) do
+      command
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> case do
+        [] -> nil
+        parts -> Enum.join(parts, " ")
+      end
+    else
+      nil
+    end
+  end
+
+  defp normalize_approval_command(_command), do: nil
+
+  defp approval_command_parts(command) when is_map(command) do
+    binary_command = fetch_first(command, ["parsedCmd", :parsedCmd, "command", :command, "cmd", :cmd])
+    args = fetch_first(command, ["args", :args, "argv", :argv])
+
+    case {binary_command, args} do
+      {binary, list} when is_binary(binary) and is_list(list) -> [binary | list]
+      {binary, _list} when is_binary(binary) -> binary
+      {_binary, list} when is_list(list) -> list
+      _ -> nil
+    end
+  end
+
+  defp fetch_first(map, keys) when is_map(map) and is_list(keys) do
+    Enum.find_value(keys, &Map.get(map, &1))
+  end
+
+  defp fetch_first(_map, _keys), do: nil
 
   defp maybe_auto_answer_tool_request_user_input(
          port,

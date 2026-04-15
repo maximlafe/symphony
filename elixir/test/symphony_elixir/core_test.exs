@@ -3066,6 +3066,8 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "`github_wait_for_checks`"
     assert prompt =~ "`exec_background`"
     assert prompt =~ "`exec_wait`"
+    assert prompt =~ "background_required"
+    assert prompt =~ "do not retry the same command in foreground"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
     assert prompt =~ "making a classified `decision`/`human-action` handoff"
