@@ -889,6 +889,129 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 17_000, 20_500)
   end
 
+  test "failover retry prefers a loaded ready checkpoint over a queued fallback checkpoint" do
+    issue_id = "issue-failover-spawn-reload-checkpoint"
+    retry_token = make_ref()
+    task_supervisor = install_failing_task_supervisor_for_test()
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-failover-reload-checkpoint-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+
+    on_exit(fn ->
+      restore_task_supervisor_for_test(task_supervisor)
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      File.rm_rf(test_root)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      codex_accounts: [%{id: "primary", codex_home: "/tmp/codex-primary"}]
+    )
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-558E",
+      title: "Failover spawn reload checkpoint",
+      state: "In Progress"
+    }
+
+    workspace = init_workspace_repo!(workspace_root, issue.identifier)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nReloaded state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-789")
+
+    loaded_checkpoint =
+      SymphonyElixir.ResumeCheckpoint.capture(
+        issue,
+        %{
+          latest_pr_snapshot: %{
+            "url" => "https://github.com/maximlafe/symphony/pull/78",
+            "state" => "OPEN",
+            "has_pending_checks" => false,
+            "has_actionable_feedback" => false
+          }
+        },
+        workspace_root: workspace_root
+      )
+
+    assert loaded_checkpoint["resume_ready"] == true
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    queued_fallback =
+      SymphonyElixir.ResumeCheckpoint.for_prompt(%{
+        "fallback_reasons" => ["resume checkpoint capture failed: boom"]
+      })
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{},
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{
+        issue_id => %{
+          attempt: 1,
+          retry_token: retry_token,
+          due_at_ms: System.monotonic_time(:millisecond),
+          identifier: issue.identifier,
+          trace_id: "trace-failover-spawn-reload",
+          error: "account failover: threshold exceeded",
+          error_class: "transient",
+          delay_type: :failover,
+          resume_checkpoint: queued_fallback
+        }
+      },
+      codex_accounts: %{
+        "primary" => %{
+          id: "primary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: %{"limitId" => "codex"}
+        }
+      },
+      active_codex_account_id: "primary",
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: %{"limitId" => "codex"},
+      codex_dispatch_reason: nil
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:retry_issue, issue_id, retry_token}, state)
+
+    assert %{
+             attempt: 2,
+             due_at_ms: due_at_ms,
+             error: error,
+             error_class: "transient",
+             delay_type: nil,
+             resume_checkpoint: reloaded_checkpoint
+           } = updated_state.retry_attempts[issue_id]
+
+    assert error =~ "failed to spawn agent:"
+    assert_due_in_range(due_at_ms, 17_000, 20_500)
+    assert reloaded_checkpoint["resume_ready"] == true
+    assert reloaded_checkpoint["workpad_ref"] == "comment-789"
+    assert reloaded_checkpoint["open_pr"]["number"] == 78
+
+    refute Enum.any?(
+             reloaded_checkpoint["fallback_reasons"],
+             &String.contains?(&1, "capture failed")
+           )
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()
@@ -2320,6 +2443,332 @@ defmodule SymphonyElixir.CoreTest do
 
     assert %{attempt: 1, delay_type: :failover, error_class: "transient"} =
              after_second_failover.retry_attempts[issue_b_id]
+  end
+
+  test "live rate-limit exhaustion preserves ready resume checkpoint across failover retry" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-failover-resume-ready-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    issue_id = "issue-live-rate-limit-resume-ready"
+    issue = %Issue{id: issue_id, identifier: "MT-LIVE-RESUME", state: "In Progress"}
+    workspace = init_workspace_repo!(workspace_root, issue.identifier)
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+    verification_checked_at = DateTime.utc_now()
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+
+      File.rm_rf(test_root)
+    end)
+
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nResume state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-123")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"},
+        %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+      ],
+      codex_minimum_remaining_percent: 5,
+      codex_monitored_windows_mins: [300, 10_080]
+    )
+
+    healthy_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 20},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    exhausted_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 96},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      next_poll_due_at_ms: nil,
+      poll_check_in_progress: false,
+      tick_timer_ref: nil,
+      tick_token: nil,
+      workspace_usage_bytes: 0,
+      workspace_cleanup_ref: nil,
+      workspace_usage_refresh_ref: nil,
+      workspace_threshold_exceeded?: false,
+      running: %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: make_ref(),
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-failover-resume",
+          session_id: "thread-failover-resume",
+          codex_account_id: "primary",
+          latest_pr_snapshot: %{
+            "url" => "https://github.com/maximlafe/symphony/pull/77",
+            "state" => "OPEN",
+            "has_pending_checks" => false,
+            "has_actionable_feedback" => false
+          },
+          latest_ci_wait_result: %{"pending_checks" => []},
+          verification_result: "passed",
+          verification_summary: "handoff check passed",
+          verification_checked_at: verification_checked_at,
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          started_at: DateTime.utc_now()
+        }
+      },
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{
+        "primary" => %{
+          id: "primary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        },
+        "secondary" => %{
+          id: "secondary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        }
+      },
+      active_codex_account_id: "primary",
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: healthy_rate_limits,
+      codex_dispatch_reason: nil
+    }
+
+    update = %{
+      event: :notification,
+      codex_account_id: "primary",
+      payload: %{
+        "method" => "codex/event/token_count",
+        "params" => %{
+          "msg" => %{
+            "type" => "event_msg",
+            "payload" => %{
+              "type" => "token_count",
+              "rate_limits" => exhausted_rate_limits
+            }
+          }
+        }
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+    assert_receive {:retry_issue, ^issue_id, _retry_token}, 200
+
+    assert %{
+             attempt: 1,
+             delay_type: :failover,
+             error_class: "transient",
+             resume_checkpoint: checkpoint
+           } = updated_state.retry_attempts[issue_id]
+
+    assert checkpoint["available"] == true
+    assert checkpoint["resume_ready"] == true
+    assert checkpoint["branch"] == "main"
+    assert is_binary(checkpoint["head"])
+    assert checkpoint["workpad_ref"] == "comment-123"
+    assert is_binary(checkpoint["workpad_digest"])
+    assert checkpoint["last_validation_status"]["result"] == "passed"
+    assert checkpoint["last_validation_status"]["summary"] == "handoff check passed"
+    assert checkpoint["last_validation_status"]["checked_at"] == DateTime.to_iso8601(verification_checked_at)
+    assert checkpoint["open_pr"]["number"] == 77
+    assert checkpoint["pending_checks"] == false
+    assert checkpoint["open_feedback"] == false
+  end
+
+  test "live rate-limit exhaustion keeps fallback checkpoint when workspace is unavailable" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-failover-resume-fallback-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    issue_id = "issue-live-rate-limit-resume-fallback"
+    issue = %Issue{id: issue_id, identifier: "MT-LIVE-RESUME-FALLBACK", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+
+      File.rm_rf(test_root)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"},
+        %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+      ],
+      codex_minimum_remaining_percent: 5,
+      codex_monitored_windows_mins: [300, 10_080]
+    )
+
+    healthy_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 20},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    exhausted_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 96},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      next_poll_due_at_ms: nil,
+      poll_check_in_progress: false,
+      tick_timer_ref: nil,
+      tick_token: nil,
+      workspace_usage_bytes: 0,
+      workspace_cleanup_ref: nil,
+      workspace_usage_refresh_ref: nil,
+      workspace_threshold_exceeded?: false,
+      running: %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: make_ref(),
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-failover-resume-fallback",
+          session_id: "thread-failover-resume-fallback",
+          codex_account_id: "primary",
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          started_at: DateTime.utc_now()
+        }
+      },
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{
+        "primary" => %{
+          id: "primary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        },
+        "secondary" => %{
+          id: "secondary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        }
+      },
+      active_codex_account_id: "primary",
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: healthy_rate_limits,
+      codex_dispatch_reason: nil
+    }
+
+    update = %{
+      event: :notification,
+      codex_account_id: "primary",
+      payload: %{
+        "method" => "codex/event/token_count",
+        "params" => %{
+          "msg" => %{
+            "type" => "event_msg",
+            "payload" => %{
+              "type" => "token_count",
+              "rate_limits" => exhausted_rate_limits
+            }
+          }
+        }
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+    assert_receive {:retry_issue, ^issue_id, _retry_token}, 200
+
+    assert %{
+             attempt: 1,
+             delay_type: :failover,
+             error_class: "transient",
+             resume_checkpoint: checkpoint
+           } = updated_state.retry_attempts[issue_id]
+
+    assert checkpoint["available"] == false
+    assert checkpoint["resume_ready"] == false
+
+    assert Enum.any?(
+             checkpoint["fallback_reasons"],
+             &String.contains?(&1, "workspace is unavailable for retry checkpoint capture")
+           )
   end
 
   test "live rate-limit exhaustion does not preempt the run when no healthy replacement exists" do

@@ -1569,6 +1569,7 @@ defmodule SymphonyElixir.Orchestrator do
     session_id = running_entry_session_id(running_entry)
     attempt = next_failure_attempt_from_running(running_entry)
     health_reason = codex_account_health_reason(state, from_account_id) || "account became unhealthy"
+    resume_checkpoint = capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
 
     state =
       state
@@ -1599,9 +1600,10 @@ defmodule SymphonyElixir.Orchestrator do
         trace_id: trace_id,
         error: "account failover: #{health_reason}",
         error_class: ErrorClassifier.to_string(:transient),
-        delay_type: :failover
+        delay_type: :failover,
+        resume_checkpoint: resume_checkpoint
       }
-      |> Map.merge(retry_execution_metadata(running_entry))
+      |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
     )
   end
 
@@ -2788,17 +2790,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp merge_loaded_resume_checkpoint(%{} = provided, %Issue{} = issue) do
-    loaded = ResumeCheckpoint.load(issue)
+    provided = ResumeCheckpoint.for_prompt(provided)
+    loaded = issue |> ResumeCheckpoint.load() |> ResumeCheckpoint.for_prompt()
     loaded_reasons = if loaded["available"] == true, do: Map.get(loaded, "fallback_reasons", []), else: []
 
-    if loaded_reasons == [] do
-      ResumeCheckpoint.for_prompt(provided)
-    else
-      provided
-      |> Map.update("fallback_reasons", loaded_reasons, fn reasons ->
-        (reasons || []) ++ loaded_reasons
-      end)
-      |> ResumeCheckpoint.for_prompt()
+    cond do
+      loaded["resume_ready"] == true and provided["resume_ready"] != true ->
+        loaded
+
+      loaded_reasons == [] ->
+        provided
+
+      true ->
+        provided
+        |> Map.update("fallback_reasons", loaded_reasons, fn reasons ->
+          (reasons || []) ++ loaded_reasons
+        end)
+        |> ResumeCheckpoint.for_prompt()
     end
   end
 
