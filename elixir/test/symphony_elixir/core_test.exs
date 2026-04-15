@@ -1708,6 +1708,9 @@ defmodule SymphonyElixir.CoreTest do
                error_signature: first_error_signature
              } = state_after_first_failure.retry_attempts[issue_id]
 
+      cancel_retry_timer(state_after_first_failure.retry_attempts[issue_id])
+      wait_for_orchestrator_state(pid, fn state -> state.poll_check_in_progress == false end)
+
       second_ref = make_ref()
 
       replace_orchestrator_state!(pid, fn current_state ->
@@ -1728,6 +1731,8 @@ defmodule SymphonyElixir.CoreTest do
       send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "selected_rule: `retry_dedupe_hit`"
+      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
       assert blocker_body =~ "failure_class: `retry_dedupe_hit`"
       assert blocker_body =~ "retry_action: `stop`"
       assert blocker_body =~ first_error_signature
@@ -2317,7 +2322,11 @@ defmodule SymphonyElixir.CoreTest do
              retry_token: ^retry_token,
              error: error,
              error_class: "transient",
-             delay_type: :failover
+             delay_type: :failover,
+             retry_failover_decision: %{
+               selected_rule: "account_unhealthy_no_checkpoint",
+               selected_action: "immediate_preemption"
+             }
            } = updated_state.retry_attempts[issue_id]
 
     assert error =~ "account failover:"
@@ -3443,6 +3452,8 @@ defmodule SymphonyElixir.CoreTest do
       send(pid, {:retry_issue, issue_id, retry_token})
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "selected_rule: `stale_workspace_head`"
+      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
       assert blocker_body =~ "stale_workspace_head"
       assert blocker_body =~ runtime_head_sha
       assert blocker_body =~ expected_head_sha
