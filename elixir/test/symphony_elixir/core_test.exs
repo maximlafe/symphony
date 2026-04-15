@@ -2320,7 +2320,7 @@ defmodule SymphonyElixir.CoreTest do
              delay_type: :failover
            } = updated_state.retry_attempts[issue_id]
 
-    assert error =~ "account failover:"
+    assert error =~ "account failover forced_preemption=no_safe_drain_signal:"
     assert %{healthy: false, health_reason: health_reason} = updated_state.codex_accounts["primary"]
     assert health_reason =~ "threshold exceeded"
 
@@ -2495,7 +2495,7 @@ defmodule SymphonyElixir.CoreTest do
              after_second_failover.retry_attempts[issue_b_id]
   end
 
-  test "live rate-limit exhaustion preserves ready resume checkpoint across failover retry" do
+  test "live rate-limit exhaustion drains a run with safe handoff signals instead of failover retry" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -2645,27 +2645,30 @@ defmodule SymphonyElixir.CoreTest do
     assert {:noreply, updated_state} =
              Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
 
-    assert_receive {:retry_issue, ^issue_id, _retry_token}, 200
+    assert updated_state.active_codex_account_id == "secondary"
+    assert %{healthy: false, health_reason: health_reason} = updated_state.codex_accounts["primary"]
+    assert health_reason =~ "threshold exceeded"
 
     assert %{
-             attempt: 1,
-             delay_type: :failover,
-             error_class: "transient",
-             resume_checkpoint: checkpoint
-           } = updated_state.retry_attempts[issue_id]
+             codex_account_id: "primary",
+             failover_drain_decision: %{
+               disposition: :drain,
+               reason: :safe_boundary_reached,
+               safe_signal: safe_signal,
+               from_account_id: "primary",
+               to_account_id: "secondary"
+             }
+           } = updated_state.running[issue_id]
 
-    assert checkpoint["available"] == true
-    assert checkpoint["resume_ready"] == true
-    assert checkpoint["branch"] == "main"
-    assert is_binary(checkpoint["head"])
-    assert checkpoint["workpad_ref"] == "comment-123"
-    assert is_binary(checkpoint["workpad_digest"])
-    assert checkpoint["last_validation_status"]["result"] == "passed"
-    assert checkpoint["last_validation_status"]["summary"] == "handoff check passed"
-    assert checkpoint["last_validation_status"]["checked_at"] == DateTime.to_iso8601(verification_checked_at)
-    assert checkpoint["open_pr"]["number"] == 77
-    assert checkpoint["pending_checks"] == false
-    assert checkpoint["open_feedback"] == false
+    assert safe_signal in [
+             "verification_result:passed",
+             "latest_pr_snapshot:open",
+             "latest_ci_wait_result:available"
+           ]
+
+    assert updated_state.retry_attempts == %{}
+    assert Process.alive?(worker_pid)
+    refute_received {:retry_issue, ^issue_id, _retry_token}
   end
 
   test "live rate-limit exhaustion keeps fallback checkpoint when workspace is unavailable" do
