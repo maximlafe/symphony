@@ -602,12 +602,17 @@ defmodule SymphonyElixir.Orchestrator do
 
       state
       |> terminate_running_issue(issue_id, false)
-      |> schedule_issue_retry(issue_id, next_attempt, %{
-        identifier: identifier,
-        trace_id: trace_id,
-        error: "stalled for #{elapsed_ms}ms without codex activity",
-        error_class: ErrorClassifier.to_string(:transient)
-      })
+      |> schedule_issue_retry(
+        issue_id,
+        next_attempt,
+        %{
+          identifier: identifier,
+          trace_id: trace_id,
+          error: "stalled for #{elapsed_ms}ms without codex activity",
+          error_class: ErrorClassifier.to_string(:transient)
+        }
+        |> Map.merge(retry_execution_metadata(running_entry))
+      )
     else
       state
     end
@@ -826,34 +831,88 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_dispatch_issue(%State{} = state, issue, attempt, trace_id, retry_delay_type, resume_checkpoint) do
     resolved_resume_checkpoint = resolve_resume_checkpoint(issue, resume_checkpoint)
     trace_id = dispatch_trace_id(issue, trace_id)
+    execution_head = capture_execution_head(issue)
 
+    if stale_execution_head?(execution_head) do
+      block_stale_workspace_head(
+        state,
+        issue,
+        attempt,
+        trace_id,
+        resolved_resume_checkpoint,
+        execution_head
+      )
+    else
+      dispatch_ready_issue(
+        state,
+        issue,
+        attempt,
+        trace_id,
+        retry_delay_type,
+        resolved_resume_checkpoint,
+        execution_head
+      )
+    end
+  end
+
+  defp dispatch_ready_issue(
+         %State{} = state,
+         issue,
+         attempt,
+         trace_id,
+         retry_delay_type,
+         resolved_resume_checkpoint,
+         execution_head
+       ) do
     case maybe_dispatch_controller_finalizer(
            state,
            issue,
            attempt,
            trace_id,
            retry_delay_type,
-           resolved_resume_checkpoint
+           resolved_resume_checkpoint,
+           execution_head
          ) do
       {:dispatched, state} ->
         state
 
       :not_applicable ->
-        case active_codex_account(state) do
-          nil ->
-            state
+        dispatch_issue_via_account(
+          state,
+          issue,
+          attempt,
+          trace_id,
+          retry_delay_type,
+          resolved_resume_checkpoint,
+          execution_head
+        )
+    end
+  end
 
-          codex_account ->
-            dispatch_issue_with_account(
-              state,
-              issue,
-              attempt,
-              codex_account,
-              trace_id,
-              retry_delay_type,
-              resolved_resume_checkpoint
-            )
-        end
+  defp dispatch_issue_via_account(
+         %State{} = state,
+         issue,
+         attempt,
+         trace_id,
+         retry_delay_type,
+         resolved_resume_checkpoint,
+         execution_head
+       ) do
+    case active_codex_account(state) do
+      nil ->
+        state
+
+      codex_account ->
+        dispatch_issue_with_account(
+          state,
+          issue,
+          attempt,
+          codex_account,
+          trace_id,
+          retry_delay_type,
+          resolved_resume_checkpoint,
+          execution_head
+        )
     end
   end
 
@@ -897,6 +956,10 @@ defmodule SymphonyElixir.Orchestrator do
     error = pick_retry_error(previous_retry, metadata)
     error_class = pick_retry_error_class(previous_retry, metadata)
     resume_checkpoint = pick_retry_resume_checkpoint(previous_retry, metadata)
+    runtime_head_sha = pick_retry_runtime_head_sha(previous_retry, metadata)
+    expected_head_sha = pick_retry_expected_head_sha(previous_retry, metadata)
+    execution_branch = pick_retry_execution_branch(previous_retry, metadata)
+    error_signature = pick_retry_error_signature(previous_retry, metadata, error)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -924,7 +987,11 @@ defmodule SymphonyElixir.Orchestrator do
             error: error,
             error_class: error_class,
             delay_type: metadata[:delay_type],
-            resume_checkpoint: resume_checkpoint
+            resume_checkpoint: resume_checkpoint,
+            runtime_head_sha: runtime_head_sha,
+            expected_head_sha: expected_head_sha,
+            execution_branch: execution_branch,
+            error_signature: error_signature
           })
     }
   end
@@ -939,7 +1006,11 @@ defmodule SymphonyElixir.Orchestrator do
           error: Map.get(retry_entry, :error),
           error_class: Map.get(retry_entry, :error_class),
           delay_type: Map.get(retry_entry, :delay_type),
-          resume_checkpoint: Map.get(retry_entry, :resume_checkpoint)
+          resume_checkpoint: Map.get(retry_entry, :resume_checkpoint),
+          runtime_head_sha: Map.get(retry_entry, :runtime_head_sha),
+          expected_head_sha: Map.get(retry_entry, :expected_head_sha),
+          execution_branch: Map.get(retry_entry, :execution_branch),
+          error_signature: Map.get(retry_entry, :error_signature)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1041,12 +1112,17 @@ defmodule SymphonyElixir.Orchestrator do
 
     state
     |> complete_issue(issue_id)
-    |> schedule_issue_retry(issue_id, continuation_attempt, %{
-      identifier: identifier,
-      trace_id: trace_id,
-      delay_type: :continuation,
-      resume_checkpoint: resume_checkpoint
-    })
+    |> schedule_issue_retry(
+      issue_id,
+      continuation_attempt,
+      %{
+        identifier: identifier,
+        trace_id: trace_id,
+        delay_type: :continuation,
+        resume_checkpoint: resume_checkpoint
+      }
+      |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
+    )
   end
 
   defp handle_agent_exit_reason(
@@ -1085,6 +1161,7 @@ defmodule SymphonyElixir.Orchestrator do
         codex_account_id: Map.get(running_entry, :codex_account_id),
         resume_checkpoint: capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
       }
+      |> Map.merge(retry_execution_metadata(running_entry))
     )
   end
 
@@ -1116,14 +1193,19 @@ defmodule SymphonyElixir.Orchestrator do
         state
         |> complete_issue(issue_id)
         |> maybe_store_finalizer_checkpoint(issue_id, checkpoint)
-        |> schedule_issue_retry(issue_id, continuation_attempt, %{
-          identifier: identifier,
-          trace_id: trace_id,
-          delay_type: :continuation,
-          resume_checkpoint: checkpoint,
-          error: reason,
-          error_class: ErrorClassifier.to_string(:transient)
-        })
+        |> schedule_issue_retry(
+          issue_id,
+          continuation_attempt,
+          %{
+            identifier: identifier,
+            trace_id: trace_id,
+            delay_type: :continuation,
+            resume_checkpoint: checkpoint,
+            error: reason,
+            error_class: ErrorClassifier.to_string(:transient)
+          }
+          |> Map.merge(retry_execution_metadata(running_entry, checkpoint))
+        )
 
       {:fallback, %{checkpoint: checkpoint, reason: reason}} ->
         Logger.info("Controller finalizer returned action-required fallback for issue_id=#{issue_id} issue_identifier=#{identifier}: #{reason}")
@@ -1131,14 +1213,19 @@ defmodule SymphonyElixir.Orchestrator do
         state
         |> complete_issue(issue_id)
         |> maybe_store_finalizer_checkpoint(issue_id, checkpoint)
-        |> schedule_issue_retry(issue_id, fallback_attempt, %{
-          identifier: identifier,
-          trace_id: trace_id,
-          delay_type: nil,
-          resume_checkpoint: checkpoint,
-          error: reason,
-          error_class: ErrorClassifier.to_string(:transient)
-        })
+        |> schedule_issue_retry(
+          issue_id,
+          fallback_attempt,
+          %{
+            identifier: identifier,
+            trace_id: trace_id,
+            delay_type: nil,
+            resume_checkpoint: checkpoint,
+            error: reason,
+            error_class: ErrorClassifier.to_string(:transient)
+          }
+          |> Map.merge(retry_execution_metadata(running_entry, checkpoint))
+        )
 
       {:not_applicable, _payload} ->
         Logger.info("Controller finalizer returned not_applicable for issue_id=#{issue_id} issue_identifier=#{identifier}; falling back to agent run")
@@ -1157,13 +1244,18 @@ defmodule SymphonyElixir.Orchestrator do
 
         state
         |> complete_issue(issue_id)
-        |> schedule_issue_retry(issue_id, fallback_attempt, %{
-          identifier: identifier,
-          trace_id: trace_id,
-          error: "controller finalizer returned unexpected result",
-          error_class: ErrorClassifier.to_string(:transient),
-          delay_type: nil
-        })
+        |> schedule_issue_retry(
+          issue_id,
+          fallback_attempt,
+          %{
+            identifier: identifier,
+            trace_id: trace_id,
+            error: "controller finalizer returned unexpected result",
+            error_class: ErrorClassifier.to_string(:transient),
+            delay_type: nil
+          }
+          |> Map.merge(retry_execution_metadata(running_entry))
+        )
     end
   end
 
@@ -1182,14 +1274,19 @@ defmodule SymphonyElixir.Orchestrator do
 
     state
     |> complete_issue(issue_id)
-    |> schedule_issue_retry(issue_id, attempt, %{
-      identifier: identifier,
-      trace_id: trace_id,
-      error: "controller finalizer exited: #{inspect(reason)}",
-      error_class: ErrorClassifier.to_string(:transient),
-      delay_type: nil,
-      resume_checkpoint: checkpoint
-    })
+    |> schedule_issue_retry(
+      issue_id,
+      attempt,
+      %{
+        identifier: identifier,
+        trace_id: trace_id,
+        error: "controller finalizer exited: #{inspect(reason)}",
+        error_class: ErrorClassifier.to_string(:transient),
+        delay_type: nil,
+        resume_checkpoint: checkpoint
+      }
+      |> Map.merge(retry_execution_metadata(running_entry, checkpoint))
+    )
   end
 
   defp maybe_store_finalizer_checkpoint(state, _issue_id, checkpoint) when not is_map(checkpoint), do: state
@@ -1208,7 +1305,8 @@ defmodule SymphonyElixir.Orchestrator do
          attempt,
          trace_id,
          retry_delay_type,
-         resume_checkpoint
+         resume_checkpoint,
+         execution_head
        ) do
     eligible_fun = Map.get(state, :controller_finalizer_eligible_fun)
 
@@ -1219,7 +1317,8 @@ defmodule SymphonyElixir.Orchestrator do
              attempt,
              trace_id,
              retry_delay_type,
-             resume_checkpoint
+             resume_checkpoint,
+             execution_head
            ) do
         {:ok, updated_state} -> {:dispatched, updated_state}
         {:error, _reason} -> :not_applicable
@@ -1235,7 +1334,8 @@ defmodule SymphonyElixir.Orchestrator do
          attempt,
          trace_id,
          retry_delay_type,
-         resume_checkpoint
+         resume_checkpoint,
+         execution_head
        ) do
     recipient = self()
     finalizer_fun = Map.get(state, :controller_finalizer_fun, &ControllerFinalizer.run/3)
@@ -1263,6 +1363,9 @@ defmodule SymphonyElixir.Orchestrator do
                 codex_account_id: nil,
                 worker_kind: :controller_finalizer,
                 resume_checkpoint: resume_checkpoint,
+                runtime_head_sha: Map.get(execution_head, :runtime_head_sha),
+                expected_head_sha: Map.get(execution_head, :expected_head_sha),
+                execution_branch: Map.get(execution_head, :execution_branch),
                 last_codex_message: nil,
                 last_codex_timestamp: nil,
                 last_codex_event: nil,
@@ -1310,7 +1413,8 @@ defmodule SymphonyElixir.Orchestrator do
          codex_account,
          trace_id,
          retry_delay_type,
-         resume_checkpoint
+         resume_checkpoint,
+         execution_head
        ) do
     recipient = self()
 
@@ -1346,6 +1450,9 @@ defmodule SymphonyElixir.Orchestrator do
                 trace_id: trace_id,
                 session_id: nil,
                 codex_account_id: codex_account.id,
+                runtime_head_sha: Map.get(execution_head, :runtime_head_sha),
+                expected_head_sha: Map.get(execution_head, :expected_head_sha),
+                execution_branch: Map.get(execution_head, :execution_branch),
                 last_codex_message: nil,
                 last_codex_timestamp: nil,
                 last_codex_event: nil,
@@ -1379,14 +1486,20 @@ defmodule SymphonyElixir.Orchestrator do
 
         next_attempt = next_failure_retry_attempt(attempt, retry_delay_type)
 
-        schedule_issue_retry(state, issue.id, next_attempt, %{
-          identifier: issue.identifier,
-          trace_id: trace_id,
-          error: "failed to spawn agent: #{inspect(reason)}",
-          error_class: ErrorClassifier.to_string(:transient),
-          delay_type: nil,
-          resume_checkpoint: resume_checkpoint
-        })
+        schedule_issue_retry(
+          state,
+          issue.id,
+          next_attempt,
+          %{
+            identifier: issue.identifier,
+            trace_id: trace_id,
+            error: "failed to spawn agent: #{inspect(reason)}",
+            error_class: ErrorClassifier.to_string(:transient),
+            delay_type: nil,
+            resume_checkpoint: resume_checkpoint
+          }
+          |> Map.merge(retry_execution_metadata(execution_head, resume_checkpoint))
+        )
     end
   end
 
@@ -1472,13 +1585,19 @@ defmodule SymphonyElixir.Orchestrator do
     |> Map.get(:pid)
     |> terminate_task()
 
-    schedule_issue_retry(state, issue_id, attempt, %{
-      identifier: identifier,
-      trace_id: trace_id,
-      error: "account failover: #{health_reason}",
-      error_class: ErrorClassifier.to_string(:transient),
-      delay_type: :failover
-    })
+    schedule_issue_retry(
+      state,
+      issue_id,
+      attempt,
+      %{
+        identifier: identifier,
+        trace_id: trace_id,
+        error: "account failover: #{health_reason}",
+        error_class: ErrorClassifier.to_string(:transient),
+        delay_type: :failover
+      }
+      |> Map.merge(retry_execution_metadata(running_entry))
+    )
   end
 
   defp run_workspace_housekeeping(%State{} = state, source) do
@@ -2065,22 +2184,34 @@ defmodule SymphonyElixir.Orchestrator do
         )
 
       failure.retry_action == :switch_account ->
-        schedule_issue_retry(state, issue_id, failure_attempt, %{
-          identifier: identifier,
-          trace_id: trace_id,
-          error: "agent exited: #{failure.summary}",
-          error_class: error_class_label,
-          resume_checkpoint: context[:resume_checkpoint]
-        })
+        schedule_issue_retry(
+          state,
+          issue_id,
+          failure_attempt,
+          %{
+            identifier: identifier,
+            trace_id: trace_id,
+            error: "agent exited: #{failure.summary}",
+            error_class: error_class_label,
+            resume_checkpoint: context[:resume_checkpoint]
+          }
+          |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
+        )
 
       ErrorClassifier.retry_allowed?(failure.error_class, failure_attempt) ->
-        schedule_issue_retry(state, issue_id, failure_attempt, %{
-          identifier: identifier,
-          trace_id: trace_id,
-          error: "agent exited: #{failure.summary}",
-          error_class: error_class_label,
-          resume_checkpoint: context[:resume_checkpoint]
-        })
+        schedule_issue_retry(
+          state,
+          issue_id,
+          failure_attempt,
+          %{
+            identifier: identifier,
+            trace_id: trace_id,
+            error: "agent exited: #{failure.summary}",
+            error_class: error_class_label,
+            resume_checkpoint: context[:resume_checkpoint]
+          }
+          |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
+        )
 
       true ->
         escalate_issue_for_manual_intervention(
@@ -2166,13 +2297,19 @@ defmodule SymphonyElixir.Orchestrator do
           end
         )
 
-        schedule_issue_retry(state, context.issue_id, failure_attempt, %{
-          identifier: context.identifier,
-          trace_id: context.trace_id,
-          error: "failed to escalate #{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
-          error_class: ErrorClassifier.to_string(:transient),
-          resume_checkpoint: context[:resume_checkpoint]
-        })
+        schedule_issue_retry(
+          state,
+          context.issue_id,
+          failure_attempt,
+          %{
+            identifier: context.identifier,
+            trace_id: context.trace_id,
+            error: "failed to escalate #{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
+            error_class: ErrorClassifier.to_string(:transient),
+            resume_checkpoint: context[:resume_checkpoint]
+          }
+          |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
+        )
     end
   end
 
@@ -2190,13 +2327,19 @@ defmodule SymphonyElixir.Orchestrator do
       end
     )
 
-    schedule_issue_retry(state, context.issue_id, failure_attempt, %{
-      identifier: context.identifier,
-      trace_id: context.trace_id,
-      error: "failed to escalate #{context.identifier} to #{manual_intervention_state()}: missing issue id",
-      error_class: ErrorClassifier.to_string(:transient),
-      resume_checkpoint: context[:resume_checkpoint]
-    })
+    schedule_issue_retry(
+      state,
+      context.issue_id,
+      failure_attempt,
+      %{
+        identifier: context.identifier,
+        trace_id: context.trace_id,
+        error: "failed to escalate #{context.identifier} to #{manual_intervention_state()}: missing issue id",
+        error_class: ErrorClassifier.to_string(:transient),
+        resume_checkpoint: context[:resume_checkpoint]
+      }
+      |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
+    )
   end
 
   defp blocker_comment_body(
@@ -2333,6 +2476,203 @@ defmodule SymphonyElixir.Orchestrator do
 
     if is_map(checkpoint), do: ResumeCheckpoint.for_prompt(checkpoint)
   end
+
+  defp pick_retry_runtime_head_sha(previous_retry, metadata) do
+    metadata[:runtime_head_sha] || Map.get(previous_retry, :runtime_head_sha)
+  end
+
+  defp pick_retry_expected_head_sha(previous_retry, metadata) do
+    metadata[:expected_head_sha] || Map.get(previous_retry, :expected_head_sha)
+  end
+
+  defp pick_retry_execution_branch(previous_retry, metadata) do
+    metadata[:execution_branch] || Map.get(previous_retry, :execution_branch)
+  end
+
+  defp pick_retry_error_signature(previous_retry, metadata, error) do
+    metadata[:error_signature] ||
+      Map.get(previous_retry, :error_signature) ||
+      normalize_error_signature(error)
+  end
+
+  defp retry_execution_metadata(source, resume_checkpoint \\ nil)
+
+  defp retry_execution_metadata(source, resume_checkpoint)
+       when is_map(source) and (is_map(resume_checkpoint) or is_nil(resume_checkpoint)) do
+    %{}
+    |> maybe_put_retry_metadata(:runtime_head_sha, retry_runtime_head_sha(source, resume_checkpoint))
+    |> maybe_put_retry_metadata(:expected_head_sha, Map.get(source, :expected_head_sha))
+    |> maybe_put_retry_metadata(:execution_branch, Map.get(source, :execution_branch))
+  end
+
+  defp retry_execution_metadata(_source, _resume_checkpoint), do: %{}
+
+  defp retry_runtime_head_sha(source, resume_checkpoint) when is_map(source) do
+    case Map.get(source, :runtime_head_sha) do
+      "unknown" -> checkpoint_head(resume_checkpoint) || "unknown"
+      value when is_binary(value) and value != "" -> value
+      _ -> checkpoint_head(resume_checkpoint)
+    end
+  end
+
+  defp maybe_put_retry_metadata(metadata, _key, value)
+       when not is_binary(value) or value == "",
+       do: metadata
+
+  defp maybe_put_retry_metadata(metadata, key, value), do: Map.put(metadata, key, value)
+
+  defp checkpoint_head(%{"head" => head}) when is_binary(head) and head != "", do: head
+  defp checkpoint_head(_resume_checkpoint), do: nil
+
+  defp normalize_error_signature(value) when is_binary(value) do
+    value
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/u, "_")
+    |> String.trim("_")
+    |> case do
+      "" -> nil
+      normalized -> String.slice(normalized, 0, 120)
+    end
+  end
+
+  defp normalize_error_signature(_value), do: nil
+
+  defp capture_execution_head(issue) do
+    workspace = issue_workspace_path(issue)
+    runtime_head_sha = resolve_runtime_head_sha(workspace) || "unknown"
+    execution_branch = resolve_execution_branch(workspace)
+    expected_head_sha = resolve_expected_head_sha(workspace, execution_branch) || "unknown"
+
+    %{
+      workspace: workspace,
+      runtime_head_sha: runtime_head_sha,
+      expected_head_sha: expected_head_sha,
+      execution_branch: execution_branch
+    }
+  end
+
+  defp block_stale_workspace_head(
+         %State{} = state,
+         %Issue{} = issue,
+         attempt,
+         trace_id,
+         resume_checkpoint,
+         execution_head
+       ) do
+    reason = stale_workspace_head_reason(execution_head)
+    failure_attempt = dispatch_failure_attempt(attempt)
+
+    with_log_metadata(issue_log_metadata(issue.id, issue.identifier, nil, trace_id), fn ->
+      Logger.warning("Blocking stale workspace head before dispatch for #{issue_context(issue)}: #{reason}")
+    end)
+
+    escalate_issue_for_manual_intervention(
+      state,
+      issue,
+      reason,
+      failure_attempt,
+      %{
+        issue_id: issue.id,
+        identifier: issue.identifier,
+        trace_id: trace_id,
+        codex_account_id: nil,
+        error_class: ErrorClassifier.to_string(:permanent),
+        failure_class: "stale_workspace_head",
+        retry_action: :stop,
+        resume_checkpoint: resume_checkpoint
+      }
+      |> Map.merge(retry_execution_metadata(execution_head, resume_checkpoint))
+    )
+  end
+
+  defp stale_execution_head?(%{
+         workspace: workspace,
+         runtime_head_sha: runtime_head_sha,
+         expected_head_sha: expected_head_sha
+       }) do
+    known_git_sha?(runtime_head_sha) and
+      known_git_sha?(expected_head_sha) and
+      runtime_head_sha != expected_head_sha and
+      git_status_success?(workspace, ["merge-base", "--is-ancestor", runtime_head_sha, expected_head_sha])
+  end
+
+  defp stale_workspace_head_reason(execution_head) do
+    branch_suffix =
+      case Map.get(execution_head, :execution_branch) do
+        branch when is_binary(branch) and branch != "" -> " on #{branch}"
+        _ -> ""
+      end
+
+    "stale_workspace_head: runtime #{Map.get(execution_head, :runtime_head_sha)} is behind expected #{Map.get(execution_head, :expected_head_sha)}#{branch_suffix}"
+  end
+
+  defp dispatch_failure_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
+  defp dispatch_failure_attempt(_attempt), do: 1
+
+  defp issue_workspace_path(%Issue{identifier: identifier}), do: issue_workspace_path(%{identifier: identifier})
+
+  defp issue_workspace_path(%{identifier: identifier}) when is_binary(identifier) and identifier != "" do
+    safe_identifier = String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
+    Path.expand(Path.join(Config.settings!().workspace.root, safe_identifier))
+  end
+
+  defp issue_workspace_path(_issue), do: nil
+
+  defp resolve_runtime_head_sha(workspace), do: git_trimmed(workspace, ["rev-parse", "HEAD"])
+
+  defp resolve_execution_branch(workspace) when is_binary(workspace) do
+    read_trimmed(Path.join(workspace, ".symphony-working-branch")) ||
+      read_trimmed(Path.join(workspace, ".symphony-base-branch"))
+  end
+
+  defp resolve_execution_branch(_workspace), do: nil
+
+  defp resolve_expected_head_sha(workspace, execution_branch)
+       when is_binary(workspace) and is_binary(execution_branch) and execution_branch != "" do
+    [
+      "refs/remotes/origin/#{execution_branch}",
+      "origin/#{execution_branch}",
+      "refs/heads/#{execution_branch}",
+      execution_branch
+    ]
+    |> Enum.find_value(&git_trimmed(workspace, ["rev-parse", &1]))
+  end
+
+  defp resolve_expected_head_sha(_workspace, _execution_branch), do: nil
+
+  defp git_trimmed(workspace, args) when is_binary(workspace) and is_list(args) do
+    case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
+      {output, 0} -> String.trim(output)
+      _ -> nil
+    end
+  end
+
+  defp git_trimmed(_workspace, _args), do: nil
+
+  defp git_status_success?(workspace, args) when is_binary(workspace) and is_list(args) do
+    match?({_output, 0}, System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true))
+  end
+
+  defp git_status_success?(_workspace, _args), do: false
+
+  defp read_trimmed(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, body} ->
+        case String.trim(body) do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp known_git_sha?(value) when is_binary(value) do
+    String.match?(value, ~r/^[0-9a-f]{7,40}$/)
+  end
+
+  defp known_git_sha?(_value), do: false
 
   defp capture_resume_checkpoint(%Issue{} = issue, running_entry) when is_map(running_entry) do
     ResumeCheckpoint.capture(issue, running_entry)
@@ -2500,6 +2840,8 @@ defmodule SymphonyElixir.Orchestrator do
           verification_checked_at: Map.get(metadata, :verification_checked_at),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
+        |> maybe_put_snapshot_value(:runtime_head_sha, Map.get(metadata, :runtime_head_sha))
+        |> maybe_put_snapshot_value(:expected_head_sha, Map.get(metadata, :expected_head_sha))
         |> Map.merge(runtime_fields)
       end)
 
@@ -2515,6 +2857,8 @@ defmodule SymphonyElixir.Orchestrator do
           error: Map.get(retry, :error),
           error_class: Map.get(retry, :error_class)
         }
+        |> maybe_put_snapshot_value(:runtime_head_sha, Map.get(retry, :runtime_head_sha))
+        |> maybe_put_snapshot_value(:expected_head_sha, Map.get(retry, :expected_head_sha))
       end)
 
     {:reply,
@@ -2568,6 +2912,9 @@ defmodule SymphonyElixir.Orchestrator do
         {:reply, {:error, :invalid_account}, state}
     end
   end
+
+  defp maybe_put_snapshot_value(map, _key, value) when not is_binary(value) or value == "", do: map
+  defp maybe_put_snapshot_value(map, key, value), do: Map.put(map, key, value)
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)

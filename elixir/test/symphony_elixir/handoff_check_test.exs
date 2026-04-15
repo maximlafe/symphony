@@ -361,6 +361,23 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert String.valid?(List.first(decoded["missing_items"]))
   end
 
+  test "write_manifest preserves non-binary map keys while sanitizing values" do
+    manifest_path = Path.join(System.tmp_dir!(), "handoff-check-non-binary-key-#{System.unique_integer([:positive])}.json")
+
+    manifest = %{
+      7 => "numeric-key",
+      "summary" => "ok",
+      passed: true
+    }
+
+    assert {:ok, written_path} = HandoffCheck.write_manifest(manifest, manifest_path)
+    assert {:ok, encoded} = File.read(written_path)
+    assert {:ok, decoded} = Jason.decode(encoded)
+    assert decoded["passed"] == true
+    assert decoded["7"] == "numeric-key"
+    assert decoded["summary"] == "ok"
+  end
+
   test "review_ready_transition_allowed? rejects invalid manifest states and missing workpad references" do
     manifest_dir = Path.join(System.tmp_dir!(), "handoff-check-manifest-dir-#{System.unique_integer([:positive])}")
     missing_workpad = Path.join(System.tmp_dir!(), "handoff-check-review-#{System.unique_integer([:positive])}.md")

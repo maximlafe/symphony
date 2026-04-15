@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.ControllerFinalizerTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Codex.DynamicTool
   alias SymphonyElixir.{Config, ControllerFinalizer}
   alias SymphonyElixir.Linear.Issue
 
@@ -128,52 +129,30 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert ControllerFinalizer.eligible?(issue, checkpoint)
   end
 
-  test "eligible?/2 blocks repeat finalization when fallback fingerprint relies on reason" do
-    issue = %Issue{id: "issue-fingerprint-reason", identifier: "LET-462-FINGERPRINT-REASON", state: "In Progress"}
+  test "eligible?/2 parses blocked PR fingerprints when blocked_pr_number is a string" do
+    issue = %Issue{id: "issue-fingerprint-string", identifier: "LET-462-FINGERPRINT-STRING", state: "In Progress"}
 
-    checkpoint = %{
-      "open_pr" => %{"url" => "https://github.com/acme/symphony/pull/42"},
+    matching_checkpoint = %{
+      "open_pr" => %{"number" => 42, "url" => "https://github.com/acme/symphony/pull/42"},
       "controller_finalizer" => %{
         "status" => "action_required",
         "reason" => "pull request has actionable feedback",
-        "blocked_pr_number" => 42,
-        "blocked_head" => nil
-      }
-    }
-
-    refute ControllerFinalizer.eligible?(issue, checkpoint)
-  end
-
-  test "eligible?/2 handles string PR numbers in fallback fingerprint" do
-    issue = %Issue{id: "issue-string-pr", identifier: "LET-462-STRING-PR", state: "In Progress"}
-
-    checkpoint = %{
-      "open_pr" => %{"number" => 42},
-      "controller_finalizer" => %{
-        "status" => "action_required",
-        "reason" => "pull request has actionable feedback",
+        "blocked_reason" => "pull request has actionable feedback",
         "blocked_pr_number" => "42",
         "blocked_head" => nil
       }
     }
 
-    refute ControllerFinalizer.eligible?(issue, checkpoint)
-  end
+    refute ControllerFinalizer.eligible?(issue, matching_checkpoint)
 
-  test "eligible?/2 ignores invalid string PR numbers in fallback fingerprint" do
-    issue = %Issue{id: "issue-invalid-string-pr", identifier: "LET-462-INVALID-STRING-PR", state: "In Progress"}
+    invalid_checkpoint =
+      put_in(
+        matching_checkpoint,
+        ["controller_finalizer", "blocked_pr_number"],
+        "not-a-number"
+      )
 
-    checkpoint = %{
-      "open_pr" => %{"number" => 42},
-      "controller_finalizer" => %{
-        "status" => "action_required",
-        "reason" => "pull request has actionable feedback",
-        "blocked_pr_number" => "not-a-number",
-        "blocked_head" => nil
-      }
-    }
-
-    assert ControllerFinalizer.eligible?(issue, checkpoint)
+    assert ControllerFinalizer.eligible?(issue, invalid_checkpoint)
   end
 
   test "run/3 completes deterministic finalization and transitions issue state on success" do
@@ -265,6 +244,94 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
 
     assert {:retry, payload} = run_finalizer(issue, checkpoint, script)
     assert payload.reason == "workpad sync failed"
+    assert payload.checkpoint["controller_finalizer"]["status"] == "waiting"
+  end
+
+  test "run/3 tolerates invalid UTF-8 in dynamic tool failure payloads" do
+    issue = %Issue{id: "issue-invalid-utf8", identifier: "LET-462-UTF8", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier)
+
+    checkpoint = %{
+      "head" => "head-invalid-utf8",
+      "open_pr" => %{"number" => 42, "url" => "https://github.com/acme/symphony/pull/42"}
+    }
+
+    invalid_json =
+      <<
+        208,
+        189,
+        208,
+        181,
+        32,
+        209,
+        130,
+        209,
+        128,
+        208,
+        181,
+        208,
+        177,
+        209,
+        131,
+        208,
+        181,
+        209,
+        130,
+        209,
+        129,
+        209,
+        143,
+        44,
+        32,
+        208,
+        145,
+        208,
+        148,
+        47,
+        209,
+        129,
+        209
+      >>
+
+    executor = fn
+      "sync_workpad", _args, _opts ->
+        tool_success(%{"comment_id" => "workpad-comment"})
+
+      "github_wait_for_checks", _args, _opts ->
+        tool_success(%{
+          "all_green" => true,
+          "pending_checks" => [],
+          "failed_checks" => [],
+          "checks" => []
+        })
+
+      "github_pr_snapshot", args, tool_opts ->
+        DynamicTool.execute(
+          "github_pr_snapshot",
+          args,
+          gh_runner: fn gh_args, _opts ->
+            case gh_args do
+              ["pr", "view", "42", "-R", "acme/symphony", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+                {:ok, invalid_json}
+            end
+          end,
+          workspace: tool_opts[:workspace]
+        )
+
+      "symphony_handoff_check", _args, _opts ->
+        flunk("handoff check should not run after a snapshot failure")
+    end
+
+    assert {:retry, payload} =
+             ControllerFinalizer.run(
+               issue,
+               checkpoint,
+               repo: "acme/symphony",
+               tracker_module: TrackerStub,
+               tool_executor: executor
+             )
+
+    assert payload.reason == "GitHub CLI returned invalid JSON."
     assert payload.checkpoint["controller_finalizer"]["status"] == "waiting"
   end
 

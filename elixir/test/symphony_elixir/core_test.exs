@@ -2462,6 +2462,255 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "stale workspace head blocks dispatch before the worker starts" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-stale-head-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-stale-head"
+    issue_identifier = "MT-STALE-HEAD"
+    trace_id = "trace-stale-head"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: issue_id,
+          identifier: issue_identifier,
+          title: "Block stale workspace head",
+          description: "Do not dispatch stale runtime workspaces",
+          state: "In Progress",
+          url: "https://example.org/issues/#{issue_identifier}",
+          labels: []
+        }
+      ])
+
+      {runtime_head_sha, expected_head_sha} =
+        create_stale_workspace!(workspace_root, issue_identifier, "merge/stale-01")
+
+      orchestrator_name = Module.concat(__MODULE__, :StaleHeadOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      retry_token = make_ref()
+
+      :sys.replace_state(pid, fn _ ->
+        base_dispatch_state("primary")
+        |> Map.put(:poll_interval_ms, initial_state.poll_interval_ms)
+        |> Map.put(:retry_attempts, %{
+          issue_id => %{
+            attempt: 1,
+            timer_ref: nil,
+            retry_token: retry_token,
+            due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+            identifier: issue_identifier,
+            trace_id: trace_id,
+            error: "retry stale workspace head"
+          }
+        })
+      end)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "stale_workspace_head"
+      assert blocker_body =~ runtime_head_sha
+      assert blocker_body =~ expected_head_sha
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+
+      final_state =
+        wait_for_orchestrator_state(pid, fn state ->
+          state.running == %{} and
+            not Map.has_key?(state.retry_attempts, issue_id) and
+            not MapSet.member?(state.claimed, issue_id)
+        end)
+
+      assert final_state.running == %{}
+      refute Map.has_key?(final_state.retry_attempts, issue_id)
+      refute MapSet.member?(final_state.claimed, issue_id)
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "dispatch keeps runtime head metadata when expected head cannot be resolved" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-unknown-expected-head-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-unknown-expected-head"
+    issue_identifier = "MT-UNKNOWN-HEAD"
+    trace_id = "trace-unknown-expected-head"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: issue_id,
+          identifier: issue_identifier,
+          title: "Keep runtime head metadata",
+          description: "Expected head resolution may be unavailable",
+          state: "In Progress",
+          url: "https://example.org/issues/#{issue_identifier}",
+          labels: []
+        }
+      ])
+
+      runtime_head_sha =
+        create_workspace_with_unknown_expected_head!(
+          workspace_root,
+          issue_identifier,
+          "merge/missing-head"
+        )
+
+      orchestrator_name = Module.concat(__MODULE__, :UnknownExpectedHeadOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      retry_token = make_ref()
+
+      :sys.replace_state(pid, fn _ ->
+        base_dispatch_state("primary")
+        |> Map.put(:retry_attempts, %{
+          issue_id => %{
+            attempt: 1,
+            timer_ref: nil,
+            retry_token: retry_token,
+            due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+            identifier: issue_identifier,
+            trace_id: trace_id,
+            error: "retry unknown expected head"
+          }
+        })
+      end)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(
+            %{
+              runtime_head_sha: ^runtime_head_sha,
+              expected_head_sha: "unknown"
+            },
+            Map.get(state.running, issue_id)
+          )
+        end)
+
+      assert %{
+               ^issue_id => %{
+                 pid: worker_pid,
+                 runtime_head_sha: ^runtime_head_sha,
+                 expected_head_sha: "unknown"
+               }
+             } = state.running
+
+      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
+      Process.exit(worker_pid, :kill)
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "worker failure preserves execution head metadata in retry context" do
+    issue_id = "issue-retry-head-metadata"
+    ref = make_ref()
+    runtime_head_sha = "7384c2d49d893f544cda4ffa38f61bf06bcb0e9d"
+    expected_head_sha = "4d93431c93186898f429f090f0054b7f3a1cb5a9"
+    execution_branch = "merge/retry-head"
+
+    orchestrator_name = Module.concat(__MODULE__, :RetryHeadMetadataOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-RETRY-HEADS",
+      issue: %Issue{id: issue_id, identifier: "MT-RETRY-HEADS", state: "In Progress"},
+      trace_id: "trace-retry-heads",
+      runtime_head_sha: runtime_head_sha,
+      expected_head_sha: expected_head_sha,
+      execution_branch: execution_branch,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        match?(
+          %{
+            runtime_head_sha: ^runtime_head_sha,
+            expected_head_sha: ^expected_head_sha,
+            execution_branch: ^execution_branch
+          },
+          state.retry_attempts[issue_id]
+        )
+      end)
+
+    assert %{
+             attempt: 1,
+             error_class: "semi_permanent",
+             runtime_head_sha: ^runtime_head_sha,
+             expected_head_sha: ^expected_head_sha,
+             execution_branch: ^execution_branch
+           } = state.retry_attempts[issue_id]
+  end
+
   test "manual refresh coalesces repeated requests and ignores superseded ticks" do
     now_ms = System.monotonic_time(:millisecond)
     stale_tick_token = make_ref()
@@ -2497,6 +2746,84 @@ defmodule SymphonyElixir.CoreTest do
 
     assert remaining_ms >= min_remaining_ms
     assert remaining_ms <= max_remaining_ms
+  end
+
+  defp base_dispatch_state(account_id) do
+    %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      next_poll_due_at_ms: nil,
+      poll_check_in_progress: false,
+      tick_timer_ref: nil,
+      tick_token: nil,
+      workspace_usage_bytes: 0,
+      workspace_cleanup_ref: nil,
+      workspace_usage_refresh_ref: nil,
+      workspace_threshold_exceeded?: false,
+      running: %{},
+      completed: MapSet.new(),
+      claimed: MapSet.new(),
+      retry_attempts: %{},
+      codex_accounts: %{
+        account_id => %{id: account_id, codex_home: System.tmp_dir!(), healthy: true}
+      },
+      active_codex_account_id: account_id,
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: nil,
+      codex_dispatch_reason: nil
+    }
+  end
+
+  defp create_stale_workspace!(workspace_root, issue_identifier, execution_branch) do
+    workspace = init_workspace_repo!(workspace_root, issue_identifier)
+
+    runtime_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
+
+    git_ok!(workspace, ["checkout", "-b", execution_branch])
+    File.write!(Path.join(workspace, "tracked.txt"), "expected head\n")
+    git_ok!(workspace, ["add", "tracked.txt"])
+    git_ok!(workspace, ["commit", "-m", "expected head"])
+
+    expected_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
+
+    git_ok!(workspace, ["checkout", runtime_head_sha])
+    File.write!(Path.join(workspace, ".symphony-working-branch"), execution_branch <> "\n")
+
+    {runtime_head_sha, expected_head_sha}
+  end
+
+  defp create_workspace_with_unknown_expected_head!(
+         workspace_root,
+         issue_identifier,
+         execution_branch
+       ) do
+    workspace = init_workspace_repo!(workspace_root, issue_identifier)
+    File.write!(Path.join(workspace, ".symphony-working-branch"), execution_branch <> "\n")
+    git_output!(workspace, ["rev-parse", "HEAD"])
+  end
+
+  defp init_workspace_repo!(workspace_root, issue_identifier) do
+    workspace = Path.join(workspace_root, issue_identifier)
+    File.mkdir_p!(workspace)
+
+    git_ok!(workspace, ["init", "-b", "main"])
+    git_ok!(workspace, ["config", "user.name", "Symphony Tests"])
+    git_ok!(workspace, ["config", "user.email", "symphony-tests@example.com"])
+
+    File.write!(Path.join(workspace, "tracked.txt"), "runtime head\n")
+    git_ok!(workspace, ["add", "tracked.txt"])
+    git_ok!(workspace, ["commit", "-m", "runtime head"])
+
+    workspace
+  end
+
+  defp git_ok!(workspace, args) do
+    assert {_, 0} = System.cmd("git", args, cd: workspace, stderr_to_stdout: true)
+  end
+
+  defp git_output!(workspace, args) do
+    {output, 0} = System.cmd("git", args, cd: workspace, stderr_to_stdout: true)
+    String.trim(output)
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)

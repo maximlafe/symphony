@@ -1034,12 +1034,41 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   test "github_pr_snapshot sanitizes invalid UTF-8 in GitHub CLI error payloads" do
     invalid_json =
-      [
-        <<208, 189, 208, 181, 32, 209, 130, 209, 128, 208, 181, 208, 177, 209, 131>>,
-        <<208, 181, 209, 130, 209, 129, 209, 143, 44, 32, 208, 145, 208, 148>>,
-        <<47, 209, 129, 209>>
-      ]
-      |> IO.iodata_to_binary()
+      <<
+        208,
+        189,
+        208,
+        181,
+        32,
+        209,
+        130,
+        209,
+        128,
+        208,
+        181,
+        208,
+        177,
+        209,
+        131,
+        208,
+        181,
+        209,
+        130,
+        209,
+        129,
+        209,
+        143,
+        44,
+        32,
+        208,
+        145,
+        208,
+        148,
+        47,
+        209,
+        129,
+        209
+      >>
 
     response =
       DynamicTool.execute(

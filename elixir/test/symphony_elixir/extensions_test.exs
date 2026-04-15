@@ -510,6 +510,105 @@ defmodule SymphonyElixir.ExtensionsTest do
              json_response(conn, 202)
   end
 
+  test "phoenix observability api includes execution head metadata when present" do
+    now = DateTime.utc_now()
+
+    snapshot = %{
+      active_codex_account_id: "primary",
+      codex_accounts: [],
+      running: [
+        %{
+          issue_id: "issue-heads",
+          identifier: "MT-HEADS",
+          trace_id: "trace-heads",
+          state: "In Progress",
+          codex_account_id: "primary",
+          session_id: "thread-heads",
+          turn_count: 1,
+          codex_app_server_pid: nil,
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          started_at: now,
+          runtime_head_sha: "runtime-running-sha",
+          expected_head_sha: "expected-running-sha"
+        }
+      ],
+      retrying: [
+        %{
+          issue_id: "issue-heads-retry",
+          identifier: "MT-HEADS-RETRY",
+          attempt: 3,
+          trace_id: "trace-heads-retry",
+          due_in_ms: 2_000,
+          error: "stale_workspace_head",
+          error_class: "permanent",
+          runtime_head_sha: "runtime-retry-sha",
+          expected_head_sha: "expected-retry-sha"
+        }
+      ],
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      rate_limits: %{},
+      workspace: %{
+        usage_bytes: 1,
+        warning_threshold_bytes: 10,
+        done_closed_keep_count: 5
+      }
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ExecutionHeadApiOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    state_payload = json_response(get(build_conn(), "/api/v1/state"), 200)
+
+    assert [
+             %{
+               "issue_identifier" => "MT-HEADS",
+               "runtime_head_sha" => "runtime-running-sha",
+               "expected_head_sha" => "expected-running-sha"
+             }
+           ] =
+             Enum.map(
+               state_payload["running"],
+               &Map.take(&1, ["issue_identifier", "runtime_head_sha", "expected_head_sha"])
+             )
+
+    assert [
+             %{
+               "issue_identifier" => "MT-HEADS-RETRY",
+               "runtime_head_sha" => "runtime-retry-sha",
+               "expected_head_sha" => "expected-retry-sha"
+             }
+           ] =
+             Enum.map(
+               state_payload["retrying"],
+               &Map.take(&1, ["issue_identifier", "runtime_head_sha", "expected_head_sha"])
+             )
+
+    running_issue_payload = json_response(get(build_conn(), "/api/v1/MT-HEADS"), 200)
+
+    assert running_issue_payload["running"]["runtime_head_sha"] == "runtime-running-sha"
+    assert running_issue_payload["running"]["expected_head_sha"] == "expected-running-sha"
+    assert running_issue_payload["tracked"]["runtime_head_sha"] == "runtime-running-sha"
+    assert running_issue_payload["tracked"]["expected_head_sha"] == "expected-running-sha"
+
+    retry_issue_payload = json_response(get(build_conn(), "/api/v1/MT-HEADS-RETRY"), 200)
+
+    assert retry_issue_payload["retry"]["runtime_head_sha"] == "runtime-retry-sha"
+    assert retry_issue_payload["retry"]["expected_head_sha"] == "expected-retry-sha"
+  end
+
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
     previous_release_sha = System.get_env("SYMPHONY_RELEASE_SHA")
     previous_image_tag = System.get_env("SYMPHONY_IMAGE_TAG")
