@@ -129,6 +129,32 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert ControllerFinalizer.eligible?(issue, checkpoint)
   end
 
+  test "eligible?/2 parses blocked PR fingerprints when blocked_pr_number is a string" do
+    issue = %Issue{id: "issue-fingerprint-string", identifier: "LET-462-FINGERPRINT-STRING", state: "In Progress"}
+
+    matching_checkpoint = %{
+      "open_pr" => %{"number" => 42, "url" => "https://github.com/acme/symphony/pull/42"},
+      "controller_finalizer" => %{
+        "status" => "action_required",
+        "reason" => "pull request has actionable feedback",
+        "blocked_reason" => "pull request has actionable feedback",
+        "blocked_pr_number" => "42",
+        "blocked_head" => nil
+      }
+    }
+
+    refute ControllerFinalizer.eligible?(issue, matching_checkpoint)
+
+    invalid_checkpoint =
+      put_in(
+        matching_checkpoint,
+        ["controller_finalizer", "blocked_pr_number"],
+        "not-a-number"
+      )
+
+    assert ControllerFinalizer.eligible?(issue, invalid_checkpoint)
+  end
+
   test "run/3 completes deterministic finalization and transitions issue state on success" do
     issue = %Issue{id: "issue-success", identifier: "LET-462-SUCCESS", state: "In Progress"}
     _workspace = create_workspace!(issue.identifier)
