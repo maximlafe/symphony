@@ -46,13 +46,13 @@ validation-env-check:
 	@$(VALIDATION_MIX) deps | grep -F "* dialyxir " >/dev/null
 
 validate:
+	$(VALIDATION_MIX) deps.get
 	$(MAKE) validation-env-check
 	$(MAKE) contracts
 	$(VALIDATION_MIX) build
 	$(VALIDATION_MIX) format --check-formatted
 	$(VALIDATION_MIX) lint
 	$(VALIDATION_TEST_MIX) test --cover
-	$(VALIDATION_MIX) deps.get
 	$(VALIDATION_MIX) dialyzer --format short
 
 dashboard:

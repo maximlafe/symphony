@@ -22,6 +22,7 @@ class SymphonyValidationContractTest(unittest.TestCase):
         self.assertIn("VALIDATION_TEST_MIX_ENV ?= test", makefile)
         self.assertIn("validation-env-check:", makefile)
         self.assertIn("validate:", makefile)
+        self.assertIn("$(VALIDATION_MIX) deps.get", makefile)
         self.assertIn('$(VALIDATION_MIX) deps | grep -F "* credo " >/dev/null', makefile)
         self.assertIn('$(VALIDATION_MIX) deps | grep -F "* dialyxir " >/dev/null', makefile)
         self.assertIn("$(VALIDATION_MIX) build", makefile)
