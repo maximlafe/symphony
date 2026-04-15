@@ -26,41 +26,41 @@ defmodule SymphonyElixir.BudgetGuardrails do
       exceeded?(issue_total, settings.codex.max_total_tokens) ->
         {:handoff,
          decision(context, %{
-           reason: :max_total_tokens_exceeded,
-           threshold: settings.codex.max_total_tokens,
-           observed_total: issue_total,
-           issue_total_tokens: issue_total
+           budget_reason: :max_total_tokens_exceeded,
+           budget_threshold: settings.codex.max_total_tokens,
+           budget_observed_total: issue_total,
+           budget_issue_total_tokens: issue_total,
+           budget_decision: "handoff"
          })}
 
       exceeded?(attempt_tokens, settings.codex.max_tokens_per_attempt) ->
         per_attempt_decision(context, settings, attempt_tokens, issue_total)
 
       true ->
-        {:allow,
-         %{
-           attempt_tokens: attempt_tokens,
-           issue_total_tokens: issue_total
-         }}
+        {:allow, %{budget_attempt_tokens: attempt_tokens, budget_issue_total_tokens: issue_total}}
     end
   end
 
-  def decide(_context), do: {:allow, %{attempt_tokens: 0, issue_total_tokens: 0}}
+  def decide(_context), do: {:allow, %{budget_attempt_tokens: 0, budget_issue_total_tokens: 0}}
 
   defp per_attempt_decision(context, settings, attempt_tokens, issue_total) do
     base =
       decision(context, %{
-        reason: :max_tokens_per_attempt_exceeded,
-        threshold: settings.codex.max_tokens_per_attempt,
-        observed_total: attempt_tokens,
-        issue_total_tokens: issue_total
+        budget_reason: :max_tokens_per_attempt_exceeded,
+        budget_threshold: settings.codex.max_tokens_per_attempt,
+        budget_observed_total: attempt_tokens,
+        budget_issue_total_tokens: issue_total
       })
 
     case cheaper_profile(context, settings) do
       {:ok, profile_key} ->
-        {:downshift, Map.put(base, :cost_profile_key, profile_key)}
+        {:downshift,
+         base
+         |> Map.put(:budget_decision, "downshift")
+         |> Map.put(:budget_next_cost_profile_key, profile_key)}
 
       :error ->
-        {:handoff, base}
+        {:handoff, Map.put(base, :budget_decision, "handoff")}
     end
   end
 
@@ -73,15 +73,16 @@ defmodule SymphonyElixir.BudgetGuardrails do
       summary: summary(attrs),
       issue_id: issue_id(issue),
       issue_identifier: issue_identifier(issue),
+      budget_decision: Map.get(attrs, :budget_decision),
       attempt: Map.get(context, :attempt),
       delay_type: Map.get(context, :delay_type),
-      attempt_tokens: non_negative_integer(Map.get(context, :attempt_tokens)),
+      budget_attempt_tokens: non_negative_integer(Map.get(context, :attempt_tokens)),
       issue_tokens_before_attempt: non_negative_integer(Map.get(context, :issue_tokens_before_attempt))
     }
     |> Map.merge(attrs)
   end
 
-  defp summary(%{reason: reason, observed_total: observed, threshold: threshold}) do
+  defp summary(%{budget_reason: reason, budget_observed_total: observed, budget_threshold: threshold}) do
     "budget #{reason}: observed #{observed} exceeded threshold #{threshold}"
   end
 

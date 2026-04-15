@@ -16,6 +16,7 @@ defmodule SymphonyElixir.Orchestrator do
     ResumeCheckpoint,
     RunPhase,
     StatusDashboard,
+    TelemetrySchema,
     Tracker,
     Workspace
   }
@@ -1150,7 +1151,7 @@ defmodule SymphonyElixir.Orchestrator do
             trace_id: trace_id,
             delay_type: :continuation,
             resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_totals),
-            issue_token_total: budget_totals.issue_total_tokens
+            issue_token_total: budget_totals.budget_issue_total_tokens
           }
           |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
         )
@@ -1168,8 +1169,8 @@ defmodule SymphonyElixir.Orchestrator do
             trace_id: trace_id,
             delay_type: :continuation,
             resume_checkpoint: put_budget_checkpoint(resume_checkpoint, decision),
-            issue_token_total: decision.issue_total_tokens,
-            cost_profile_key: decision.cost_profile_key,
+            issue_token_total: decision.budget_issue_total_tokens,
+            cost_profile_key: decision.budget_next_cost_profile_key,
             budget_decision: decision,
             error: "budget downshift: #{decision.reason}",
             error_class: ErrorClassifier.to_string(:transient)
@@ -1226,7 +1227,7 @@ defmodule SymphonyElixir.Orchestrator do
             trace_id: trace_id,
             codex_account_id: Map.get(running_entry, :codex_account_id),
             resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_totals),
-            issue_token_total: budget_totals.issue_total_tokens
+            issue_token_total: budget_totals.budget_issue_total_tokens
           }
           |> Map.merge(retry_execution_metadata(running_entry))
         )
@@ -1244,8 +1245,8 @@ defmodule SymphonyElixir.Orchestrator do
             error: "budget downshift: #{decision.reason}",
             error_class: error_class_label,
             resume_checkpoint: put_budget_checkpoint(resume_checkpoint, decision),
-            issue_token_total: decision.issue_total_tokens,
-            cost_profile_key: decision.cost_profile_key,
+            issue_token_total: decision.budget_issue_total_tokens,
+            cost_profile_key: decision.budget_next_cost_profile_key,
             budget_decision: decision
           }
           |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
@@ -2385,8 +2386,8 @@ defmodule SymphonyElixir.Orchestrator do
               trace_id: trace_id,
               delay_type: delay_type,
               resume_checkpoint: checkpoint,
-              issue_token_total: decision.issue_total_tokens,
-              cost_profile_key: decision.cost_profile_key,
+              issue_token_total: decision.budget_issue_total_tokens,
+              cost_profile_key: decision.budget_next_cost_profile_key,
               budget_decision: decision,
               error: "budget downshift: #{decision.reason}",
               error_class: ErrorClassifier.to_string(:transient)
@@ -2443,13 +2444,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp put_budget_checkpoint(checkpoint, budget) when is_map(checkpoint) and is_map(budget) do
     Map.put(checkpoint, "token_budget", %{
-      "issue_total_tokens" => budget_value(budget, :issue_total_tokens),
-      "attempt_tokens" => budget_value(budget, :attempt_tokens),
-      "reason" => budget_value(budget, :reason),
-      "threshold" => budget_value(budget, :threshold),
-      "observed_total" => budget_value(budget, :observed_total),
-      "decision" => budget_value(budget, :decision),
-      "cost_profile_key" => budget_value(budget, :cost_profile_key)
+      "budget_issue_total_tokens" => budget_value(budget, :budget_issue_total_tokens),
+      "budget_attempt_tokens" => budget_value(budget, :budget_attempt_tokens),
+      "budget_reason" => budget_value(budget, :budget_reason),
+      "budget_threshold" => budget_value(budget, :budget_threshold),
+      "budget_observed_total" => budget_value(budget, :budget_observed_total),
+      "budget_decision" => budget_value(budget, :budget_decision),
+      "budget_next_cost_profile_key" => budget_value(budget, :budget_next_cost_profile_key)
     })
   end
 
@@ -2462,29 +2463,46 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp budget_issue_total(%{"token_budget" => %{"issue_total_tokens" => value}})
-       when is_integer(value) and value >= 0,
-       do: value
+  defp budget_issue_total(%{"token_budget" => budget}) when is_map(budget) do
+    budget
+    |> TelemetrySchema.runtime_payload()
+    |> Map.get("budget_issue_total_tokens")
+    |> normalize_budget_issue_total()
+  end
 
-  defp budget_issue_total(%{"token_budget" => %{"issue_total_tokens" => value}}) when is_binary(value) do
+  defp budget_issue_total(_checkpoint), do: 0
+
+  defp normalize_budget_issue_total(value) when is_integer(value) and value >= 0, do: value
+
+  defp normalize_budget_issue_total(value) when is_binary(value) do
     case Integer.parse(value) do
       {integer, ""} when integer >= 0 -> integer
       _ -> 0
     end
   end
 
-  defp budget_issue_total(_checkpoint), do: 0
+  defp normalize_budget_issue_total(_value), do: 0
 
-  defp budget_cost_profile_key(%{"token_budget" => %{"cost_profile_key" => profile_key}})
-       when is_binary(profile_key) and profile_key != "",
-       do: profile_key
+  defp budget_cost_profile_key(%{"token_budget" => budget}) when is_map(budget) do
+    case Map.get(TelemetrySchema.runtime_payload(budget), "budget_next_cost_profile_key") do
+      profile_key when is_binary(profile_key) and profile_key != "" -> profile_key
+      _ -> nil
+    end
+  end
 
   defp budget_cost_profile_key(_checkpoint), do: nil
 
   defp log_budget_decision(issue_id, identifier, session_id, trace_id, decision, budget) do
-    with_log_metadata(issue_log_metadata(issue_id, identifier, session_id, trace_id), fn ->
+    metadata =
+      issue_log_metadata(issue_id, identifier, session_id, trace_id)
+      |> Enum.into(%{})
+      |> Map.merge(%{budget_decision: decision})
+      |> Map.merge(TelemetrySchema.logger_metadata(budget))
+      |> Map.to_list()
+
+    with_log_metadata(metadata, fn ->
       Logger.warning(
-        "Budget decision issue_id=#{issue_id} issue_identifier=#{identifier} attempt=#{inspect(Map.get(budget, :attempt))} delay_type=#{inspect(Map.get(budget, :delay_type))} threshold=#{inspect(Map.get(budget, :threshold))} observed_total=#{inspect(Map.get(budget, :observed_total))} decision=#{decision} reason=#{Map.get(budget, :reason)}"
+        "Budget decision issue_id=#{issue_id} issue_identifier=#{identifier} attempt=#{inspect(Map.get(budget, :attempt))} delay_type=#{inspect(Map.get(budget, :delay_type))} budget_threshold=#{inspect(Map.get(budget, :budget_threshold))} budget_observed_total=#{inspect(Map.get(budget, :budget_observed_total))} budget_decision=#{decision} budget_reason=#{Map.get(budget, :budget_reason)}"
       )
     end)
   end
@@ -2515,7 +2533,7 @@ defmodule SymphonyElixir.Orchestrator do
             trace_id: trace_id,
             error: "failed to escalate budget handoff to #{intervention_state}: #{inspect(reason)}",
             error_class: ErrorClassifier.to_string(:transient),
-            issue_token_total: Map.get(decision, :issue_total_tokens)
+            issue_token_total: Map.get(decision, :budget_issue_total_tokens)
           }
         )
     end
@@ -2535,7 +2553,7 @@ defmodule SymphonyElixir.Orchestrator do
           trace_id: trace_id,
           error: "failed to escalate budget handoff: missing issue id",
           error_class: ErrorClassifier.to_string(:transient),
-          issue_token_total: Map.get(decision, :issue_total_tokens)
+          issue_token_total: Map.get(decision, :budget_issue_total_tokens)
         }
       )
     else
@@ -2555,9 +2573,9 @@ defmodule SymphonyElixir.Orchestrator do
       end
 
     cost_profile_line =
-      case Map.get(decision, :cost_profile_key) do
+      case Map.get(decision, :budget_next_cost_profile_key) do
         profile_key when is_binary(profile_key) and profile_key != "" ->
-          "- cost_profile_key: `#{profile_key}`\n"
+          "- budget_next_cost_profile_key: `#{profile_key}`\n"
 
         _ ->
           ""
@@ -2569,11 +2587,11 @@ defmodule SymphonyElixir.Orchestrator do
     - checkpoint_type: `#{Map.get(decision, :checkpoint_type, "decision")}`
     - risk_level: `#{Map.get(decision, :risk_level, "medium")}`
     - issue: `#{issue.identifier || issue.id}`
-    #{trace_id_line}- reason: `#{Map.get(decision, :reason)}`
-    - threshold: `#{Map.get(decision, :threshold)}`
-    - observed_total: `#{Map.get(decision, :observed_total)}`
-    - attempt_tokens: `#{Map.get(decision, :attempt_tokens)}`
-    - issue_total_tokens: `#{Map.get(decision, :issue_total_tokens)}`
+    #{trace_id_line}- budget_reason: `#{Map.get(decision, :budget_reason)}`
+    - budget_threshold: `#{Map.get(decision, :budget_threshold)}`
+    - budget_observed_total: `#{Map.get(decision, :budget_observed_total)}`
+    - budget_attempt_tokens: `#{Map.get(decision, :budget_attempt_tokens)}`
+    - budget_issue_total_tokens: `#{Map.get(decision, :budget_issue_total_tokens)}`
     #{cost_profile_line}- summary: #{Map.get(decision, :summary)}
     """
   end
@@ -3279,9 +3297,8 @@ defmodule SymphonyElixir.Orchestrator do
           verification_checked_at: Map.get(metadata, :verification_checked_at),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
-        |> maybe_put_snapshot_value(:runtime_head_sha, Map.get(metadata, :runtime_head_sha))
-        |> maybe_put_snapshot_value(:expected_head_sha, Map.get(metadata, :expected_head_sha))
         |> Map.merge(runtime_fields)
+        |> TelemetrySchema.put_runtime_payload(metadata)
       end)
 
     retrying =
@@ -3296,8 +3313,7 @@ defmodule SymphonyElixir.Orchestrator do
           error: Map.get(retry, :error),
           error_class: Map.get(retry, :error_class)
         }
-        |> maybe_put_snapshot_value(:runtime_head_sha, Map.get(retry, :runtime_head_sha))
-        |> maybe_put_snapshot_value(:expected_head_sha, Map.get(retry, :expected_head_sha))
+        |> TelemetrySchema.put_runtime_payload(retry)
       end)
 
     {:reply,
@@ -3351,9 +3367,6 @@ defmodule SymphonyElixir.Orchestrator do
         {:reply, {:error, :invalid_account}, state}
     end
   end
-
-  defp maybe_put_snapshot_value(map, _key, value) when not is_binary(value) or value == "", do: map
-  defp maybe_put_snapshot_value(map, key, value), do: Map.put(map, key, value)
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)

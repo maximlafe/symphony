@@ -91,6 +91,38 @@ defmodule SymphonyElixir.JsonFormatterTest do
     assert payload["command_source"] == "cost_profile"
   end
 
+  test "agent logs include canonical budget and execution-head decision metadata" do
+    event = %{
+      level: :warning,
+      msg: {:string, "Budget handoff"},
+      meta: %{
+        time: 1_710_000_000_323_456,
+        mfa: {SymphonyElixir.Orchestrator, :handle_info, 2},
+        budget_decision: "handoff",
+        budget_reason: "max_total_tokens_exceeded",
+        budget_threshold: 100,
+        budget_observed_total: 125,
+        budget_attempt_tokens: 50,
+        budget_issue_total_tokens: 125,
+        runtime_head_sha: "runtime-sha",
+        expected_head_sha: "expected-sha",
+        head_relation: "mismatch"
+      }
+    }
+
+    payload = event |> JsonFormatter.format(%{}) |> decode_json_line()
+
+    assert payload["budget_decision"] == "handoff"
+    assert payload["budget_reason"] == "max_total_tokens_exceeded"
+    assert payload["budget_threshold"] == "100"
+    assert payload["budget_observed_total"] == "125"
+    assert payload["budget_attempt_tokens"] == "50"
+    assert payload["budget_issue_total_tokens"] == "125"
+    assert payload["runtime_head_sha"] == "runtime-sha"
+    assert payload["expected_head_sha"] == "expected-sha"
+    assert payload["head_relation"] == "mismatch"
+  end
+
   test "agent module logs include required context keys even when values are missing" do
     event = %{
       level: :info,

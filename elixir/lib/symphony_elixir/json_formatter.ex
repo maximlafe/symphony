@@ -15,6 +15,7 @@ defmodule SymphonyElixir.JsonFormatter do
   @context_fields ~w(issue_id issue_identifier session_id trace_id workspace)
   @context_field_atoms [:issue_id, :issue_identifier, :session_id, :trace_id, :workspace]
   @cost_fields ~w(cost_profile_key cost_profile_reason cost_stage cost_signals codex_model codex_effort command_source)
+  @decision_fields Enum.map(SymphonyElixir.TelemetrySchema.logger_metadata_fields(), &Atom.to_string/1)
   @cost_field_atoms [
     :cost_profile_key,
     :cost_profile_reason,
@@ -117,9 +118,11 @@ defmodule SymphonyElixir.JsonFormatter do
   defp context_fields(%{meta: metadata}, message) when is_map(metadata) and is_binary(message) do
     message_fields = message_context_fields(message)
 
+    decision_field_atoms = SymphonyElixir.TelemetrySchema.logger_metadata_fields()
+
     metadata_fields =
-      (@context_field_atoms ++ @cost_field_atoms)
-      |> Enum.zip(@context_fields ++ @cost_fields)
+      (@context_field_atoms ++ @cost_field_atoms ++ decision_field_atoms)
+      |> Enum.zip(@context_fields ++ @cost_fields ++ @decision_fields)
       |> Enum.reduce(%{}, fn {metadata_key, output_key}, acc ->
         case Map.get(metadata, metadata_key) do
           nil ->
@@ -163,7 +166,7 @@ defmodule SymphonyElixir.JsonFormatter do
       Enum.reduce(@context_fields, %{}, fn field, acc ->
         Map.put(acc, field, Map.get(context_fields, field))
       end)
-      |> Map.merge(Map.take(context_fields, @cost_fields))
+      |> Map.merge(Map.take(context_fields, @cost_fields ++ @decision_fields))
     else
       context_fields
     end

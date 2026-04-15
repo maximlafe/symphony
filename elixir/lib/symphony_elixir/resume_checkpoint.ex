@@ -3,7 +3,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
   Builds and validates a compact retry/handoff resume checkpoint for unattended runs.
   """
 
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, TelemetrySchema}
 
   @manifest_rel_path ".symphony/resume/checkpoint.json"
   @workpad_path "workpad.md"
@@ -49,6 +49,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
         |> Map.put("workpad_ref", read_trimmed(Path.join(workspace, @workpad_ref_path)))
         |> Map.put("workpad_digest", sha256_file(Path.join(workspace, @workpad_path)))
         |> merge_pr_context(running_entry)
+        |> Map.merge(TelemetrySchema.validation_guard_payload(running_entry))
         |> evaluate_readiness()
 
       persist_checkpoint(checkpoint)
@@ -72,6 +73,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       |> normalize_checkpoint()
       |> revalidate(workspace)
       |> evaluate_readiness()
+      |> then(&Map.merge(&1, TelemetrySchema.checkpoint_payload(&1, "resume_checkpoint")))
       |> Map.put("available", true)
       |> Map.put("manifest_path", manifest_path)
     else
@@ -83,7 +85,13 @@ defmodule SymphonyElixir.ResumeCheckpoint do
   end
 
   @spec for_prompt(map() | nil) :: map()
-  def for_prompt(checkpoint) when is_map(checkpoint), do: checkpoint |> normalize_checkpoint() |> evaluate_readiness()
+  def for_prompt(checkpoint) when is_map(checkpoint) do
+    checkpoint
+    |> normalize_checkpoint()
+    |> evaluate_readiness()
+    |> then(&Map.merge(&1, TelemetrySchema.checkpoint_payload(&1, "resume_checkpoint")))
+  end
+
   def for_prompt(_checkpoint), do: evaluate_readiness(base_checkpoint(nil))
 
   defp persist_checkpoint(%{"manifest_path" => path} = checkpoint) when is_binary(path) and path != "" do
@@ -152,6 +160,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     |> Map.put("available", Map.get(checkpoint, "available") == true)
     |> Map.put("fallback_reasons", reasons)
     |> Map.put("resume_ready", reasons == [])
+    |> then(&Map.merge(&1, TelemetrySchema.checkpoint_payload(&1, "resume_checkpoint")))
   end
 
   defp required_field_reasons(checkpoint) do

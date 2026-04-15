@@ -1807,15 +1807,31 @@ defmodule SymphonyElixir.CoreTest do
 
       send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
 
-      _state_after_first_failure =
+      state_after_first_failure =
         wait_for_orchestrator_state(pid, fn state ->
           match?(%{attempt: 1, feedback_digest: "feedback-digest-a"}, state.retry_attempts[issue_id])
         end)
+        |> then(fn state ->
+          cancel_retry_timer(state.retry_attempts[issue_id])
+          state
+        end)
+
+      first_retry_key = state_after_first_failure.retry_dedupe_keys[issue_id]
+      assert is_binary(first_retry_key)
+      stop_orchestrator(pid)
 
       second_ref = make_ref()
+      retry_orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeFeedbackChangeRetryOrchestrator)
+      {:ok, retry_pid} = Orchestrator.start_link(name: retry_orchestrator_name)
 
-      replace_orchestrator_state!(pid, fn current_state ->
-        current_state
+      on_exit(fn ->
+        stop_orchestrator(retry_pid)
+      end)
+
+      retry_initial_state = :sys.get_state(retry_pid)
+
+      replace_orchestrator_state!(retry_pid, fn _ ->
+        retry_initial_state
         |> Map.put(:running, %{
           issue_id =>
             feedback_dedupe_running_entry(issue, second_ref,
@@ -1827,12 +1843,13 @@ defmodule SymphonyElixir.CoreTest do
         })
         |> Map.put(:claimed, MapSet.new([issue_id]))
         |> Map.put(:retry_attempts, %{})
+        |> Map.put(:retry_dedupe_keys, %{issue_id => first_retry_key})
       end)
 
-      send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(retry_pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
 
       state_after_second_failure =
-        wait_for_orchestrator_state(pid, fn state ->
+        wait_for_orchestrator_state(retry_pid, fn state ->
           match?(%{attempt: 2, feedback_digest: "feedback-digest-b"}, state.retry_attempts[issue_id])
         end)
 
@@ -1903,15 +1920,31 @@ defmodule SymphonyElixir.CoreTest do
 
       send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
 
-      _state_after_first_failure =
+      state_after_first_failure =
         wait_for_orchestrator_state(pid, fn state ->
           match?(%{attempt: 1, runtime_head_sha: "runtime-head-a"}, state.retry_attempts[issue_id])
         end)
+        |> then(fn state ->
+          cancel_retry_timer(state.retry_attempts[issue_id])
+          state
+        end)
+
+      first_retry_key = state_after_first_failure.retry_dedupe_keys[issue_id]
+      assert is_binary(first_retry_key)
+      stop_orchestrator(pid)
 
       second_ref = make_ref()
+      retry_orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeHeadChangeRetryOrchestrator)
+      {:ok, retry_pid} = Orchestrator.start_link(name: retry_orchestrator_name)
 
-      replace_orchestrator_state!(pid, fn current_state ->
-        current_state
+      on_exit(fn ->
+        stop_orchestrator(retry_pid)
+      end)
+
+      retry_initial_state = :sys.get_state(retry_pid)
+
+      replace_orchestrator_state!(retry_pid, fn _ ->
+        retry_initial_state
         |> Map.put(:running, %{
           issue_id =>
             feedback_dedupe_running_entry(issue, second_ref,
@@ -1923,12 +1956,13 @@ defmodule SymphonyElixir.CoreTest do
         })
         |> Map.put(:claimed, MapSet.new([issue_id]))
         |> Map.put(:retry_attempts, %{})
+        |> Map.put(:retry_dedupe_keys, %{issue_id => first_retry_key})
       end)
 
-      send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(retry_pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
 
       state_after_second_failure =
-        wait_for_orchestrator_state(pid, fn state ->
+        wait_for_orchestrator_state(retry_pid, fn state ->
           match?(%{attempt: 2, runtime_head_sha: "runtime-head-b"}, state.retry_attempts[issue_id])
         end)
 
@@ -2004,13 +2038,28 @@ defmodule SymphonyElixir.CoreTest do
         wait_for_orchestrator_state(pid, fn state ->
           match?(%{attempt: 1}, state.retry_attempts[issue_id])
         end)
+        |> then(fn state ->
+          cancel_retry_timer(state.retry_attempts[issue_id])
+          state
+        end)
 
       assert %{error_signature: first_error_signature} = state_after_first_failure.retry_attempts[issue_id]
+      first_retry_key = state_after_first_failure.retry_dedupe_keys[issue_id]
+      assert is_binary(first_retry_key)
+      stop_orchestrator(pid)
 
       second_ref = make_ref()
+      retry_orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeErrorChangeRetryOrchestrator)
+      {:ok, retry_pid} = Orchestrator.start_link(name: retry_orchestrator_name)
 
-      replace_orchestrator_state!(pid, fn current_state ->
-        current_state
+      on_exit(fn ->
+        stop_orchestrator(retry_pid)
+      end)
+
+      retry_initial_state = :sys.get_state(retry_pid)
+
+      replace_orchestrator_state!(retry_pid, fn _ ->
+        retry_initial_state
         |> Map.put(:running, %{
           issue_id =>
             feedback_dedupe_running_entry(issue, second_ref,
@@ -2022,12 +2071,13 @@ defmodule SymphonyElixir.CoreTest do
         })
         |> Map.put(:claimed, MapSet.new([issue_id]))
         |> Map.put(:retry_attempts, %{})
+        |> Map.put(:retry_dedupe_keys, %{issue_id => first_retry_key})
       end)
 
-      send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "connection reset by peer"}})
+      send(retry_pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "connection reset by peer"}})
 
       state_after_second_failure =
-        wait_for_orchestrator_state(pid, fn state ->
+        wait_for_orchestrator_state(retry_pid, fn state ->
           match?(%{attempt: 2}, state.retry_attempts[issue_id])
         end)
 
@@ -4906,10 +4956,27 @@ defmodule SymphonyElixir.CoreTest do
     }
   end
 
-  defp replace_orchestrator_state!(pid, fun, timeout \\ 15_000)
+  defp replace_orchestrator_state!(pid, fun, timeout \\ 30_000)
        when is_pid(pid) and is_function(fun, 1) and is_integer(timeout) and timeout > 0 do
     :sys.replace_state(pid, fun, timeout)
   end
+
+  defp cancel_retry_timer(%{timer_ref: timer_ref}) when is_reference(timer_ref) do
+    Process.cancel_timer(timer_ref)
+    :ok
+  end
+
+  defp cancel_retry_timer(_retry_entry), do: :ok
+
+  defp stop_orchestrator(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      Process.exit(pid, :normal)
+    end
+
+    :ok
+  end
+
+  defp stop_orchestrator(_pid), do: :ok
 
   defp wait_for_orchestrator_state(pid, predicate, attempts \\ 40)
 

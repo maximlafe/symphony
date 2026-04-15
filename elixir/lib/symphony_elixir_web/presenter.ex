@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, TelemetrySchema}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -145,8 +145,7 @@ defmodule SymphonyElixirWeb.Presenter do
         total_tokens: entry.codex_total_tokens
       }
     }
-    |> maybe_put(:runtime_head_sha, Map.get(entry, :runtime_head_sha))
-    |> maybe_put(:expected_head_sha, Map.get(entry, :expected_head_sha))
+    |> Map.merge(TelemetrySchema.runtime_payload(entry))
   end
 
   defp retry_entry_payload(entry) do
@@ -159,8 +158,7 @@ defmodule SymphonyElixirWeb.Presenter do
       error: entry.error,
       error_class: Map.get(entry, :error_class)
     }
-    |> maybe_put(:runtime_head_sha, Map.get(entry, :runtime_head_sha))
-    |> maybe_put(:expected_head_sha, Map.get(entry, :expected_head_sha))
+    |> Map.merge(TelemetrySchema.runtime_payload(entry))
   end
 
   defp running_issue_payload(running) do
@@ -195,8 +193,7 @@ defmodule SymphonyElixirWeb.Presenter do
         total_tokens: running.codex_total_tokens
       }
     }
-    |> maybe_put(:runtime_head_sha, Map.get(running, :runtime_head_sha))
-    |> maybe_put(:expected_head_sha, Map.get(running, :expected_head_sha))
+    |> Map.merge(TelemetrySchema.runtime_payload(running))
   end
 
   defp retry_issue_payload(retry) do
@@ -207,8 +204,7 @@ defmodule SymphonyElixirWeb.Presenter do
       error: retry.error,
       error_class: Map.get(retry, :error_class)
     }
-    |> maybe_put(:runtime_head_sha, Map.get(retry, :runtime_head_sha))
-    |> maybe_put(:expected_head_sha, Map.get(retry, :expected_head_sha))
+    |> Map.merge(TelemetrySchema.runtime_payload(retry))
   end
 
   defp recent_events_payload(running) do
@@ -246,12 +242,8 @@ defmodule SymphonyElixirWeb.Presenter do
       verification_missing_items: Map.get(running, :verification_missing_items, []),
       verification_checked_at: iso8601(Map.get(running, :verification_checked_at))
     }
-    |> maybe_put(:runtime_head_sha, Map.get(running, :runtime_head_sha))
-    |> maybe_put(:expected_head_sha, Map.get(running, :expected_head_sha))
+    |> Map.merge(TelemetrySchema.runtime_payload(running))
   end
-
-  defp maybe_put(map, _key, value) when value in [nil, ""], do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp account_payload(account) when is_map(account) do
     %{

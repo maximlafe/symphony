@@ -33,9 +33,11 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
                issue_tokens_before_attempt: 75
              })
 
-    assert decision.reason == :max_total_tokens_exceeded
-    assert decision.threshold == 100
-    assert decision.observed_total == 125
+    assert decision.budget_reason == :max_total_tokens_exceeded
+    assert decision.budget_threshold == 100
+    assert decision.budget_observed_total == 125
+    assert decision.budget_issue_total_tokens == 125
+    assert decision.budget_decision == "handoff"
     assert decision.checkpoint_type == "decision"
     assert decision.risk_level == "medium"
   end
@@ -63,10 +65,38 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
                issue_tokens_before_attempt: 0
              })
 
-    assert decision.reason == :max_tokens_per_attempt_exceeded
-    assert decision.threshold == 10
-    assert decision.observed_total == 12
-    assert decision.cost_profile_key == "cheap_implementation"
+    assert decision.budget_reason == :max_tokens_per_attempt_exceeded
+    assert decision.budget_threshold == 10
+    assert decision.budget_observed_total == 12
+    assert decision.budget_next_cost_profile_key == "cheap_implementation"
+    assert decision.budget_decision == "downshift"
+  end
+
+  test "per-attempt budget handoff fallback is not mislabeled as downshift" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command_template: "codex --config model_reasoning_effort={{effort}} --model {{model}} app-server",
+      codex_max_tokens_per_attempt: 10,
+      codex_cost_profiles: %{
+        cheap_implementation: %{model: "gpt-5.3-codex", effort: "medium"}
+      },
+      codex_cost_policy: %{
+        stage_defaults: %{implementation: "cheap_implementation"}
+      }
+    )
+
+    assert {:handoff, decision} =
+             BudgetGuardrails.decide(%{
+               issue: %Issue{id: "issue-budget", identifier: "LET-472", state: "In Progress"},
+               attempt: 1,
+               delay_type: nil,
+               attempt_tokens: 12,
+               issue_tokens_before_attempt: 0,
+               current_cost_profile_key: "cheap_implementation"
+             })
+
+    assert decision.budget_reason == :max_tokens_per_attempt_exceeded
+    assert decision.budget_decision == "handoff"
+    refute Map.has_key?(decision, :budget_next_cost_profile_key)
   end
 
   test "normal continuation exit over per-attempt budget blocks without retrying" do
@@ -177,8 +207,8 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
       send(pid, {:DOWN, ref, :process, self(), :boom})
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 1_500
-      assert blocker_body =~ "max_total_tokens_exceeded"
-      assert blocker_body =~ "observed_total: `22`"
+      assert blocker_body =~ "budget_reason: `max_total_tokens_exceeded`"
+      assert blocker_body =~ "budget_observed_total: `22`"
       assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
 
       state =
