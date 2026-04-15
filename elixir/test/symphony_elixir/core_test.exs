@@ -1510,6 +1510,417 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "same failure key after one queued retry blocks the issue" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-feedback-dedupe-block"
+    issue_identifier = "MT-FEEDBACK-DEDUPE-BLOCK"
+    trace_id = "trace-feedback-dedupe-block"
+    runtime_head_sha = "runtime-head-feedback-dedupe"
+    feedback_digest = "feedback-digest-stable"
+    test_root = Path.join(System.tmp_dir!(), "symphony-elixir-feedback-dedupe-block-#{System.unique_integer([:positive])}")
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      issue = prepare_feedback_dedupe_issue!(issue_id, issue_identifier, workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeBlockOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      first_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              feedback_digest: feedback_digest
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      state_after_first_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(
+            %{
+              attempt: 1,
+              feedback_digest: ^feedback_digest,
+              runtime_head_sha: ^runtime_head_sha
+            },
+            state.retry_attempts[issue_id]
+          )
+        end)
+
+      assert %{
+               attempt: 1,
+               feedback_digest: ^feedback_digest,
+               runtime_head_sha: ^runtime_head_sha,
+               error_signature: first_error_signature
+             } = state_after_first_failure.retry_attempts[issue_id]
+
+      second_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn current_state ->
+        current_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              feedback_digest: feedback_digest,
+              retry_attempt: 1
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "failure_class: `retry_dedupe_hit`"
+      assert blocker_body =~ "retry_action: `stop`"
+      assert blocker_body =~ first_error_signature
+      assert blocker_body =~ runtime_head_sha
+      assert blocker_body =~ feedback_digest
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+
+      final_state =
+        wait_for_orchestrator_state(pid, fn state ->
+          state.running == %{} and
+            not Map.has_key?(state.retry_attempts, issue_id) and
+            not MapSet.member?(state.claimed, issue_id)
+        end)
+
+      assert final_state.running == %{}
+      refute Map.has_key?(final_state.retry_attempts, issue_id)
+      refute MapSet.member?(final_state.claimed, issue_id)
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "changed feedback digest allows another failure-driven retry" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-feedback-dedupe-feedback-change"
+    issue_identifier = "MT-FEEDBACK-DEDUPE-FEEDBACK"
+    trace_id = "trace-feedback-dedupe-feedback-change"
+    runtime_head_sha = "runtime-head-feedback-change"
+    test_root = Path.join(System.tmp_dir!(), "symphony-elixir-feedback-dedupe-feedback-change-#{System.unique_integer([:positive])}")
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      issue = prepare_feedback_dedupe_issue!(issue_id, issue_identifier, workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeFeedbackChangeOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      first_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              feedback_digest: "feedback-digest-a"
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      _state_after_first_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 1, feedback_digest: "feedback-digest-a"}, state.retry_attempts[issue_id])
+        end)
+
+      second_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn current_state ->
+        current_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              feedback_digest: "feedback-digest-b",
+              retry_attempt: 1
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      state_after_second_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 2, feedback_digest: "feedback-digest-b"}, state.retry_attempts[issue_id])
+        end)
+
+      assert %{attempt: 2, feedback_digest: "feedback-digest-b"} =
+               state_after_second_failure.retry_attempts[issue_id]
+
+      refute_received {:memory_tracker_comment, ^issue_id, _body}
+      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "changed runtime head allows another failure-driven retry" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-feedback-dedupe-head-change"
+    issue_identifier = "MT-FEEDBACK-DEDUPE-HEAD"
+    trace_id = "trace-feedback-dedupe-head-change"
+    feedback_digest = "feedback-digest-stable"
+    test_root = Path.join(System.tmp_dir!(), "symphony-elixir-feedback-dedupe-head-change-#{System.unique_integer([:positive])}")
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      issue = prepare_feedback_dedupe_issue!(issue_id, issue_identifier, workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeHeadChangeOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      first_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: "runtime-head-a",
+              feedback_digest: feedback_digest
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      _state_after_first_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 1, runtime_head_sha: "runtime-head-a"}, state.retry_attempts[issue_id])
+        end)
+
+      second_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn current_state ->
+        current_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: "runtime-head-b",
+              feedback_digest: feedback_digest,
+              retry_attempt: 1
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      state_after_second_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 2, runtime_head_sha: "runtime-head-b"}, state.retry_attempts[issue_id])
+        end)
+
+      assert %{attempt: 2, runtime_head_sha: "runtime-head-b"} =
+               state_after_second_failure.retry_attempts[issue_id]
+
+      refute_received {:memory_tracker_comment, ^issue_id, _body}
+      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "changed error signature allows another failure-driven retry" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-feedback-dedupe-error-change"
+    issue_identifier = "MT-FEEDBACK-DEDUPE-ERROR"
+    trace_id = "trace-feedback-dedupe-error-change"
+    runtime_head_sha = "runtime-head-error-change"
+    feedback_digest = "feedback-digest-error-change"
+    test_root = Path.join(System.tmp_dir!(), "symphony-elixir-feedback-dedupe-error-change-#{System.unique_integer([:positive])}")
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      issue = prepare_feedback_dedupe_issue!(issue_id, issue_identifier, workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeErrorChangeOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      first_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              feedback_digest: feedback_digest
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      state_after_first_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 1}, state.retry_attempts[issue_id])
+        end)
+
+      assert %{error_signature: first_error_signature} = state_after_first_failure.retry_attempts[issue_id]
+
+      second_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn current_state ->
+        current_state
+        |> Map.put(:running, %{
+          issue_id =>
+            feedback_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              feedback_digest: feedback_digest,
+              retry_attempt: 1
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "connection reset by peer"}})
+
+      state_after_second_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 2}, state.retry_attempts[issue_id])
+        end)
+
+      assert %{attempt: 2, error_signature: second_error_signature} =
+               state_after_second_failure.retry_attempts[issue_id]
+
+      refute first_error_signature == second_error_signature
+      refute_received {:memory_tracker_comment, ^issue_id, _body}
+      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "untrusted turn_failed text does not mark the codex account unhealthy" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     issue_id = "issue-turn-failed-untrusted-auth-text"
@@ -4007,6 +4418,48 @@ defmodule SymphonyElixir.CoreTest do
       {:error, {:already_started, _pid}} -> :ok
       other -> raise "failed to restart TaskSupervisor: #{inspect(other)}"
     end
+  end
+
+  defp prepare_feedback_dedupe_issue!(issue_id, issue_identifier, workspace_root) do
+    workspace = Path.join(workspace_root, issue_identifier)
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nFeedback dedupe state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-#{issue_id}")
+
+    %Issue{
+      id: issue_id,
+      identifier: issue_identifier,
+      title: "Feedback retry dedupe",
+      description: "Track retry dedupe for identical feedback",
+      state: "In Progress",
+      url: "https://example.org/issues/#{issue_identifier}",
+      labels: []
+    }
+  end
+
+  defp feedback_dedupe_running_entry(issue, ref, opts) do
+    %{
+      pid: self(),
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      trace_id: Keyword.get(opts, :trace_id),
+      retry_attempt: Keyword.get(opts, :retry_attempt),
+      runtime_head_sha: Keyword.fetch!(opts, :runtime_head_sha),
+      latest_pr_snapshot: %{
+        "url" => "https://github.com/acme/symphony/pull/480",
+        "state" => "OPEN",
+        "has_pending_checks" => false,
+        "has_actionable_feedback" => true,
+        "feedback_digest" => Keyword.fetch!(opts, :feedback_digest)
+      },
+      started_at: DateTime.utc_now()
+    }
+  end
+
+  defp replace_orchestrator_state!(pid, fun, timeout \\ 15_000)
+       when is_pid(pid) and is_function(fun, 1) and is_integer(timeout) and timeout > 0 do
+    :sys.replace_state(pid, fun, timeout)
   end
 
   defp wait_for_orchestrator_state(pid, predicate, attempts \\ 40)

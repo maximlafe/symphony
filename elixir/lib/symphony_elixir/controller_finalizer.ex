@@ -412,7 +412,8 @@ defmodule SymphonyElixir.ControllerFinalizer do
       "url" => payload["url"],
       "state" => payload["state"],
       "has_pending_checks" => payload["has_pending_checks"] == true,
-      "has_actionable_feedback" => payload["has_actionable_feedback"] == true
+      "has_actionable_feedback" => payload["has_actionable_feedback"] == true,
+      "feedback_digest" => normalize_string(payload["feedback_digest"])
     }
   end
 
@@ -430,6 +431,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
     |> Map.put("open_pr", open_pr)
     |> Map.put("pending_checks", snapshot["has_pending_checks"])
     |> Map.put("open_feedback", snapshot["has_actionable_feedback"])
+    |> Map.put("feedback_digest", snapshot["feedback_digest"])
   end
 
   defp normalize_open_pr(existing, snapshot) do
