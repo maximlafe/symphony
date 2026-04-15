@@ -28,6 +28,14 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
         failover_reason: :account_unhealthy,
         failover_from_account_id: "primary",
         failover_to_account_id: "backup",
+        retry_failover_decision: %{
+          selected_rule: "retry_dedupe_hit",
+          selected_action: :stop_with_classified_handoff,
+          reason: "identical retry surface",
+          suppressed_rules: [:budget_exceeded_per_attempt_downshift],
+          checkpoint_type: "human-action",
+          risk_level: :medium
+        },
         run_phase: "waiting ci",
         wait_reason: :checks_pending,
         current_command: "github_wait_for_checks --poll",
@@ -61,6 +69,12 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
              "retry_dedupe_result" => "queued",
              "retry_dedupe_key" => "timeout::runtime-sha::feedback-1",
              "runtime_head_sha" => "runtime-sha",
+             "retry_failover_checkpoint_type" => "human-action",
+             "retry_failover_reason" => "identical retry surface",
+             "retry_failover_risk_level" => "medium",
+             "retry_failover_selected_action" => "stop_with_classified_handoff",
+             "retry_failover_selected_rule" => "retry_dedupe_hit",
+             "retry_failover_suppressed_rules" => ["budget_exceeded_per_attempt_downshift"],
              "validation_guard_name" => "review-ready",
              "validation_guard_reason" => "all required checks green",
              "validation_guard_result" => "passed",
@@ -161,6 +175,24 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
              "validation_guard_name" => "handoff",
              "validation_guard_result" => "failed",
              "validation_guard_reason" => "missing artifact"
+           }
+  end
+
+  test "runtime_payload reads retry/failover decision aliases from flat keys or nested metadata" do
+    assert TelemetrySchema.runtime_payload(%{
+             retry_failover_selected_rule: :stale_workspace_head,
+             retry_failover_selected_action: "stop_with_classified_handoff",
+             retry_failover_reason: "workspace behind expected head",
+             retry_failover_suppressed_rules: [:account_unhealthy_checkpoint_available],
+             retry_failover_checkpoint_type: :human_action,
+             retry_failover_risk_level: "high"
+           }) == %{
+             "retry_failover_checkpoint_type" => "human_action",
+             "retry_failover_reason" => "workspace behind expected head",
+             "retry_failover_risk_level" => "high",
+             "retry_failover_selected_action" => "stop_with_classified_handoff",
+             "retry_failover_selected_rule" => "stale_workspace_head",
+             "retry_failover_suppressed_rules" => ["account_unhealthy_checkpoint_available"]
            }
   end
 

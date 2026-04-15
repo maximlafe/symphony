@@ -20,6 +20,14 @@ defmodule SymphonyElixir.TelemetrySchema do
     :error_signature,
     :feedback_digest
   ]
+  @retry_failover_fields [
+    :retry_failover_selected_rule,
+    :retry_failover_selected_action,
+    :retry_failover_reason,
+    :retry_failover_suppressed_rules,
+    :retry_failover_checkpoint_type,
+    :retry_failover_risk_level
+  ]
   @failover_fields [
     :failover_decision,
     :failover_reason,
@@ -43,6 +51,7 @@ defmodule SymphonyElixir.TelemetrySchema do
                 @cost_fields ++
                   @budget_fields ++
                   @retry_dedupe_fields ++
+                  @retry_failover_fields ++
                   @failover_fields ++
                   @wait_fields ++
                   @checkpoint_fields ++
@@ -72,6 +81,7 @@ defmodule SymphonyElixir.TelemetrySchema do
     |> Map.merge(validation_guard_fields(source))
     |> Map.merge(budget_fields(source))
     |> Map.merge(retry_dedupe_fields(source))
+    |> Map.merge(retry_failover_fields(source))
     |> Map.merge(failover_fields(source))
     |> Map.merge(cost_fields(source))
   end
@@ -186,6 +196,40 @@ defmodule SymphonyElixir.TelemetrySchema do
     |> reject_nil_values()
   end
 
+  defp retry_failover_fields(source) do
+    decision = fetch(source, :retry_failover_decision)
+
+    %{
+      "retry_failover_selected_rule" =>
+        normalize_string(
+          fetch(source, :retry_failover_selected_rule) ||
+            decision_field(decision, :selected_rule)
+        ),
+      "retry_failover_selected_action" =>
+        normalize_string(
+          fetch(source, :retry_failover_selected_action) ||
+            decision_field(decision, :selected_action)
+        ),
+      "retry_failover_reason" => normalize_string(fetch(source, :retry_failover_reason) || decision_field(decision, :reason)),
+      "retry_failover_suppressed_rules" =>
+        normalize_nonempty_string_list(
+          fetch(source, :retry_failover_suppressed_rules) ||
+            decision_field(decision, :suppressed_rules)
+        ),
+      "retry_failover_checkpoint_type" =>
+        normalize_string(
+          fetch(source, :retry_failover_checkpoint_type) ||
+            decision_field(decision, :checkpoint_type)
+        ),
+      "retry_failover_risk_level" =>
+        normalize_string(
+          fetch(source, :retry_failover_risk_level) ||
+            decision_field(decision, :risk_level)
+        )
+    }
+    |> reject_nil_values()
+  end
+
   defp failover_fields(source) do
     %{
       "failover_decision" => normalize_string(fetch(source, :failover_decision)),
@@ -247,6 +291,12 @@ defmodule SymphonyElixir.TelemetrySchema do
     Map.get(source, key) || Map.get(source, Atom.to_string(key))
   end
 
+  defp decision_field(decision, key) when is_map(decision) do
+    Map.get(decision, key) || Map.get(decision, Atom.to_string(key))
+  end
+
+  defp decision_field(_decision, _key), do: nil
+
   defp normalize_value(value) when is_boolean(value), do: value
   defp normalize_value(nil), do: nil
   defp normalize_value(value) when is_atom(value), do: Atom.to_string(value)
@@ -274,6 +324,13 @@ defmodule SymphonyElixir.TelemetrySchema do
 
   defp normalize_string_list(value) when is_binary(value), do: [value]
   defp normalize_string_list(_value), do: []
+
+  defp normalize_nonempty_string_list(values) do
+    case normalize_string_list(values) do
+      [] -> nil
+      normalized -> normalized
+    end
+  end
 
   defp wait_mode_for_phase("waiting ci"), do: "ci"
   defp wait_mode_for_phase("waiting external"), do: "external"

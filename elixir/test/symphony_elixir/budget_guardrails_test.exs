@@ -144,6 +144,8 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
       send(pid, {:DOWN, ref, :process, self(), :normal})
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 1_500
+      assert blocker_body =~ "selected_rule: `budget_exceeded_per_attempt_handoff`"
+      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
       assert blocker_body =~ "checkpoint_type: `decision`"
       assert blocker_body =~ "risk_level: `medium`"
       assert blocker_body =~ "max_tokens_per_attempt_exceeded"
@@ -207,8 +209,10 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
       send(pid, {:DOWN, ref, :process, self(), :boom})
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 1_500
-      assert blocker_body =~ "budget_reason: `max_total_tokens_exceeded`"
-      assert blocker_body =~ "budget_observed_total: `22`"
+      assert blocker_body =~ "selected_rule: `budget_exceeded_cumulative`"
+      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
+      assert blocker_body =~ "max_total_tokens_exceeded"
+      assert blocker_body =~ "observed_total: `22`"
       assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
 
       state =
