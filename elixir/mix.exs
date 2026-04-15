@@ -16,6 +16,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Config,
           SymphonyElixir.Config.Schema,
           SymphonyElixir.Config.Schema.Verification,
+          SymphonyElixir.BudgetGuardrails,
           SymphonyElixir.Linear.Client,
           Mix.Tasks.Handoff.Check,
           SymphonyElixir.SpecsCheck,

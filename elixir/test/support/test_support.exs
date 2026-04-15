@@ -174,6 +174,8 @@ defmodule SymphonyElixir.TestSupport do
           codex_turn_timeout_ms: 3_600_000,
           codex_read_timeout_ms: 5_000,
           codex_stall_timeout_ms: 300_000,
+          codex_max_total_tokens: nil,
+          codex_max_tokens_per_attempt: nil,
           codex_accounts: [],
           codex_minimum_remaining_percent: 5,
           codex_monitored_windows_mins: [300, 10_080],
@@ -223,6 +225,8 @@ defmodule SymphonyElixir.TestSupport do
     codex_turn_timeout_ms = Keyword.get(config, :codex_turn_timeout_ms)
     codex_read_timeout_ms = Keyword.get(config, :codex_read_timeout_ms)
     codex_stall_timeout_ms = Keyword.get(config, :codex_stall_timeout_ms)
+    codex_max_total_tokens = Keyword.get(config, :codex_max_total_tokens)
+    codex_max_tokens_per_attempt = Keyword.get(config, :codex_max_tokens_per_attempt)
     codex_accounts = Keyword.get(config, :codex_accounts)
     codex_minimum_remaining_percent = Keyword.get(config, :codex_minimum_remaining_percent)
     codex_monitored_windows_mins = Keyword.get(config, :codex_monitored_windows_mins)
@@ -277,6 +281,8 @@ defmodule SymphonyElixir.TestSupport do
         "  turn_timeout_ms: #{yaml_value(codex_turn_timeout_ms)}",
         "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
+        "  max_total_tokens: #{yaml_value(codex_max_total_tokens)}",
+        "  max_tokens_per_attempt: #{yaml_value(codex_max_tokens_per_attempt)}",
         "  accounts: #{yaml_value(codex_accounts)}",
         "  minimum_remaining_percent: #{yaml_value(codex_minimum_remaining_percent)}",
         "  monitored_windows_mins: #{yaml_value(codex_monitored_windows_mins)}",

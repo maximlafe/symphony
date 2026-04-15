@@ -101,7 +101,7 @@ defmodule SymphonyElixir.Config do
     signals = cost_signals(issue_or_state, stage, settings.codex.cost_policy)
 
     with template when is_binary(template) <- present_codex_command(Map.get(settings.codex, :command_template)),
-         {:ok, profile_key, profile, reason} <- resolve_cost_profile(settings.codex, stage, signals),
+         {:ok, profile_key, profile, reason} <- resolve_cost_profile(settings.codex, stage, signals, issue_or_state),
          {:ok, model, effort} <- profile_model_effort(profile) do
       %{
         stage: stage,
@@ -316,10 +316,20 @@ defmodule SymphonyElixir.Config do
 
   defp normalize_codex_stage(_stage), do: nil
 
-  defp resolve_cost_profile(codex_config, stage, signals) do
+  defp resolve_cost_profile(codex_config, stage, signals, context) do
     signal_escalations = nested_map(codex_config.cost_policy, "signal_escalations")
     stage_defaults = nested_map(codex_config.cost_policy, "stage_defaults")
 
+    with profile_key when is_binary(profile_key) <- requested_cost_profile_key(context),
+         {:ok, profile} <- fetch_cost_profile(codex_config.cost_profiles, profile_key) do
+      {:ok, profile_key, profile, "profile_override:#{profile_key}"}
+    else
+      _ ->
+        resolve_policy_cost_profile(codex_config, stage, signals, signal_escalations, stage_defaults)
+    end
+  end
+
+  defp resolve_policy_cost_profile(codex_config, stage, signals, signal_escalations, stage_defaults) do
     with {signal, profile_key} <- first_signal_profile(signals, signal_escalations),
          {:ok, profile} <- fetch_cost_profile(codex_config.cost_profiles, profile_key) do
       {:ok, profile_key, profile, "signal:#{signal}"}
@@ -333,6 +343,14 @@ defmodule SymphonyElixir.Config do
         end
     end
   end
+
+  defp requested_cost_profile_key(%{cost_profile_key: profile_key}) when is_binary(profile_key),
+    do: profile_key
+
+  defp requested_cost_profile_key(%{"cost_profile_key" => profile_key}) when is_binary(profile_key),
+    do: profile_key
+
+  defp requested_cost_profile_key(_context), do: nil
 
   defp first_signal_profile(signals, signal_escalations) do
     Enum.find_value(signals, fn signal ->
