@@ -1949,8 +1949,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp normalize_feedback_body_intent(_body), do: nil
-
   defp maybe_put_actionable_feedback(snapshot, true, actionable_feedback) do
     Map.put(snapshot, "actionable_feedback", actionable_feedback)
   end
