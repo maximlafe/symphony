@@ -304,6 +304,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   @pending_check_statuses MapSet.new(["EXPECTED", "PENDING", "IN_PROGRESS", "QUEUED", "REQUESTED", "WAITING"])
   @failing_check_conclusions MapSet.new(["ACTION_REQUIRED", "CANCELLED", "ERROR", "FAILURE", "FAILED", "STALE", "STARTUP_FAILURE", "TIMED_OUT"])
   @non_actionable_pr_comment_authors MapSet.new(["github-actions", "linear"])
+  @trusted_review_bot_author_patterns [
+    ~r/\Achatgpt-codex(?:-connector)?\[bot\]\z/,
+    ~r/\Aopenai-codex(?:-connector)?\[bot\]\z/
+  ]
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
@@ -1943,10 +1947,25 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       |> String.trim()
       |> String.downcase()
 
-    normalized in @non_actionable_pr_comment_authors or String.ends_with?(normalized, "[bot]")
+    cond do
+      normalized in @non_actionable_pr_comment_authors ->
+        true
+
+      String.ends_with?(normalized, "[bot]") ->
+        not trusted_review_bot_author?(normalized)
+
+      true ->
+        false
+    end
   end
 
   defp non_actionable_author?(_author_login), do: false
+
+  defp trusted_review_bot_author?(normalized_author_login) when is_binary(normalized_author_login) do
+    Enum.any?(@trusted_review_bot_author_patterns, fn pattern ->
+      Regex.match?(pattern, normalized_author_login)
+    end)
+  end
 
   defp pick_first(data, [key]) do
     get_nested(data, key)
