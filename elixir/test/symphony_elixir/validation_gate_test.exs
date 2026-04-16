@@ -92,6 +92,95 @@ defmodule SymphonyElixir.ValidationGateTest do
            ]) == ["preflight", "cheap_gate", "targeted_tests", "runtime_smoke", "repo_validation"]
   end
 
+  test "derives required proof checks from delivery:tdd and runtime contract sources" do
+    assert ValidationGate.required_proof_checks(["delivery:tdd"], ["backend_only"]) == [
+             %{
+               "check" => "red_proof",
+               "label" => "red proof",
+               "source" => "issue label `delivery:tdd`",
+               "next_action" => "Run a failing baseline command and mark the `red proof` validation item with that command."
+             }
+           ]
+
+    assert ValidationGate.required_proof_checks([], ["runtime_contract"]) == [
+             %{
+               "check" => "runtime_smoke",
+               "label" => "runtime smoke",
+               "source" => "validation gate change class `runtime_contract`",
+               "next_action" => "Run the runtime smoke command for the changed contract path and mark the `runtime smoke` validation item."
+             }
+           ]
+
+    assert ValidationGate.required_proof_checks(["delivery:tdd"], ["runtime_contract"]) == [
+             %{
+               "check" => "red_proof",
+               "label" => "red proof",
+               "source" => "issue label `delivery:tdd`",
+               "next_action" => "Run a failing baseline command and mark the `red proof` validation item with that command."
+             },
+             %{
+               "check" => "runtime_smoke",
+               "label" => "runtime smoke",
+               "source" => "validation gate change class `runtime_contract`",
+               "next_action" => "Run the runtime smoke command for the changed contract path and mark the `runtime smoke` validation item."
+             }
+           ]
+  end
+
+  test "reports missing required proof checks without backend-only false positives" do
+    validation_items = [
+      %{"checked" => true, "label" => "red proof", "command" => "mix test test/app_test.exs:12"},
+      %{"checked" => true, "label" => "runtime smoke", "command" => "n/a"},
+      %{"checked" => true, "label" => "targeted tests", "command" => "mix test test/app_test.exs"}
+    ]
+
+    both_missing =
+      ValidationGate.missing_required_proof_checks(
+        validation_items,
+        ["delivery:tdd"],
+        ["runtime_contract"]
+      )
+
+    assert Enum.map(both_missing["missing_checks"], & &1["check"]) == ["runtime_smoke"]
+    assert "red_proof" in both_missing["checked_checks"]
+
+    backend_only =
+      ValidationGate.missing_required_proof_checks(
+        validation_items,
+        [],
+        ["backend_only"]
+      )
+
+    assert backend_only["missing_checks"] == []
+  end
+
+  test "checked validation helpers normalize label-only entries and reject invalid placeholders" do
+    assert ValidationGate.checked_validation_checks(["preflight"]) == ["preflight"]
+
+    assert ValidationGate.checked_validation_checks([
+             %{"checked" => true, "label" => "runtime smoke", "command" => 123},
+             %{"checked" => true, "label" => 123, "command" => "mix test"},
+             456
+           ]) == []
+
+    assert ValidationGate.checked_validation_checks(:invalid) == []
+  end
+
+  test "required proof checks normalize mixed issue label types" do
+    assert Enum.map(ValidationGate.required_proof_checks([:"delivery:tdd", 123], ["backend_only"]), & &1["check"]) == [
+             "red_proof"
+           ]
+
+    assert ValidationGate.required_proof_checks("delivery:tdd", ["runtime_contract"]) == [
+             %{
+               "check" => "runtime_smoke",
+               "label" => "runtime smoke",
+               "source" => "validation gate change class `runtime_contract`",
+               "next_action" => "Run the runtime smoke command for the changed contract path and mark the `runtime smoke` validation item."
+             }
+           ]
+  end
+
   test "fails closed for invalid change class, path, gate, and rerun inputs" do
     assert ValidationGate.normalize_check(:ignored) == nil
     assert ValidationGate.normalize_checks(:ignored) == []

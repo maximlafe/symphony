@@ -1048,8 +1048,9 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 - [ ] preflight: `make symphony-preflight`
 - [ ] cheap gate: `<same-HEAD targeted proof>`
+- [ ] red proof: `<command>` (обязательно при `delivery:tdd`; когда обязательно, не помечай `n/a`)
 - [ ] targeted tests: `<command>`
-- [ ] runtime smoke: `<command>` (для runtime/infra/workflow-contract/handoff изменений)
+- [ ] runtime smoke: `<command>` (для runtime/infra/workflow-contract/handoff изменений; когда обязательно, не помечай `n/a`)
 - [ ] stateful proof: `<command>` (для DB/schema/stateful изменений)
 - [ ] ui runtime proof: `<command>` (для hosted UI/frontend изменений)
 - [ ] visual artifact: `<artifact title>` (для hosted UI/frontend изменений)
