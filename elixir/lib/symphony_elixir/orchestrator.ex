@@ -994,6 +994,14 @@ defmodule SymphonyElixir.Orchestrator do
     cost_profile_key = pick_retry_cost_profile_key(previous_retry, metadata)
     budget_decision = pick_retry_budget_decision(previous_retry, metadata)
     feedback_digest = pick_retry_feedback_digest(previous_retry, metadata)
+    failure_class = pick_retry_failure_class(previous_retry, metadata)
+
+    validation_bundle_fingerprint =
+      pick_retry_validation_bundle_fingerprint(previous_retry, metadata)
+
+    workspace_diff_fingerprint =
+      pick_retry_workspace_diff_fingerprint(previous_retry, metadata)
+
     retry_failover_decision = pick_retry_failover_decision(previous_retry, metadata)
 
     if is_reference(old_timer) do
@@ -1031,6 +1039,9 @@ defmodule SymphonyElixir.Orchestrator do
             cost_profile_key: cost_profile_key,
             budget_decision: budget_decision,
             feedback_digest: feedback_digest,
+            failure_class: failure_class,
+            validation_bundle_fingerprint: validation_bundle_fingerprint,
+            workspace_diff_fingerprint: workspace_diff_fingerprint,
             retry_failover_decision: retry_failover_decision
           })
     }
@@ -1055,6 +1066,9 @@ defmodule SymphonyElixir.Orchestrator do
           cost_profile_key: Map.get(retry_entry, :cost_profile_key),
           budget_decision: Map.get(retry_entry, :budget_decision),
           feedback_digest: Map.get(retry_entry, :feedback_digest),
+          failure_class: Map.get(retry_entry, :failure_class),
+          validation_bundle_fingerprint: Map.get(retry_entry, :validation_bundle_fingerprint),
+          workspace_diff_fingerprint: Map.get(retry_entry, :workspace_diff_fingerprint),
           retry_failover_decision: Map.get(retry_entry, :retry_failover_decision)
         }
 
@@ -1260,6 +1274,7 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: identifier,
             trace_id: trace_id,
             codex_account_id: Map.get(running_entry, :codex_account_id),
+            failure_class: failure_class_label,
             resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_totals),
             issue_token_total: budget_totals.budget_issue_total_tokens
           }
@@ -2800,8 +2815,11 @@ defmodule SymphonyElixir.Orchestrator do
           risk_level: "medium",
           log_fields: %{
             error_signature: metadata[:error_signature] || normalize_error_signature(metadata[:error]) || "unknown",
+            failure_class: metadata[:failure_class] || "unknown",
             runtime_head_sha: metadata[:runtime_head_sha] || "unknown",
-            feedback_digest: metadata[:feedback_digest] || "unknown"
+            feedback_digest: metadata[:feedback_digest] || "unknown",
+            validation_bundle_fingerprint: metadata[:validation_bundle_fingerprint] || "unknown",
+            workspace_diff_fingerprint: metadata[:workspace_diff_fingerprint] || "unknown"
           }
         })
       )
@@ -3221,6 +3239,29 @@ defmodule SymphonyElixir.Orchestrator do
     metadata[:feedback_digest] || Map.get(previous_retry, :feedback_digest)
   end
 
+  defp pick_retry_failure_class(previous_retry, metadata) do
+    case metadata[:failure_class] || Map.get(previous_retry, :failure_class) do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp pick_retry_validation_bundle_fingerprint(previous_retry, metadata) do
+    case metadata[:validation_bundle_fingerprint] ||
+           Map.get(previous_retry, :validation_bundle_fingerprint) do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp pick_retry_workspace_diff_fingerprint(previous_retry, metadata) do
+    case metadata[:workspace_diff_fingerprint] ||
+           Map.get(previous_retry, :workspace_diff_fingerprint) do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
   defp pick_retry_failover_decision(previous_retry, metadata) do
     case metadata[:retry_failover_decision] || Map.get(previous_retry, :retry_failover_decision) do
       value when is_map(value) -> value
@@ -3237,6 +3278,12 @@ defmodule SymphonyElixir.Orchestrator do
     |> maybe_put_retry_metadata(:expected_head_sha, Map.get(source, :expected_head_sha))
     |> maybe_put_retry_metadata(:execution_branch, Map.get(source, :execution_branch))
     |> maybe_put_retry_metadata(:feedback_digest, retry_feedback_digest(source, resume_checkpoint))
+    |> maybe_put_retry_metadata(:failure_class, Map.get(source, :failure_class))
+    |> maybe_put_retry_metadata(:validation_bundle_fingerprint, retry_validation_bundle_fingerprint(source))
+    |> maybe_put_retry_metadata(
+      :workspace_diff_fingerprint,
+      retry_workspace_diff_fingerprint(source, resume_checkpoint)
+    )
   end
 
   defp retry_execution_metadata(_source, _resume_checkpoint), do: %{}
@@ -3271,6 +3318,28 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp retry_validation_bundle_fingerprint(source) when is_map(source) do
+    case Map.get(source, :validation_bundle_fingerprint) || Map.get(source, "validation_bundle_fingerprint") do
+      value when is_binary(value) and value != "" ->
+        value
+
+      _ ->
+        source
+        |> Map.get(:current_command)
+        |> validation_bundle_fingerprint_from_command()
+    end
+  end
+
+  defp retry_workspace_diff_fingerprint(source, resume_checkpoint) when is_map(source) do
+    case Map.get(source, :workspace_diff_fingerprint) || Map.get(source, "workspace_diff_fingerprint") do
+      value when is_binary(value) and value != "" ->
+        value
+
+      _ ->
+        checkpoint_workspace_diff_fingerprint(resume_checkpoint)
+    end
+  end
+
   defp normalize_error_signature(value) when is_binary(value) do
     value
     |> String.downcase()
@@ -3285,26 +3354,142 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_error_signature(_value), do: nil
 
   defp retry_dedupe_key(metadata) when is_map(metadata) do
-    with false <- metadata[:delay_type] == :continuation,
-         error_signature when is_binary(error_signature) and error_signature != "" <-
-           metadata[:error_signature] || normalize_error_signature(metadata[:error]),
-         runtime_head_sha when is_binary(runtime_head_sha) and runtime_head_sha != "" <-
-           metadata[:runtime_head_sha],
-         feedback_digest when is_binary(feedback_digest) and feedback_digest != "" <-
-           metadata[:feedback_digest] do
-      Enum.join([error_signature, runtime_head_sha, feedback_digest], "::")
+    if metadata[:delay_type] == :continuation do
+      nil
     else
-      _ -> nil
+      validation_retry_dedupe_key(metadata) || generic_retry_dedupe_key(metadata)
     end
   end
 
   defp retry_dedupe_reason(metadata) when is_map(metadata) do
     error_signature = metadata[:error_signature] || normalize_error_signature(metadata[:error]) || "unknown"
+    failure_class = normalize_optional_string(metadata[:failure_class]) || "unknown"
+    validation_bundle_fingerprint = normalize_optional_string(metadata[:validation_bundle_fingerprint])
+    workspace_diff_fingerprint = normalize_optional_string(metadata[:workspace_diff_fingerprint])
     runtime_head_sha = metadata[:runtime_head_sha] || "unknown"
     feedback_digest = metadata[:feedback_digest] || "unknown"
 
-    "retry_dedupe_hit: identical failure surface repeated after one queued retry (error_signature=#{error_signature} runtime_head_sha=#{runtime_head_sha} feedback_digest=#{feedback_digest})"
+    if validation_bundle_fingerprint && workspace_diff_fingerprint do
+      "retry_dedupe_hit: identical validation retry surface repeated after one queued retry (error_signature=#{error_signature} failure_class=#{failure_class} validation_bundle_fingerprint=#{validation_bundle_fingerprint} workspace_diff_fingerprint=#{workspace_diff_fingerprint} feedback_digest=#{feedback_digest})"
+    else
+      "retry_dedupe_hit: identical failure surface repeated after one queued retry (error_signature=#{error_signature} runtime_head_sha=#{runtime_head_sha} feedback_digest=#{feedback_digest})"
+    end
   end
+
+  defp validation_retry_dedupe_key(metadata) when is_map(metadata) do
+    with error_signature when is_binary(error_signature) and error_signature != "" <-
+           metadata[:error_signature] || normalize_error_signature(metadata[:error]),
+         validation_bundle_fingerprint
+         when is_binary(validation_bundle_fingerprint) and validation_bundle_fingerprint != "" <-
+           metadata[:validation_bundle_fingerprint],
+         workspace_diff_fingerprint
+         when is_binary(workspace_diff_fingerprint) and workspace_diff_fingerprint != "" <-
+           metadata[:workspace_diff_fingerprint] do
+      failure_class = normalize_optional_string(metadata[:failure_class])
+      feedback_digest = normalize_optional_string(metadata[:feedback_digest])
+
+      [
+        "validation",
+        error_signature,
+        failure_class || "unknown",
+        validation_bundle_fingerprint,
+        workspace_diff_fingerprint,
+        feedback_digest || "none"
+      ]
+      |> Enum.join("::")
+    else
+      _ -> nil
+    end
+  end
+
+  defp generic_retry_dedupe_key(metadata) when is_map(metadata) do
+    with error_signature when is_binary(error_signature) and error_signature != "" <-
+           metadata[:error_signature] || normalize_error_signature(metadata[:error]),
+         runtime_head_sha when is_binary(runtime_head_sha) and runtime_head_sha != "" <-
+           metadata[:runtime_head_sha],
+         feedback_digest when is_binary(feedback_digest) and feedback_digest != "" <-
+           metadata[:feedback_digest] do
+      Enum.join(["generic", error_signature, runtime_head_sha, feedback_digest], "::")
+    else
+      _ -> nil
+    end
+  end
+
+  defp validation_bundle_fingerprint_from_command(command) when is_binary(command) do
+    normalized =
+      command
+      |> String.trim()
+      |> String.downcase()
+      |> String.replace(~r/\s+/, " ")
+
+    cond do
+      normalized == "" ->
+        nil
+
+      Regex.match?(~r/^mix test(\s|$)/, normalized) ->
+        "validation:test"
+
+      Regex.match?(~r/^make test(\s|$)/, normalized) ->
+        "validation:test"
+
+      Regex.match?(~r/^make symphony-validate(\s|$)/, normalized) ->
+        "validation:repo-validate"
+
+      Regex.match?(~r/^make symphony-preflight(\s|$)/, normalized) ->
+        "validation:preflight"
+
+      Regex.match?(~r/^make symphony-handoff-check(\s|$)/, normalized) ->
+        "validation:handoff-check"
+
+      Regex.match?(~r/^mix specs\.check(\s|$)/, normalized) ->
+        "validation:specs-check"
+
+      true ->
+        nil
+    end
+  end
+
+  defp validation_bundle_fingerprint_from_command(_command), do: nil
+
+  defp checkpoint_workspace_diff_fingerprint(%{} = resume_checkpoint) do
+    case Map.get(resume_checkpoint, "workspace_diff_fingerprint") do
+      value when is_binary(value) and value != "" ->
+        value
+
+      _ ->
+        checkpoint_workspace_diff_fallback_fingerprint(resume_checkpoint)
+    end
+  end
+
+  defp checkpoint_workspace_diff_fingerprint(_resume_checkpoint), do: nil
+
+  defp checkpoint_workspace_diff_fallback_fingerprint(%{} = resume_checkpoint) do
+    head = normalize_optional_string(Map.get(resume_checkpoint, "head"))
+    workpad_digest = normalize_optional_string(Map.get(resume_checkpoint, "workpad_digest"))
+    changed_files = normalize_checkpoint_changed_files(Map.get(resume_checkpoint, "changed_files"))
+
+    if is_binary(head) or is_binary(workpad_digest) or changed_files != [] do
+      digest_source =
+        ["head=#{head || "none"}", "workpad_digest=#{workpad_digest || "none"}"] ++
+          Enum.map(changed_files, &"changed_file=#{&1}")
+
+      digest_source
+      |> Enum.join("\n")
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+    end
+  end
+
+  defp normalize_checkpoint_changed_files(files) when is_list(files) do
+    files
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp normalize_checkpoint_changed_files(_files), do: []
 
   defp remember_retry_dedupe_key(%State{} = state, issue_id, key)
        when is_binary(issue_id) and is_binary(key) do

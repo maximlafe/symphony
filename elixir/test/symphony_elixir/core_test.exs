@@ -1757,6 +1757,284 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "same validation bundle and workspace diff without feedback digest blocks repeated reruns" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-validation-dedupe-without-feedback"
+    issue_identifier = "MT-VALIDATION-DEDUPE-NO-FEEDBACK"
+    trace_id = "trace-validation-dedupe-without-feedback"
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-validation-dedupe-no-feedback-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      workspace = init_workspace_repo!(workspace_root, issue_identifier)
+      File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nValidation dedupe state")
+      File.write!(Path.join(workspace, ".workpad-id"), "comment-validation-dedupe")
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        title: "Validation retry dedupe without feedback",
+        description: "Track validation retry dedupe when feedback digest is missing",
+        state: "In Progress",
+        url: "https://example.org/issues/#{issue_identifier}",
+        labels: []
+      }
+
+      runtime_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :ValidationDedupeNoFeedbackOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      first_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            validation_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              current_command: "mix test elixir/test/symphony_elixir/retry_failover_decision_test.exs"
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      state_after_first_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(
+            %{
+              attempt: 1,
+              validation_bundle_fingerprint: "validation:test",
+              workspace_diff_fingerprint: workspace_diff_fingerprint
+            }
+            when is_binary(workspace_diff_fingerprint),
+            state.retry_attempts[issue_id]
+          )
+        end)
+        |> then(fn state ->
+          cancel_retry_timer(state.retry_attempts[issue_id])
+          state
+        end)
+
+      first_retry = state_after_first_failure.retry_attempts[issue_id]
+      first_retry_key = state_after_first_failure.retry_dedupe_keys[issue_id]
+
+      assert is_binary(first_retry_key)
+      assert first_retry.validation_bundle_fingerprint == "validation:test"
+      assert is_binary(first_retry.workspace_diff_fingerprint)
+      stop_orchestrator(pid)
+
+      second_ref = make_ref()
+      retry_orchestrator_name = Module.concat(__MODULE__, :ValidationDedupeNoFeedbackRetryOrchestrator)
+      {:ok, retry_pid} = Orchestrator.start_link(name: retry_orchestrator_name)
+
+      on_exit(fn ->
+        stop_orchestrator(retry_pid)
+      end)
+
+      retry_initial_state = :sys.get_state(retry_pid)
+
+      replace_orchestrator_state!(retry_pid, fn _ ->
+        retry_initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            validation_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              current_command: "make test",
+              retry_attempt: 1
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+        |> Map.put(:retry_dedupe_keys, %{issue_id => first_retry_key})
+      end)
+
+      send(retry_pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "selected_rule: `retry_dedupe_hit`"
+      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
+      assert blocker_body =~ "validation_bundle_fingerprint=validation:test"
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "changed workspace diff allows another validation retry without feedback digest" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-validation-dedupe-workspace-change"
+    issue_identifier = "MT-VALIDATION-DEDUPE-DIFF-CHANGE"
+    trace_id = "trace-validation-dedupe-workspace-change"
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-validation-dedupe-diff-change-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      workspace = init_workspace_repo!(workspace_root, issue_identifier)
+      File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nValidation dedupe state")
+      File.write!(Path.join(workspace, ".workpad-id"), "comment-validation-dedupe")
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        title: "Validation retry dedupe with workspace diff change",
+        description: "Track validation retry dedupe when workspace diff changes",
+        state: "In Progress",
+        url: "https://example.org/issues/#{issue_identifier}",
+        labels: []
+      }
+
+      runtime_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :ValidationDedupeWorkspaceChangeOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      first_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            validation_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              current_command: "mix test elixir/test/symphony_elixir/retry_failover_decision_test.exs"
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      state_after_first_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 1, validation_bundle_fingerprint: "validation:test"}, state.retry_attempts[issue_id])
+        end)
+        |> then(fn state ->
+          cancel_retry_timer(state.retry_attempts[issue_id])
+          state
+        end)
+
+      first_retry = state_after_first_failure.retry_attempts[issue_id]
+      first_retry_key = state_after_first_failure.retry_dedupe_keys[issue_id]
+
+      assert is_binary(first_retry_key)
+      assert is_binary(first_retry.workspace_diff_fingerprint)
+      stop_orchestrator(pid)
+
+      File.write!(Path.join(workspace, "tracked.txt"), "runtime head updated\n")
+
+      second_ref = make_ref()
+      retry_orchestrator_name = Module.concat(__MODULE__, :ValidationDedupeWorkspaceChangeRetryOrchestrator)
+      {:ok, retry_pid} = Orchestrator.start_link(name: retry_orchestrator_name)
+
+      on_exit(fn ->
+        stop_orchestrator(retry_pid)
+      end)
+
+      retry_initial_state = :sys.get_state(retry_pid)
+
+      replace_orchestrator_state!(retry_pid, fn _ ->
+        retry_initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            validation_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              current_command: "mix test --cover elixir/test/symphony_elixir/retry_failover_decision_test.exs",
+              retry_attempt: 1
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+        |> Map.put(:retry_dedupe_keys, %{issue_id => first_retry_key})
+      end)
+
+      send(retry_pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+
+      state_after_second_failure =
+        wait_for_orchestrator_state(retry_pid, fn state ->
+          match?(%{attempt: 2, validation_bundle_fingerprint: "validation:test"}, state.retry_attempts[issue_id])
+        end)
+
+      assert %{attempt: 2} = state_after_second_failure.retry_attempts[issue_id]
+
+      refute first_retry.workspace_diff_fingerprint ==
+               state_after_second_failure.retry_attempts[issue_id].workspace_diff_fingerprint
+
+      refute_received {:memory_tracker_comment, ^issue_id, _body}
+      refute_received {:memory_tracker_state_update, ^issue_id, _state_name}
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "changed feedback digest allows another failure-driven retry" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
@@ -4966,6 +5244,38 @@ defmodule SymphonyElixir.CoreTest do
       started_at: DateTime.utc_now()
     }
   end
+
+  defp validation_dedupe_running_entry(issue, ref, opts) do
+    latest_pr_snapshot =
+      %{
+        "url" => "https://github.com/acme/symphony/pull/497",
+        "state" => "OPEN",
+        "has_pending_checks" => false,
+        "has_actionable_feedback" => false
+      }
+      |> maybe_put_feedback_digest(Keyword.get(opts, :feedback_digest))
+
+    %{
+      pid: self(),
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      trace_id: Keyword.get(opts, :trace_id),
+      retry_attempt: Keyword.get(opts, :retry_attempt),
+      runtime_head_sha: Keyword.fetch!(opts, :runtime_head_sha),
+      current_command: Keyword.fetch!(opts, :current_command),
+      latest_pr_snapshot: latest_pr_snapshot,
+      started_at: DateTime.utc_now()
+    }
+  end
+
+  defp maybe_put_feedback_digest(snapshot, digest) when is_binary(digest) and digest != "" do
+    snapshot
+    |> Map.put("feedback_digest", digest)
+    |> Map.put("has_actionable_feedback", true)
+  end
+
+  defp maybe_put_feedback_digest(snapshot, _digest), do: snapshot
 
   defp replace_orchestrator_state!(pid, fun, timeout \\ 30_000)
        when is_pid(pid) and is_function(fun, 1) and is_integer(timeout) and timeout > 0 do
