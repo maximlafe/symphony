@@ -2234,6 +2234,8 @@ defmodule SymphonyElixir.CoreTest do
           trace_id: "trace-live-failover",
           session_id: "thread-live-failover-turn-1",
           codex_account_id: "primary",
+          run_phase: :editing,
+          reported_milestones: MapSet.new([:validation_running]),
           last_codex_message: nil,
           last_codex_timestamp: nil,
           last_codex_event: nil,
@@ -2332,6 +2334,157 @@ defmodule SymphonyElixir.CoreTest do
 
     assert late_down_state == updated_state
     refute_received {:retry_issue, ^issue_id, _another_retry_token}
+  end
+
+  test "live rate-limit exhaustion preempts when CI wait result reports failed checks" do
+    issue_id = "issue-live-rate-limit-ci-failed"
+    issue = %Issue{id: issue_id, identifier: "MT-LIVE-CI-FAILED", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"},
+        %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+      ],
+      codex_minimum_remaining_percent: 5,
+      codex_monitored_windows_mins: [300, 10_080]
+    )
+
+    healthy_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 20},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    exhausted_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 96},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      next_poll_due_at_ms: nil,
+      poll_check_in_progress: false,
+      tick_timer_ref: nil,
+      tick_token: nil,
+      workspace_usage_bytes: 0,
+      workspace_cleanup_ref: nil,
+      workspace_usage_refresh_ref: nil,
+      workspace_threshold_exceeded?: false,
+      running: %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: make_ref(),
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-live-ci-failed",
+          session_id: "thread-live-ci-failed-turn-1",
+          codex_account_id: "primary",
+          run_phase: :editing,
+          latest_ci_wait_result: %{
+            "all_green" => false,
+            "failed_checks" => ["make-all / run"],
+            "pending_checks" => [],
+            "checks" => []
+          },
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          started_at: DateTime.utc_now()
+        }
+      },
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{
+        "primary" => %{
+          id: "primary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        },
+        "secondary" => %{
+          id: "secondary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        }
+      },
+      active_codex_account_id: "primary",
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: healthy_rate_limits,
+      codex_dispatch_reason: nil
+    }
+
+    update = %{
+      event: :notification,
+      codex_account_id: "primary",
+      payload: %{
+        "method" => "codex/event/token_count",
+        "params" => %{
+          "msg" => %{
+            "type" => "event_msg",
+            "payload" => %{
+              "type" => "token_count",
+              "rate_limits" => exhausted_rate_limits
+            }
+          }
+        }
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+    assert_receive {:retry_issue, ^issue_id, retry_token}, 200
+    Process.sleep(10)
+
+    assert updated_state.active_codex_account_id == "secondary"
+    refute Map.has_key?(updated_state.running, issue_id)
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    refute Process.alive?(worker_pid)
+
+    assert %{
+             attempt: 1,
+             retry_token: ^retry_token,
+             error: error,
+             error_class: "transient",
+             delay_type: :failover
+           } = updated_state.retry_attempts[issue_id]
+
+    assert error =~ "account failover forced_preemption=no_safe_drain_signal:"
   end
 
   test "live rate-limit exhaustion also fails over sibling runs already on the exhausted account" do

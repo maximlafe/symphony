@@ -1712,17 +1712,15 @@ defmodule SymphonyElixir.Orchestrator do
   defp safe_milestone_signal(running_entry) do
     safe_milestones = [:code_ready, :validation_running, :pr_opened, :handoff_ready]
 
-    Enum.find_value([:reported_milestones, :pending_milestones], fn key ->
-      running_entry
-      |> Map.get(key, MapSet.new())
-      |> normalize_milestone_set()
-      |> MapSet.to_list()
-      |> RunPhase.sort_milestones()
-      |> Enum.find(&(&1 in safe_milestones))
-      |> then(fn
-        nil -> nil
-        milestone -> "#{key}:#{RunPhase.milestone_label(milestone)}"
-      end)
+    running_entry
+    |> Map.get(:pending_milestones, MapSet.new())
+    |> normalize_milestone_set()
+    |> MapSet.to_list()
+    |> RunPhase.sort_milestones()
+    |> Enum.find(&(&1 in safe_milestones))
+    |> then(fn
+      nil -> nil
+      milestone -> "pending_milestones:#{RunPhase.milestone_label(milestone)}"
     end)
   end
 
@@ -1777,10 +1775,21 @@ defmodule SymphonyElixir.Orchestrator do
   defp ci_wait_signal(running_entry) do
     result = Map.get(running_entry, :latest_ci_wait_result)
 
-    if is_map(result) and not truthy?(map_any(result, ["failed", :failed])) do
+    if ci_wait_result_safe_for_drain?(result) do
       "latest_ci_wait_result:available"
     end
   end
+
+  defp ci_wait_result_safe_for_drain?(result) when is_map(result) do
+    all_green = normalize_optional_boolean(map_any(result, ["all_green", :all_green]))
+    failed_checks = map_any(result, ["failed_checks", :failed_checks])
+
+    not truthy?(map_any(result, ["failed", :failed])) and
+      all_green != false and
+      (not is_list(failed_checks) or failed_checks == [])
+  end
+
+  defp ci_wait_result_safe_for_drain?(_result), do: false
 
   defp truthy?(value), do: value in [true, "true", "TRUE", 1, "1"]
 
