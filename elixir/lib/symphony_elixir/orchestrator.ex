@@ -261,6 +261,9 @@ defmodule SymphonyElixir.Orchestrator do
           {:failover, state} ->
             {:noreply, state}
 
+          {:keep_running, state, running_entry_to_store} ->
+            {:noreply, %{state | running: Map.put(state.running, issue_id, running_entry_to_store)}}
+
           {:keep_running, state} ->
             {:noreply, %{state | running: Map.put(state.running, issue_id, updated_running_entry)}}
 
@@ -1674,51 +1677,67 @@ defmodule SymphonyElixir.Orchestrator do
     account_health_after = codex_account_health(state, tracked_account_id)
     replacement_account_id = active_codex_account_id_or_nil(state)
 
-    if failover_required?(
-         tracked_account_id,
-         updated_running_entry,
-         account_health_after,
-         replacement_account_id
-       ) do
-      resume_checkpoint = capture_resume_checkpoint(Map.get(updated_running_entry, :issue), updated_running_entry)
-      health_reason = codex_account_health_reason(state, tracked_account_id) || "account became unhealthy"
+    case running_failover_decision(
+           state,
+           tracked_account_id,
+           updated_running_entry,
+           account_health_after,
+           replacement_account_id
+         ) do
+      {:preempt, failover_reason} ->
+        resume_checkpoint = capture_resume_checkpoint(Map.get(updated_running_entry, :issue), updated_running_entry)
+        health_reason = codex_account_health_reason(state, tracked_account_id) || "account became unhealthy"
 
-      decision =
-        RetryFailoverDecision.decide(retry_failover_account_unhealthy_signals(health_reason, resume_checkpoint))
+        decision =
+          RetryFailoverDecision.decide(retry_failover_account_unhealthy_signals(health_reason, resume_checkpoint))
 
-      log_retry_failover_decision(
-        issue_id,
-        Map.get(updated_running_entry, :identifier, issue_id),
-        running_entry_session_id(updated_running_entry),
-        running_entry_trace_id(updated_running_entry),
-        decision
-      )
+        log_retry_failover_decision(
+          issue_id,
+          Map.get(updated_running_entry, :identifier, issue_id),
+          running_entry_session_id(updated_running_entry),
+          running_entry_trace_id(updated_running_entry),
+          decision
+        )
 
-      case decision.selected_action do
-        :drain_to_milestone ->
-          {:keep_running, state}
+        case decision.selected_action do
+          action when action in [:checkpoint_and_failover, :immediate_preemption] ->
+            {:failover,
+             preempt_running_issue_for_failover(
+               state,
+               issue_id,
+               updated_running_entry,
+               %{
+                 from_account_id: tracked_account_id,
+                 to_account_id: replacement_account_id,
+                 account_health_after: account_health_after,
+                 health_reason: health_reason,
+                 resume_checkpoint: resume_checkpoint,
+                 failover_reason: failover_reason,
+                 decision: decision
+               }
+             )}
 
-        action when action in [:checkpoint_and_failover, :immediate_preemption] ->
-          {:failover,
-           preempt_running_issue_for_failover(
-             state,
-             issue_id,
-             updated_running_entry,
-             %{
-               from_account_id: tracked_account_id,
-               to_account_id: replacement_account_id,
-               account_health_after: account_health_after,
-               health_reason: health_reason,
-               resume_checkpoint: resume_checkpoint,
-               decision: decision
-             }
-           )}
+          _ ->
+            {:keep_running, state, updated_running_entry}
+        end
 
-        _ ->
-          {:keep_running, state}
-      end
-    else
-      {:keep_running, state}
+      {:drain, reason, safe_signal} ->
+        drained_entry =
+          mark_failover_drain_decision(
+            state,
+            issue_id,
+            updated_running_entry,
+            tracked_account_id,
+            replacement_account_id,
+            account_health_after,
+            reason,
+            safe_signal
+          )
+
+        {:keep_running, state, drained_entry}
+
+      {:keep_running, _reason} ->
+        {:keep_running, state, updated_running_entry}
     end
   end
 
@@ -1731,14 +1750,183 @@ defmodule SymphonyElixir.Orchestrator do
     {:keep_running, state}
   end
 
-  defp failover_required?(tracked_account_id, running_entry, false, replacement_account_id)
+  defp running_failover_decision(
+         %State{} = state,
+         tracked_account_id,
+         running_entry,
+         false,
+         replacement_account_id
+       )
        when is_map(running_entry) and is_binary(tracked_account_id) and is_binary(replacement_account_id) do
-    Map.get(running_entry, :codex_account_id) == tracked_account_id and
-      replacement_account_id != tracked_account_id
+    cond do
+      Map.get(running_entry, :codex_account_id) != tracked_account_id ->
+        {:keep_running, :account_mismatch}
+
+      replacement_account_id == tracked_account_id ->
+        {:keep_running, :no_replacement_account}
+
+      unsafe_failover_account_state?(state, tracked_account_id) ->
+        {:preempt, :unsafe_account_runtime_state}
+
+      safe_signal = safe_failover_drain_signal(running_entry) ->
+        {:drain, :safe_boundary_reached, safe_signal}
+
+      true ->
+        {:preempt, :no_safe_drain_signal}
+    end
   end
 
-  defp failover_required?(_tracked_account_id, _running_entry, _account_health_after, _replacement_account_id),
-    do: false
+  defp running_failover_decision(_state, _tracked_account_id, _running_entry, _account_health_after, _replacement_account_id),
+    do: {:keep_running, :account_healthy_or_no_replacement}
+
+  defp unsafe_failover_account_state?(%State{} = state, account_id) when is_binary(account_id) do
+    account = Map.get(state.codex_accounts, account_id, %{})
+    runtime_state = Map.get(account, :runtime_state)
+    health_reason = Map.get(account, :health_reason) || Map.get(account, :runtime_health_reason) || ""
+
+    runtime_state == :broken or
+      (is_binary(health_reason) and String.contains?(String.downcase(health_reason), "auth"))
+  end
+
+  defp safe_failover_drain_signal(running_entry) when is_map(running_entry) do
+    safe_milestone_signal(running_entry) ||
+      safe_phase_signal(running_entry) ||
+      ready_resume_checkpoint_signal(running_entry) ||
+      passed_verification_signal(running_entry) ||
+      open_pr_snapshot_signal(running_entry) ||
+      ci_wait_signal(running_entry)
+  end
+
+  defp safe_milestone_signal(running_entry) do
+    safe_milestones = [:code_ready, :validation_running, :pr_opened, :handoff_ready]
+
+    running_entry
+    |> Map.get(:pending_milestones, MapSet.new())
+    |> normalize_milestone_set()
+    |> MapSet.to_list()
+    |> RunPhase.sort_milestones()
+    |> Enum.find(&(&1 in safe_milestones))
+    |> then(fn
+      nil -> nil
+      milestone -> "pending_milestones:#{RunPhase.milestone_label(milestone)}"
+    end)
+  end
+
+  defp safe_phase_signal(running_entry) do
+    phase = Map.get(running_entry, :run_phase)
+
+    if phase in [:targeted_tests, :verification, :runtime_proof, :full_validate, :waiting_ci, :publishing_pr] do
+      "run_phase:#{RunPhase.phase_label(phase)}"
+    end
+  end
+
+  defp ready_resume_checkpoint_signal(running_entry) do
+    case Map.get(running_entry, :resume_checkpoint) do
+      %{"resume_ready" => true} -> "resume_checkpoint:ready"
+      %{resume_ready: true} -> "resume_checkpoint:ready"
+      _ -> nil
+    end
+  end
+
+  defp passed_verification_signal(running_entry) do
+    if Map.get(running_entry, :verification_result) in ["passed", :passed] do
+      "verification_result:passed"
+    end
+  end
+
+  defp open_pr_snapshot_signal(running_entry) do
+    snapshot = Map.get(running_entry, :latest_pr_snapshot)
+
+    if pr_snapshot_open?(snapshot) and not pr_snapshot_actionable_failure?(snapshot) do
+      "latest_pr_snapshot:open"
+    end
+  end
+
+  defp pr_snapshot_open?(snapshot) when is_map(snapshot) do
+    snapshot
+    |> map_any(["state", :state])
+    |> to_string()
+    |> String.upcase()
+    |> Kernel.==("OPEN")
+  end
+
+  defp pr_snapshot_open?(_snapshot), do: false
+
+  defp pr_snapshot_actionable_failure?(snapshot) when is_map(snapshot) do
+    truthy?(map_any(snapshot, ["has_actionable_feedback", :has_actionable_feedback])) or
+      truthy?(map_any(snapshot, ["has_failing_checks", :has_failing_checks])) or
+      truthy?(map_any(snapshot, ["failed", :failed]))
+  end
+
+  defp pr_snapshot_actionable_failure?(_snapshot), do: true
+
+  defp ci_wait_signal(running_entry) do
+    result = Map.get(running_entry, :latest_ci_wait_result)
+
+    if ci_wait_result_safe_for_drain?(result) do
+      "latest_ci_wait_result:available"
+    end
+  end
+
+  defp ci_wait_result_safe_for_drain?(result) when is_map(result) do
+    all_green = normalize_optional_boolean(map_any(result, ["all_green", :all_green]))
+    failed_checks = map_any(result, ["failed_checks", :failed_checks])
+
+    not truthy?(map_any(result, ["failed", :failed])) and
+      all_green != false and
+      (not is_list(failed_checks) or failed_checks == [])
+  end
+
+  defp ci_wait_result_safe_for_drain?(_result), do: false
+
+  defp truthy?(value), do: value in [true, "true", "TRUE", 1, "1"]
+
+  defp map_any(map, keys) when is_map(map) and is_list(keys) do
+    Enum.reduce_while(keys, nil, fn key, _acc ->
+      if Map.has_key?(map, key) do
+        {:halt, Map.get(map, key)}
+      else
+        {:cont, nil}
+      end
+    end)
+  end
+
+  defp map_any(_map, _keys), do: nil
+
+  defp mark_failover_drain_decision(
+         %State{} = state,
+         issue_id,
+         running_entry,
+         from_account_id,
+         to_account_id,
+         account_health_after,
+         reason,
+         safe_signal
+       ) do
+    identifier = Map.get(running_entry, :identifier, issue_id)
+    trace_id = Map.get(running_entry, :trace_id)
+    session_id = running_entry_session_id(running_entry)
+    health_reason = codex_account_health_reason(state, from_account_id) || "account became unhealthy"
+
+    decision = %{
+      disposition: :drain,
+      reason: reason,
+      safe_signal: safe_signal,
+      from_account_id: from_account_id,
+      to_account_id: to_account_id,
+      health_reason: health_reason
+    }
+
+    if Map.get(running_entry, :failover_drain_decision) != decision do
+      with_log_metadata(issue_log_metadata(issue_id, identifier, session_id, trace_id), fn ->
+        Logger.warning(
+          "Failover decision disposition=drain issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} from codex_account_id=#{from_account_id} to codex_account_id=#{to_account_id} health_reason=#{health_reason} previous_health=#{inspect(account_health_after)} safe_boundary_signal=#{safe_signal} reason=#{reason}"
+        )
+      end)
+    end
+
+    Map.put(running_entry, :failover_drain_decision, decision)
+  end
 
   defp preempt_running_issue_for_failover(%State{} = state, issue_id, running_entry, failover_context)
        when is_map(failover_context) do
@@ -1751,6 +1939,7 @@ defmodule SymphonyElixir.Orchestrator do
     account_health_after = Map.get(failover_context, :account_health_after)
     health_reason = Map.get(failover_context, :health_reason)
     resume_checkpoint = Map.get(failover_context, :resume_checkpoint)
+    failover_reason = Map.get(failover_context, :failover_reason, :no_safe_drain_signal)
     decision = Map.fetch!(failover_context, :decision)
 
     state =
@@ -1761,7 +1950,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     with_log_metadata(issue_log_metadata(issue_id, identifier, session_id, trace_id), fn ->
       Logger.warning(
-        "Failing over issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} from codex_account_id=#{from_account_id} to codex_account_id=#{to_account_id} reason=#{health_reason} previous_health=#{inspect(account_health_after)} attempt=#{attempt} selected_action=#{decision.selected_action} selected_rule=#{decision.selected_rule}"
+        "Failover decision disposition=forced_preemption issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} from codex_account_id=#{from_account_id} to codex_account_id=#{to_account_id} health_reason=#{health_reason} previous_health=#{inspect(account_health_after)} forced_preemption_reason=#{failover_reason} attempt=#{attempt} selected_action=#{decision.selected_action} selected_rule=#{decision.selected_rule}"
       )
     end)
 
@@ -1780,7 +1969,7 @@ defmodule SymphonyElixir.Orchestrator do
       %{
         identifier: identifier,
         trace_id: trace_id,
-        error: "account failover: #{health_reason}",
+        error: "account failover forced_preemption=#{failover_reason}: #{health_reason}",
         error_class: ErrorClassifier.to_string(:transient),
         delay_type: :failover,
         resume_checkpoint: resume_checkpoint
