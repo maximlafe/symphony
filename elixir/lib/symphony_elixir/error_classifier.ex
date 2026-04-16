@@ -192,6 +192,10 @@ defmodule SymphonyElixir.ErrorClassifier do
     failure_details(:permanent, :invalid_workspace, :stop, :ready, "workspace path unreadable")
   end
 
+  def classify_details({:workspace_capability_rejected, details}) when is_map(details) do
+    failure_details(:permanent, :process_error, :stop, :ready, summarize_workspace_capability(details))
+  end
+
   def classify_details({:workspace_hook_failed, _hook_name, _status, output}) when is_binary(output) do
     classify_workspace_hook_output(output)
   end
@@ -466,6 +470,29 @@ defmodule SymphonyElixir.ErrorClassifier do
 
   defp turn_failed_summary_source(payload) do
     payload_field(payload, :summary) || turn_failed_text_source(payload)
+  end
+
+  defp summarize_workspace_capability(details) when is_map(details) do
+    reason = capability_detail(details, :reason)
+    command_class = capability_detail(details, :command_class)
+
+    case {reason, capability_detail(details, :tool), capability_detail(details, :target)} do
+      {:missing_tool, tool, _target} when is_binary(tool) ->
+        "workspace capability rejected #{command_class}: missing required tool `#{tool}`"
+
+      {:missing_make_target, _tool, target} when is_binary(target) ->
+        "workspace capability rejected #{command_class}: missing required make target `#{target}`"
+
+      _other ->
+        summarize_reason(details)
+    end
+  end
+
+  defp capability_detail(details, key) when is_map(details) and is_atom(key) do
+    case Map.fetch(details, key) do
+      {:ok, value} -> value
+      :error -> Map.get(details, Atom.to_string(key))
+    end
   end
 
   defp failure_details(summary, error_class, failure_class, retry_action, account_state)

@@ -68,6 +68,11 @@ root exposes the worker contract:
 Use those root targets instead of ad-hoc shell history when validating a fresh clone or a new
 runtime host.
 
+Before launching Codex, Symphony now runs a cheap workspace capability probe and caches a manifest
+at `.symphony/cache/workspace-capability-manifest.json` inside each issue workspace. The gate
+rejects impossible runtime/validation/PR-tail classes early (for example missing `rg` or missing
+root `Makefile` targets) instead of spending model turns first.
+
 The production runtime contract now lives alongside the app:
 
 - `deploy/docker/README.md`

@@ -17,6 +17,25 @@ defmodule SymphonyElixir.ErrorClassifierTest do
     assert ErrorClassifier.classify({:workspace_symlink_escape, "/tmp/workspace", "/tmp"}) == :permanent
     assert ErrorClassifier.classify({:workspace_outside_root, "/tmp/workspace", "/tmp"}) == :permanent
     assert ErrorClassifier.classify({:workspace_path_unreadable, "/tmp/workspace", :eacces}) == :permanent
+
+    assert ErrorClassifier.classify({:workspace_capability_rejected, %{reason: :missing_tool, tool: "rg"}}) ==
+             :permanent
+
+    missing_target_reason = %{
+      reason: :missing_make_target,
+      command_class: :validation,
+      target: "symphony-validate"
+    }
+
+    missing_target_failure =
+      ErrorClassifier.classify_details({:workspace_capability_rejected, missing_target_reason})
+
+    assert missing_target_failure.summary =~ "missing required make target"
+
+    unknown_capability_failure =
+      ErrorClassifier.classify_details({:workspace_capability_rejected, %{reason: :unknown_capability_reject}})
+
+    assert unknown_capability_failure.summary =~ "unknown_capability_reject"
   end
 
   test "classifies unattended auth and bootstrap blockers as permanent" do
