@@ -3634,30 +3634,21 @@ defmodule SymphonyElixir.Orchestrator do
       |> String.downcase()
       |> String.replace(~r/\s+/, " ")
 
-    cond do
-      normalized == "" ->
-        nil
-
-      Regex.match?(~r/^mix test(\s|$)/, normalized) ->
-        "validation:test"
-
-      Regex.match?(~r/^make test(\s|$)/, normalized) ->
-        "validation:test"
-
-      Regex.match?(~r/^make symphony-validate(\s|$)/, normalized) ->
-        "validation:repo-validate"
-
-      Regex.match?(~r/^make symphony-preflight(\s|$)/, normalized) ->
-        "validation:preflight"
-
-      Regex.match?(~r/^make symphony-handoff-check(\s|$)/, normalized) ->
-        "validation:handoff-check"
-
-      Regex.match?(~r/^mix specs\.check(\s|$)/, normalized) ->
-        "validation:specs-check"
-
-      true ->
-        nil
+    if normalized == "" do
+      nil
+    else
+      [
+        {~r/^mix test(\s|$)/, "validation:test"},
+        {~r/^make test(\s|$)/, "validation:test"},
+        {~r/^make symphony-validate(\s|$)/, "validation:repo-validate"},
+        {~r/^make symphony-preflight(\s|$)/, "validation:preflight"},
+        {~r/^make symphony-handoff-check(\s|$)/, "validation:handoff-check"},
+        {~r/^mix specs\.check(\s|$)/, "validation:specs-check"},
+        {~r/^mix dialyzer(\s|$)/, "validation:dialyzer"}
+      ]
+      |> Enum.find_value(fn {pattern, fingerprint} ->
+        Regex.match?(pattern, normalized) && fingerprint
+      end)
     end
   end
 

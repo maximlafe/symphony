@@ -2031,6 +2031,141 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "repeated stall failures are deduped for dialyzer validation wait snapshot" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-dialyzer-stall-dedupe"
+    issue_identifier = "MT-DIALYZER-STALL-DEDUPE"
+    trace_id = "trace-dialyzer-stall-dedupe"
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dialyzer-stall-dedupe-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      workspace = init_workspace_repo!(workspace_root, issue_identifier)
+      File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nDialyzer stall dedupe state")
+      File.write!(Path.join(workspace, ".workpad-id"), "comment-dialyzer-stall-dedupe")
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        title: "Dialyzer validation stall dedupe",
+        description: "Track dedupe when stalled dialyzer validation restarts with unchanged state",
+        state: "In Progress",
+        url: "https://example.org/issues/#{issue_identifier}",
+        labels: []
+      }
+
+      runtime_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :DialyzerStallDedupeOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      first_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            validation_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              current_command: "mix dialyzer --format short",
+              external_step: "exec_wait"
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(
+        pid,
+        {:DOWN, first_ref, :process, self(), {:agent_run_failed, "stalled for 312655ms without codex activity"}}
+      )
+
+      state_after_first_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 1, validation_bundle_fingerprint: "validation:dialyzer"}, state.retry_attempts[issue_id])
+        end)
+        |> then(fn state ->
+          cancel_retry_timer(state.retry_attempts[issue_id])
+          state
+        end)
+
+      first_retry_key = state_after_first_failure.retry_dedupe_keys[issue_id]
+      assert is_binary(first_retry_key)
+      stop_orchestrator(pid)
+
+      second_ref = make_ref()
+      retry_orchestrator_name = Module.concat(__MODULE__, :DialyzerStallDedupeRetryOrchestrator)
+      {:ok, retry_pid} = Orchestrator.start_link(name: retry_orchestrator_name)
+
+      on_exit(fn ->
+        stop_orchestrator(retry_pid)
+      end)
+
+      retry_initial_state = :sys.get_state(retry_pid)
+
+      replace_orchestrator_state!(retry_pid, fn _ ->
+        retry_initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            validation_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              current_command: "mix dialyzer --format short",
+              external_step: "exec_wait",
+              retry_attempt: 1
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+        |> Map.put(:retry_dedupe_keys, %{issue_id => first_retry_key})
+      end)
+
+      send(
+        retry_pid,
+        {:DOWN, second_ref, :process, self(), {:agent_run_failed, "stalled for 305994ms without codex activity"}}
+      )
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "selected_rule: `retry_dedupe_hit`"
+      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
+      assert blocker_body =~ "validation_bundle_fingerprint=validation:dialyzer"
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "changed workspace diff allows another validation retry without feedback digest" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
@@ -3243,6 +3378,154 @@ defmodule SymphonyElixir.CoreTest do
 
     assert updated_state.retry_attempts == %{}
     assert Process.alive?(worker_pid)
+    refute_received {:retry_issue, ^issue_id, _retry_token}
+  end
+
+  test "live rate-limit exhaustion drains when active validation wait snapshot is present" do
+    issue_id = "issue-live-rate-limit-active-validation"
+    issue = %Issue{id: issue_id, identifier: "MT-LIVE-ACTIVE-VALIDATION", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"},
+        %{id: "secondary", codex_home: "/tmp/codex-secondary"}
+      ],
+      codex_minimum_remaining_percent: 5,
+      codex_monitored_windows_mins: [300, 10_080]
+    )
+
+    healthy_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 20},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    exhausted_rate_limits = %{
+      "limitId" => "codex",
+      "primary" => %{"windowDurationMins" => 300, "usedPercent" => 96},
+      "secondary" => %{"windowDurationMins" => 10_080, "usedPercent" => 30},
+      "credits" => %{"hasCredits" => false, "unlimited" => false, "balance" => nil}
+    }
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      next_poll_due_at_ms: nil,
+      poll_check_in_progress: false,
+      tick_timer_ref: nil,
+      tick_token: nil,
+      workspace_usage_bytes: 0,
+      workspace_cleanup_ref: nil,
+      workspace_usage_refresh_ref: nil,
+      workspace_threshold_exceeded?: false,
+      running: %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: make_ref(),
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-live-active-validation",
+          session_id: "thread-live-active-validation",
+          codex_account_id: "primary",
+          run_phase: :editing,
+          current_command: "mix dialyzer --format short",
+          external_step: "exec_wait",
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          started_at: DateTime.utc_now()
+        }
+      },
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{
+        "primary" => %{
+          id: "primary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        },
+        "secondary" => %{
+          id: "secondary",
+          explicit?: true,
+          healthy: true,
+          probe_healthy: true,
+          probe_health_reason: nil,
+          health_reason: nil,
+          auth_mode: "chatgpt",
+          requires_openai_auth: false,
+          missing_windows_mins: [],
+          insufficient_windows_mins: [],
+          rate_limits: healthy_rate_limits
+        }
+      },
+      active_codex_account_id: "primary",
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: healthy_rate_limits,
+      codex_dispatch_reason: nil
+    }
+
+    update = %{
+      event: :notification,
+      codex_account_id: "primary",
+      payload: %{
+        "method" => "codex/event/token_count",
+        "params" => %{
+          "msg" => %{
+            "type" => "event_msg",
+            "payload" => %{
+              "type" => "token_count",
+              "rate_limits" => exhausted_rate_limits
+            }
+          }
+        }
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+    assert updated_state.active_codex_account_id == "secondary"
+    assert %{healthy: false, health_reason: health_reason} = updated_state.codex_accounts["primary"]
+    assert health_reason =~ "threshold exceeded"
+
+    assert %{
+             codex_account_id: "primary",
+             failover_drain_decision: %{
+               disposition: :drain,
+               reason: :safe_boundary_reached,
+               safe_signal: "active_validation_snapshot:validation:dialyzer",
+               from_account_id: "primary",
+               to_account_id: "secondary"
+             }
+           } = updated_state.running[issue_id]
+
+    assert Process.alive?(worker_pid)
+    refute Map.has_key?(updated_state.retry_attempts, issue_id)
     refute_received {:retry_issue, ^issue_id, _retry_token}
   end
 

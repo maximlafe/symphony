@@ -487,6 +487,18 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       Regex.match?(~r/^make symphony-validate(\s|$)/, normalized) ->
         "validation:repo-validate"
 
+      Regex.match?(~r/^make symphony-preflight(\s|$)/, normalized) ->
+        "validation:preflight"
+
+      Regex.match?(~r/^make symphony-handoff-check(\s|$)/, normalized) ->
+        "validation:handoff-check"
+
+      Regex.match?(~r/^mix specs\.check(\s|$)/, normalized) ->
+        "validation:specs-check"
+
+      Regex.match?(~r/^mix dialyzer(\s|$)/, normalized) ->
+        "validation:dialyzer"
+
       true ->
         nil
     end
