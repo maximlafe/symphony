@@ -963,7 +963,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute payload["feedback_digest"] == feedback_digest(changed_feedback)
   end
 
-  test "github_pr_snapshot ignores bot review chatter and inline replies" do
+  test "github_pr_snapshot treats Codex inline root comments as actionable" do
     response =
       DynamicTool.execute(
         "github_pr_snapshot",
@@ -1022,6 +1022,15 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                    "line" => 40,
                    "html_url" => "https://example.test/inline/2",
                    "created_at" => "2026-04-14T11:38:05Z"
+                 },
+                 %{
+                   "id" => 3,
+                   "user" => %{"login" => "github-actions[bot]"},
+                   "body" => "Build details: https://example.test/actions/73",
+                   "path" => "elixir/lib/symphony_elixir/config.ex",
+                   "line" => 12,
+                   "html_url" => "https://example.test/inline/3",
+                   "created_at" => "2026-04-14T11:38:15Z"
                  }
                ])}
           end
@@ -1033,11 +1042,22 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert payload["all_checks_green"] == true
     assert payload["has_pending_checks"] == false
-    assert payload["has_actionable_feedback"] == false
+    assert payload["has_actionable_feedback"] == true
     assert payload["top_level_comment_count"] == 0
     assert payload["review_count"] == 0
-    assert payload["inline_comment_count"] == 0
-    assert payload["actionable_feedback"] == []
+    assert payload["inline_comment_count"] == 1
+
+    assert payload["actionable_feedback"] == [
+             %{
+               "author" => "chatgpt-codex-connector[bot]",
+               "body" => "Avoid exception-driven lookup",
+               "channel" => "inline_comment",
+               "created_at" => "2026-04-14T11:25:48Z",
+               "line" => 40,
+               "path" => "elixir/lib/symphony_elixir/config.ex",
+               "url" => "https://example.test/inline/1"
+             }
+           ]
   end
 
   test "github_pr_snapshot sanitizes invalid UTF-8 in GitHub CLI error payloads" do
