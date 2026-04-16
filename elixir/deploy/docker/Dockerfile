@@ -23,6 +23,7 @@ RUN apt-get update \
       python3 \
       python3-pip \
       python3-venv \
+      ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g "npm@${NPM_VERSION}" @openai/codex
