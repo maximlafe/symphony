@@ -318,6 +318,462 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert passing_manifest["profile"] == "runtime"
   end
 
+  test "evaluate enforces acceptance matrix proof mapping for mode:plan issues" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log from the health check
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:targeted tests`
+    - [x] `AM-2` -> `validation:runtime smoke`
+    - [x] `AM-3` -> `artifact:runtime-proof.log`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Acceptance matrix coverage is complete.
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: acceptance_matrix_description(),
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert manifest["missing_items"] == []
+    assert get_in(manifest, ["proof_signals", "acceptance_matrix_covered"]) == true
+    assert get_in(manifest, ["proof_signals", "proof_surface_exists"]) == true
+    assert get_in(manifest, ["proof_signals", "proof_run_executed"]) == true
+  end
+
+  test "evaluate rejects missing and non-executed acceptance matrix proof mappings for mode:plan issues" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `scripts/proof_runner --help`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log from the health check
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:targeted tests`
+    - [x] `AM-2` -> `validation:runtime smoke`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Matrix coverage is partial.
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: acceptance_matrix_description_run_executed_runtime(),
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "acceptance matrix item `AM-3` is missing a checked proof mapping entry" in manifest["missing_items"]
+
+    assert "acceptance matrix item `AM-2` requires executed proof; mapped validation command looks surface-only (`--help`)" in manifest["missing_items"]
+  end
+
+  test "evaluate reports missing and malformed acceptance matrix definitions" do
+    assert {:error, non_binary_manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: :invalid,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "acceptance matrix section is missing or empty in issue description for `mode:plan` handoff" in non_binary_manifest["missing_items"]
+
+    assert {:error, missing_section_manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: "## Overview\nNo acceptance matrix section here.",
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "acceptance matrix section is missing or empty in issue description for `mode:plan` handoff" in missing_section_manifest["missing_items"]
+
+    malformed_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | <id> | bad | bad | test | <target> | run_executed |
+    | AM-BAD | bad | bad | test | target | unknown |
+    | AM-DUP | dup one | dup | test | target-a | run_executed |
+    | AM-DUP | dup two | dup | test | target-b | run_executed |
+    | only | two |
+    """
+
+    assert {:error, malformed_manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: malformed_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert Enum.any?(malformed_manifest["missing_items"], &String.contains?(&1, "missing required id or proof_target"))
+    assert Enum.any?(malformed_manifest["missing_items"], &String.contains?(&1, "unsupported proof_type/proof_semantic"))
+    assert Enum.any?(malformed_manifest["missing_items"], &String.contains?(&1, "invalid column count"))
+    assert "acceptance matrix contains duplicate id `AM-DUP`" in malformed_manifest["missing_items"]
+  end
+
+  test "evaluate validates proof mapping format, unknown ids, duplicate refs, and duplicate matrix mappings" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log from the health check
+
+    ### Proof Mapping
+
+    - [ ] `AM-1` -> `validation:targeted tests`
+    - [x] AM-1 -> validation:targeted tests
+    - [x] `AM-3` validation:targeted tests
+    - [x] `AM-2` -> `evidence`
+    - [x] `AM-UNKNOWN` -> `validation:targeted tests`
+    - [x] `AM-1` -> `validation:targeted tests`
+    - [x] `AM-1` -> `validation:runtime smoke`
+    - [x] `AM-2` -> `validation:targeted tests`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Mapping guardrails are under test.
+    """
+
+    description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    | AM-2 | Runtime smoke path | Runtime smoke proof exists | runtime_smoke | mix test test/symphony_elixir/handoff_check_test.exs | runtime_smoke |
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "proof mapping entry is missing matrix item id in backticks" in manifest["missing_items"]
+
+    assert Enum.any?(
+             manifest["missing_items"],
+             &String.contains?(&1, "proof mapping entry for `AM-2` must use `validation:<label>`, `artifact:<title>`, or `runtime:<label>`")
+           )
+
+    assert "proof mapping references unknown acceptance matrix item `AM-UNKNOWN`" in manifest["missing_items"]
+
+    assert Enum.any?(
+             manifest["missing_items"],
+             &String.contains?(&1, "proof mapping reference `validation:targeted tests` is reused by multiple acceptance matrix items")
+           )
+
+    assert "acceptance matrix item `AM-1` has multiple proof mapping entries; exactly one is required" in manifest["missing_items"]
+  end
+
+  test "evaluate enforces artifact and validation mapping types plus semantic execution checks" do
+    artifact_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-A | Artifact proof path | Artifact uploaded | artifact | runtime-proof.log | run_executed |
+    """
+
+    artifact_workpad_wrong_type = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log
+
+    ### Proof Mapping
+
+    - [x] `AM-A` -> `validation:targeted tests`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Wrong artifact mapping type.
+    """
+
+    assert {:error, wrong_type_manifest} =
+             HandoffCheck.evaluate(
+               artifact_workpad_wrong_type,
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: artifact_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "acceptance matrix item `AM-A` expects artifact mapping `artifact:<title>`" in wrong_type_manifest["missing_items"]
+
+    artifact_workpad_empty_target = String.replace(artifact_workpad_wrong_type, "`validation:targeted tests`", "`artifact:<title>`")
+
+    assert {:error, empty_target_manifest} =
+             HandoffCheck.evaluate(
+               artifact_workpad_empty_target,
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: artifact_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert Enum.any?(
+             empty_target_manifest["missing_items"],
+             &String.contains?(&1, "proof mapping entry for `AM-A` must use `validation:<label>`, `artifact:<title>`, or `runtime:<label>`")
+           )
+
+    missing_artifact_workpad = String.replace(artifact_workpad_wrong_type, "`validation:targeted tests`", "`artifact:missing.log`")
+
+    assert {:error, missing_artifact_manifest} =
+             HandoffCheck.evaluate(
+               missing_artifact_workpad,
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: artifact_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "acceptance matrix item `AM-A` maps to artifact `missing.log` that is not checked in `Artifacts`" in missing_artifact_manifest["missing_items"]
+
+    uploaded_but_not_attached_workpad = String.replace(artifact_workpad_wrong_type, "`validation:targeted tests`", "`artifact:runtime-proof.log`")
+
+    assert {:error, not_attached_manifest} =
+             HandoffCheck.evaluate(
+               uploaded_but_not_attached_workpad,
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: artifact_description,
+               attachments: [],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "acceptance matrix item `AM-A` maps to artifact `runtime-proof.log` that is not uploaded in Linear attachments" in not_attached_manifest["missing_items"]
+
+    validation_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-TYPE | Validation type check | Validation proof exists | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    | AM-NIL | Missing validation check | Validation entry missing | test | missing validation | run_executed |
+    | AM-RUNTIME-BAD | Runtime smoke check | Runtime smoke uses correct label | runtime_smoke | mix test test/symphony_elixir/handoff_check_test.exs | runtime_smoke |
+    | AM-HELP | Executed proof check | Help-only command must fail | test | scripts/proof_runner --help | run_executed |
+    | AM-SURFACE | Surface-only signal | Surface exists is allowed | test | mix test test/symphony_elixir/handoff_check_test.exs | surface_exists |
+    """
+
+    validation_workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `scripts/proof_runner --help`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log
+
+    ### Proof Mapping
+
+    - [x] `AM-TYPE` -> `artifact:runtime-proof.log`
+    - [x] `AM-NIL` -> `validation:missing validation`
+    - [x] `AM-RUNTIME-BAD` -> `validation:targeted tests`
+    - [x] `AM-HELP` -> `validation:runtime smoke`
+    - [x] `AM-SURFACE` -> `validation:targeted tests`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Validation mapping semantics are under test.
+    """
+
+    assert {:error, validation_manifest} =
+             HandoffCheck.evaluate(
+               validation_workpad,
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: validation_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "acceptance matrix item `AM-TYPE` expects validation mapping `validation:<label>`" in validation_manifest["missing_items"]
+    assert "acceptance matrix item `AM-NIL` maps to validation `missing validation` that is not checked" in validation_manifest["missing_items"]
+
+    assert "acceptance matrix item `AM-RUNTIME-BAD` with proof_type `runtime_smoke` must map to `runtime smoke` validation entry" in validation_manifest["missing_items"]
+
+    assert "acceptance matrix item `AM-HELP` requires executed proof; mapped validation command looks surface-only (`--help`)" in validation_manifest["missing_items"]
+
+    runtime_semantic_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-RUNTIME-OK | Runtime smoke check | Runtime smoke signal is explicit | runtime_smoke | mix test test/symphony_elixir/handoff_check_test.exs | runtime_smoke |
+    """
+
+    runtime_semantic_workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log
+
+    ### Proof Mapping
+
+    - [x] `AM-RUNTIME-OK` -> `validation:runtime smoke`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Runtime smoke semantic path is valid.
+    """
+
+    assert {:ok, runtime_semantic_manifest} =
+             HandoffCheck.evaluate(
+               runtime_semantic_workpad,
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: runtime_semantic_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert get_in(runtime_semantic_manifest, ["proof_signals", "runtime_smoke"]) == true
+    assert get_in(runtime_semantic_manifest, ["proof_signals", "acceptance_matrix_covered"]) == true
+  end
+
+  test "evaluate normalizes validation gate errors and git changed paths for invalid change classes" do
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["verification:runtime"],
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: [123],
+               validation_gate_errors: [:custom_error],
+               git: %{
+                 "head_sha" => "abc123",
+                 "tree_sha" => "tree123",
+                 "worktree_clean" => true,
+                 "changed_paths" => [123, :workflow_file]
+               }
+             )
+
+    assert Enum.any?(manifest["missing_items"], &String.contains?(&1, "custom_error"))
+    assert Enum.any?(manifest["missing_items"], &String.contains?(&1, "unsupported change class `123`"))
+  end
+
   test "review_ready_transition_allowed? fails when the workpad digest no longer matches the manifest" do
     workpad_path = Path.join(System.tmp_dir!(), "handoff-check-workpad-#{System.unique_integer([:positive])}.md")
     manifest_path = Path.join(System.tmp_dir!(), "handoff-check-manifest-#{System.unique_integer([:positive])}.json")
@@ -890,6 +1346,22 @@ defmodule SymphonyElixir.HandoffCheckTest do
     - `risk_level`: `medium`
     - `summary`: Runtime proof, tests, and repo validation are complete.
     """
+  end
+
+  defp acceptance_matrix_description do
+    """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+    | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
+    """
+  end
+
+  defp acceptance_matrix_description_run_executed_runtime do
+    String.replace(acceptance_matrix_description(), "surface_exists", "run_executed")
   end
 
   defp green_pr_snapshot do

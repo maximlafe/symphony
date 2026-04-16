@@ -732,6 +732,7 @@ Instructions:
    - always pass the absolute path to local `workpad.md` when calling `sync_workpad`.
 6. Update the issue-description task-spec only when required sections are missing or the task contract materially changed:
    - use canonical Russian headings `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and keep a final `## Symphony` section;
+   - for execution/review-oriented tasks, add mandatory `## Acceptance Matrix` with atomic items (`id`, `scenario`, `expected_outcome`, `proof_type`, `proof_target`, `proof_semantic`);
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
    - keep `## Symphony` as the last section with `Repo: <resolved owner/name>`, `Base branch: <configured branch>`, and `Working branch: <configured branch name>` when `.symphony-working-branch` exists;
    - if `.symphony-source-repository`, `.symphony-base-branch`, or `.symphony-working-branch` exist, treat them as authoritative when repopulating `Repo:`, `Base branch:`, and `Working branch:` during normalization;
@@ -990,6 +991,12 @@ Use this structure when creating a new issue description or normalizing an exist
 - Критерий 1
 - Критерий 2
 
+## Acceptance Matrix
+
+| id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+| -- | -- | -- | -- | -- | -- |
+| AM-1 | <scenario> | <expected outcome> | <test|artifact|runtime_smoke> | <target> | <surface_exists|run_executed|runtime_smoke> |
+
 ## Вне скоупа
 
 - Добавляй только если есть явные non-goals
@@ -1052,6 +1059,10 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 - [ ] вложение: `<title>` -> <что подтверждает>
 - [ ] ожидаемый, но не созданный артефакт: `<name>` -> <почему не был получен>
+
+### Proof Mapping
+
+- [ ] `<AM-id>` -> `validation:<label>` | `artifact:<title>` | `runtime:<label>`
 
 ### Checkpoint
 

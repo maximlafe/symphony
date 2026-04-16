@@ -8,6 +8,7 @@ defmodule SymphonyElixir.HandoffCheck do
   @allowed_checkpoint_types ["human-verify", "decision", "human-action"]
   @allowed_risk_levels ["low", "medium", "high"]
   @delivery_tdd_label "delivery:tdd"
+  @plan_mode_label "mode:plan"
   @supported_profiles ["ui", "data-extraction", "runtime", "generic"]
   @default_profile_labels %{
     "ui" => "verification:ui",
@@ -20,6 +21,8 @@ defmodule SymphonyElixir.HandoffCheck do
   @visual_extensions MapSet.new([".gif", ".jpeg", ".jpg", ".mov", ".mp4", ".png", ".webm", ".webp"])
   @machine_readable_extensions MapSet.new([".csv", ".json", ".jsonl", ".md", ".ndjson", ".tsv"])
   @runtime_extensions MapSet.new([".json", ".log", ".md", ".txt"])
+  @matrix_proof_types MapSet.new(["test", "artifact", "runtime_smoke"])
+  @matrix_semantics MapSet.new(["surface_exists", "run_executed", "runtime_smoke"])
 
   @type result :: {:ok, map()} | {:error, map()}
 
@@ -43,6 +46,7 @@ defmodule SymphonyElixir.HandoffCheck do
     pr_number = Keyword.get(opts, :pr_number)
     issue_id = Keyword.get(opts, :issue_id)
     issue_identifier = Keyword.get(opts, :issue_identifier)
+    issue_description = Keyword.get(opts, :issue_description)
     issue_labels = normalize_labels(Keyword.get(opts, :labels, []))
     attachments = normalize_attachments(Keyword.get(opts, :attachments, []))
     pr_snapshot = normalize_pr_snapshot(Keyword.get(opts, :pr_snapshot))
@@ -57,6 +61,7 @@ defmodule SymphonyElixir.HandoffCheck do
       )
 
     parsed_workpad = parse_workpad(workpad_body)
+    {acceptance_matrix_items, acceptance_matrix_errors} = parse_acceptance_matrix(issue_description)
 
     {validation_gate, git_metadata, validation_gate_errors} =
       resolve_validation_gate(parsed_workpad, opts)
@@ -67,6 +72,15 @@ defmodule SymphonyElixir.HandoffCheck do
       "errors" => validation_gate_errors
     }
 
+    {proof_signals, acceptance_matrix_missing_items} =
+      acceptance_matrix_missing_items(
+        acceptance_matrix_items,
+        parsed_workpad,
+        issue_labels,
+        attachments,
+        acceptance_matrix_errors
+      )
+
     missing_items =
       collect_missing_items(
         parsed_workpad,
@@ -75,7 +89,8 @@ defmodule SymphonyElixir.HandoffCheck do
         pr_snapshot,
         profile,
         profile_errors,
-        validation_context
+        validation_context,
+        acceptance_matrix_missing_items
       )
 
     passed = missing_items == []
@@ -90,11 +105,13 @@ defmodule SymphonyElixir.HandoffCheck do
         "validation_gate" => validation_gate,
         "git" => git_metadata,
         "summary" => summary_for_manifest(passed, profile, missing_items),
+        "proof_signals" => proof_signals,
         "issue" => %{
           "id" => issue_id,
           "identifier" => issue_identifier,
           "labels" => issue_labels,
-          "attachment_titles" => Enum.map(attachments, & &1["title"])
+          "attachment_titles" => Enum.map(attachments, & &1["title"]),
+          "acceptance_matrix" => acceptance_matrix_items
         },
         "pull_request" => %{
           "repo" => repo,
@@ -111,6 +128,7 @@ defmodule SymphonyElixir.HandoffCheck do
           "sections" => parsed_workpad["sections"],
           "validation" => parsed_workpad["validation"],
           "artifacts" => parsed_workpad["artifacts"],
+          "proof_mapping" => parsed_workpad["proof_mapping"],
           "checkpoint" => parsed_workpad["checkpoint"]
         },
         "missing_items" => missing_items
@@ -305,12 +323,14 @@ defmodule SymphonyElixir.HandoffCheck do
     sections = split_sections(body)
     validation_items = parse_checkbox_items(section_body(sections, ["Validation", "Проверка"]))
     artifact_items = parse_artifact_items(section_body(sections, ["Artifacts", "Артефакты"]))
+    proof_mapping_items = parse_proof_mapping_items(section_body(sections, ["Proof Mapping", "Маппинг доказательств"]))
     checkpoint = parse_checkpoint(Map.get(sections, "Checkpoint", ""))
 
     %{
       "sections" => Map.keys(sections),
       "validation" => validation_items,
       "artifacts" => artifact_items,
+      "proof_mapping" => proof_mapping_items,
       "checkpoint" => checkpoint
     }
   end
@@ -372,6 +392,24 @@ defmodule SymphonyElixir.HandoffCheck do
     end)
   end
 
+  defp parse_proof_mapping_items(section_body) when is_binary(section_body) do
+    parse_checkbox_items(section_body)
+    |> Enum.map(fn item ->
+      matrix_item_id = mapping_matrix_item_id(item["text"])
+      reference = mapping_reference(item["text"])
+
+      {reference_type, reference_value} =
+        if is_binary(reference), do: mapping_reference_parts(reference), else: {nil, nil}
+
+      Map.merge(item, %{
+        "matrix_item_id" => matrix_item_id,
+        "reference" => reference,
+        "reference_type" => reference_type,
+        "reference_value" => reference_value
+      })
+    end)
+  end
+
   defp parse_checkpoint(section_body) when is_binary(section_body) do
     section_body
     |> String.split(~r/\R/, trim: true)
@@ -381,6 +419,478 @@ defmodule SymphonyElixir.HandoffCheck do
         _ -> acc
       end
     end)
+  end
+
+  defp parse_acceptance_matrix(nil), do: {[], []}
+
+  defp parse_acceptance_matrix(issue_description) when is_binary(issue_description) do
+    section_body = markdown_h2_section_body(issue_description, "Acceptance Matrix")
+
+    rows =
+      section_body
+      |> String.split(~r/\R/, trim: true)
+      |> Enum.map(&String.trim/1)
+      |> Enum.filter(&(String.starts_with?(&1, "|") and String.ends_with?(&1, "|")))
+
+    data_rows =
+      rows
+      |> Enum.drop(2)
+      |> Enum.reject(&table_separator_row?/1)
+
+    parsed_rows =
+      Enum.map(data_rows, &parse_acceptance_matrix_row/1)
+
+    items =
+      parsed_rows
+      |> Enum.flat_map(fn
+        {:ok, item} -> [item]
+        _ -> []
+      end)
+
+    row_errors =
+      parsed_rows
+      |> Enum.flat_map(fn
+        {:error, reason} -> [reason]
+        _ -> []
+      end)
+
+    unique_errors =
+      items
+      |> Enum.group_by(& &1["id"])
+      |> Enum.flat_map(fn
+        {_id, [_single]} -> []
+        {id, _dupes} -> ["acceptance matrix contains duplicate id `#{id}`"]
+      end)
+
+    {items, Enum.uniq(row_errors ++ unique_errors)}
+  end
+
+  defp parse_acceptance_matrix(_issue_description), do: {[], []}
+
+  defp markdown_h2_section_body(markdown, heading) when is_binary(markdown) and is_binary(heading) do
+    escaped_heading = Regex.escape(heading)
+    section_regex = ~r/(?:^|\n)##\s+#{escaped_heading}\s*\n(?<body>.*?)(?=\n##\s+|\z)/ms
+
+    case Regex.named_captures(section_regex, markdown) do
+      %{"body" => body} -> String.trim(body)
+      _ -> ""
+    end
+  end
+
+  defp table_separator_row?(row) do
+    row
+    |> String.trim("|")
+    |> String.split("|")
+    |> Enum.map(&String.trim/1)
+    |> Enum.all?(fn cell -> Regex.match?(~r/^:?-{3,}:?$/, cell) end)
+  end
+
+  defp parse_acceptance_matrix_row(row) do
+    cells =
+      row
+      |> String.trim("|")
+      |> String.split("|")
+      |> Enum.map(&String.trim/1)
+
+    case cells do
+      [id, scenario, expected_outcome, proof_type, proof_target, proof_semantic | _rest] ->
+        with true <- not placeholder_value?(id),
+             canonical_type when is_binary(canonical_type) <- normalize_matrix_proof_type(proof_type),
+             canonical_semantic when is_binary(canonical_semantic) <- normalize_matrix_semantic(proof_semantic),
+             true <- not placeholder_value?(proof_target) do
+          {:ok,
+           %{
+             "id" => strip_wrapping_backticks(id),
+             "scenario" => scenario,
+             "expected_outcome" => expected_outcome,
+             "proof_type" => canonical_type,
+             "proof_target" => strip_wrapping_backticks(proof_target),
+             "proof_semantic" => canonical_semantic
+           }}
+        else
+          false ->
+            {:error, "acceptance matrix row is missing required id or proof_target: #{row}"}
+
+          nil ->
+            {:error, "acceptance matrix row has unsupported proof_type/proof_semantic: #{row}"}
+        end
+
+      _ ->
+        {:error, "acceptance matrix row has invalid column count: #{row}"}
+    end
+  end
+
+  defp normalize_matrix_proof_type(value) when is_binary(value) do
+    normalized =
+      value
+      |> strip_wrapping_backticks()
+      |> String.downcase()
+      |> String.trim()
+      |> String.replace(~r/[\s-]+/, "_")
+
+    if MapSet.member?(@matrix_proof_types, normalized), do: normalized
+  end
+
+  defp normalize_matrix_semantic(value) when is_binary(value) do
+    normalized =
+      value
+      |> strip_wrapping_backticks()
+      |> String.downcase()
+      |> String.trim()
+      |> String.replace(~r/[\s-]+/, "_")
+
+    cond do
+      normalized in ["", "default"] ->
+        "run_executed"
+
+      MapSet.member?(@matrix_semantics, normalized) ->
+        normalized
+
+      true ->
+        nil
+    end
+  end
+
+  defp mapping_matrix_item_id(text) when is_binary(text) do
+    case Regex.run(~r/`([^`]+)`/, text) do
+      [_, id] -> String.trim(id)
+      _ -> nil
+    end
+  end
+
+  defp mapping_reference(text) when is_binary(text) do
+    case String.split(text, "->", parts: 2) do
+      [_, reference] -> reference |> String.trim() |> strip_wrapping_backticks()
+      _ -> nil
+    end
+  end
+
+  defp mapping_reference_parts(reference) when is_binary(reference) do
+    case Regex.run(~r/^(validation|artifact|runtime)\s*:\s*(.+)$/i, reference) do
+      [_, type, value] ->
+        {String.downcase(String.trim(type)), value |> String.trim() |> strip_wrapping_backticks()}
+
+      _ ->
+        {nil, nil}
+    end
+  end
+
+  defp acceptance_matrix_missing_items(acceptance_matrix_items, parsed_workpad, issue_labels, attachments, parse_errors) do
+    validation_items = parsed_workpad["validation"] || []
+    proof_mapping_items = parsed_workpad["proof_mapping"] || []
+    artifact_items = parsed_workpad["artifacts"] || []
+    runtime_smoke_checked? = runtime_smoke_checked?(validation_items)
+
+    case requires_acceptance_matrix?(issue_labels, acceptance_matrix_items) do
+      false ->
+        {skipped_matrix_proof_signals(runtime_smoke_checked?), []}
+
+      true ->
+        evaluate_acceptance_matrix(
+          acceptance_matrix_items,
+          validation_items,
+          artifact_items,
+          proof_mapping_items,
+          attachments,
+          parse_errors,
+          runtime_smoke_checked?
+        )
+    end
+  end
+
+  defp evaluate_acceptance_matrix(
+         acceptance_matrix_items,
+         validation_items,
+         artifact_items,
+         proof_mapping_items,
+         attachments,
+         parse_errors,
+         runtime_smoke_checked?
+       ) do
+    checked_mappings = checked_proof_mapping_items(proof_mapping_items)
+    mapping_groups = Enum.group_by(checked_mappings, & &1["matrix_item_id"])
+    matrix_ids = MapSet.new(Enum.map(acceptance_matrix_items, & &1["id"]))
+
+    base_errors =
+      []
+      |> Kernel.++(missing_matrix_section_errors(acceptance_matrix_items))
+      |> Kernel.++(parse_errors)
+      |> Kernel.++(proof_mapping_format_errors(proof_mapping_items))
+      |> Kernel.++(unknown_matrix_mapping_errors(checked_mappings, matrix_ids))
+      |> Kernel.++(duplicate_reference_errors(checked_mappings))
+
+    {item_errors, signals} =
+      Enum.reduce(acceptance_matrix_items, {base_errors, initial_proof_signals(runtime_smoke_checked?)}, fn matrix_item, {errors, signals} ->
+        validate_single_matrix_item(
+          matrix_item,
+          Map.get(mapping_groups, matrix_item["id"], []),
+          validation_items,
+          artifact_items,
+          attachments,
+          errors,
+          signals
+        )
+      end)
+
+    finalized_signals = Map.put(signals, "acceptance_matrix_covered", item_errors == [])
+    {finalized_signals, Enum.uniq(item_errors)}
+  end
+
+  defp validate_single_matrix_item(matrix_item, [], _validation_items, _artifact_items, _attachments, errors, signals) do
+    {errors ++ ["acceptance matrix item `#{matrix_item["id"]}` is missing a checked proof mapping entry"], signals}
+  end
+
+  defp validate_single_matrix_item(matrix_item, [_mapping, _second | _rest], _validation_items, _artifact_items, _attachments, errors, signals) do
+    {errors ++ ["acceptance matrix item `#{matrix_item["id"]}` has multiple proof mapping entries; exactly one is required"], signals}
+  end
+
+  defp validate_single_matrix_item(matrix_item, [mapping], validation_items, artifact_items, attachments, errors, signals) do
+    validate_matrix_mapping(
+      matrix_item,
+      mapping,
+      validation_items,
+      artifact_items,
+      attachments,
+      errors,
+      signals
+    )
+  end
+
+  defp requires_acceptance_matrix?(issue_labels, acceptance_matrix_items) do
+    @plan_mode_label in issue_labels or acceptance_matrix_items != []
+  end
+
+  defp runtime_smoke_checked?(validation_items) do
+    Enum.any?(validation_items, fn item ->
+      item["checked"] == true and item["label"] == "runtime smoke" and not placeholder_value?(item["command"])
+    end)
+  end
+
+  defp skipped_matrix_proof_signals(runtime_smoke_checked?) do
+    %{
+      "proof_surface_exists" => false,
+      "proof_run_executed" => false,
+      "runtime_smoke" => runtime_smoke_checked?,
+      "acceptance_matrix_covered" => true
+    }
+  end
+
+  defp checked_proof_mapping_items(proof_mapping_items) do
+    proof_mapping_items
+    |> Enum.filter(&(&1["checked"] == true))
+    |> Enum.reject(&(placeholder_value?(&1["matrix_item_id"]) or placeholder_value?(&1["reference_value"])))
+  end
+
+  defp missing_matrix_section_errors(acceptance_matrix_items) do
+    case acceptance_matrix_items do
+      [] -> ["acceptance matrix section is missing or empty in issue description for `mode:plan` handoff"]
+      _ -> []
+    end
+  end
+
+  defp validate_matrix_mapping(matrix_item, mapping, validation_items, artifact_items, attachments, errors, signals) do
+    matrix_item_id = matrix_item["id"]
+    matrix_type = matrix_item["proof_type"]
+    matrix_semantic = matrix_item["proof_semantic"]
+    reference_type = mapping["reference_type"]
+    reference_value = mapping["reference_value"]
+
+    if matrix_type == "artifact" do
+      validate_artifact_matrix_mapping(
+        matrix_item_id,
+        reference_type,
+        reference_value,
+        artifact_items,
+        attachments,
+        errors,
+        signals,
+        matrix_semantic
+      )
+    else
+      validate_validation_matrix_mapping(
+        matrix_item_id,
+        matrix_type,
+        matrix_semantic,
+        reference_type,
+        reference_value,
+        validation_items,
+        errors,
+        signals
+      )
+    end
+  end
+
+  defp validate_artifact_matrix_mapping(matrix_item_id, reference_type, reference_value, artifact_items, attachments, errors, signals, matrix_semantic) do
+    if reference_type != "artifact" do
+      {errors ++ ["acceptance matrix item `#{matrix_item_id}` expects artifact mapping `artifact:<title>`"], signals}
+    else
+      artifact_match =
+        Enum.find(artifact_items, fn item ->
+          item["checked"] == true and item["kind"] == "uploaded_attachment" and item["title"] == reference_value
+        end)
+
+      cond do
+        is_nil(artifact_match) ->
+          {errors ++ ["acceptance matrix item `#{matrix_item_id}` maps to artifact `#{reference_value}` that is not checked in `Artifacts`"], signals}
+
+        not attachment_present?(attachments, reference_value) ->
+          {errors ++ ["acceptance matrix item `#{matrix_item_id}` maps to artifact `#{reference_value}` that is not uploaded in Linear attachments"], signals}
+
+        true ->
+          updated_signals =
+            signals
+            |> mark_matrix_semantic(matrix_semantic)
+            |> mark_runtime_smoke_signal(matrix_semantic)
+
+          {errors, updated_signals}
+      end
+    end
+  end
+
+  defp validate_validation_matrix_mapping(
+         matrix_item_id,
+         matrix_type,
+         matrix_semantic,
+         reference_type,
+         reference_value,
+         validation_items,
+         errors,
+         signals
+       ) do
+    case reference_type do
+      type when type in ["validation", "runtime"] ->
+        validation_match = find_checked_validation_item(validation_items, reference_value)
+
+        validate_validation_match(
+          validation_match,
+          reference_value,
+          matrix_item_id,
+          matrix_type,
+          matrix_semantic,
+          errors,
+          signals
+        )
+
+      _ ->
+        {errors ++ ["acceptance matrix item `#{matrix_item_id}` expects validation mapping `validation:<label>`"], signals}
+    end
+  end
+
+  defp find_checked_validation_item(validation_items, reference_value) do
+    Enum.find(validation_items, fn item ->
+      item["checked"] == true and String.downcase(to_string(item["label"])) == String.downcase(to_string(reference_value))
+    end)
+  end
+
+  defp validate_validation_match(nil, reference_value, matrix_item_id, _matrix_type, _matrix_semantic, errors, signals) do
+    {errors ++ ["acceptance matrix item `#{matrix_item_id}` maps to validation `#{reference_value}` that is not checked"], signals}
+  end
+
+  defp validate_validation_match(validation_match, _reference_value, matrix_item_id, "runtime_smoke", matrix_semantic, errors, signals) do
+    cond do
+      validation_match["label"] != "runtime smoke" ->
+        {errors ++ ["acceptance matrix item `#{matrix_item_id}` with proof_type `runtime_smoke` must map to `runtime smoke` validation entry"], signals}
+
+      matrix_semantic == "run_executed" and surface_only_command?(validation_match["command"]) ->
+        {errors ++ ["acceptance matrix item `#{matrix_item_id}` requires executed proof; mapped validation command looks surface-only (`--help`)"], signals}
+
+      true ->
+        updated_signals =
+          signals
+          |> mark_matrix_semantic(matrix_semantic)
+          |> mark_runtime_smoke_signal("runtime_smoke")
+
+        {errors, updated_signals}
+    end
+  end
+
+  defp validate_validation_match(validation_match, _reference_value, matrix_item_id, _matrix_type, "run_executed", errors, signals)
+       when is_map(validation_match) do
+    if surface_only_command?(validation_match["command"]) do
+      {errors ++ ["acceptance matrix item `#{matrix_item_id}` requires executed proof; mapped validation command looks surface-only (`--help`)"], signals}
+    else
+      {errors, signals |> mark_matrix_semantic("run_executed")}
+    end
+  end
+
+  defp validate_validation_match(_validation_match, _reference_value, _matrix_item_id, matrix_type, matrix_semantic, errors, signals) do
+    updated_signals =
+      signals
+      |> mark_matrix_semantic(matrix_semantic)
+      |> mark_runtime_smoke_signal(matrix_type)
+
+    {errors, updated_signals}
+  end
+
+  defp proof_mapping_format_errors(proof_mapping_items) do
+    Enum.flat_map(proof_mapping_items, fn item ->
+      checked? = item["checked"] == true
+      matrix_item_id = item["matrix_item_id"]
+      reference_type = item["reference_type"]
+      reference_value = item["reference_value"]
+
+      cond do
+        not checked? ->
+          []
+
+        placeholder_value?(matrix_item_id) ->
+          ["proof mapping entry is missing matrix item id in backticks"]
+
+        reference_type not in ["validation", "artifact", "runtime"] or placeholder_value?(reference_value) ->
+          ["proof mapping entry for `#{matrix_item_id}` must use `validation:<label>`, `artifact:<title>`, or `runtime:<label>`"]
+
+        true ->
+          []
+      end
+    end)
+  end
+
+  defp unknown_matrix_mapping_errors(checked_mappings, matrix_ids) do
+    checked_mappings
+    |> Enum.flat_map(fn mapping ->
+      matrix_item_id = mapping["matrix_item_id"]
+
+      if MapSet.member?(matrix_ids, matrix_item_id) do
+        []
+      else
+        ["proof mapping references unknown acceptance matrix item `#{matrix_item_id}`"]
+      end
+    end)
+  end
+
+  defp duplicate_reference_errors(checked_mappings) do
+    checked_mappings
+    |> Enum.group_by(fn mapping ->
+      "#{mapping["reference_type"]}:#{String.downcase(to_string(mapping["reference_value"]))}"
+    end)
+    |> Enum.flat_map(fn {reference, mappings} ->
+      matrix_ids =
+        mappings
+        |> Enum.map(& &1["matrix_item_id"])
+        |> Enum.uniq()
+
+      if length(matrix_ids) > 1 do
+        ["proof mapping reference `#{reference}` is reused by multiple acceptance matrix items: #{Enum.join(matrix_ids, ", ")}"]
+      else
+        []
+      end
+    end)
+  end
+
+  defp mark_matrix_semantic(signals, "surface_exists"), do: Map.put(signals, "proof_surface_exists", true)
+  defp mark_matrix_semantic(signals, "run_executed"), do: Map.put(signals, "proof_run_executed", true)
+  defp mark_matrix_semantic(signals, "runtime_smoke"), do: Map.put(signals, "runtime_smoke", true)
+
+  defp mark_runtime_smoke_signal(signals, "runtime_smoke"), do: Map.put(signals, "runtime_smoke", true)
+  defp mark_runtime_smoke_signal(signals, _), do: signals
+
+  defp initial_proof_signals(runtime_smoke_checked?) do
+    %{
+      "proof_surface_exists" => false,
+      "proof_run_executed" => false,
+      "runtime_smoke" => runtime_smoke_checked?,
+      "acceptance_matrix_covered" => false
+    }
   end
 
   defp normalize_checkpoint_value(value) when is_binary(value) do
@@ -404,7 +914,8 @@ defmodule SymphonyElixir.HandoffCheck do
          pr_snapshot,
          profile,
          profile_errors,
-         validation_context
+         validation_context,
+         acceptance_matrix_missing_items
        ) do
     []
     |> Kernel.++(profile_errors)
@@ -413,6 +924,7 @@ defmodule SymphonyElixir.HandoffCheck do
     |> Kernel.++(validation_gate_missing_items(validation_context["gate"], validation_context["git"]))
     |> Kernel.++(checkpoint_missing_items(parsed_workpad["checkpoint"]))
     |> Kernel.++(artifact_manifest_missing_items(parsed_workpad["artifacts"], attachments))
+    |> Kernel.++(acceptance_matrix_missing_items)
     |> Kernel.++(profile_missing_items(profile, parsed_workpad["artifacts"], attachments))
     |> Kernel.++(pr_snapshot_missing_items(pr_snapshot))
     |> Enum.uniq()
@@ -791,6 +1303,8 @@ defmodule SymphonyElixir.HandoffCheck do
     trimmed = String.trim(value)
     trimmed == "" or String.starts_with?(trimmed, "<") or String.contains?(trimmed, "fill only")
   end
+
+  defp surface_only_command?(value), do: is_binary(value) and String.contains?(String.downcase(value), "--help")
 
   defp claim_matches?(claim, phrases) when is_binary(claim) do
     normalized_claim = String.downcase(claim)
