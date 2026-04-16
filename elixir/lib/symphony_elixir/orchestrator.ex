@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Orchestrator do
     ControllerFinalizer,
     ErrorClassifier,
     ResumeCheckpoint,
+    RetryFailoverDecision,
     RunPhase,
     StatusDashboard,
     TelemetrySchema,
@@ -88,6 +89,8 @@ defmodule SymphonyElixir.Orchestrator do
   def init(opts) do
     now_ms = System.monotonic_time(:millisecond)
     config = Config.settings!()
+    start_immediately? = Keyword.get(opts, :start_immediately?, true)
+    run_startup_housekeeping? = Keyword.get(opts, :run_startup_housekeeping?, true)
 
     state = %State{
       poll_interval_ms: config.polling.interval_ms,
@@ -114,8 +117,19 @@ defmodule SymphonyElixir.Orchestrator do
       codex_dispatch_reason: nil
     }
 
-    state = run_workspace_housekeeping(state, :startup)
-    state = schedule_tick(state, 0)
+    state =
+      if run_startup_housekeeping? do
+        run_workspace_housekeeping(state, :startup)
+      else
+        state
+      end
+
+    state =
+      if start_immediately? do
+        schedule_tick(state, 0)
+      else
+        state
+      end
 
     {:ok, state}
   end
@@ -983,6 +997,15 @@ defmodule SymphonyElixir.Orchestrator do
     cost_profile_key = pick_retry_cost_profile_key(previous_retry, metadata)
     budget_decision = pick_retry_budget_decision(previous_retry, metadata)
     feedback_digest = pick_retry_feedback_digest(previous_retry, metadata)
+    failure_class = pick_retry_failure_class(previous_retry, metadata)
+
+    validation_bundle_fingerprint =
+      pick_retry_validation_bundle_fingerprint(previous_retry, metadata)
+
+    workspace_diff_fingerprint =
+      pick_retry_workspace_diff_fingerprint(previous_retry, metadata)
+
+    retry_failover_decision = pick_retry_failover_decision(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1018,7 +1041,11 @@ defmodule SymphonyElixir.Orchestrator do
             issue_token_total: issue_token_total,
             cost_profile_key: cost_profile_key,
             budget_decision: budget_decision,
-            feedback_digest: feedback_digest
+            feedback_digest: feedback_digest,
+            failure_class: failure_class,
+            validation_bundle_fingerprint: validation_bundle_fingerprint,
+            workspace_diff_fingerprint: workspace_diff_fingerprint,
+            retry_failover_decision: retry_failover_decision
           })
     }
   end
@@ -1041,7 +1068,11 @@ defmodule SymphonyElixir.Orchestrator do
           issue_token_total: Map.get(retry_entry, :issue_token_total),
           cost_profile_key: Map.get(retry_entry, :cost_profile_key),
           budget_decision: Map.get(retry_entry, :budget_decision),
-          feedback_digest: Map.get(retry_entry, :feedback_digest)
+          feedback_digest: Map.get(retry_entry, :feedback_digest),
+          failure_class: Map.get(retry_entry, :failure_class),
+          validation_bundle_fingerprint: Map.get(retry_entry, :validation_bundle_fingerprint),
+          workspace_diff_fingerprint: Map.get(retry_entry, :workspace_diff_fingerprint),
+          retry_failover_decision: Map.get(retry_entry, :retry_failover_decision)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1142,6 +1173,10 @@ defmodule SymphonyElixir.Orchestrator do
 
     case BudgetGuardrails.decide(budget_context) do
       {:allow, budget_totals} ->
+        decision = retry_failover_budget_decision({:allow, budget_totals})
+
+        log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
+
         Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check (attempt #{continuation_attempt})")
 
         state
@@ -1157,10 +1192,14 @@ defmodule SymphonyElixir.Orchestrator do
             issue_token_total: budget_totals.budget_issue_total_tokens
           }
           |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
+          |> Map.merge(retry_failover_metadata(decision))
         )
 
-      {:downshift, decision} ->
-        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, decision)
+      {:downshift, budget_decision} ->
+        decision = retry_failover_budget_decision({:downshift, budget_decision})
+
+        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, budget_decision)
+        log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
 
         state
         |> complete_issue(issue_id)
@@ -1171,22 +1210,31 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: identifier,
             trace_id: trace_id,
             delay_type: :continuation,
-            resume_checkpoint: put_budget_checkpoint(resume_checkpoint, decision),
-            issue_token_total: decision.budget_issue_total_tokens,
-            cost_profile_key: decision.budget_next_cost_profile_key,
-            budget_decision: decision,
-            error: "budget downshift: #{decision.reason}",
+            resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_decision),
+            issue_token_total: budget_decision.budget_issue_total_tokens,
+            cost_profile_key: budget_decision.budget_next_cost_profile_key,
+            budget_decision: budget_decision,
+            error: "budget downshift: #{budget_decision.reason}",
             error_class: ErrorClassifier.to_string(:transient)
           }
           |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
+          |> Map.merge(retry_failover_metadata(decision))
         )
 
-      {:handoff, decision} ->
-        log_budget_decision(issue_id, identifier, session_id, trace_id, :handoff, decision)
+      {:handoff, budget_decision} ->
+        decision = retry_failover_budget_decision({:handoff, budget_decision})
+
+        log_budget_decision(issue_id, identifier, session_id, trace_id, :handoff, budget_decision)
+        log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
 
         state
         |> complete_issue(issue_id)
-        |> escalate_issue_for_budget_handoff(Map.get(running_entry, :issue), decision, trace_id)
+        |> escalate_issue_for_budget_handoff(
+          Map.get(running_entry, :issue),
+          budget_decision,
+          trace_id,
+          decision
+        )
     end
   end
 
@@ -1229,14 +1277,18 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: identifier,
             trace_id: trace_id,
             codex_account_id: Map.get(running_entry, :codex_account_id),
+            failure_class: failure_class_label,
             resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_totals),
             issue_token_total: budget_totals.budget_issue_total_tokens
           }
           |> Map.merge(retry_execution_metadata(running_entry))
         )
 
-      {:downshift, decision} ->
-        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, decision)
+      {:downshift, budget_decision} ->
+        decision = retry_failover_budget_decision({:downshift, budget_decision})
+
+        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, budget_decision)
+        log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
 
         schedule_issue_retry(
           state,
@@ -1245,19 +1297,30 @@ defmodule SymphonyElixir.Orchestrator do
           %{
             identifier: identifier,
             trace_id: trace_id,
-            error: "budget downshift: #{decision.reason}",
+            error: "budget downshift: #{budget_decision.reason}",
             error_class: error_class_label,
-            resume_checkpoint: put_budget_checkpoint(resume_checkpoint, decision),
-            issue_token_total: decision.budget_issue_total_tokens,
-            cost_profile_key: decision.budget_next_cost_profile_key,
-            budget_decision: decision
+            resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_decision),
+            issue_token_total: budget_decision.budget_issue_total_tokens,
+            cost_profile_key: budget_decision.budget_next_cost_profile_key,
+            budget_decision: budget_decision
           }
           |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
+          |> Map.merge(retry_failover_metadata(decision))
         )
 
-      {:handoff, decision} ->
-        log_budget_decision(issue_id, identifier, session_id, trace_id, :handoff, decision)
-        escalate_issue_for_budget_handoff(state, Map.get(running_entry, :issue), decision, trace_id)
+      {:handoff, budget_decision} ->
+        decision = retry_failover_budget_decision({:handoff, budget_decision})
+
+        log_budget_decision(issue_id, identifier, session_id, trace_id, :handoff, budget_decision)
+        log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
+
+        escalate_issue_for_budget_handoff(
+          state,
+          Map.get(running_entry, :issue),
+          budget_decision,
+          trace_id,
+          decision
+        )
     end
   end
 
@@ -1621,17 +1684,42 @@ defmodule SymphonyElixir.Orchestrator do
            account_health_after,
            replacement_account_id
          ) do
-      {:preempt, reason} ->
-        {:failover,
-         preempt_running_issue_for_failover(
-           state,
-           issue_id,
-           updated_running_entry,
-           tracked_account_id,
-           replacement_account_id,
-           account_health_after,
-           reason
-         )}
+      {:preempt, failover_reason} ->
+        resume_checkpoint = capture_resume_checkpoint(Map.get(updated_running_entry, :issue), updated_running_entry)
+        health_reason = codex_account_health_reason(state, tracked_account_id) || "account became unhealthy"
+
+        decision =
+          RetryFailoverDecision.decide(retry_failover_account_unhealthy_signals(health_reason, resume_checkpoint))
+
+        log_retry_failover_decision(
+          issue_id,
+          Map.get(updated_running_entry, :identifier, issue_id),
+          running_entry_session_id(updated_running_entry),
+          running_entry_trace_id(updated_running_entry),
+          decision
+        )
+
+        case decision.selected_action do
+          action when action in [:checkpoint_and_failover, :immediate_preemption] ->
+            {:failover,
+             preempt_running_issue_for_failover(
+               state,
+               issue_id,
+               updated_running_entry,
+               %{
+                 from_account_id: tracked_account_id,
+                 to_account_id: replacement_account_id,
+                 account_health_after: account_health_after,
+                 health_reason: health_reason,
+                 resume_checkpoint: resume_checkpoint,
+                 failover_reason: failover_reason,
+                 decision: decision
+               }
+             )}
+
+          _ ->
+            {:keep_running, state, updated_running_entry}
+        end
 
       {:drain, reason, safe_signal} ->
         drained_entry =
@@ -1834,21 +1922,19 @@ defmodule SymphonyElixir.Orchestrator do
     Map.put(running_entry, :failover_drain_decision, decision)
   end
 
-  defp preempt_running_issue_for_failover(
-         %State{} = state,
-         issue_id,
-         running_entry,
-         from_account_id,
-         to_account_id,
-         account_health_after,
-         failover_reason
-       ) do
+  defp preempt_running_issue_for_failover(%State{} = state, issue_id, running_entry, failover_context)
+       when is_map(failover_context) do
     identifier = Map.get(running_entry, :identifier, issue_id)
     trace_id = Map.get(running_entry, :trace_id)
     session_id = running_entry_session_id(running_entry)
     attempt = next_failure_attempt_from_running(running_entry)
-    health_reason = codex_account_health_reason(state, from_account_id) || "account became unhealthy"
-    resume_checkpoint = capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
+    from_account_id = Map.get(failover_context, :from_account_id)
+    to_account_id = Map.get(failover_context, :to_account_id)
+    account_health_after = Map.get(failover_context, :account_health_after)
+    health_reason = Map.get(failover_context, :health_reason)
+    resume_checkpoint = Map.get(failover_context, :resume_checkpoint)
+    failover_reason = Map.get(failover_context, :failover_reason, :no_safe_drain_signal)
+    decision = Map.fetch!(failover_context, :decision)
 
     state =
       state
@@ -1858,7 +1944,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     with_log_metadata(issue_log_metadata(issue_id, identifier, session_id, trace_id), fn ->
       Logger.warning(
-        "Failover decision disposition=forced_preemption issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} from codex_account_id=#{from_account_id} to codex_account_id=#{to_account_id} health_reason=#{health_reason} previous_health=#{inspect(account_health_after)} forced_preemption_reason=#{failover_reason} attempt=#{attempt}"
+        "Failover decision disposition=forced_preemption issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} from codex_account_id=#{from_account_id} to codex_account_id=#{to_account_id} health_reason=#{health_reason} previous_health=#{inspect(account_health_after)} forced_preemption_reason=#{failover_reason} attempt=#{attempt} selected_action=#{decision.selected_action} selected_rule=#{decision.selected_rule}"
       )
     end)
 
@@ -1883,6 +1969,7 @@ defmodule SymphonyElixir.Orchestrator do
         resume_checkpoint: resume_checkpoint
       }
       |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
+      |> Map.merge(retry_failover_metadata(decision))
     )
   end
 
@@ -2478,7 +2565,12 @@ defmodule SymphonyElixir.Orchestrator do
             trace_id: trace_id,
             error: "agent exited: #{failure.summary}",
             error_class: error_class_label,
-            resume_checkpoint: context[:resume_checkpoint]
+            resume_checkpoint: context[:resume_checkpoint],
+            retry_failover_signals:
+              retry_failover_account_unhealthy_signals(
+                failure.summary,
+                context[:resume_checkpoint]
+              )
           }
           |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
         )
@@ -2547,18 +2639,20 @@ defmodule SymphonyElixir.Orchestrator do
       {:allow, _budget_totals} ->
         {:keep_running, state}
 
-      {:downshift, decision} ->
+      {:downshift, budget_decision} ->
         identifier = Map.get(running_entry, :identifier, issue_id)
         session_id = running_entry_session_id(running_entry)
         trace_id = running_entry_trace_id(running_entry)
+        decision = retry_failover_budget_decision({:downshift, budget_decision})
 
-        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, decision)
+        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, budget_decision)
+        log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
 
         checkpoint =
           running_entry
           |> Map.get(:issue)
           |> capture_resume_checkpoint(running_entry)
-          |> put_budget_checkpoint(decision)
+          |> put_budget_checkpoint(budget_decision)
 
         state =
           state
@@ -2572,29 +2666,37 @@ defmodule SymphonyElixir.Orchestrator do
               trace_id: trace_id,
               delay_type: delay_type,
               resume_checkpoint: checkpoint,
-              issue_token_total: decision.budget_issue_total_tokens,
-              cost_profile_key: decision.budget_next_cost_profile_key,
-              budget_decision: decision,
-              error: "budget downshift: #{decision.reason}",
+              issue_token_total: budget_decision.budget_issue_total_tokens,
+              cost_profile_key: budget_decision.budget_next_cost_profile_key,
+              budget_decision: budget_decision,
+              error: "budget downshift: #{budget_decision.reason}",
               error_class: ErrorClassifier.to_string(:transient)
             }
             |> Map.merge(retry_execution_metadata(running_entry, checkpoint))
+            |> Map.merge(retry_failover_metadata(decision))
           )
 
         {:budget_stop, state}
 
-      {:handoff, decision} ->
+      {:handoff, budget_decision} ->
         identifier = Map.get(running_entry, :identifier, issue_id)
         session_id = running_entry_session_id(running_entry)
         trace_id = running_entry_trace_id(running_entry)
+        decision = retry_failover_budget_decision({:handoff, budget_decision})
 
-        log_budget_decision(issue_id, identifier, session_id, trace_id, :handoff, decision)
+        log_budget_decision(issue_id, identifier, session_id, trace_id, :handoff, budget_decision)
+        log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
 
         state =
           state
           |> Map.put(:running, Map.put(state.running, issue_id, running_entry))
           |> terminate_running_issue(issue_id, false)
-          |> escalate_issue_for_budget_handoff(Map.get(running_entry, :issue), decision, trace_id)
+          |> escalate_issue_for_budget_handoff(
+            Map.get(running_entry, :issue),
+            budget_decision,
+            trace_id,
+            decision
+          )
 
         {:budget_stop, state}
     end
@@ -2693,15 +2795,96 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
+  defp retry_failover_budget_decision({:allow, _budget_totals}) do
+    RetryFailoverDecision.decide(%{})
+  end
+
+  defp retry_failover_budget_decision({kind, budget_decision})
+       when kind in [:downshift, :handoff] and is_map(budget_decision) do
+    RetryFailoverDecision.decide(%{
+      budget_exceeded: %{
+        scope: retry_failover_budget_scope(budget_decision),
+        reason: Map.get(budget_decision, :budget_reason),
+        summary: Map.get(budget_decision, :summary),
+        checkpoint_type: Map.get(budget_decision, :checkpoint_type),
+        risk_level: Map.get(budget_decision, :risk_level),
+        cheaper_profile?: kind == :downshift,
+        cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key),
+        retry_metadata: %{
+          budget_decision: budget_decision,
+          issue_token_total: Map.get(budget_decision, :budget_issue_total_tokens),
+          cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key)
+        },
+        log_fields: %{
+          budget_threshold: Map.get(budget_decision, :budget_threshold),
+          budget_observed_total: Map.get(budget_decision, :budget_observed_total),
+          budget_attempt_tokens: Map.get(budget_decision, :budget_attempt_tokens),
+          budget_issue_total_tokens: Map.get(budget_decision, :budget_issue_total_tokens),
+          budget_next_cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key)
+        }
+      }
+    })
+  end
+
+  defp retry_failover_budget_scope(%{budget_reason: :max_total_tokens_exceeded}), do: :cumulative
+  defp retry_failover_budget_scope(%{budget_reason: :max_tokens_per_attempt_exceeded}), do: :per_attempt
+
+  defp retry_failover_metadata(%RetryFailoverDecision{} = decision) do
+    %{
+      retry_failover_decision: RetryFailoverDecision.metadata(decision)
+    }
+    |> Map.merge(decision.retry_metadata)
+  end
+
+  defp log_retry_failover_decision(issue_id, identifier, session_id, trace_id, %RetryFailoverDecision{} = decision) do
+    metadata =
+      issue_log_metadata(issue_id, identifier, session_id, trace_id)
+      |> Enum.into(%{})
+      |> Map.merge(
+        TelemetrySchema.logger_metadata(%{
+          retry_failover_decision: RetryFailoverDecision.metadata(decision)
+        })
+      )
+      |> Map.to_list()
+
+    with_log_metadata(metadata, fn ->
+      Logger.warning(
+        "Retry/failover decision issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id || "n/a"} selected_rule=#{decision.selected_rule} selected_action=#{decision.selected_action} reason=#{inspect(decision.reason)} suppressed_rules=#{inspect(RetryFailoverDecision.suppressed_rule_labels(decision))}"
+      )
+    end)
+  end
+
+  defp retry_failover_account_unhealthy_signals(reason, resume_checkpoint) do
+    checkpoint_available = retry_failover_checkpoint_available?(resume_checkpoint)
+
+    %{
+      account_unhealthy: %{
+        reason: reason,
+        retry_metadata: %{},
+        log_fields: %{
+          checkpoint_available: checkpoint_available
+        }
+      },
+      checkpoint_available: checkpoint_available,
+      milestone_near: false,
+      unsafe_preemption_required: false
+    }
+  end
+
+  defp retry_failover_checkpoint_available?(%{"resume_ready" => true}), do: true
+  defp retry_failover_checkpoint_available?(%{"available" => true}), do: true
+  defp retry_failover_checkpoint_available?(_checkpoint), do: false
+
   defp escalate_issue_for_budget_handoff(
          state,
          %Issue{id: tracker_issue_id} = issue,
-         decision,
-         trace_id
+         budget_decision,
+         trace_id,
+         retry_failover_decision
        )
-       when is_binary(tracker_issue_id) and is_map(decision) do
+       when is_binary(tracker_issue_id) and is_map(budget_decision) do
     intervention_state = manual_intervention_state()
-    body = budget_handoff_comment_body(issue, decision, trace_id)
+    body = budget_handoff_comment_body(issue, budget_decision, trace_id, retry_failover_decision)
 
     with :ok <- Tracker.create_comment(tracker_issue_id, body),
          :ok <- Tracker.update_issue_state(tracker_issue_id, intervention_state) do
@@ -2713,34 +2896,36 @@ defmodule SymphonyElixir.Orchestrator do
         schedule_issue_retry(
           state,
           issue.id,
-          budget_retry_attempt(decision),
+          budget_retry_attempt(budget_decision),
           %{
             identifier: issue.identifier,
             trace_id: trace_id,
             error: "failed to escalate budget handoff to #{intervention_state}: #{inspect(reason)}",
             error_class: ErrorClassifier.to_string(:transient),
-            issue_token_total: Map.get(decision, :budget_issue_total_tokens)
+            issue_token_total: Map.get(budget_decision, :budget_issue_total_tokens)
           }
+          |> Map.merge(retry_failover_metadata(retry_failover_decision))
         )
     end
   end
 
-  defp escalate_issue_for_budget_handoff(state, issue, decision, trace_id) do
-    issue_id = Map.get(decision, :issue_id) || Map.get(issue || %{}, :id)
-    identifier = Map.get(decision, :issue_identifier) || Map.get(issue || %{}, :identifier) || issue_id
+  defp escalate_issue_for_budget_handoff(state, issue, budget_decision, trace_id, retry_failover_decision) do
+    issue_id = Map.get(budget_decision, :issue_id) || Map.get(issue || %{}, :id)
+    identifier = Map.get(budget_decision, :issue_identifier) || Map.get(issue || %{}, :identifier) || issue_id
 
     if is_binary(issue_id) do
       schedule_issue_retry(
         state,
         issue_id,
-        budget_retry_attempt(decision),
+        budget_retry_attempt(budget_decision),
         %{
           identifier: identifier,
           trace_id: trace_id,
           error: "failed to escalate budget handoff: missing issue id",
           error_class: ErrorClassifier.to_string(:transient),
-          issue_token_total: Map.get(decision, :budget_issue_total_tokens)
+          issue_token_total: Map.get(budget_decision, :budget_issue_total_tokens)
         }
+        |> Map.merge(retry_failover_metadata(retry_failover_decision))
       )
     else
       state
@@ -2750,36 +2935,20 @@ defmodule SymphonyElixir.Orchestrator do
   defp budget_retry_attempt(%{attempt: attempt}) when is_integer(attempt) and attempt > 0, do: attempt
   defp budget_retry_attempt(_decision), do: 1
 
-  defp budget_handoff_comment_body(%Issue{} = issue, decision, trace_id) do
-    trace_id_line =
-      if is_binary(trace_id) and trace_id != "" do
-        "- trace_id: `#{trace_id}`\n"
-      else
-        ""
-      end
-
-    cost_profile_line =
-      case Map.get(decision, :budget_next_cost_profile_key) do
-        profile_key when is_binary(profile_key) and profile_key != "" ->
-          "- budget_next_cost_profile_key: `#{profile_key}`\n"
-
-        _ ->
-          ""
-      end
-
-    """
-    ### Budget handoff (auto-classified)
-
-    - checkpoint_type: `#{Map.get(decision, :checkpoint_type, "decision")}`
-    - risk_level: `#{Map.get(decision, :risk_level, "medium")}`
-    - issue: `#{issue.identifier || issue.id}`
-    #{trace_id_line}- budget_reason: `#{Map.get(decision, :budget_reason)}`
-    - budget_threshold: `#{Map.get(decision, :budget_threshold)}`
-    - budget_observed_total: `#{Map.get(decision, :budget_observed_total)}`
-    - budget_attempt_tokens: `#{Map.get(decision, :budget_attempt_tokens)}`
-    - budget_issue_total_tokens: `#{Map.get(decision, :budget_issue_total_tokens)}`
-    #{cost_profile_line}- summary: #{Map.get(decision, :summary)}
-    """
+  defp budget_handoff_comment_body(%Issue{} = issue, budget_decision, trace_id, retry_failover_decision) do
+    decision_comment_body(
+      retry_failover_decision,
+      issue.identifier || issue.id,
+      trace_id,
+      %{
+        threshold: Map.get(budget_decision, :budget_threshold),
+        observed_total: Map.get(budget_decision, :budget_observed_total),
+        attempt_tokens: Map.get(budget_decision, :budget_attempt_tokens),
+        issue_total_tokens: Map.get(budget_decision, :budget_issue_total_tokens),
+        cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key),
+        summary: Map.get(budget_decision, :summary)
+      }
+    )
   end
 
   defp schedule_failure_retry_or_dedupe_hit(
@@ -2789,34 +2958,91 @@ defmodule SymphonyElixir.Orchestrator do
          metadata
        )
        when is_binary(issue_id) and is_integer(attempt) and attempt > 0 and is_map(metadata) do
+    base_signals = Map.get(metadata, :retry_failover_signals, %{})
+
     case retry_dedupe_key(metadata) do
       nil ->
-        schedule_issue_retry(state, issue_id, attempt, metadata)
+        schedule_retry_with_retry_failover_decision(
+          state,
+          issue,
+          attempt,
+          metadata,
+          RetryFailoverDecision.decide(base_signals)
+        )
 
       key ->
         if Map.get(state.retry_dedupe_keys, issue_id) == key do
-          escalate_issue_for_manual_intervention(
+          handle_retry_dedupe_hit(state, issue, attempt, metadata, base_signals)
+        else
+          schedule_retry_with_retry_failover_decision(
             state,
             issue,
-            retry_dedupe_reason(metadata),
             attempt,
-            %{
-              issue_id: issue_id,
-              identifier: issue.identifier,
-              trace_id: metadata[:trace_id],
-              codex_account_id: metadata[:codex_account_id],
-              error_class: ErrorClassifier.to_string(:permanent),
-              failure_class: "retry_dedupe_hit",
-              retry_action: :stop,
-              resume_checkpoint: metadata[:resume_checkpoint]
-            }
+            metadata,
+            RetryFailoverDecision.decide(base_signals)
           )
-        else
-          state
-          |> schedule_issue_retry(issue_id, attempt, metadata)
           |> remember_retry_dedupe_key(issue_id, key)
         end
     end
+  end
+
+  defp handle_retry_dedupe_hit(state, issue, attempt, metadata, base_signals) do
+    issue_id = issue.id
+    dedupe_reason = retry_dedupe_reason(metadata)
+
+    decision =
+      RetryFailoverDecision.decide(
+        Map.put(base_signals, :retry_dedupe_hit, %{
+          reason: dedupe_reason,
+          checkpoint_type: "human-action",
+          risk_level: "medium",
+          log_fields: %{
+            error_signature: metadata[:error_signature] || normalize_error_signature(metadata[:error]) || "unknown",
+            failure_class: metadata[:failure_class] || "unknown",
+            runtime_head_sha: metadata[:runtime_head_sha] || "unknown",
+            feedback_digest: metadata[:feedback_digest] || "unknown",
+            validation_bundle_fingerprint: metadata[:validation_bundle_fingerprint] || "unknown",
+            workspace_diff_fingerprint: metadata[:workspace_diff_fingerprint] || "unknown"
+          }
+        })
+      )
+
+    log_retry_failover_decision(issue_id, issue.identifier, nil, metadata[:trace_id], decision)
+
+    escalate_issue_for_retry_failover_handoff(
+      state,
+      issue,
+      decision,
+      attempt,
+      %{
+        issue_id: issue_id,
+        identifier: issue.identifier,
+        trace_id: metadata[:trace_id],
+        codex_account_id: metadata[:codex_account_id],
+        error_class: ErrorClassifier.to_string(:permanent),
+        failure_class: "retry_dedupe_hit",
+        retry_action: :stop,
+        resume_checkpoint: metadata[:resume_checkpoint]
+      }
+    )
+  end
+
+  defp schedule_retry_with_retry_failover_decision(
+         state,
+         %Issue{id: issue_id} = issue,
+         attempt,
+         metadata,
+         %RetryFailoverDecision{} = decision
+       ) do
+    log_retry_failover_decision(issue_id, issue.identifier, nil, metadata[:trace_id], decision)
+
+    schedule_issue_retry(
+      state,
+      issue_id,
+      attempt,
+      metadata
+      |> Map.merge(retry_failover_metadata(decision))
+    )
   end
 
   defp escalate_issue_for_manual_intervention(
@@ -2909,6 +3135,70 @@ defmodule SymphonyElixir.Orchestrator do
     )
   end
 
+  defp escalate_issue_for_retry_failover_handoff(
+         state,
+         %Issue{id: tracker_issue_id},
+         %RetryFailoverDecision{} = decision,
+         failure_attempt,
+         context
+       )
+       when is_binary(tracker_issue_id) do
+    blocker_comment =
+      decision_comment_body(
+        decision,
+        context.identifier,
+        context.trace_id,
+        %{
+          failed_attempt: failure_attempt,
+          error_class: context.error_class,
+          failure_class: context.failure_class,
+          codex_account_id: context.codex_account_id,
+          retry_action: context.retry_action
+        }
+      )
+
+    intervention_state = manual_intervention_state()
+
+    with :ok <- Tracker.create_comment(tracker_issue_id, blocker_comment),
+         :ok <- Tracker.update_issue_state(tracker_issue_id, intervention_state) do
+      with_log_metadata(
+        issue_log_metadata(context.issue_id, context.identifier, nil, context.trace_id),
+        fn ->
+          Logger.warning(
+            "Escalated issue_id=#{context.issue_id} issue_identifier=#{context.identifier} to #{intervention_state} with selected_rule=#{decision.selected_rule} selected_action=#{decision.selected_action} (attempt #{failure_attempt})"
+          )
+        end
+      )
+
+      state
+      |> complete_issue(context.issue_id)
+      |> release_issue_claim(context.issue_id)
+    else
+      {:error, tracker_reason} ->
+        with_log_metadata(
+          issue_log_metadata(context.issue_id, context.identifier, nil, context.trace_id),
+          fn ->
+            Logger.error("Failed to escalate issue_id=#{context.issue_id} issue_identifier=#{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}")
+          end
+        )
+
+        schedule_issue_retry(
+          state,
+          context.issue_id,
+          failure_attempt,
+          %{
+            identifier: context.identifier,
+            trace_id: context.trace_id,
+            error: "failed to escalate #{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
+            error_class: ErrorClassifier.to_string(:transient),
+            resume_checkpoint: context[:resume_checkpoint]
+          }
+          |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
+          |> Map.merge(retry_failover_metadata(decision))
+        )
+    end
+  end
+
   defp blocker_comment_body(
          identifier,
          trace_id,
@@ -2952,6 +3242,47 @@ defmodule SymphonyElixir.Orchestrator do
     #{trace_id_line}#{account_line}#{retry_action_line}- reason: `#{ErrorClassifier.summarize_reason(reason)}`
     """
   end
+
+  defp decision_comment_body(%RetryFailoverDecision{} = decision, identifier, trace_id, extra_fields) do
+    suppressed_rules =
+      case RetryFailoverDecision.suppressed_rule_labels(decision) do
+        [] -> "[]"
+        rules -> Enum.join(rules, ", ")
+      end
+
+    [
+      "### Retry/failover decision (auto-classified)",
+      "",
+      decision_field_line("selected_rule", decision.selected_rule),
+      decision_field_line("selected_action", decision.selected_action),
+      decision_field_line("checkpoint_type", decision.checkpoint_type),
+      decision_field_line("risk_level", decision.risk_level),
+      decision_field_line("issue", identifier),
+      decision_field_line("trace_id", trace_id),
+      decision_field_line("reason", decision.reason),
+      decision_field_line("suppressed_rules", suppressed_rules)
+    ]
+    |> Kernel.++(
+      extra_fields
+      |> Enum.map(fn {key, value} -> decision_field_line(Atom.to_string(key), value) end)
+    )
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp decision_field_line(_label, nil), do: nil
+  defp decision_field_line(_label, ""), do: nil
+  defp decision_field_line(_label, []), do: nil
+
+  defp decision_field_line(label, value) when is_atom(value) do
+    decision_field_line(label, Atom.to_string(value))
+  end
+
+  defp decision_field_line(label, value) when is_list(value) do
+    decision_field_line(label, Enum.map_join(value, ", ", &to_string/1))
+  end
+
+  defp decision_field_line(label, value), do: "- #{label}: `#{value}`"
 
   defp release_issue_claim(%State{} = state, issue_id) do
     %{
@@ -3091,6 +3422,36 @@ defmodule SymphonyElixir.Orchestrator do
     metadata[:feedback_digest] || Map.get(previous_retry, :feedback_digest)
   end
 
+  defp pick_retry_failure_class(previous_retry, metadata) do
+    case metadata[:failure_class] || Map.get(previous_retry, :failure_class) do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp pick_retry_validation_bundle_fingerprint(previous_retry, metadata) do
+    case metadata[:validation_bundle_fingerprint] ||
+           Map.get(previous_retry, :validation_bundle_fingerprint) do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp pick_retry_workspace_diff_fingerprint(previous_retry, metadata) do
+    case metadata[:workspace_diff_fingerprint] ||
+           Map.get(previous_retry, :workspace_diff_fingerprint) do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp pick_retry_failover_decision(previous_retry, metadata) do
+    case metadata[:retry_failover_decision] || Map.get(previous_retry, :retry_failover_decision) do
+      value when is_map(value) -> value
+      _ -> nil
+    end
+  end
+
   defp retry_execution_metadata(source, resume_checkpoint \\ nil)
 
   defp retry_execution_metadata(source, resume_checkpoint)
@@ -3100,6 +3461,12 @@ defmodule SymphonyElixir.Orchestrator do
     |> maybe_put_retry_metadata(:expected_head_sha, Map.get(source, :expected_head_sha))
     |> maybe_put_retry_metadata(:execution_branch, Map.get(source, :execution_branch))
     |> maybe_put_retry_metadata(:feedback_digest, retry_feedback_digest(source, resume_checkpoint))
+    |> maybe_put_retry_metadata(:failure_class, Map.get(source, :failure_class))
+    |> maybe_put_retry_metadata(:validation_bundle_fingerprint, retry_validation_bundle_fingerprint(source))
+    |> maybe_put_retry_metadata(
+      :workspace_diff_fingerprint,
+      retry_workspace_diff_fingerprint(source, resume_checkpoint)
+    )
   end
 
   defp retry_execution_metadata(_source, _resume_checkpoint), do: %{}
@@ -3134,6 +3501,28 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp retry_validation_bundle_fingerprint(source) when is_map(source) do
+    case Map.get(source, :validation_bundle_fingerprint) || Map.get(source, "validation_bundle_fingerprint") do
+      value when is_binary(value) and value != "" ->
+        value
+
+      _ ->
+        source
+        |> Map.get(:current_command)
+        |> validation_bundle_fingerprint_from_command()
+    end
+  end
+
+  defp retry_workspace_diff_fingerprint(source, resume_checkpoint) when is_map(source) do
+    case Map.get(source, :workspace_diff_fingerprint) || Map.get(source, "workspace_diff_fingerprint") do
+      value when is_binary(value) and value != "" ->
+        value
+
+      _ ->
+        checkpoint_workspace_diff_fingerprint(resume_checkpoint)
+    end
+  end
+
   defp normalize_error_signature(value) when is_binary(value) do
     value
     |> String.downcase()
@@ -3148,26 +3537,142 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_error_signature(_value), do: nil
 
   defp retry_dedupe_key(metadata) when is_map(metadata) do
-    with false <- metadata[:delay_type] == :continuation,
-         error_signature when is_binary(error_signature) and error_signature != "" <-
-           metadata[:error_signature] || normalize_error_signature(metadata[:error]),
-         runtime_head_sha when is_binary(runtime_head_sha) and runtime_head_sha != "" <-
-           metadata[:runtime_head_sha],
-         feedback_digest when is_binary(feedback_digest) and feedback_digest != "" <-
-           metadata[:feedback_digest] do
-      Enum.join([error_signature, runtime_head_sha, feedback_digest], "::")
+    if metadata[:delay_type] == :continuation do
+      nil
     else
-      _ -> nil
+      validation_retry_dedupe_key(metadata) || generic_retry_dedupe_key(metadata)
     end
   end
 
   defp retry_dedupe_reason(metadata) when is_map(metadata) do
     error_signature = metadata[:error_signature] || normalize_error_signature(metadata[:error]) || "unknown"
+    failure_class = normalize_optional_string(metadata[:failure_class]) || "unknown"
+    validation_bundle_fingerprint = normalize_optional_string(metadata[:validation_bundle_fingerprint])
+    workspace_diff_fingerprint = normalize_optional_string(metadata[:workspace_diff_fingerprint])
     runtime_head_sha = metadata[:runtime_head_sha] || "unknown"
     feedback_digest = metadata[:feedback_digest] || "unknown"
 
-    "retry_dedupe_hit: identical failure surface repeated after one queued retry (error_signature=#{error_signature} runtime_head_sha=#{runtime_head_sha} feedback_digest=#{feedback_digest})"
+    if validation_bundle_fingerprint && workspace_diff_fingerprint do
+      "retry_dedupe_hit: identical validation retry surface repeated after one queued retry (error_signature=#{error_signature} failure_class=#{failure_class} validation_bundle_fingerprint=#{validation_bundle_fingerprint} workspace_diff_fingerprint=#{workspace_diff_fingerprint} feedback_digest=#{feedback_digest})"
+    else
+      "retry_dedupe_hit: identical failure surface repeated after one queued retry (error_signature=#{error_signature} runtime_head_sha=#{runtime_head_sha} feedback_digest=#{feedback_digest})"
+    end
   end
+
+  defp validation_retry_dedupe_key(metadata) when is_map(metadata) do
+    with error_signature when is_binary(error_signature) and error_signature != "" <-
+           metadata[:error_signature] || normalize_error_signature(metadata[:error]),
+         validation_bundle_fingerprint
+         when is_binary(validation_bundle_fingerprint) and validation_bundle_fingerprint != "" <-
+           metadata[:validation_bundle_fingerprint],
+         workspace_diff_fingerprint
+         when is_binary(workspace_diff_fingerprint) and workspace_diff_fingerprint != "" <-
+           metadata[:workspace_diff_fingerprint] do
+      failure_class = normalize_optional_string(metadata[:failure_class])
+      feedback_digest = normalize_optional_string(metadata[:feedback_digest])
+
+      [
+        "validation",
+        error_signature,
+        failure_class || "unknown",
+        validation_bundle_fingerprint,
+        workspace_diff_fingerprint,
+        feedback_digest || "none"
+      ]
+      |> Enum.join("::")
+    else
+      _ -> nil
+    end
+  end
+
+  defp generic_retry_dedupe_key(metadata) when is_map(metadata) do
+    with error_signature when is_binary(error_signature) and error_signature != "" <-
+           metadata[:error_signature] || normalize_error_signature(metadata[:error]),
+         runtime_head_sha when is_binary(runtime_head_sha) and runtime_head_sha != "" <-
+           metadata[:runtime_head_sha],
+         feedback_digest when is_binary(feedback_digest) and feedback_digest != "" <-
+           metadata[:feedback_digest] do
+      Enum.join(["generic", error_signature, runtime_head_sha, feedback_digest], "::")
+    else
+      _ -> nil
+    end
+  end
+
+  defp validation_bundle_fingerprint_from_command(command) when is_binary(command) do
+    normalized =
+      command
+      |> String.trim()
+      |> String.downcase()
+      |> String.replace(~r/\s+/, " ")
+
+    cond do
+      normalized == "" ->
+        nil
+
+      Regex.match?(~r/^mix test(\s|$)/, normalized) ->
+        "validation:test"
+
+      Regex.match?(~r/^make test(\s|$)/, normalized) ->
+        "validation:test"
+
+      Regex.match?(~r/^make symphony-validate(\s|$)/, normalized) ->
+        "validation:repo-validate"
+
+      Regex.match?(~r/^make symphony-preflight(\s|$)/, normalized) ->
+        "validation:preflight"
+
+      Regex.match?(~r/^make symphony-handoff-check(\s|$)/, normalized) ->
+        "validation:handoff-check"
+
+      Regex.match?(~r/^mix specs\.check(\s|$)/, normalized) ->
+        "validation:specs-check"
+
+      true ->
+        nil
+    end
+  end
+
+  defp validation_bundle_fingerprint_from_command(_command), do: nil
+
+  defp checkpoint_workspace_diff_fingerprint(%{} = resume_checkpoint) do
+    case Map.get(resume_checkpoint, "workspace_diff_fingerprint") do
+      value when is_binary(value) and value != "" ->
+        value
+
+      _ ->
+        checkpoint_workspace_diff_fallback_fingerprint(resume_checkpoint)
+    end
+  end
+
+  defp checkpoint_workspace_diff_fingerprint(_resume_checkpoint), do: nil
+
+  defp checkpoint_workspace_diff_fallback_fingerprint(%{} = resume_checkpoint) do
+    head = normalize_optional_string(Map.get(resume_checkpoint, "head"))
+    workpad_digest = normalize_optional_string(Map.get(resume_checkpoint, "workpad_digest"))
+    changed_files = normalize_checkpoint_changed_files(Map.get(resume_checkpoint, "changed_files"))
+
+    if is_binary(head) or is_binary(workpad_digest) or changed_files != [] do
+      digest_source =
+        ["head=#{head || "none"}", "workpad_digest=#{workpad_digest || "none"}"] ++
+          Enum.map(changed_files, &"changed_file=#{&1}")
+
+      digest_source
+      |> Enum.join("\n")
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+    end
+  end
+
+  defp normalize_checkpoint_changed_files(files) when is_list(files) do
+    files
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp normalize_checkpoint_changed_files(_files), do: []
 
   defp remember_retry_dedupe_key(%State{} = state, issue_id, key)
        when is_binary(issue_id) and is_binary(key) do
@@ -3199,14 +3704,30 @@ defmodule SymphonyElixir.Orchestrator do
     reason = stale_workspace_head_reason(execution_head)
     failure_attempt = dispatch_failure_attempt(attempt)
 
+    decision =
+      RetryFailoverDecision.decide(%{
+        stale_workspace_head: %{
+          reason: reason,
+          checkpoint_type: "human-action",
+          risk_level: "high",
+          log_fields: %{
+            runtime_head_sha: Map.get(execution_head, :runtime_head_sha),
+            expected_head_sha: Map.get(execution_head, :expected_head_sha),
+            execution_branch: Map.get(execution_head, :execution_branch)
+          }
+        }
+      })
+
     with_log_metadata(issue_log_metadata(issue.id, issue.identifier, nil, trace_id), fn ->
       Logger.warning("Blocking stale workspace head before dispatch for #{issue_context(issue)}: #{reason}")
     end)
 
-    escalate_issue_for_manual_intervention(
+    log_retry_failover_decision(issue.id, issue.identifier, nil, trace_id, decision)
+
+    escalate_issue_for_retry_failover_handoff(
       state,
       issue,
-      reason,
+      decision,
       failure_attempt,
       %{
         issue_id: issue.id,

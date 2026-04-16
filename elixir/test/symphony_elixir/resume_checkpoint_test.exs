@@ -46,6 +46,7 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert checkpoint["branch"] == "main"
     assert is_binary(checkpoint["head"])
     assert checkpoint["changed_files"] == ["new.txt", "renamed.txt"]
+    assert is_binary(checkpoint["workspace_diff_fingerprint"])
     assert checkpoint["workpad_ref"] == "comment-123"
     assert is_binary(checkpoint["workpad_digest"])
     assert checkpoint["last_validation_status"]["result"] == "passed"
@@ -107,6 +108,37 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert checkpoint["open_feedback"] == true
     assert checkpoint["feedback_digest"] == "checkpoint-feedback-digest"
     assert checkpoint["checkpoint_quality"] == "pending_review"
+  end
+
+  test "workspace_diff_fingerprint ignores internal workpad/checkpoint artifacts but detects real code diff" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-resume-checkpoint-diff-fingerprint-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    issue = %Issue{id: "issue-resume-workspace-diff", identifier: "LET-461-DIFF", state: "In Progress"}
+    workspace = Path.join(workspace_root, issue.identifier)
+
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nInitial state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-diff")
+    File.write!(Path.join(workspace, "tracked.txt"), "hello")
+    init_git_repo!(workspace)
+
+    first = ResumeCheckpoint.capture(issue, %{}, workspace_root: workspace_root)
+    assert is_binary(first["workspace_diff_fingerprint"])
+
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nChanged locally")
+    second = ResumeCheckpoint.capture(issue, %{}, workspace_root: workspace_root)
+    assert second["workspace_diff_fingerprint"] == first["workspace_diff_fingerprint"]
+
+    File.write!(Path.join(workspace, "tracked.txt"), "code change")
+    third = ResumeCheckpoint.capture(issue, %{}, workspace_root: workspace_root)
+    refute third["workspace_diff_fingerprint"] == first["workspace_diff_fingerprint"]
   end
 
   test "for_prompt trims blank feedback_digest to nil" do
@@ -259,6 +291,7 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert checkpoint["branch"] == nil
     assert checkpoint["head"] == nil
     assert checkpoint["changed_files"] == []
+    assert checkpoint["workspace_diff_fingerprint"] == nil
     assert checkpoint["workpad_ref"] == nil
     assert checkpoint["workpad_digest"] == nil
     assert checkpoint["open_pr"] == nil
