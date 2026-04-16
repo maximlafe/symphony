@@ -17,6 +17,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     "result" => :result,
     "summary" => :summary,
     "checked_at" => :checked_at,
+    "workspace_diff_fingerprint" => :workspace_diff_fingerprint,
     "has_pending_checks" => :has_pending_checks,
     "has_actionable_feedback" => :has_actionable_feedback,
     "feedback_digest" => :feedback_digest
@@ -46,6 +47,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
         |> Map.put("branch", git_trimmed(workspace, ["rev-parse", "--abbrev-ref", "HEAD"]))
         |> Map.put("head", git_trimmed(workspace, ["rev-parse", "HEAD"]))
         |> Map.put("changed_files", git_changed_files(workspace))
+        |> Map.put("workspace_diff_fingerprint", git_workspace_diff_fingerprint(workspace))
         |> Map.put("workpad_ref", read_trimmed(Path.join(workspace, @workpad_ref_path)))
         |> Map.put("workpad_digest", sha256_file(Path.join(workspace, @workpad_path)))
         |> merge_pr_context(running_entry)
@@ -131,6 +133,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     |> Map.update("last_validation_status", base["last_validation_status"], &normalize_validation_status/1)
     |> Map.put("open_pr", normalize_open_pr(Map.get(checkpoint, "open_pr")))
     |> Map.put("feedback_digest", normalize_optional_string(Map.get(checkpoint, "feedback_digest")))
+    |> Map.put("workspace_diff_fingerprint", normalize_optional_string(Map.get(checkpoint, "workspace_diff_fingerprint")))
     |> normalize_boolean("pending_checks")
     |> normalize_boolean("open_feedback")
   end
@@ -419,6 +422,54 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     end
   end
 
+  defp git_workspace_diff_fingerprint(workspace) do
+    status_lines = git_status_lines(workspace)
+
+    if is_list(status_lines) do
+      head = git_trimmed(workspace, ["rev-parse", "HEAD"]) || "unknown"
+
+      entries =
+        status_lines
+        |> Enum.map(&parse_status_entry/1)
+        |> Enum.reject(fn {_kind, _status, path} ->
+          path == "" or internal_workspace_artifact?(path)
+        end)
+
+      entry_digests =
+        entries
+        |> Enum.sort_by(fn {_kind, status, path} -> {path, status} end)
+        |> Enum.map(fn {kind, status, path} ->
+          digest = sha256_file(Path.join(workspace, path)) || "missing"
+          "#{kind}:#{status}:#{path}:#{digest}"
+        end)
+
+      ["head=#{head}" | entry_digests]
+      |> Enum.join("\n---\n")
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+    end
+  end
+
+  defp git_status_lines(workspace) do
+    case System.cmd("git", ["-C", workspace, "status", "--porcelain=v1", "--untracked-files=all"], stderr_to_stdout: true) do
+      {output, 0} -> String.split(output, "\n", trim: true)
+      _ -> nil
+    end
+  end
+
+  defp parse_status_entry(line) when is_binary(line) do
+    status = String.slice(line, 0, 2)
+    path = parse_status_path(line)
+
+    kind = if status == "??", do: :untracked, else: :tracked
+    {kind, status, path}
+  end
+
+  defp internal_workspace_artifact?(path) when is_binary(path) do
+    path in [@manifest_rel_path, @workpad_path, @workpad_ref_path] or
+      String.starts_with?(path, ".symphony/resume/")
+  end
+
   defp parse_status_path(line) when is_binary(line) do
     trimmed =
       line
@@ -500,6 +551,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       "branch" => nil,
       "head" => nil,
       "changed_files" => [],
+      "workspace_diff_fingerprint" => nil,
       "last_validation_status" => %{
         "result" => "unknown",
         "summary" => nil,
