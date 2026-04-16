@@ -1896,6 +1896,141 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "repeated stall failures with different elapsed times are deduped for the same validation wait snapshot" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-validation-stall-dedupe"
+    issue_identifier = "MT-VALIDATION-STALL-DEDUPE"
+    trace_id = "trace-validation-stall-dedupe"
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-validation-stall-dedupe-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      workspace = init_workspace_repo!(workspace_root, issue_identifier)
+      File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nValidation stall dedupe state")
+      File.write!(Path.join(workspace, ".workpad-id"), "comment-validation-stall-dedupe")
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        title: "Validation stall dedupe",
+        description: "Track dedupe when stalled validation restarts with unchanged state",
+        state: "In Progress",
+        url: "https://example.org/issues/#{issue_identifier}",
+        labels: []
+      }
+
+      runtime_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :ValidationStallDedupeOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      first_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            validation_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              current_command: "make symphony-validate",
+              external_step: "exec_wait"
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(
+        pid,
+        {:DOWN, first_ref, :process, self(), {:agent_run_failed, "stalled for 312655ms without codex activity"}}
+      )
+
+      state_after_first_failure =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(%{attempt: 1, validation_bundle_fingerprint: "validation:repo-validate"}, state.retry_attempts[issue_id])
+        end)
+        |> then(fn state ->
+          cancel_retry_timer(state.retry_attempts[issue_id])
+          state
+        end)
+
+      first_retry_key = state_after_first_failure.retry_dedupe_keys[issue_id]
+      assert is_binary(first_retry_key)
+      stop_orchestrator(pid)
+
+      second_ref = make_ref()
+      retry_orchestrator_name = Module.concat(__MODULE__, :ValidationStallDedupeRetryOrchestrator)
+      {:ok, retry_pid} = Orchestrator.start_link(name: retry_orchestrator_name)
+
+      on_exit(fn ->
+        stop_orchestrator(retry_pid)
+      end)
+
+      retry_initial_state = :sys.get_state(retry_pid)
+
+      replace_orchestrator_state!(retry_pid, fn _ ->
+        retry_initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            validation_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              current_command: "make symphony-validate",
+              external_step: "exec_wait",
+              retry_attempt: 1
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+        |> Map.put(:retry_dedupe_keys, %{issue_id => first_retry_key})
+      end)
+
+      send(
+        retry_pid,
+        {:DOWN, second_ref, :process, self(), {:agent_run_failed, "stalled for 305994ms without codex activity"}}
+      )
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "selected_rule: `retry_dedupe_hit`"
+      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
+      assert blocker_body =~ "validation_bundle_fingerprint=validation:repo-validate"
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "changed workspace diff allows another validation retry without feedback digest" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
@@ -5420,6 +5555,7 @@ defmodule SymphonyElixir.CoreTest do
       retry_attempt: Keyword.get(opts, :retry_attempt),
       runtime_head_sha: Keyword.fetch!(opts, :runtime_head_sha),
       current_command: Keyword.fetch!(opts, :current_command),
+      external_step: Keyword.get(opts, :external_step),
       latest_pr_snapshot: latest_pr_snapshot,
       started_at: DateTime.utc_now()
     }

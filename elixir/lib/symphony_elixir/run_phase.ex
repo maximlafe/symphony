@@ -275,12 +275,6 @@ defmodule SymphonyElixir.RunPhase do
     end
   end
 
-  defp fallback_phase(nil, external_step) when is_binary(external_step),
-    do: phase_for_external_step(external_step)
-
-  defp fallback_phase(nil, fallback_phase), do: fallback_phase
-  defp fallback_phase(phase, _fallback_phase), do: phase
-
   defp activity_state(_last_activity_at, _now, stall_timeout_ms)
        when not is_integer(stall_timeout_ms) or stall_timeout_ms <= 0,
        do: "alive"
@@ -436,6 +430,12 @@ defmodule SymphonyElixir.RunPhase do
   defp extract_command(_update), do: nil
 
   defp extract_external_step(%{event: :tool_call_started, payload: payload}) when is_map(payload) do
+    extract_tool_name(payload)
+  end
+
+  defp extract_external_step(_update), do: nil
+
+  defp extract_tool_name(payload) when is_map(payload) do
     payload
     |> extract_first_path([
       ["params", "tool"],
@@ -446,7 +446,7 @@ defmodule SymphonyElixir.RunPhase do
     |> normalize_command()
   end
 
-  defp extract_external_step(_update), do: nil
+  defp extract_tool_name(_payload), do: nil
 
   defp extract_operational_notice(update) when is_map(update) do
     update
@@ -554,13 +554,17 @@ defmodule SymphonyElixir.RunPhase do
   defp resolve_step_context(running_entry, update) do
     cond do
       tool_step = extract_external_step(update) ->
-        {nil, tool_step}
+        {Map.get(running_entry, :current_command), tool_step}
 
       command = extract_command(update) ->
         {command, nil}
 
       tool_step_finished?(update) ->
-        {Map.get(running_entry, :current_command), nil}
+        if extract_tool_name(Map.get(update, :payload)) == "exec_wait" do
+          {nil, nil}
+        else
+          {Map.get(running_entry, :current_command), nil}
+        end
 
       command_finished?(update) ->
         {nil, Map.get(running_entry, :external_step)}
@@ -571,10 +575,9 @@ defmodule SymphonyElixir.RunPhase do
   end
 
   defp resolve_phase(current_command, external_step) do
-    current_command
-    |> phase_for_command()
-    |> fallback_phase(external_step)
-    |> fallback_phase(:editing)
+    phase_for_external_step(external_step) ||
+      phase_for_command(current_command) ||
+      :editing
   end
 
   defp resolve_phase_started_at(running_entry, phase, existing_phase, timestamp) do

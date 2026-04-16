@@ -632,6 +632,7 @@ defmodule SymphonyElixir.Orchestrator do
       end)
 
       next_attempt = next_failure_attempt_from_running(running_entry)
+      checkpoint = capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
 
       state
       |> terminate_running_issue(issue_id, false)
@@ -642,9 +643,10 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: identifier,
           trace_id: trace_id,
           error: "stalled for #{elapsed_ms}ms without codex activity",
-          error_class: ErrorClassifier.to_string(:transient)
+          error_class: ErrorClassifier.to_string(:transient),
+          resume_checkpoint: checkpoint
         }
-        |> Map.merge(retry_execution_metadata(running_entry))
+        |> Map.merge(retry_execution_metadata(running_entry, checkpoint))
       )
     else
       state
@@ -1281,7 +1283,7 @@ defmodule SymphonyElixir.Orchestrator do
             resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_totals),
             issue_token_total: budget_totals.budget_issue_total_tokens
           }
-          |> Map.merge(retry_execution_metadata(running_entry))
+          |> Map.merge(retry_execution_metadata(running_entry, put_budget_checkpoint(resume_checkpoint, budget_totals)))
         )
 
       {:downshift, budget_decision} ->
@@ -1413,7 +1415,7 @@ defmodule SymphonyElixir.Orchestrator do
             error_class: ErrorClassifier.to_string(:transient),
             delay_type: nil
           }
-          |> Map.merge(retry_execution_metadata(running_entry))
+          |> Map.merge(retry_execution_metadata(running_entry, Map.get(running_entry, :resume_checkpoint)))
         )
     end
   end
@@ -1791,6 +1793,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp safe_failover_drain_signal(running_entry) when is_map(running_entry) do
     safe_milestone_signal(running_entry) ||
       safe_phase_signal(running_entry) ||
+      active_validation_wait_signal(running_entry) ||
       ready_resume_checkpoint_signal(running_entry) ||
       passed_verification_signal(running_entry) ||
       open_pr_snapshot_signal(running_entry) ||
@@ -1817,6 +1820,15 @@ defmodule SymphonyElixir.Orchestrator do
 
     if phase in [:targeted_tests, :verification, :runtime_proof, :full_validate, :waiting_ci, :publishing_pr] do
       "run_phase:#{RunPhase.phase_label(phase)}"
+    end
+  end
+
+  defp active_validation_wait_signal(running_entry) do
+    with "exec_wait" <- normalize_optional_string(Map.get(running_entry, :external_step)),
+         validation_bundle_fingerprint
+         when is_binary(validation_bundle_fingerprint) and validation_bundle_fingerprint != "" <-
+           retry_validation_bundle_fingerprint(running_entry, Map.get(running_entry, :resume_checkpoint)) do
+      "active_validation_snapshot:#{validation_bundle_fingerprint}"
     end
   end
 
@@ -3458,8 +3470,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp retry_execution_metadata(source, resume_checkpoint \\ nil)
-
   defp retry_execution_metadata(source, resume_checkpoint)
        when is_map(source) and (is_map(resume_checkpoint) or is_nil(resume_checkpoint)) do
     %{}
@@ -3468,7 +3478,10 @@ defmodule SymphonyElixir.Orchestrator do
     |> maybe_put_retry_metadata(:execution_branch, Map.get(source, :execution_branch))
     |> maybe_put_retry_metadata(:feedback_digest, retry_feedback_digest(source, resume_checkpoint))
     |> maybe_put_retry_metadata(:failure_class, Map.get(source, :failure_class))
-    |> maybe_put_retry_metadata(:validation_bundle_fingerprint, retry_validation_bundle_fingerprint(source))
+    |> maybe_put_retry_metadata(
+      :validation_bundle_fingerprint,
+      retry_validation_bundle_fingerprint(source, resume_checkpoint)
+    )
     |> maybe_put_retry_metadata(
       :workspace_diff_fingerprint,
       retry_workspace_diff_fingerprint(source, resume_checkpoint)
@@ -3507,15 +3520,18 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp retry_validation_bundle_fingerprint(source) when is_map(source) do
+  defp retry_validation_bundle_fingerprint(source, resume_checkpoint)
+       when is_map(source) and (is_map(resume_checkpoint) or is_nil(resume_checkpoint)) do
     case Map.get(source, :validation_bundle_fingerprint) || Map.get(source, "validation_bundle_fingerprint") do
       value when is_binary(value) and value != "" ->
         value
 
       _ ->
-        source
-        |> Map.get(:current_command)
-        |> validation_bundle_fingerprint_from_command()
+        active_validation_bundle_fingerprint(source) ||
+          source
+          |> Map.get(:current_command)
+          |> validation_bundle_fingerprint_from_command() ||
+          checkpoint_active_validation_bundle_fingerprint(resume_checkpoint)
     end
   end
 
@@ -3530,11 +3546,18 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp normalize_error_signature(value) when is_binary(value) do
-    value
-    |> String.downcase()
-    |> String.replace(~r/[^a-z0-9]+/u, "_")
-    |> String.trim("_")
-    |> case do
+    downcased = String.downcase(value)
+
+    normalized =
+      if Regex.match?(~r/stalled\s+for\s+\d+ms\s+without\s+codex\s+activity/u, downcased) do
+        "stalled_without_codex_activity"
+      else
+        downcased
+        |> String.replace(~r/[^a-z0-9]+/u, "_")
+        |> String.trim("_")
+      end
+
+    case normalized do
       "" -> nil
       normalized -> String.slice(normalized, 0, 120)
     end
@@ -3639,6 +3662,29 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp validation_bundle_fingerprint_from_command(_command), do: nil
+
+  defp active_validation_bundle_fingerprint(%{} = source) do
+    source
+    |> Map.get(:active_validation_snapshot, Map.get(source, "active_validation_snapshot"))
+    |> active_validation_snapshot_bundle()
+  end
+
+  defp checkpoint_active_validation_bundle_fingerprint(%{} = resume_checkpoint) do
+    resume_checkpoint
+    |> Map.get("active_validation_snapshot", Map.get(resume_checkpoint, :active_validation_snapshot))
+    |> active_validation_snapshot_bundle()
+  end
+
+  defp checkpoint_active_validation_bundle_fingerprint(_resume_checkpoint), do: nil
+
+  defp active_validation_snapshot_bundle(%{} = snapshot) do
+    case Map.get(snapshot, "validation_bundle_fingerprint") || Map.get(snapshot, :validation_bundle_fingerprint) do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp active_validation_snapshot_bundle(_snapshot), do: nil
 
   defp checkpoint_workspace_diff_fingerprint(%{} = resume_checkpoint) do
     case Map.get(resume_checkpoint, "workspace_diff_fingerprint") do
