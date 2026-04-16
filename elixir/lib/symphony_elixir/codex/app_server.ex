@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Codex.RuntimeHome, Config, PathSafety}
+  alias SymphonyElixir.{Codex.DynamicTool, Codex.RuntimeHome, Config, PathSafety, WorkspaceCapability}
 
   @initialize_id 1
   @thread_start_id 2
@@ -50,6 +50,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace),
+         {:ok, _capability_manifest} <-
+           WorkspaceCapability.prelaunch_gate(expanded_workspace, workspace_capability_opts(opts)),
          {:ok, port, cost_decision} <-
            start_port(
              expanded_workspace,
@@ -256,6 +258,13 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp cost_context_map(%_{} = struct), do: Map.from_struct(struct)
   defp cost_context_map(%{} = map), do: map
   defp cost_context_map(_issue), do: %{}
+
+  defp workspace_capability_opts(opts) when is_list(opts) do
+    opts
+    |> Keyword.take([:tool_probe, :time_source])
+  end
+
+  defp workspace_capability_opts(_opts), do: []
 
   defp normalize_command_env(command_env) when is_list(command_env) do
     {source_homes, remaining_env} =

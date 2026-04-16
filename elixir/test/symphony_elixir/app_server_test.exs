@@ -76,6 +76,67 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server rejects impossible validation targets before starting codex session" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-capability-gate-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-498")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-capability-gate.trace")
+
+      File.mkdir_p!(Path.join(workspace, ".git"))
+
+      File.write!(Path.join(workspace, "Makefile"), """
+      .PHONY: symphony-preflight symphony-handoff-check
+      symphony-preflight:
+      \t@echo ok
+
+      symphony-handoff-check:
+      \t@echo ok
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      printf 'started\\n' >> "#{trace_file}"
+      exit 0
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-capability-gate",
+        identifier: "MT-498",
+        title: "Reject impossible validation target before launch",
+        description: "Ensure missing make targets fail before Codex starts",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-498",
+        labels: ["backend"]
+      }
+
+      tool_probe = fn tool -> "/tmp/fake-tools/#{tool}" end
+
+      assert {:error, {:workspace_capability_rejected, details}} =
+               AppServer.run(workspace, "guard", issue, tool_probe: tool_probe)
+
+      assert details.reason == :missing_make_target
+      assert details.command_class == :validation
+      assert details.target == "symphony-validate"
+      refute File.exists?(trace_file)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server passes explicit turn sandbox policies through unchanged" do
     test_root =
       Path.join(

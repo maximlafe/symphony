@@ -31,6 +31,7 @@ defmodule SymphonyElixir.RunPhaseTest do
     assert apply_update_for_command("make symphony-live-e2e", timestamp).run_phase == :waiting_external
     assert apply_update_for_command("launch-app --headless", timestamp).run_phase == :runtime_proof
     assert apply_update_for_command("pytest tests/unit/test_run_phase.py", timestamp).run_phase == :targeted_tests
+    assert apply_update_for_command("make test-unit", timestamp).run_phase == :editing
     assert apply_update_for_command("echo ok && make test", timestamp).run_phase == :full_validate
     assert apply_update_for_command("git push origin HEAD", timestamp).run_phase == :publishing_pr
   end

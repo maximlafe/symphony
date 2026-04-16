@@ -364,7 +364,7 @@ defmodule SymphonyElixir.RunPhase do
   end
 
   defp targeted_tests_command?(normalized) do
-    matches_any?(normalized, ["mix test", "pytest", "make test-unit", "symphony-preflight"])
+    matches_any?(normalized, ["mix test", "pytest", "symphony-preflight"])
   end
 
   defp phase_for_external_step(nil), do: nil
