@@ -142,6 +142,31 @@ defmodule SymphonyElixir.RunPhaseTest do
 
     assert command_finished.run_phase == :editing
     assert command_finished.current_command == nil
+
+    exec_wait_started =
+      RunPhase.apply_update(
+        %{base_entry() | current_command: "make symphony-validate", run_phase: :full_validate},
+        %{
+          event: :tool_call_started,
+          timestamp: DateTime.add(timestamp, 3, :second),
+          payload: %{"params" => %{"tool" => "exec_wait"}}
+        }
+      )
+
+    assert exec_wait_started.run_phase == :waiting_external
+    assert exec_wait_started.current_command == "make symphony-validate"
+    assert exec_wait_started.external_step == "exec_wait"
+
+    exec_wait_finished =
+      RunPhase.apply_update(exec_wait_started, %{
+        event: :tool_call_completed,
+        timestamp: DateTime.add(timestamp, 4, :second),
+        payload: %{"params" => %{"tool" => "exec_wait"}}
+      })
+
+    assert exec_wait_finished.run_phase == :editing
+    assert exec_wait_finished.current_command == nil
+    assert exec_wait_finished.external_step == nil
   end
 
   test "snapshot_fields derives heartbeat state and phase fallbacks" do

@@ -110,6 +110,169 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert checkpoint["checkpoint_quality"] == "pending_review"
   end
 
+  test "capture stores active validation snapshot while exec_wait is in flight" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-resume-checkpoint-active-validation-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    issue = %Issue{id: "issue-resume-active-validation", identifier: "LET-461-ACTIVE", state: "In Progress"}
+    workspace = Path.join(workspace_root, issue.identifier)
+
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nValidation wait state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-active-validation")
+    File.write!(Path.join(workspace, "tracked.txt"), "tracked\n")
+    init_git_repo!(workspace)
+
+    checkpoint =
+      ResumeCheckpoint.capture(
+        issue,
+        %{
+          current_command: "make symphony-validate",
+          external_step: "exec_wait"
+        },
+        workspace_root: workspace_root
+      )
+
+    assert checkpoint["active_validation_snapshot"] == %{
+             "command" => "make symphony-validate",
+             "external_step" => "exec_wait",
+             "validation_bundle_fingerprint" => "validation:repo-validate"
+           }
+  end
+
+  test "capture normalizes active validation snapshot sources and command variants" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-resume-checkpoint-active-validation-variants-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    issue = %Issue{id: "issue-resume-active-variants", identifier: "LET-461-ACTIVE-VARIANTS", state: "In Progress"}
+    workspace = Path.join(workspace_root, issue.identifier)
+
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nValidation wait state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-active-validation-variants")
+    File.write!(Path.join(workspace, "tracked.txt"), "tracked\n")
+    init_git_repo!(workspace)
+
+    from_mix_test =
+      ResumeCheckpoint.capture(
+        issue,
+        %{
+          current_command: "mix test test/symphony_elixir/core_test.exs",
+          external_step: "exec_wait"
+        },
+        workspace_root: workspace_root
+      )
+
+    assert from_mix_test["active_validation_snapshot"] == %{
+             "command" => "mix test test/symphony_elixir/core_test.exs",
+             "external_step" => "exec_wait",
+             "validation_bundle_fingerprint" => "validation:test"
+           }
+
+    from_running_snapshot =
+      ResumeCheckpoint.capture(
+        issue,
+        %{
+          active_validation_snapshot: %{
+            "command" => "make symphony-validate",
+            "external_step" => "exec_wait",
+            "validation_bundle_fingerprint" => "validation:repo-validate",
+            "wait_state" => "running",
+            "result_ref" => "exec-123"
+          }
+        },
+        workspace_root: workspace_root
+      )
+
+    assert from_running_snapshot["active_validation_snapshot"] == %{
+             "command" => "make symphony-validate",
+             "external_step" => "exec_wait",
+             "validation_bundle_fingerprint" => "validation:repo-validate",
+             "wait_state" => "running",
+             "result_ref" => "exec-123"
+           }
+
+    from_resume_checkpoint =
+      ResumeCheckpoint.capture(
+        issue,
+        %{
+          current_command: "echo ok",
+          external_step: "exec_wait",
+          resume_checkpoint: %{
+            "active_validation_snapshot" => %{
+              "command" => "make symphony-validate",
+              "external_step" => "exec_wait",
+              "validation_bundle_fingerprint" => "validation:repo-validate",
+              "wait_state" => "running",
+              "result_ref" => "exec-456"
+            }
+          }
+        },
+        workspace_root: workspace_root
+      )
+
+    assert from_resume_checkpoint["active_validation_snapshot"] == %{
+             "command" => "make symphony-validate",
+             "external_step" => "exec_wait",
+             "validation_bundle_fingerprint" => "validation:repo-validate",
+             "wait_state" => "running",
+             "result_ref" => "exec-456"
+           }
+
+    no_snapshot =
+      ResumeCheckpoint.capture(
+        issue,
+        %{current_command: "   ", external_step: "exec_wait"},
+        workspace_root: workspace_root
+      )
+
+    assert no_snapshot["active_validation_snapshot"] == nil
+
+    no_snapshot_without_command =
+      ResumeCheckpoint.capture(
+        issue,
+        %{external_step: "exec_wait"},
+        workspace_root: workspace_root
+      )
+
+    assert no_snapshot_without_command["active_validation_snapshot"] == nil
+
+    non_wait_external_step =
+      ResumeCheckpoint.capture(
+        issue,
+        %{current_command: "make symphony-validate", external_step: "github_wait_for_checks"},
+        workspace_root: workspace_root
+      )
+
+    assert non_wait_external_step["active_validation_snapshot"] == nil
+
+    invalid_running_snapshot =
+      ResumeCheckpoint.capture(
+        issue,
+        %{
+          active_validation_snapshot: %{
+            "command" => "make symphony-validate",
+            "external_step" => "exec_wait"
+          }
+        },
+        workspace_root: workspace_root
+      )
+
+    assert invalid_running_snapshot["active_validation_snapshot"] == nil
+  end
+
   test "workspace_diff_fingerprint ignores internal workpad/checkpoint artifacts but detects real code diff" do
     test_root =
       Path.join(

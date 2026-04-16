@@ -20,7 +20,13 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     "workspace_diff_fingerprint" => :workspace_diff_fingerprint,
     "has_pending_checks" => :has_pending_checks,
     "has_actionable_feedback" => :has_actionable_feedback,
-    "feedback_digest" => :feedback_digest
+    "feedback_digest" => :feedback_digest,
+    "active_validation_snapshot" => :active_validation_snapshot,
+    "command" => :command,
+    "external_step" => :external_step,
+    "validation_bundle_fingerprint" => :validation_bundle_fingerprint,
+    "wait_state" => :wait_state,
+    "result_ref" => :result_ref
   }
 
   @spec manifest_path(map() | nil, keyword()) :: String.t() | nil
@@ -37,6 +43,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       base_checkpoint(issue)
       |> Map.put("captured_at", DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601())
       |> Map.put("last_validation_status", validation_status_from_running_entry(running_entry))
+      |> Map.put("active_validation_snapshot", active_validation_snapshot_from_context(running_entry))
 
     with workspace when is_binary(workspace) <- workspace_for_issue(issue, opts),
          true <- File.dir?(workspace) do
@@ -131,6 +138,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     |> Map.update("changed_files", [], &normalize_changed_files/1)
     |> Map.update("fallback_reasons", [], &normalize_reasons/1)
     |> Map.update("last_validation_status", base["last_validation_status"], &normalize_validation_status/1)
+    |> Map.put("active_validation_snapshot", normalize_active_validation_snapshot(Map.get(checkpoint, "active_validation_snapshot")))
     |> Map.put("open_pr", normalize_open_pr(Map.get(checkpoint, "open_pr")))
     |> Map.put("feedback_digest", normalize_optional_string(Map.get(checkpoint, "feedback_digest")))
     |> Map.put("workspace_diff_fingerprint", normalize_optional_string(Map.get(checkpoint, "workspace_diff_fingerprint")))
@@ -300,6 +308,45 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     normalize_optional_string(Map.get(resume_checkpoint, "feedback_digest"))
   end
 
+  defp active_validation_snapshot_from_context(%{} = running_entry) do
+    current_command = normalize_optional_string(Map.get(running_entry, :current_command))
+    external_step = normalize_optional_string(Map.get(running_entry, :external_step))
+    running_snapshot = normalize_active_validation_snapshot(Map.get(running_entry, :active_validation_snapshot))
+
+    cond do
+      is_map(running_snapshot) ->
+        running_snapshot
+
+      external_step == "exec_wait" ->
+        validation_bundle_fingerprint_from_command(current_command)
+        |> case do
+          value when is_binary(value) and value != "" ->
+            compact_map(%{
+              "command" => current_command,
+              "external_step" => external_step,
+              "validation_bundle_fingerprint" => value
+            })
+
+          _ ->
+            nil
+        end
+
+      true ->
+        nil
+    end
+    |> case do
+      %{} = snapshot ->
+        snapshot
+
+      _ ->
+        running_entry
+        |> Map.get(:resume_checkpoint)
+        |> normalize_checkpoint()
+        |> Map.get("active_validation_snapshot")
+        |> normalize_active_validation_snapshot()
+    end
+  end
+
   defp normalize_open_pr_snapshot(%{} = snapshot) do
     url = map_get(snapshot, "url")
     state = map_get(snapshot, "state")
@@ -353,6 +400,26 @@ defmodule SymphonyElixir.ResumeCheckpoint do
 
   defp normalize_reasons(_reasons), do: []
 
+  defp normalize_active_validation_snapshot(%{} = snapshot) do
+    command = normalize_optional_string(map_get(snapshot, "command"))
+    external_step = normalize_optional_string(map_get(snapshot, "external_step"))
+    validation_bundle_fingerprint = normalize_optional_string(map_get(snapshot, "validation_bundle_fingerprint"))
+    wait_state = normalize_optional_string(map_get(snapshot, "wait_state"))
+    result_ref = normalize_optional_string(map_get(snapshot, "result_ref"))
+
+    if is_binary(validation_bundle_fingerprint) and validation_bundle_fingerprint != "" do
+      compact_map(%{
+        "command" => command,
+        "external_step" => external_step,
+        "validation_bundle_fingerprint" => validation_bundle_fingerprint,
+        "wait_state" => wait_state,
+        "result_ref" => result_ref
+      })
+    end
+  end
+
+  defp normalize_active_validation_snapshot(_snapshot), do: nil
+
   defp normalize_validation_status(%{} = status) do
     %{
       "result" => map_get(status, "result"),
@@ -399,6 +466,33 @@ defmodule SymphonyElixir.ResumeCheckpoint do
   end
 
   defp normalize_optional_string(_value), do: nil
+
+  defp compact_map(map) when is_map(map) do
+    map
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp validation_bundle_fingerprint_from_command(command) when is_binary(command) do
+    normalized =
+      command
+      |> String.trim()
+      |> String.downcase()
+      |> String.replace(~r/\s+/, " ")
+
+    cond do
+      Regex.match?(~r/^(mix test|make test)(\s|$)/, normalized) ->
+        "validation:test"
+
+      Regex.match?(~r/^make symphony-validate(\s|$)/, normalized) ->
+        "validation:repo-validate"
+
+      true ->
+        nil
+    end
+  end
+
+  defp validation_bundle_fingerprint_from_command(_command), do: nil
 
   defp git_trimmed(workspace, args) do
     case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
@@ -552,6 +646,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       "head" => nil,
       "changed_files" => [],
       "workspace_diff_fingerprint" => nil,
+      "active_validation_snapshot" => nil,
       "last_validation_status" => %{
         "result" => "unknown",
         "summary" => nil,
