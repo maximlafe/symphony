@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
   """
 
   alias SymphonyElixir.Codex.DynamicTool
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, ValidationGate}
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Tracker
 
@@ -174,9 +174,49 @@ defmodule SymphonyElixir.ControllerFinalizer do
              }}
 
           true ->
-            run_handoff_check(context, checkpoint, snapshot, opts)
+            run_pre_handoff_guard(context, checkpoint, snapshot, opts)
         end
     end
+  end
+
+  defp run_pre_handoff_guard(context, checkpoint, snapshot, opts) do
+    proof_diagnostic = pre_handoff_proof_diagnostic(context, checkpoint)
+
+    if proof_diagnostic["missing_checks"] == [] do
+      run_handoff_check(context, checkpoint, snapshot, opts)
+    else
+      fallback_checkpoint =
+        checkpoint_status(
+          checkpoint,
+          "action_required",
+          "required proof checks are missing before handoff",
+          checkpoint["head"]
+        )
+
+      {:fallback,
+       %{
+         checkpoint: fallback_checkpoint,
+         reason: "required proof checks are missing before handoff",
+         details: %{"proof_diagnostic" => proof_diagnostic}
+       }}
+    end
+  end
+
+  defp pre_handoff_proof_diagnostic(context, checkpoint) do
+    validation_items =
+      case File.read(context.workpad_path) do
+        {:ok, workpad_body} -> parse_validation_items(workpad_body)
+        _ -> []
+      end
+
+    change_classes = pre_handoff_change_classes(context.workspace, checkpoint)
+
+    ValidationGate.missing_required_proof_checks(
+      validation_items,
+      context.issue_labels,
+      change_classes
+    )
+    |> Map.put("change_classes", change_classes)
   end
 
   defp run_handoff_check(context, checkpoint, snapshot, opts) do
@@ -287,7 +327,8 @@ defmodule SymphonyElixir.ControllerFinalizer do
            workpad_path: workpad_path,
            comment_id: comment_id,
            pr_number: pr_number,
-           repo: repo
+           repo: repo,
+           issue_labels: issue_labels(issue)
          }}
       else
         {:error, message} ->
@@ -513,6 +554,117 @@ defmodule SymphonyElixir.ControllerFinalizer do
       _ ->
         {:error, "cannot parse OWNER/REPO from remote url"}
     end
+  end
+
+  defp parse_validation_items(workpad_body) when is_binary(workpad_body) do
+    workpad_body
+    |> validation_section()
+    |> String.split(~r/\R/, trim: true)
+    |> Enum.map(&Regex.run(~r/^- \[([ xX])\]\s+(.*)$/, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(fn [_, checked, text] ->
+      %{
+        "checked" => String.downcase(checked) == "x",
+        "label" => checkbox_label(text),
+        "command" => checkbox_command(text)
+      }
+    end)
+  end
+
+  defp validation_section(workpad_body) when is_binary(workpad_body) do
+    case Regex.named_captures(~r/###\s+(Validation|Проверка)\s*\R(?<body>.*?)(?:\R###\s+|\z)/ms, workpad_body) do
+      %{"body" => body} -> body
+      _ -> ""
+    end
+  end
+
+  defp checkbox_label(text) when is_binary(text) do
+    text
+    |> String.split(":", parts: 2)
+    |> hd()
+    |> String.downcase()
+    |> String.trim()
+  end
+
+  defp checkbox_command(text) when is_binary(text) do
+    case Regex.run(~r/`([^`]+)`/, text) do
+      [_, command] -> String.trim(command)
+      _ -> text |> String.split(":", parts: 2) |> List.last() |> to_string() |> String.trim()
+    end
+  end
+
+  defp pre_handoff_change_classes(workspace, checkpoint) do
+    changed_paths =
+      case checkpoint_changed_files(checkpoint) do
+        [] -> git_changed_paths(workspace)
+        files -> files
+      end
+
+    case ValidationGate.classify_paths(changed_paths) do
+      {:ok, classes} -> classes
+      {:error, _reasons} -> []
+    end
+  end
+
+  defp checkpoint_changed_files(%{"changed_files" => files}) when is_list(files) do
+    files
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp checkpoint_changed_files(_checkpoint), do: []
+
+  defp git_changed_paths(workspace) do
+    base_branch = base_branch(workspace)
+
+    case System.cmd("git", ["-C", workspace, "diff", "--name-only", "origin/#{base_branch}...HEAD"], stderr_to_stdout: true) do
+      {output, 0} ->
+        split_git_lines(output)
+
+      _ ->
+        []
+    end
+  end
+
+  defp base_branch(workspace) do
+    case File.read(Path.join(workspace, ".symphony-base-branch")) do
+      {:ok, body} ->
+        case String.trim(body) do
+          "" -> "main"
+          branch -> branch
+        end
+
+      _ ->
+        "main"
+    end
+  end
+
+  defp split_git_lines(output) when is_binary(output) do
+    output
+    |> String.split(~r/\R/, trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp issue_labels(%Issue{labels: labels}) when is_list(labels), do: normalize_labels(labels)
+
+  defp issue_labels(%{} = issue) do
+    case issue[:labels] || issue["labels"] do
+      labels when is_list(labels) -> normalize_labels(labels)
+      _ -> []
+    end
+  end
+
+  defp normalize_labels(labels) when is_list(labels) do
+    labels
+    |> Enum.map(fn
+      label when is_binary(label) -> String.trim(label)
+      label when is_atom(label) -> label |> Atom.to_string() |> String.trim()
+      _ -> ""
+    end)
+    |> Enum.reject(&(&1 == ""))
   end
 
   defp checkpoint_pr_number(checkpoint) when is_map(checkpoint) do

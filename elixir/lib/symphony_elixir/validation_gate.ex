@@ -87,6 +87,15 @@ defmodule SymphonyElixir.ValidationGate do
     "repo validation" => "repo_validation",
     "repo_validation" => "repo_validation"
   }
+  @delivery_tdd_label "delivery:tdd"
+  @proof_check_labels %{
+    "red_proof" => "red proof",
+    "runtime_smoke" => "runtime smoke"
+  }
+  @proof_check_actions %{
+    "red_proof" => "Run a failing baseline command and mark the `red proof` validation item with that command.",
+    "runtime_smoke" => "Run the runtime smoke command for the changed contract path and mark the `runtime smoke` validation item."
+  }
 
   @runtime_contract_prefixes ["workflows/", ".agents/", ".github/"]
   @runtime_contract_suffixes ["workflow.md", "workflows.md", "makefile"]
@@ -133,6 +142,68 @@ defmodule SymphonyElixir.ValidationGate do
   end
 
   def normalize_checks(_values), do: []
+
+  @spec checked_validation_checks(term()) :: [String.t()]
+  def checked_validation_checks(validation_items) when is_list(validation_items) do
+    validation_items
+    |> Enum.flat_map(fn
+      %{} = item ->
+        checked = item["checked"] || item[:checked]
+        label = item["label"] || item[:label]
+        command = item["command"] || item[:command] || ""
+
+        if checked == true and not placeholder_check_command?(command) and is_binary(label) do
+          [label]
+        else
+          []
+        end
+
+      label when is_binary(label) ->
+        [label]
+
+      _ ->
+        []
+    end)
+    |> normalize_checks()
+  end
+
+  def checked_validation_checks(_validation_items), do: []
+
+  @spec required_proof_checks(term(), term()) :: [map()]
+  def required_proof_checks(issue_labels, change_classes) do
+    labels = normalize_issue_labels(issue_labels)
+    canonical_classes = canonical_change_classes_or_empty(change_classes)
+
+    []
+    |> maybe_add_required_proof_check(
+      delivery_tdd_enabled?(labels),
+      "red_proof",
+      "issue label `delivery:tdd`"
+    )
+    |> maybe_add_required_proof_check(
+      "runtime_contract" in canonical_classes,
+      "runtime_smoke",
+      "validation gate change class `runtime_contract`"
+    )
+  end
+
+  @spec missing_required_proof_checks(term(), term(), term()) :: map()
+  def missing_required_proof_checks(validation_items, issue_labels, change_classes) do
+    required_checks = required_proof_checks(issue_labels, change_classes)
+    checked_checks = checked_validation_checks(validation_items)
+    checked_set = MapSet.new(checked_checks)
+
+    missing_checks =
+      Enum.reject(required_checks, fn requirement ->
+        MapSet.member?(checked_set, requirement["check"])
+      end)
+
+    %{
+      "required_checks" => Enum.map(required_checks, & &1["check"]),
+      "checked_checks" => checked_checks,
+      "missing_checks" => missing_checks
+    }
+  end
 
   @spec canonical_change_classes(term()) :: {:ok, [change_class()]} | {:error, [String.t()]}
   def canonical_change_classes(classes) when is_list(classes) do
@@ -355,6 +426,43 @@ defmodule SymphonyElixir.ValidationGate do
 
   defp normalize_gate_value(_value), do: nil
 
+  defp normalize_issue_labels(labels) when is_list(labels) do
+    labels
+    |> Enum.map(fn
+      value when is_binary(value) -> String.trim(value)
+      value when is_atom(value) -> value |> Atom.to_string() |> String.trim()
+      _ -> ""
+    end)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp normalize_issue_labels(_labels), do: []
+
+  defp canonical_change_classes_or_empty(change_classes) do
+    case canonical_change_classes(change_classes) do
+      {:ok, classes} -> classes
+      {:error, _reasons} -> []
+    end
+  end
+
+  defp delivery_tdd_enabled?(issue_labels) when is_list(issue_labels) do
+    @delivery_tdd_label in issue_labels
+  end
+
+  defp maybe_add_required_proof_check(requirements, false, _check, _source), do: requirements
+
+  defp maybe_add_required_proof_check(requirements, true, check, source) do
+    requirements ++
+      [
+        %{
+          "check" => check,
+          "label" => Map.fetch!(@proof_check_labels, check),
+          "source" => source,
+          "next_action" => Map.fetch!(@proof_check_actions, check)
+        }
+      ]
+  end
+
   defp class_for_path(path) do
     normalized = path |> String.replace("\\", "/") |> String.downcase()
 
@@ -449,6 +557,15 @@ defmodule SymphonyElixir.ValidationGate do
   defp normalize_trigger(_value), do: nil
 
   defp truthy?(value), do: value in [true, "true", "yes", "1", 1]
+
+  defp placeholder_check_command?(value) when is_binary(value) do
+    trimmed = String.trim(value)
+    normalized = String.downcase(trimmed)
+
+    trimmed == "" or String.starts_with?(trimmed, "<") or String.contains?(normalized, "fill only") or normalized in ["n/a", "na", "none"]
+  end
+
+  defp placeholder_check_command?(_value), do: true
 
   defp rerun_start(trigger, true) when trigger in ["ci_failure", "review_feedback"], do: "blocked_decision"
   defp rerun_start(_trigger, _remote_only), do: "cheap"

@@ -7,7 +7,6 @@ defmodule SymphonyElixir.HandoffCheck do
 
   @allowed_checkpoint_types ["human-verify", "decision", "human-action"]
   @allowed_risk_levels ["low", "medium", "high"]
-  @delivery_tdd_label "delivery:tdd"
   @plan_mode_label "mode:plan"
   @supported_profiles ["ui", "data-extraction", "runtime", "generic"]
   @default_profile_labels %{
@@ -920,7 +919,7 @@ defmodule SymphonyElixir.HandoffCheck do
     []
     |> Kernel.++(profile_errors)
     |> Kernel.++(validation_context["errors"])
-    |> Kernel.++(validation_missing_items(parsed_workpad["validation"], issue_labels))
+    |> Kernel.++(validation_missing_items(parsed_workpad["validation"], issue_labels, validation_context["gate"]))
     |> Kernel.++(validation_gate_missing_items(validation_context["gate"], validation_context["git"]))
     |> Kernel.++(checkpoint_missing_items(parsed_workpad["checkpoint"]))
     |> Kernel.++(artifact_manifest_missing_items(parsed_workpad["artifacts"], attachments))
@@ -930,20 +929,29 @@ defmodule SymphonyElixir.HandoffCheck do
     |> Enum.uniq()
   end
 
-  defp validation_missing_items(validation_items, issue_labels) do
-    required_labels =
-      ["preflight", "targeted tests", "repo validation"] ++
-        if delivery_tdd_enabled?(issue_labels), do: ["red proof"], else: []
+  defp validation_missing_items(validation_items, issue_labels, validation_gate) do
+    checked_checks = ValidationGate.checked_validation_checks(validation_items)
 
-    required_labels
-    |> Enum.filter(fn label ->
-      Enum.all?(validation_items, fn item ->
-        item["checked"] != true or item["label"] != label or placeholder_value?(item["command"])
+    required_core_checks =
+      ["preflight", "targeted tests", "repo validation"]
+      |> ValidationGate.normalize_checks()
+      |> Enum.reject(&(&1 in checked_checks))
+      |> Enum.map(&"validation checklist is missing a checked `#{human_check_label(&1)}` item")
+
+    proof_check_diagnostic =
+      ValidationGate.missing_required_proof_checks(
+        validation_items,
+        issue_labels,
+        validation_gate_change_classes(validation_gate)
+      )
+
+    required_proof_checks =
+      proof_check_diagnostic["missing_checks"]
+      |> Enum.map(fn requirement ->
+        "validation checklist is missing a checked `#{requirement["label"]}` item"
       end)
-    end)
-    |> Enum.map(fn label ->
-      "validation checklist is missing a checked `#{label}` item"
-    end)
+
+    required_core_checks ++ required_proof_checks
   end
 
   defp validation_gate_missing_items(validation_gate, git_metadata) do
@@ -956,9 +964,10 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp delivery_tdd_enabled?(issue_labels) when is_list(issue_labels) do
-    @delivery_tdd_label in issue_labels
-  end
+  defp validation_gate_change_classes(%{"change_classes" => classes}) when is_list(classes), do: classes
+  defp validation_gate_change_classes(_validation_gate), do: []
+
+  defp human_check_label(check) when is_binary(check), do: String.replace(check, "_", " ")
 
   defp checkpoint_missing_items(checkpoint) do
     []
@@ -1173,10 +1182,7 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp passed_validation_checks(validation_items) when is_list(validation_items) do
-    validation_items
-    |> Enum.filter(&(&1["checked"] == true and not placeholder_value?(&1["command"])))
-    |> Enum.map(& &1["label"])
-    |> ValidationGate.normalize_checks()
+    ValidationGate.checked_validation_checks(validation_items)
   end
 
   defp normalize_validation_gate_errors(errors) when is_list(errors) do

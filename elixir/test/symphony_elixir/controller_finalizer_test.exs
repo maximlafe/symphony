@@ -536,6 +536,339 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert payload.reason == "symphony_handoff_check failed"
   end
 
+  test "run/3 fails fast before handoff when delivery:tdd red proof is missing" do
+    issue = %Issue{
+      id: "issue-proof-red",
+      identifier: "LET-462-PROOF-RED",
+      state: "In Progress",
+      labels: ["delivery:tdd"]
+    }
+
+    _workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())
+
+    checkpoint = %{
+      "head" => "head-proof-red",
+      "open_pr" => %{"number" => 204, "url" => "https://github.com/acme/symphony/pull/204"},
+      "changed_files" => ["elixir/lib/symphony_elixir/error_classifier.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/204",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run when required proof checks are missing")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "required proof checks are missing before handoff"
+
+    assert %{"check" => "red_proof", "source" => "issue label `delivery:tdd`"} =
+             hd(payload.details["proof_diagnostic"]["missing_checks"])
+  end
+
+  test "run/3 fails fast before handoff when runtime smoke proof is missing" do
+    issue = %Issue{id: "issue-proof-runtime", identifier: "LET-462-PROOF-RUNTIME", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())
+
+    checkpoint = %{
+      "head" => "head-proof-runtime",
+      "open_pr" => %{"number" => 205, "url" => "https://github.com/acme/symphony/pull/205"},
+      "changed_files" => ["elixir/lib/symphony_elixir/validation_gate.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/205",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run when required proof checks are missing")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "required proof checks are missing before handoff"
+
+    assert %{"check" => "runtime_smoke", "source" => "validation gate change class `runtime_contract`"} =
+             hd(payload.details["proof_diagnostic"]["missing_checks"])
+  end
+
+  test "run/3 fails fast with both proof requirements when both are missing" do
+    issue = %Issue{
+      id: "issue-proof-both",
+      identifier: "LET-462-PROOF-BOTH",
+      state: "In Progress",
+      labels: ["delivery:tdd"]
+    }
+
+    _workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())
+
+    checkpoint = %{
+      "head" => "head-proof-both",
+      "open_pr" => %{"number" => 207, "url" => "https://github.com/acme/symphony/pull/207"},
+      "changed_files" => ["elixir/lib/symphony_elixir/validation_gate.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/207",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run when required proof checks are missing")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "required proof checks are missing before handoff"
+    assert Enum.map(payload.details["proof_diagnostic"]["missing_checks"], & &1["check"]) == ["red_proof", "runtime_smoke"]
+  end
+
+  test "run/3 keeps backend-only scenario unblocked when proof checks are not required" do
+    issue = %Issue{id: "issue-proof-backend", identifier: "LET-462-PROOF-BACKEND", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())
+
+    checkpoint = %{
+      "head" => "head-proof-backend",
+      "open_pr" => %{"number" => 206, "url" => "https://github.com/acme/symphony/pull/206"},
+      "changed_files" => ["elixir/lib/symphony_elixir/error_classifier.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/206",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => {:ok, %{"manifest" => %{"passed" => true, "manifest_path" => ".symphony/verification/handoff-manifest.json"}}}
+    }
+
+    assert {:ok, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.checkpoint["controller_finalizer"]["status"] == "succeeded"
+  end
+
+  test "run/3 supports map issues with mixed label types and enforces red proof from atom labels" do
+    issue = %{
+      "id" => "issue-map-labels",
+      "identifier" => "LET-462-MAP-LABELS",
+      "state" => "In Progress",
+      "labels" => [:"delivery:tdd", 123]
+    }
+
+    _workspace = create_workspace!(issue["identifier"], workpad_body: validation_workpad())
+
+    checkpoint = %{
+      "head" => "head-map-labels",
+      "open_pr" => %{"number" => 208, "url" => "https://github.com/acme/symphony/pull/208"},
+      "changed_files" => ["elixir/lib/symphony_elixir/error_classifier.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/208",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run when required proof checks are missing")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "required proof checks are missing before handoff"
+    assert Enum.map(payload.details["proof_diagnostic"]["missing_checks"], & &1["check"]) == ["red_proof"]
+  end
+
+  test "run/3 handles map issues with malformed labels without false proof requirements" do
+    issue = %{
+      "id" => "issue-map-malformed-labels",
+      "identifier" => "LET-462-MAP-MALFORMED-LABELS",
+      "state" => "In Progress",
+      "labels" => "delivery:tdd"
+    }
+
+    _workspace = create_workspace!(issue["identifier"], workpad_body: validation_workpad())
+
+    checkpoint = %{
+      "head" => "head-map-malformed-labels",
+      "open_pr" => %{"number" => 209, "url" => "https://github.com/acme/symphony/pull/209"},
+      "changed_files" => ["elixir/lib/symphony_elixir/error_classifier.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/209",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => {:ok, %{"manifest" => %{"passed" => true, "manifest_path" => ".symphony/verification/handoff-manifest.json"}}}
+    }
+
+    assert {:ok, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.checkpoint["controller_finalizer"]["status"] == "succeeded"
+  end
+
+  test "run/3 keeps working when workpad disappears after sync and file read fails" do
+    issue = %Issue{id: "issue-proof-workpad-gone", identifier: "LET-462-PROOF-WORKPAD-GONE", state: "In Progress"}
+    workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())
+
+    checkpoint = %{
+      "head" => "head-proof-workpad-gone",
+      "open_pr" => %{"number" => 210, "url" => "https://github.com/acme/symphony/pull/210"},
+      "changed_files" => ["elixir/lib/symphony_elixir/error_classifier.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => fn _args, _opts ->
+        File.rm!(Path.join(workspace, "workpad.md"))
+        {:ok, %{"comment_id" => "workpad-comment"}}
+      end,
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/210",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => {:ok, %{"manifest" => %{"passed" => true, "manifest_path" => ".symphony/verification/handoff-manifest.json"}}}
+    }
+
+    assert {:ok, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.checkpoint["controller_finalizer"]["status"] == "succeeded"
+  end
+
+  test "run/3 parses validation commands without backticks and uses git diff/base-branch fallback" do
+    issue = %Issue{id: "issue-proof-git-diff", identifier: "LET-462-PROOF-GIT-DIFF", state: "In Progress"}
+
+    remote_repo = Path.join(System.tmp_dir!(), "controller-finalizer-remote-#{System.unique_integer([:positive])}")
+    File.rm_rf!(remote_repo)
+    File.mkdir_p!(remote_repo)
+    {_output, 0} = System.cmd("git", ["init", "--bare"], cd: remote_repo)
+
+    workspace =
+      create_workspace!(
+        issue.identifier,
+        git_init: true,
+        git_remote: remote_repo,
+        workpad_body: validation_workpad_without_backticks()
+      )
+
+    write_file!(workspace, ".symphony-base-branch", "main\n")
+    prepare_git_history!(workspace, "main")
+    add_runtime_contract_change!(workspace)
+
+    checkpoint = %{
+      "head" => "head-proof-git-diff",
+      "open_pr" => %{"number" => 211, "url" => "https://github.com/acme/symphony/pull/211"}
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/211",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run when required proof checks are missing")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "required proof checks are missing before handoff"
+    assert Enum.map(payload.details["proof_diagnostic"]["missing_checks"], & &1["check"]) == ["runtime_smoke"]
+    assert payload.details["proof_diagnostic"]["change_classes"] == ["runtime_contract"]
+  end
+
+  test "run/3 defaults empty .symphony-base-branch to main" do
+    issue = %Issue{id: "issue-proof-empty-base", identifier: "LET-462-PROOF-EMPTY-BASE", state: "In Progress"}
+
+    remote_repo = Path.join(System.tmp_dir!(), "controller-finalizer-remote-#{System.unique_integer([:positive])}")
+    File.rm_rf!(remote_repo)
+    File.mkdir_p!(remote_repo)
+    {_output, 0} = System.cmd("git", ["init", "--bare"], cd: remote_repo)
+
+    workspace =
+      create_workspace!(
+        issue.identifier,
+        git_init: true,
+        git_remote: remote_repo,
+        workpad_body: validation_workpad_without_backticks()
+      )
+
+    write_file!(workspace, ".symphony-base-branch", "\n")
+    prepare_git_history!(workspace, "main")
+    add_runtime_contract_change!(workspace)
+
+    checkpoint = %{
+      "head" => "head-proof-empty-base",
+      "open_pr" => %{"number" => 212, "url" => "https://github.com/acme/symphony/pull/212"}
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/212",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run when required proof checks are missing")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "required proof checks are missing before handoff"
+    assert Enum.map(payload.details["proof_diagnostic"]["missing_checks"], & &1["check"]) == ["runtime_smoke"]
+    assert payload.details["proof_diagnostic"]["change_classes"] == ["runtime_contract"]
+  end
+
   test "run/3 returns retry when issue state transition fails" do
     issue = %Issue{id: "issue-transition-fail", identifier: "LET-462-TRANSITION-FAIL", state: "In Progress"}
     _workspace = create_workspace!(issue.identifier)
@@ -719,12 +1052,13 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     git_remote = Keyword.get(opts, :git_remote)
     with_workpad = Keyword.get(opts, :with_workpad, true)
     with_workpad_ref = Keyword.get(opts, :with_workpad_ref, true)
+    workpad_body = Keyword.get(opts, :workpad_body, "## Codex Workpad\n\n- checkpoint\n")
 
     File.rm_rf!(workspace)
     File.mkdir_p!(workspace)
 
     if with_workpad do
-      File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\n- checkpoint\n")
+      File.write!(Path.join(workspace, "workpad.md"), workpad_body)
     end
 
     if with_workpad_ref do
@@ -786,5 +1120,51 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
       "success" => false,
       "contentItems" => [%{"type" => "inputText", "text" => Jason.encode!(payload)}]
     }
+  end
+
+  defp validation_workpad do
+    """
+    ## Codex Workpad
+
+    ### Validation
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `mix test test/symphony_elixir/controller_finalizer_test.exs`
+    - [x] repo validation: `make symphony-validate`
+    """
+  end
+
+  defp validation_workpad_without_backticks do
+    """
+    ## Codex Workpad
+
+    ### Validation
+    - [x] preflight: make symphony-preflight
+    - [x] targeted tests: mix test test/symphony_elixir/controller_finalizer_test.exs
+    - [x] repo validation: make symphony-validate
+    """
+  end
+
+  defp prepare_git_history!(workspace, base_branch) do
+    {"", 0} = System.cmd("git", ["checkout", "-b", base_branch], cd: workspace)
+    {"", 0} = System.cmd("git", ["config", "user.email", "controller-finalizer@example.test"], cd: workspace)
+    {"", 0} = System.cmd("git", ["config", "user.name", "Controller Finalizer Test"], cd: workspace)
+
+    write_file!(workspace, "README.md", "# Controller finalizer fixture\n")
+    {"", 0} = System.cmd("git", ["add", "README.md"], cd: workspace)
+    {_output, 0} = System.cmd("git", ["commit", "-m", "base"], cd: workspace)
+    {_output, 0} = System.cmd("git", ["push", "-u", "origin", base_branch], cd: workspace)
+  end
+
+  defp add_runtime_contract_change!(workspace) do
+    {"", 0} = System.cmd("git", ["checkout", "-b", "feature/proof-checks"], cd: workspace)
+    write_file!(workspace, "elixir/lib/symphony_elixir/validation_gate.ex", "# runtime contract change\n")
+    {"", 0} = System.cmd("git", ["add", "elixir/lib/symphony_elixir/validation_gate.ex"], cd: workspace)
+    {_output, 0} = System.cmd("git", ["commit", "-m", "runtime contract"], cd: workspace)
+  end
+
+  defp write_file!(workspace, relative_path, content) do
+    path = Path.join(workspace, relative_path)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, content)
   end
 end

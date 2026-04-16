@@ -35,6 +35,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "$CODEX_HOME/skills/plan-mode/SKILL.md"
     assert prompt =~ "Acceptance Matrix"
     assert prompt =~ "Proof Mapping"
+    assert prompt =~ "red proof"
+    assert prompt =~ "не помечай `n/a`"
     assert prompt =~ "`codex.cost_profiles`"
     assert get_in(config, ["codex", "command_template"]) =~ "{{effort}}"
     assert get_in(config, ["codex", "command_template"]) =~ "{{model}}"
@@ -56,6 +58,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert prompt =~ "`codex.cost_policy`"
+    assert prompt =~ "never mark this item as `n/a`"
   end
 
   test "LET workflow keeps secondary codex homes under the mounted primary CODEX_HOME" do
