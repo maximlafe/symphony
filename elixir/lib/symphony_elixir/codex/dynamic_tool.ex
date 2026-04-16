@@ -312,6 +312,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     ~r/\Achatgpt-codex(?:-connector)?\[bot\]\z/,
     ~r/\Aopenai-codex(?:-connector)?\[bot\]\z/
   ]
+  @non_actionable_feedback_body_patterns [
+    ~r/\A(?:thanks|thank you|lgtm|sgtm|resolved|fixed|done|addressed)\b/,
+    ~r/\A(?:updated|applied|implemented)\s+in\s+[0-9a-f]{7,40}\b/,
+    ~r/\Abuild details:\b/
+  ]
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
@@ -1821,13 +1826,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         nil
 
       true ->
-        %{
+        feedback_item(%{
           "channel" => "top_level_comment",
           "author" => author_login || author_association,
           "body" => body,
           "url" => pick_first(comment, ["url"]),
           "created_at" => pick_first(comment, ["createdAt", "submitted_at"])
-        }
+        })
     end
   end
 
@@ -1849,13 +1854,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         nil
 
       state == "CHANGES_REQUESTED" ->
-        %{
+        feedback_item(%{
           "channel" => "review",
           "author" => author_login,
           "state" => state,
           "body" => body,
           "submitted_at" => pick_first(review, ["submittedAt", "submitted_at"])
-        }
+        })
 
       true ->
         nil
@@ -1875,20 +1880,84 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     body = normalize_feedback_body(pick_first(comment, ["body"]))
     in_reply_to = pick_first(comment, ["in_reply_to_id", "inReplyToId"])
 
-    if body && is_nil(in_reply_to) && not non_actionable_author?(author_login) do
-      %{
+    if body && not non_actionable_author?(author_login) do
+      feedback_item(%{
         "channel" => "inline_comment",
         "author" => author_login,
         "body" => body,
+        "in_reply_to_id" => in_reply_to,
         "path" => pick_first(comment, ["path"]),
         "line" => pick_first(comment, ["line", "original_line"]),
         "url" => pick_first(comment, ["html_url", "url"]),
         "created_at" => pick_first(comment, ["created_at", "createdAt"])
-      }
+      })
     end
   end
 
   defp normalize_inline_feedback_item(_comment), do: nil
+
+  defp feedback_item(item) when is_map(item) do
+    if potentially_actionable_feedback?(item) do
+      item
+      |> Map.put("potentially_actionable", true)
+      |> Map.delete("in_reply_to_id")
+    end
+  end
+
+  defp potentially_actionable_feedback?(%{"channel" => "review", "state" => "CHANGES_REQUESTED"}), do: true
+
+  defp potentially_actionable_feedback?(%{"channel" => channel} = item)
+       when channel in ["top_level_comment", "inline_comment"] do
+    actionable_feedback_source?(Map.get(item, "author")) and
+      actionable_feedback_intent?(Map.get(item, "body")) and
+      actionable_feedback_resolution?(item)
+  end
+
+  defp potentially_actionable_feedback?(_item), do: false
+
+  defp actionable_feedback_source?(author_login) when is_binary(author_login) do
+    normalized = normalized_author_login(author_login)
+
+    cond do
+      normalized in @non_actionable_pr_comment_authors ->
+        false
+
+      String.ends_with?(normalized, "[bot]") ->
+        trusted_review_bot_author?(normalized)
+
+      true ->
+        true
+    end
+  end
+
+  defp actionable_feedback_source?(_author_login), do: true
+
+  defp actionable_feedback_intent?(body) when is_binary(body) do
+    normalized = normalize_feedback_body_intent(body)
+
+    normalized != nil and
+      Enum.all?(@non_actionable_feedback_body_patterns, fn pattern ->
+        not Regex.match?(pattern, normalized)
+      end)
+  end
+
+  defp actionable_feedback_intent?(_body), do: false
+
+  defp actionable_feedback_resolution?(%{"channel" => "inline_comment", "in_reply_to_id" => reply_id}),
+    do: is_nil(reply_id)
+
+  defp actionable_feedback_resolution?(_item), do: true
+
+  defp normalize_feedback_body_intent(body) when is_binary(body) do
+    body
+    |> String.downcase()
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> case do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
 
   defp maybe_put_actionable_feedback(snapshot, true, actionable_feedback) do
     Map.put(snapshot, "actionable_feedback", actionable_feedback)
@@ -1952,10 +2021,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp extract_author_login(_map), do: nil
 
   defp non_actionable_author?(author_login) when is_binary(author_login) do
-    normalized =
-      author_login
-      |> String.trim()
-      |> String.downcase()
+    normalized = normalized_author_login(author_login)
 
     cond do
       normalized in @non_actionable_pr_comment_authors ->
@@ -1970,6 +2036,12 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp non_actionable_author?(_author_login), do: false
+
+  defp normalized_author_login(author_login) when is_binary(author_login) do
+    author_login
+    |> String.trim()
+    |> String.downcase()
+  end
 
   defp trusted_review_bot_author?(normalized_author_login) when is_binary(normalized_author_login) do
     Enum.any?(@trusted_review_bot_author_patterns, fn pattern ->
