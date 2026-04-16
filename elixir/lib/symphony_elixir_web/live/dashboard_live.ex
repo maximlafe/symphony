@@ -161,6 +161,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </article>
 
           <article class="metric-card">
+            <p class="metric-label">Token reasons</p>
+            <p class="metric-value metric-value-break"><%= token_reason_summary(@payload) %></p>
+            <p class="metric-detail numeric">
+              Polling share <%= token_reason_polling_share(@payload) %>
+            </p>
+          </article>
+
+          <article class="metric-card">
             <p class="metric-label">Runtime</p>
             <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
             <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
@@ -527,6 +535,51 @@ defmodule SymphonyElixirWeb.DashboardLive do
         total + runtime_seconds_from_started_at(entry.started_at, now)
       end)
   end
+
+  defp token_reason_summary(payload) when is_map(payload) do
+    payload
+    |> Map.get(:token_reason_totals, %{})
+    |> Enum.map(fn {reason, totals} -> {to_string(reason), reason_total_tokens(totals)} end)
+    |> Enum.filter(fn {_reason, total_tokens} -> total_tokens > 0 end)
+    |> Enum.sort_by(fn {_reason, total_tokens} -> total_tokens end, :desc)
+    |> Enum.take(2)
+    |> case do
+      [] ->
+        "n/a"
+
+      top_reasons ->
+        Enum.map_join(top_reasons, " · ", fn {reason, total_tokens} ->
+          "#{reason}: #{format_int(total_tokens)}"
+        end)
+    end
+  end
+
+  defp token_reason_summary(_payload), do: "n/a"
+
+  defp token_reason_polling_share(payload) when is_map(payload) do
+    total_tokens = get_in(payload, [:codex_totals, :total_tokens]) || 0
+    reason_totals = Map.get(payload, :token_reason_totals, %{})
+    polling_totals = Map.get(reason_totals, :polling) || Map.get(reason_totals, "polling")
+    polling_tokens = reason_total_tokens(polling_totals)
+
+    cond do
+      not is_integer(total_tokens) or total_tokens <= 0 ->
+        "n/a"
+
+      polling_tokens <= 0 ->
+        "0.0%"
+
+      true ->
+        share = polling_tokens * 100.0 / total_tokens
+        :erlang.float_to_binary(share, decimals: 1) <> "%"
+    end
+  end
+
+  defp token_reason_polling_share(_payload), do: "n/a"
+
+  defp reason_total_tokens(%{"total_tokens" => total_tokens}) when is_integer(total_tokens), do: total_tokens
+  defp reason_total_tokens(%{total_tokens: total_tokens}) when is_integer(total_tokens), do: total_tokens
+  defp reason_total_tokens(_totals), do: 0
 
   defp format_runtime_and_turns(started_at, turn_count, now)
        when is_integer(turn_count) and turn_count > 0 do

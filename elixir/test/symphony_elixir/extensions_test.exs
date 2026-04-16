@@ -426,6 +426,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "total_tokens" => 12,
                "seconds_running" => 42.5
              },
+             "token_reason_totals" => %{},
              "rate_limits" => %{"primary" => %{"remaining" => 11}},
              "workspace" => %{
                "usage_bytes" => 2_147_483_648,

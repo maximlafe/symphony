@@ -24,6 +24,7 @@ defmodule SymphonyElixirWeb.Presenter do
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           codex_totals: snapshot.codex_totals,
+          token_reason_totals: Map.get(snapshot, :token_reason_totals, %{}),
           rate_limits: snapshot.rate_limits,
           workspace: workspace_payload(Map.get(snapshot, :workspace))
         }

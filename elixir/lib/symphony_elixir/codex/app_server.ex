@@ -13,6 +13,9 @@ defmodule SymphonyElixir.Codex.AppServer do
   @max_stream_log_bytes 1_000
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
   @foreground_wait_refusal_tools "use exec_background + exec_wait"
+  @status_check_refusal_tools "wait for exec_wait progress before repeating git/gh status checks"
+  @status_check_quiet_wait_min_interval_ms 20_000
+  @wait_guard_process_key :symphony_app_server_wait_guard
 
   @type session :: %{
           port: port(),
@@ -447,6 +450,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          },
          turn_id
        ) do
+    reset_wait_guard_state()
     session_id = "#{thread_id}-#{turn_id}"
     Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
 
@@ -738,6 +742,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     emit_message(on_message, :tool_call_started, %{payload: payload, raw: payload_string}, metadata)
 
     result = tool_executor.(tool_name, arguments)
+    update_wait_guard_from_tool_result(tool_name, arguments, result)
 
     send_message(port, %{
       "id" => id,
@@ -867,37 +872,62 @@ defmodule SymphonyElixir.Codex.AppServer do
          metadata,
          true
        ) do
-    case command_wait_routing_decision(payload) do
-      :background_required ->
-        decision = command_execution_refusal_decision(payload)
-        send_message(port, %{"id" => id, "result" => %{"decision" => decision}})
+    command = approval_command(payload)
 
-        emit_message(
-          on_message,
-          :approval_auto_denied,
-          %{
-            payload: payload,
-            raw: payload_string,
-            decision: decision,
-            wait_routing_decision: "background_required",
-            suggested_tool_path: @foreground_wait_refusal_tools
-          },
-          metadata
-        )
+    if deny_repeated_status_check?(command) do
+      decision = command_execution_refusal_decision(payload)
+      send_message(port, %{"id" => id, "result" => %{"decision" => decision}})
+      record_status_check_poll(command)
 
-        :approved
+      emit_message(
+        on_message,
+        :approval_auto_denied,
+        %{
+          payload: payload,
+          raw: payload_string,
+          decision: decision,
+          wait_routing_decision: "quiet_wait_status_throttle",
+          suggested_tool_path: @status_check_refusal_tools
+        },
+        metadata
+      )
 
-      :foreground_allowed ->
-        approve_or_require(
-          port,
-          id,
-          approval_decision,
-          payload,
-          payload_string,
-          on_message,
-          metadata,
-          true
-        )
+      :approved
+    else
+      case command_wait_routing_decision_for_command(command) do
+        :background_required ->
+          decision = command_execution_refusal_decision(payload)
+          send_message(port, %{"id" => id, "result" => %{"decision" => decision}})
+
+          emit_message(
+            on_message,
+            :approval_auto_denied,
+            %{
+              payload: payload,
+              raw: payload_string,
+              decision: decision,
+              wait_routing_decision: "background_required",
+              suggested_tool_path: @foreground_wait_refusal_tools
+            },
+            metadata
+          )
+
+          :approved
+
+        :foreground_allowed ->
+          record_status_check_poll(command)
+
+          approve_or_require(
+            port,
+            id,
+            approval_decision,
+            payload,
+            payload_string,
+            on_message,
+            metadata,
+            true
+          )
+      end
     end
   end
 
@@ -947,12 +977,6 @@ defmodule SymphonyElixir.Codex.AppServer do
          false
        ) do
     :approval_required
-  end
-
-  defp command_wait_routing_decision(payload) when is_map(payload) do
-    payload
-    |> approval_command()
-    |> command_wait_routing_decision_for_command()
   end
 
   defp command_wait_routing_decision_for_command(command) when is_binary(command) do
@@ -1354,6 +1378,117 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     String.starts_with?(normalized_label, "approve") or String.starts_with?(normalized_label, "allow")
   end
+
+  defp wait_guard_state do
+    case Process.get(@wait_guard_process_key) do
+      %{quiet_wait_active: quiet_wait_active} = state when is_boolean(quiet_wait_active) ->
+        state
+
+      _ ->
+        default_wait_guard_state()
+    end
+  end
+
+  defp default_wait_guard_state do
+    %{
+      quiet_wait_active: false,
+      active_result_ref: nil,
+      last_status_check_command: nil,
+      last_status_check_at_ms: nil
+    }
+  end
+
+  defp reset_wait_guard_state do
+    Process.put(@wait_guard_process_key, default_wait_guard_state())
+    :ok
+  end
+
+  defp deny_repeated_status_check?(command) when is_binary(command) do
+    guard = wait_guard_state()
+    now_ms = System.monotonic_time(:millisecond)
+    normalized = normalize_status_check_command(command)
+    last_command = Map.get(guard, :last_status_check_command)
+    last_at_ms = Map.get(guard, :last_status_check_at_ms)
+
+    guard.quiet_wait_active == true and status_check_command?(normalized) and
+      last_command == normalized and
+      is_integer(last_at_ms) and
+      now_ms - last_at_ms < @status_check_quiet_wait_min_interval_ms
+  end
+
+  defp deny_repeated_status_check?(_command), do: false
+
+  defp record_status_check_poll(command) when is_binary(command) do
+    normalized = normalize_status_check_command(command)
+
+    if status_check_command?(normalized) do
+      updated =
+        wait_guard_state()
+        |> Map.put(:last_status_check_command, normalized)
+        |> Map.put(:last_status_check_at_ms, System.monotonic_time(:millisecond))
+
+      Process.put(@wait_guard_process_key, updated)
+    end
+
+    :ok
+  end
+
+  defp record_status_check_poll(_command), do: :ok
+
+  defp status_check_command?(command) when is_binary(command) do
+    String.starts_with?(command, "git status") or
+      String.starts_with?(command, "gh pr status") or
+      String.starts_with?(command, "gh pr checks") or
+      String.starts_with?(command, "gh pr view") or
+      String.starts_with?(command, "gh run list") or
+      String.starts_with?(command, "gh run view") or
+      String.starts_with?(command, "gh run watch")
+  end
+
+  defp normalize_status_check_command(command) when is_binary(command) do
+    command
+    |> String.trim()
+    |> String.replace(~r/\s+/, " ")
+    |> String.downcase()
+  end
+
+  defp update_wait_guard_from_tool_result("exec_wait", arguments, result)
+       when is_map(arguments) and is_map(result) do
+    wait_payload = decode_tool_payload(result)
+    status = Map.get(wait_payload, "status")
+    quiet_wait_active = Map.get(wait_payload, "quiet_wait") == true or Map.get(wait_payload, "wait_mode") == "quiet"
+    result_ref = Map.get(wait_payload, "result_ref") || Map.get(arguments, "result_ref")
+
+    updated =
+      case status do
+        "running" ->
+          wait_guard_state()
+          |> Map.put(:quiet_wait_active, quiet_wait_active)
+          |> Map.put(:active_result_ref, result_ref)
+
+        _ ->
+          wait_guard_state()
+          |> Map.put(:quiet_wait_active, false)
+          |> Map.put(:active_result_ref, nil)
+      end
+
+    Process.put(@wait_guard_process_key, updated)
+    :ok
+  end
+
+  defp update_wait_guard_from_tool_result(_tool_name, _arguments, _result), do: :ok
+
+  defp decode_tool_payload(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text) do
+    case Jason.decode(text) do
+      {:ok, payload} when is_map(payload) -> payload
+      _ -> %{}
+    end
+  end
+
+  defp decode_tool_payload(%{"status" => _status} = payload), do: payload
+  defp decode_tool_payload(%{status: status} = payload), do: Map.put(payload, "status", status)
+
+  defp decode_tool_payload(_result), do: %{}
 
   defp await_response(port, request_id) do
     with_timeout_response(port, request_id, Config.settings!().codex.read_timeout_ms, "")

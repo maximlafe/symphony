@@ -876,6 +876,207 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server throttles repeated gh status checks while quiet exec_wait is active" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-quiet-status-throttle-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-510")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-quiet-status-throttle.trace")
+      approval_payload_file = Path.join(test_root, "approval-request.json")
+      first_status_payload_file = Path.join(test_root, "first-status-approval.json")
+      second_status_payload_file = Path.join(test_root, "second-status-approval.json")
+      background_tool_file = Path.join(test_root, "exec-background-tool.json")
+      first_wait_tool_file = Path.join(test_root, "exec-wait-tool-1.json")
+      second_wait_tool_file = Path.join(test_root, "exec-wait-tool-2.json")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(
+        approval_payload_file,
+        Jason.encode!(%{
+          "id" => 99,
+          "method" => "item/commandExecution/requestApproval",
+          "params" => %{
+            "command" => "make symphony-validate",
+            "cwd" => "/tmp",
+            "reason" => "need approval",
+            "available_decisions" => ["acceptForSession", "denied", "abort"]
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        first_status_payload_file,
+        Jason.encode!(%{
+          "id" => 201,
+          "method" => "item/commandExecution/requestApproval",
+          "params" => %{
+            "command" => "gh pr view 69",
+            "cwd" => "/tmp",
+            "reason" => "check status",
+            "available_decisions" => ["acceptForSession", "denied", "abort"]
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        second_status_payload_file,
+        Jason.encode!(%{
+          "id" => 202,
+          "method" => "item/commandExecution/requestApproval",
+          "params" => %{
+            "command" => "gh pr view 69",
+            "cwd" => "/tmp",
+            "reason" => "check status again",
+            "available_decisions" => ["acceptForSession", "denied", "abort"]
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        background_tool_file,
+        Jason.encode!(%{
+          "id" => 100,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_background",
+            "arguments" => %{"command" => "make symphony-validate"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        first_wait_tool_file,
+        Jason.encode!(%{
+          "id" => 101,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_wait",
+            "arguments" => %{"result_ref" => "exec-quiet-510"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        second_wait_tool_file,
+        Jason.encode!(%{
+          "id" => 102,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_wait",
+            "arguments" => %{"result_ref" => "exec-quiet-510"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-510"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-510"}}}'
+            cat "#{approval_payload_file}"
+            ;;
+          5)
+            cat "#{background_tool_file}"
+            ;;
+          6)
+            cat "#{first_wait_tool_file}"
+            ;;
+          7)
+            cat "#{second_wait_tool_file}"
+            ;;
+          8)
+            cat "#{first_status_payload_file}"
+            ;;
+          9)
+            cat "#{second_status_payload_file}"
+            ;;
+          10)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never"
+      )
+
+      issue = %Issue{
+        id: "issue-quiet-status-throttle",
+        identifier: "MT-510",
+        title: "Throttle repeated status checks while waiting",
+        description: "Ensure quiet exec_wait dedupes repeated gh status polling",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-510",
+        labels: ["backend"]
+      }
+
+      tool_executor = fn
+        "exec_background", _arguments ->
+          %{"success" => true, "status" => "running", "result_ref" => "exec-quiet-510"}
+
+        "exec_wait", _arguments ->
+          quiet = Process.get(:exec_wait_seen_once, false)
+          Process.put(:exec_wait_seen_once, true)
+
+          %{
+            "success" => true,
+            "status" => "running",
+            "result_ref" => "exec-quiet-510",
+            "wait_mode" => if(quiet, do: "quiet", else: "active"),
+            "quiet_wait" => quiet
+          }
+
+        _tool_name, _arguments ->
+          %{"success" => false, "error" => "unexpected tool call"}
+      end
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "Throttle repeated status checks during quiet wait", issue, tool_executor: tool_executor)
+
+      decisions =
+        trace_json_lines(trace_file)
+        |> Enum.filter(&(&1["id"] in [201, 202]))
+        |> Enum.map(fn payload -> {payload["id"], get_in(payload, ["result", "decision"])} end)
+        |> Map.new()
+
+      assert decisions[201] == "acceptForSession"
+      assert decisions[202] == "denied"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server auto-approves MCP tool approval prompts when approval policy is never" do
     test_root =
       Path.join(

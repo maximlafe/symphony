@@ -106,7 +106,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     }
 
     orchestrator_name = Module.concat(__MODULE__, :SnapshotOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    {:ok, pid} =
+      Orchestrator.start_link(
+        name: orchestrator_name,
+        start_immediately?: false,
+        run_startup_housekeeping?: false
+      )
 
     on_exit(fn ->
       if Process.alive?(pid) do
@@ -1164,6 +1170,145 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert completed_state.codex_totals.output_tokens == 4
     assert completed_state.codex_totals.total_tokens == 16
     assert is_integer(completed_state.codex_totals.seconds_running)
+  end
+
+  test "orchestrator snapshot exposes token reason totals across polling and status categories" do
+    issue_id = "issue-token-reasons"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-510",
+      title: "Token reason breakdown test",
+      description: "Track token growth reasons in observability payload",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-510"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :TokenReasonOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    process_ref = make_ref()
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    now = DateTime.utc_now()
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :tool_call_started,
+         payload: %{
+           "params" => %{
+             "tool" => "exec_wait",
+             "arguments" => %{"result_ref" => "exec-510"},
+             "tokenUsage" => %{"total" => %{"input_tokens" => 6, "output_tokens" => 4, "total_tokens" => 10}}
+           }
+         },
+         timestamp: now
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/exec_command_begin",
+           "params" => %{
+             "msg" => %{"command" => "gh pr view 69"},
+             "tokenUsage" => %{"total" => %{"input_tokens" => 12, "output_tokens" => 8, "total_tokens" => 20}}
+           }
+         },
+         timestamp: now
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/exec_command_begin",
+           "params" => %{
+             "msg" => %{"command" => "make symphony-validate"},
+             "tokenUsage" => %{"total" => %{"input_tokens" => 18, "output_tokens" => 12, "total_tokens" => 30}}
+           }
+         },
+         timestamp: now
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :tool_call_started,
+         payload: %{
+           "params" => %{
+             "tool" => "sync_workpad",
+             "arguments" => %{"issue_id" => "LET-510"},
+             "tokenUsage" => %{"total" => %{"input_tokens" => 24, "output_tokens" => 16, "total_tokens" => 40}}
+           }
+         },
+         timestamp: now
+       }}
+    )
+
+    snapshot =
+      wait_for_snapshot(
+        pid,
+        fn
+          %{codex_totals: %{total_tokens: 40}, token_reason_totals: totals}
+          when is_map(totals) ->
+            true
+
+          _ ->
+            false
+        end,
+        1_000
+      )
+
+    assert snapshot.token_reason_totals == %{
+             polling: %{input_tokens: 6, output_tokens: 4, total_tokens: 10},
+             git_gh_status: %{input_tokens: 6, output_tokens: 4, total_tokens: 10},
+             validation: %{input_tokens: 6, output_tokens: 4, total_tokens: 10},
+             linear_mutation: %{input_tokens: 6, output_tokens: 4, total_tokens: 10},
+             other: %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
+           }
   end
 
   test "orchestrator snapshot tracks turn completed usage when present" do
@@ -3316,7 +3461,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   defp do_wait_for_snapshot(pid, predicate, deadline_ms) do
-    snapshot = GenServer.call(pid, :snapshot)
+    snapshot = GenServer.call(pid, :snapshot, 15_000)
 
     if predicate.(snapshot) do
       snapshot

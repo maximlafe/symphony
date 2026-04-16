@@ -295,8 +295,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   @default_github_wait_timeout_ms 3_600_000
   @default_github_wait_poll_interval_ms 10_000
   @default_exec_background_timeout_ms 3_600_000
-  @default_exec_wait_timeout_ms 30_000
-  @default_exec_wait_poll_interval_ms 250
+  @default_exec_wait_timeout_ms 90_000
+  @default_exec_wait_poll_interval_ms 1_000
+  @minimum_exec_wait_poll_interval_ms 500
+  @exec_wait_quiet_empty_poll_limit 2
+  @exec_wait_quiet_timeout_ms 120_000
   @default_exec_tail_bytes 12_000
   @exec_background_registry_table :symphony_exec_background_registry
   @exec_background_registry_max_entries 128
@@ -484,7 +487,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         tail: "",
         worker_pid: nil,
         result: nil,
-        completed_at_ms: nil
+        completed_at_ms: nil,
+        wait_poll_count: 0,
+        empty_wait_polls: 0,
+        quiet_wait: false,
+        last_wait_tail_hash: nil
       })
 
       worker_pid =
@@ -2065,10 +2072,158 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           do: cancel_exec_background_command(entry, opts),
           else: entry
 
+      {effective_timeout_ms, effective_poll_interval_ms, wait_mode} =
+        exec_wait_policy(entry, timeout_ms, poll_interval_ms, opts)
+
       wait_started_at_ms = monotonic_time_ms(opts)
-      do_wait_for_exec_result(entry.result_ref, timeout_ms, poll_interval_ms, wait_started_at_ms, opts)
+
+      with {:ok, result} <-
+             do_wait_for_exec_result(
+               entry.result_ref,
+               effective_timeout_ms,
+               effective_poll_interval_ms,
+               wait_started_at_ms,
+               opts
+             ) do
+        handle_exec_wait_result(
+          entry.result_ref,
+          result,
+          wait_mode,
+          effective_timeout_ms,
+          effective_poll_interval_ms,
+          opts
+        )
+      end
     end
   end
+
+  defp exec_wait_policy(entry, timeout_ms, poll_interval_ms, opts) do
+    minimum_poll_interval_ms = exec_wait_min_poll_interval_ms(opts)
+    effective_poll_interval_ms = max(poll_interval_ms, minimum_poll_interval_ms)
+    quiet_wait? = Map.get(entry, :quiet_wait) == true
+    quiet_timeout_ms = exec_wait_quiet_timeout_ms(opts)
+
+    effective_timeout_ms =
+      if quiet_wait? do
+        max(timeout_ms, quiet_timeout_ms)
+      else
+        timeout_ms
+      end
+
+    wait_mode = if quiet_wait?, do: "quiet", else: "active"
+    {effective_timeout_ms, effective_poll_interval_ms, wait_mode}
+  end
+
+  defp exec_wait_min_poll_interval_ms(opts) do
+    case Keyword.get(opts, :exec_wait_min_poll_interval_ms, @minimum_exec_wait_poll_interval_ms) do
+      value when is_integer(value) and value > 0 -> value
+      _ -> @minimum_exec_wait_poll_interval_ms
+    end
+  end
+
+  defp exec_wait_quiet_timeout_ms(opts) do
+    case Keyword.get(opts, :exec_wait_quiet_timeout_ms, @exec_wait_quiet_timeout_ms) do
+      value when is_integer(value) and value > 0 -> value
+      _ -> @exec_wait_quiet_timeout_ms
+    end
+  end
+
+  defp exec_wait_quiet_empty_poll_limit(opts) do
+    case Keyword.get(opts, :exec_wait_quiet_empty_poll_limit, @exec_wait_quiet_empty_poll_limit) do
+      value when is_integer(value) and value > 0 -> value
+      _ -> @exec_wait_quiet_empty_poll_limit
+    end
+  end
+
+  defp handle_exec_wait_result(result_ref, %{"status" => "running"} = result, wait_mode, timeout_ms, poll_interval_ms, opts) do
+    :ok =
+      update_exec_registry_entry(result_ref, fn entry ->
+        update_exec_wait_running_state(entry, result, opts)
+      end)
+
+    enriched_entry =
+      case fetch_exec_registry_entry(result_ref) do
+        {:ok, entry} -> entry
+        {:error, _reason} -> nil
+      end
+
+    {:ok, annotate_exec_wait_result(result, enriched_entry, wait_mode, timeout_ms, poll_interval_ms)}
+  end
+
+  defp handle_exec_wait_result(result_ref, result, wait_mode, timeout_ms, poll_interval_ms, _opts)
+       when is_map(result) do
+    :ok =
+      update_exec_registry_entry(result_ref, fn entry ->
+        entry
+        |> Map.put(:wait_poll_count, 0)
+        |> Map.put(:empty_wait_polls, 0)
+        |> Map.put(:quiet_wait, false)
+        |> Map.put(:last_wait_tail_hash, nil)
+      end)
+
+    {:ok, annotate_exec_wait_result(result, nil, wait_mode, timeout_ms, poll_interval_ms)}
+  end
+
+  defp update_exec_wait_running_state(entry, result, opts) do
+    tail_hash = :erlang.phash2(Map.get(result, "tail", ""))
+    previous_hash = Map.get(entry, :last_wait_tail_hash)
+    empty_wait_polls = Map.get(entry, :empty_wait_polls, 0)
+    wait_poll_count = Map.get(entry, :wait_poll_count, 0)
+    unchanged_tail? = not is_nil(previous_hash) and previous_hash == tail_hash
+
+    next_empty_wait_polls =
+      if unchanged_tail? do
+        empty_wait_polls + 1
+      else
+        0
+      end
+
+    quiet_wait? =
+      Map.get(entry, :quiet_wait, false) == true or
+        next_empty_wait_polls >= exec_wait_quiet_empty_poll_limit(opts)
+
+    entry
+    |> Map.put(:wait_poll_count, wait_poll_count + 1)
+    |> Map.put(:empty_wait_polls, next_empty_wait_polls)
+    |> Map.put(:quiet_wait, quiet_wait?)
+    |> Map.put(:last_wait_tail_hash, tail_hash)
+  end
+
+  defp annotate_exec_wait_result(result, entry, wait_mode, timeout_ms, poll_interval_ms)
+       when is_map(result) do
+    effective_wait_mode =
+      case entry do
+        %{quiet_wait: true} -> "quiet"
+        _ -> wait_mode
+      end
+
+    result
+    |> Map.put("wait_mode", effective_wait_mode)
+    |> Map.put("effective_timeout_ms", timeout_ms)
+    |> Map.put("effective_poll_interval_ms", poll_interval_ms)
+    |> maybe_put_running_wait_stats(entry)
+  end
+
+  defp maybe_put_running_wait_stats(
+         payload,
+         %{
+           wait_poll_count: wait_poll_count,
+           empty_wait_polls: empty_wait_polls,
+           quiet_wait: quiet_wait
+         }
+       )
+       when is_map(payload) do
+    if is_integer(wait_poll_count) and is_integer(empty_wait_polls) and is_boolean(quiet_wait) do
+      payload
+      |> Map.put("wait_poll_count", wait_poll_count)
+      |> Map.put("empty_wait_polls", empty_wait_polls)
+      |> Map.put("quiet_wait", quiet_wait)
+    else
+      payload
+    end
+  end
+
+  defp maybe_put_running_wait_stats(payload, _entry), do: payload
 
   defp do_wait_for_exec_result(result_ref, timeout_ms, poll_interval_ms, wait_started_at_ms, opts) do
     with {:ok, entry} <- fetch_exec_registry_entry(result_ref) do
