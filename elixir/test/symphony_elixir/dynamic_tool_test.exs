@@ -1407,6 +1407,74 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert cancelled_payload["failure_summary"] =~ "cancelled"
   end
 
+  test "exec_wait escalates repeated empty waits into quiet mode with clamped polling" do
+    workspace = Path.join(System.tmp_dir!(), "exec_wait_quiet_mode_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+
+    started =
+      DynamicTool.execute(
+        "exec_background",
+        %{"command" => "sleep 1"},
+        workspace: workspace
+      )
+
+    result_ref = decode_tool_text(started)["result_ref"]
+
+    wait_opts = [
+      workspace: workspace,
+      exec_wait_min_poll_interval_ms: 5,
+      exec_wait_quiet_empty_poll_limit: 1,
+      exec_wait_quiet_timeout_ms: 40
+    ]
+
+    first_wait =
+      DynamicTool.execute(
+        "exec_wait",
+        %{"result_ref" => result_ref, "timeout_ms" => 5, "poll_interval_ms" => 1},
+        wait_opts
+      )
+
+    first_payload = decode_tool_text(first_wait)
+    assert first_payload["status"] == "running"
+    assert first_payload["wait_mode"] == "active"
+    assert first_payload["effective_poll_interval_ms"] == 5
+
+    second_wait =
+      DynamicTool.execute(
+        "exec_wait",
+        %{"result_ref" => result_ref, "timeout_ms" => 5, "poll_interval_ms" => 1},
+        wait_opts
+      )
+
+    second_payload = decode_tool_text(second_wait)
+    assert second_payload["status"] == "running"
+    assert second_payload["wait_mode"] == "quiet"
+    assert second_payload["quiet_wait"] == true
+    assert second_payload["effective_timeout_ms"] == 5
+
+    third_wait =
+      DynamicTool.execute(
+        "exec_wait",
+        %{"result_ref" => result_ref, "timeout_ms" => 5, "poll_interval_ms" => 1},
+        wait_opts
+      )
+
+    third_payload = decode_tool_text(third_wait)
+    assert third_payload["status"] == "running"
+    assert third_payload["wait_mode"] == "quiet"
+    assert third_payload["effective_timeout_ms"] == 40
+    assert third_payload["effective_poll_interval_ms"] == 5
+
+    cancelled =
+      DynamicTool.execute(
+        "exec_wait",
+        %{"result_ref" => result_ref, "cancel" => true},
+        workspace: workspace
+      )
+
+    assert decode_tool_text(cancelled)["status"] == "cancelled"
+  end
+
   test "symphony_handoff_check fails closed for an incomplete workpad and writes a manifest" do
     workspace = Path.join(System.tmp_dir!(), "handoff_tool_workspace_#{System.unique_integer([:positive])}")
 

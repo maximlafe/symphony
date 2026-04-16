@@ -42,6 +42,10 @@ defmodule SymphonyElixir.Orchestrator do
     total_tokens: 0,
     seconds_running: 0
   }
+  @token_reason_categories [:polling, :git_gh_status, :validation, :linear_mutation, :other]
+  @empty_token_reason_totals Enum.into(@token_reason_categories, %{}, fn category ->
+                               {category, %{input_tokens: 0, output_tokens: 0, total_tokens: 0}}
+                             end)
 
   defmodule State do
     @moduledoc """
@@ -74,6 +78,7 @@ defmodule SymphonyElixir.Orchestrator do
       preferred_codex_account_id: nil,
       active_codex_account_id: nil,
       codex_totals: nil,
+      codex_token_reason_totals: nil,
       codex_rate_limits: nil,
       codex_dispatch_reason: nil
     ]
@@ -113,6 +118,7 @@ defmodule SymphonyElixir.Orchestrator do
       preferred_codex_account_id: nil,
       active_codex_account_id: nil,
       codex_totals: @empty_codex_totals,
+      codex_token_reason_totals: @empty_token_reason_totals,
       codex_rate_limits: nil,
       codex_dispatch_reason: nil
     }
@@ -239,6 +245,7 @@ defmodule SymphonyElixir.Orchestrator do
         state =
           state
           |> apply_codex_token_delta(token_delta)
+          |> apply_codex_reason_delta(updated_running_entry, update, token_delta)
           |> apply_codex_rate_limits(update, tracked_account_id)
 
         notify_dashboard()
@@ -4073,6 +4080,7 @@ defmodule SymphonyElixir.Orchestrator do
        active_codex_account_id: state.active_codex_account_id,
        codex_accounts: snapshot_codex_accounts(state),
        codex_totals: state.codex_totals,
+       token_reason_totals: normalize_token_reason_totals(state.codex_token_reason_totals),
        rate_limits: active_codex_rate_limits(state),
        workspace: workspace_snapshot(state),
        polling: %{
@@ -4721,6 +4729,155 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp apply_codex_token_delta(state, _token_delta), do: state
+
+  defp apply_codex_reason_delta(
+         %State{} = state,
+         running_entry,
+         update,
+         %{input_tokens: input, output_tokens: output, total_tokens: total} = token_delta
+       )
+       when is_integer(input) and is_integer(output) and is_integer(total) and total > 0 do
+    category = token_reason_category(running_entry, update)
+    totals = normalize_token_reason_totals(state.codex_token_reason_totals)
+
+    category_totals = Map.get(totals, category, %{input_tokens: 0, output_tokens: 0, total_tokens: 0})
+
+    updated_category_totals = %{
+      input_tokens: max(0, Map.get(category_totals, :input_tokens, 0) + token_delta.input_tokens),
+      output_tokens: max(0, Map.get(category_totals, :output_tokens, 0) + token_delta.output_tokens),
+      total_tokens: max(0, Map.get(category_totals, :total_tokens, 0) + token_delta.total_tokens)
+    }
+
+    %{state | codex_token_reason_totals: Map.put(totals, category, updated_category_totals)}
+  end
+
+  defp apply_codex_reason_delta(state, _running_entry, _update, _token_delta), do: state
+
+  defp normalize_token_reason_totals(totals) when is_map(totals) do
+    Enum.reduce(@token_reason_categories, %{}, fn category, acc ->
+      source = Map.get(totals, category) || Map.get(totals, Atom.to_string(category)) || %{}
+
+      Map.put(acc, category, %{
+        input_tokens: normalize_non_negative_integer(Map.get(source, :input_tokens) || Map.get(source, "input_tokens")),
+        output_tokens: normalize_non_negative_integer(Map.get(source, :output_tokens) || Map.get(source, "output_tokens")),
+        total_tokens: normalize_non_negative_integer(Map.get(source, :total_tokens) || Map.get(source, "total_tokens"))
+      })
+    end)
+  end
+
+  defp normalize_token_reason_totals(_totals), do: @empty_token_reason_totals
+
+  defp normalize_non_negative_integer(value) when is_integer(value) and value >= 0, do: value
+  defp normalize_non_negative_integer(_value), do: 0
+
+  defp token_reason_category(running_entry, update) do
+    current_command = normalize_optional_string(map_any(running_entry, [:current_command]))
+    run_phase = map_any(running_entry, [:run_phase])
+    external_step = normalize_optional_string(map_any(running_entry, [:external_step]))
+
+    cond do
+      linear_mutation_update?(update) ->
+        :linear_mutation
+
+      git_gh_status_command?(current_command) ->
+        :git_gh_status
+
+      validation_command?(current_command) ->
+        :validation
+
+      polling_wait_update?(run_phase, external_step, current_command) ->
+        :polling
+
+      true ->
+        :other
+    end
+  end
+
+  defp polling_wait_update?(run_phase, external_step, current_command) do
+    run_phase in [:waiting_external, "waiting external"] and external_step == "exec_wait" and
+      current_command in [nil, "", "exec_wait"]
+  end
+
+  defp git_gh_status_command?(command) do
+    if is_binary(command) do
+      normalized =
+        command
+        |> String.trim()
+        |> String.downcase()
+
+      String.starts_with?(normalized, "git status") or
+        String.starts_with?(normalized, "gh pr status") or
+        String.starts_with?(normalized, "gh pr checks") or
+        String.starts_with?(normalized, "gh pr view") or
+        String.starts_with?(normalized, "gh run list") or
+        String.starts_with?(normalized, "gh run view") or
+        String.starts_with?(normalized, "gh run watch")
+    else
+      false
+    end
+  end
+
+  defp validation_command?(command) do
+    if is_binary(command) do
+      normalized =
+        command
+        |> String.trim()
+        |> String.downcase()
+
+      String.contains?(normalized, "make symphony-preflight") or
+        String.contains?(normalized, "make symphony-validate") or
+        String.contains?(normalized, "make test") or
+        String.contains?(normalized, "mix test") or
+        String.contains?(normalized, "pytest") or
+        String.contains?(normalized, "mix dialyzer") or
+        String.contains?(normalized, "make all")
+    else
+      false
+    end
+  end
+
+  defp linear_mutation_update?(%{payload: payload}) when is_map(payload) do
+    params = Map.get(payload, "params") || Map.get(payload, :params) || %{}
+    tool_name = linear_mutation_tool_name(params)
+    linear_mutation_tool?(tool_name, params)
+  end
+
+  defp linear_mutation_update?(_update), do: false
+
+  defp linear_mutation_tool_name(params) when is_map(params) do
+    Map.get(params, "tool") ||
+      Map.get(params, :tool) ||
+      Map.get(params, "name") ||
+      Map.get(params, :name)
+  end
+
+  defp linear_mutation_tool_name(_params), do: nil
+
+  defp linear_mutation_tool?(tool_name, _params)
+       when tool_name in ["sync_workpad", "linear_upload_issue_attachment"],
+       do: true
+
+  defp linear_mutation_tool?("linear_graphql", params) do
+    arguments = Map.get(params, "arguments") || Map.get(params, :arguments) || %{}
+    linear_mutation_query?(arguments)
+  end
+
+  defp linear_mutation_tool?(_tool_name, _params), do: false
+
+  defp linear_mutation_query?(arguments) when is_map(arguments) do
+    case Map.get(arguments, "query") || Map.get(arguments, :query) do
+      query when is_binary(query) ->
+        query
+        |> String.trim_leading()
+        |> String.downcase()
+        |> String.starts_with?("mutation")
+
+      _ ->
+        false
+    end
+  end
+
+  defp linear_mutation_query?(_arguments), do: false
 
   defp apply_codex_rate_limits(%State{} = state, update, account_id) when is_map(update) do
     case extract_rate_limits(update) do
