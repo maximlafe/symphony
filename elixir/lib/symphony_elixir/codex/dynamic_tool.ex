@@ -228,6 +228,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     issue(id: $issueId) {
       id
       identifier
+      description
       state {
         name
       }
@@ -534,6 +535,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           workpad_body,
           issue_id: issue_id,
           issue_identifier: Map.get(issue_context, "identifier"),
+          issue_description: Map.get(issue_context, "description"),
           workpad_path: workpad_path,
           repo: repo,
           pr_number: pr_number,
@@ -1306,6 +1308,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
        %{
          "id" => get_argument(issue, "id"),
          "identifier" => get_argument(issue, "identifier"),
+         "description" => get_argument(issue, "description"),
          "state" => get_in(issue, ["state", "name"]),
          "labels" => normalize_linear_issue_labels(get_in(issue, ["labels", "nodes"])),
          "attachments" => normalize_linear_issue_attachments(get_in(issue, ["attachments", "nodes"]))

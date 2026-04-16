@@ -181,6 +181,22 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
              "validation_bundle_fingerprint" => "validation:test"
            }
 
+    from_dialyzer =
+      ResumeCheckpoint.capture(
+        issue,
+        %{
+          current_command: "mix dialyzer --format short",
+          external_step: "exec_wait"
+        },
+        workspace_root: workspace_root
+      )
+
+    assert from_dialyzer["active_validation_snapshot"] == %{
+             "command" => "mix dialyzer --format short",
+             "external_step" => "exec_wait",
+             "validation_bundle_fingerprint" => "validation:dialyzer"
+           }
+
     from_running_snapshot =
       ResumeCheckpoint.capture(
         issue,
