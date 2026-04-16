@@ -1841,7 +1841,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       non_actionable_author?(author_login) ->
         nil
 
-      state == "CHANGES_REQUESTED" ->
+      state in ["COMMENTED", "CHANGES_REQUESTED"] or body != nil ->
         %{
           "channel" => "review",
           "author" => author_login,
