@@ -2681,7 +2681,7 @@ defmodule SymphonyElixir.CoreTest do
           run_phase: :editing,
           latest_ci_wait_result: %{
             "all_green" => false,
-            "failed_checks" => ["make-all / run"],
+            "failed_checks" => [],
             "pending_checks" => [],
             "checks" => []
           },

@@ -1882,7 +1882,13 @@ defmodule SymphonyElixir.Orchestrator do
   defp truthy?(value), do: value in [true, "true", "TRUE", 1, "1"]
 
   defp map_any(map, keys) when is_map(map) and is_list(keys) do
-    Enum.find_value(keys, fn key -> Map.get(map, key) end)
+    Enum.reduce_while(keys, nil, fn key, _acc ->
+      if Map.has_key?(map, key) do
+        {:halt, Map.get(map, key)}
+      else
+        {:cont, nil}
+      end
+    end)
   end
 
   defp map_any(_map, _keys), do: nil
