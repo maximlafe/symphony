@@ -955,6 +955,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              item["channel"] == "inline_comment" and item["path"] == "WORKFLOW.md"
            end)
 
+    assert Enum.all?(payload["actionable_feedback"], &(&1["potentially_actionable"] == true))
+
     changed_feedback =
       List.update_at(payload["actionable_feedback"], 0, fn item ->
         Map.put(item, "body", item["body"] <> " changed")
@@ -1055,9 +1057,95 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "created_at" => "2026-04-14T11:25:48Z",
                "line" => 40,
                "path" => "elixir/lib/symphony_elixir/config.ex",
+               "potentially_actionable" => true,
                "url" => "https://example.test/inline/1"
              }
            ]
+  end
+
+  test "github_pr_snapshot ignores trusted bot inline acknowledgements without a new request" do
+    response =
+      DynamicTool.execute(
+        "github_pr_snapshot",
+        %{
+          "repo" => "maximlafe/lead_status",
+          "pr_number" => 74,
+          "include_feedback_details" => true
+        },
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "74", "-R", "maximlafe/lead_status", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://github.com/maximlafe/lead_status/pull/74",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "",
+                 "mergeStateStatus" => "CLEAN",
+                 "statusCheckRollup" => [
+                   %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/lead_status/issues/74/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/lead_status/pulls/74/reviews?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/lead_status/pulls/74/comments?per_page=100"] ->
+              {:ok,
+               Jason.encode!([
+                 %{
+                   "id" => 1,
+                   "user" => %{"login" => "chatgpt-codex-connector[bot]"},
+                   "body" => "Updated in e076cc3",
+                   "path" => "elixir/lib/symphony_elixir/config.ex",
+                   "line" => 40,
+                   "html_url" => "https://example.test/inline/1",
+                   "created_at" => "2026-04-14T11:40:00Z"
+                 },
+                 %{
+                   "id" => 2,
+                   "user" => %{"login" => "chatgpt-codex-connector[bot]"},
+                   "body" => "Thanks, this is resolved now.",
+                   "path" => "elixir/lib/symphony_elixir/config.ex",
+                   "line" => 42,
+                   "html_url" => "https://example.test/inline/2",
+                   "created_at" => "2026-04-14T11:41:00Z"
+                 },
+                 %{
+                   "id" => 3,
+                   "user" => %{"login" => "chatgpt-codex-connector[bot]"},
+                   "in_reply_to_id" => 1,
+                   "body" => "Done.",
+                   "path" => "elixir/lib/symphony_elixir/config.ex",
+                   "line" => 40,
+                   "html_url" => "https://example.test/inline/3",
+                   "created_at" => "2026-04-14T11:42:00Z"
+                 },
+                 %{
+                   "id" => 4,
+                   "user" => %{"login" => "github-actions[bot]"},
+                   "body" => "Build details: https://example.test/actions/74",
+                   "path" => "elixir/lib/symphony_elixir/config.ex",
+                   "line" => 12,
+                   "html_url" => "https://example.test/inline/4",
+                   "created_at" => "2026-04-14T11:43:00Z"
+                 }
+               ])}
+          end
+        end
+      )
+
+    assert response["success"] == true
+    payload = decode_tool_text(response)
+
+    assert payload["all_checks_green"] == true
+    assert payload["has_pending_checks"] == false
+    assert payload["has_actionable_feedback"] == false
+    assert payload["inline_comment_count"] == 0
+    assert payload["actionable_feedback"] == []
   end
 
   test "github_pr_snapshot sanitizes invalid UTF-8 in GitHub CLI error payloads" do
