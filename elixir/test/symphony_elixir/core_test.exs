@@ -4678,6 +4678,167 @@ defmodule SymphonyElixir.CoreTest do
            } = state.retry_attempts[issue_id]
   end
 
+  test "failed symphony_handoff_check manifest fail-closes active run as human-action blocker" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-verification-fail-close"
+    issue = %Issue{id: issue_id, identifier: "LET-523", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      state =
+        base_dispatch_state("primary")
+        |> Map.put(:running, %{
+          issue_id => %{
+            pid: worker_pid,
+            ref: make_ref(),
+            identifier: issue.identifier,
+            issue: issue,
+            trace_id: "trace-verification-failed",
+            session_id: "thread-verification-failed",
+            codex_account_id: "primary",
+            run_phase: :editing,
+            started_at: DateTime.utc_now()
+          }
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+
+      update =
+        handoff_check_tool_update(%{
+          "profile" => "runtime",
+          "passed" => false,
+          "summary" => "proof mapping reference 'validation:targeted tests' is reused by multiple acceptance matrix items",
+          "missing_items" => ["validation:targeted tests"],
+          "checked_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        })
+
+      assert {:noreply, updated_state} =
+               Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "selected_rule: `validation_env_mismatch`"
+      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
+      assert blocker_body =~ "failure_class: `verification_guard_failed`"
+      assert blocker_body =~ "verification guard failed"
+      assert blocker_body =~ "validation:targeted tests"
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+
+      refute Map.has_key?(updated_state.running, issue_id)
+      refute Map.has_key?(updated_state.retry_attempts, issue_id)
+      refute MapSet.member?(updated_state.claimed, issue_id)
+      refute Process.alive?(worker_pid)
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end
+  end
+
+  test "passed symphony_handoff_check manifest updates metadata without stopping active run" do
+    issue_id = "issue-verification-pass-through"
+    issue = %Issue{id: issue_id, identifier: "LET-523", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+    checked_at = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    state =
+      base_dispatch_state("primary")
+      |> Map.put(:running, %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: make_ref(),
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-verification-passed",
+          session_id: "thread-verification-passed",
+          codex_account_id: "primary",
+          run_phase: :editing,
+          started_at: DateTime.utc_now()
+        }
+      })
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+
+    update =
+      handoff_check_tool_update(%{
+        "profile" => "runtime",
+        "passed" => true,
+        "summary" => "all checks green",
+        "missing_items" => [],
+        "checked_at" => DateTime.to_iso8601(checked_at)
+      })
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+    assert %{^issue_id => running_entry} = updated_state.running
+    assert running_entry.verification_profile == "runtime"
+    assert running_entry.verification_result == "passed"
+    assert running_entry.verification_summary == "all checks green"
+    assert running_entry.verification_missing_items == []
+    assert running_entry.verification_checked_at == checked_at
+    assert running_entry.validation_guard_reason == "all checks green"
+    assert updated_state.retry_attempts == %{}
+    assert Process.alive?(worker_pid)
+    refute_received {:memory_tracker_state_update, ^issue_id, "Blocked"}
+  end
+
+  test "tool updates without verification manifest do not stop active run" do
+    issue_id = "issue-no-verification-update"
+    issue = %Issue{id: issue_id, identifier: "LET-523", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    state =
+      base_dispatch_state("primary")
+      |> Map.put(:running, %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: make_ref(),
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-no-verification-update",
+          session_id: "thread-no-verification-update",
+          codex_account_id: "primary",
+          run_phase: :editing,
+          started_at: DateTime.utc_now()
+        }
+      })
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+
+    update = %{
+      event: :tool_call_completed,
+      payload: %{"params" => %{"tool" => "github_pr_snapshot"}},
+      timestamp: DateTime.utc_now()
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+    assert %{^issue_id => running_entry} = updated_state.running
+    assert Map.get(running_entry, :verification_result) == nil
+    assert updated_state.retry_attempts == %{}
+    assert Process.alive?(worker_pid)
+    refute_received {:memory_tracker_state_update, ^issue_id, "Blocked"}
+  end
+
   test "editing safe boundary triggers hard auto-compaction continuation retry with diagnostics" do
     issue_id = "issue-auto-compaction-editing"
     issue = %Issue{id: issue_id, identifier: "LET-515", state: "In Progress"}
@@ -5007,6 +5168,15 @@ defmodule SymphonyElixir.CoreTest do
 
     assert remaining_ms >= min_remaining_ms
     assert remaining_ms <= max_remaining_ms
+  end
+
+  defp handoff_check_tool_update(manifest) when is_map(manifest) do
+    %{
+      event: :tool_call_completed,
+      payload: %{"params" => %{"tool" => "symphony_handoff_check"}},
+      result: %{contentItems: [%{text: Jason.encode!(%{"manifest" => manifest})}]},
+      timestamp: DateTime.utc_now()
+    }
   end
 
   defp base_dispatch_state(account_id) do
