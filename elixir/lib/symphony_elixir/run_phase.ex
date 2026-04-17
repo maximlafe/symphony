@@ -387,7 +387,10 @@ defmodule SymphonyElixir.RunPhase do
   defp phase_for_external_step(_external_step), do: nil
 
   defp command_finished?(%{event: :notification, payload: payload}) when is_map(payload) do
-    map_value(payload, ["method", :method]) == "codex/event/exec_command_end"
+    method = normalize_event_method(map_value(payload, ["method", :method]))
+
+    method == "codex/event/exec_command_end" or
+      command_execution_item_lifecycle?(payload, ["item/completed", "codex/event/item_completed"])
   end
 
   defp command_finished?(_update), do: false
@@ -399,13 +402,13 @@ defmodule SymphonyElixir.RunPhase do
   defp tool_step_finished?(_update), do: false
 
   defp extract_command(%{payload: payload}) when is_map(payload) do
-    method = map_value(payload, ["method", :method])
+    method = normalize_event_method(map_value(payload, ["method", :method]))
 
     if method in [
          "codex/event/exec_command_begin",
          "item/commandExecution/requestApproval",
          "execCommandApproval"
-       ] do
+       ] or command_execution_item_lifecycle?(payload, ["item/started", "codex/event/item_started"]) do
       payload
       |> extract_first_path([
         ["params", "msg", "command"],
@@ -421,13 +424,83 @@ defmodule SymphonyElixir.RunPhase do
         ["params", "argv"],
         [:params, :argv],
         ["params", "args"],
-        [:params, :args]
+        [:params, :args],
+        ["params", "item", "command"],
+        [:params, :item, :command],
+        ["params", "item"],
+        [:params, :item],
+        ["params", "item", "parsedCmd"],
+        [:params, :item, :parsedCmd],
+        ["params", "item", "cmd"],
+        [:params, :item, :cmd],
+        ["params", "item", "argv"],
+        [:params, :item, :argv],
+        ["params", "item", "args"],
+        [:params, :item, :args],
+        ["params", "msg", "payload", "command"],
+        [:params, :msg, :payload, :command],
+        ["params", "msg", "payload"],
+        [:params, :msg, :payload],
+        ["params", "msg", "payload", "parsedCmd"],
+        [:params, :msg, :payload, :parsedCmd],
+        ["params", "msg", "payload", "cmd"],
+        [:params, :msg, :payload, :cmd],
+        ["params", "msg", "payload", "argv"],
+        [:params, :msg, :payload, :argv],
+        ["params", "msg", "payload", "args"],
+        [:params, :msg, :payload, :args]
       ])
       |> normalize_command()
     end
   end
 
   defp extract_command(_update), do: nil
+
+  defp command_execution_item_lifecycle?(payload, expected_methods)
+       when is_map(payload) and is_list(expected_methods) do
+    method = normalize_event_method(map_value(payload, ["method", :method]))
+
+    method in expected_methods and command_execution_item_type?(payload)
+  end
+
+  defp command_execution_item_type?(payload) when is_map(payload) do
+    payload
+    |> extract_first_path([
+      ["params", "item", "type"],
+      [:params, :item, :type],
+      ["params", "msg", "payload", "type"],
+      [:params, :msg, :payload, :type]
+    ])
+    |> normalize_command_execution_type?()
+  end
+
+  defp normalize_command_execution_type?(type) do
+    if is_binary(type) do
+      normalized =
+        type
+        |> String.trim()
+        |> String.downcase()
+        |> String.replace(~r/[^a-z0-9]/u, "")
+
+      normalized == "commandexecution"
+    else
+      false
+    end
+  end
+
+  defp normalize_event_method(method) do
+    normalized =
+      cond do
+        is_binary(method) -> method
+        is_atom(method) -> Atom.to_string(method)
+        true -> nil
+      end
+
+    if is_binary(normalized) do
+      trimmed = String.trim(normalized)
+      if trimmed == "", do: nil, else: trimmed
+    end
+  end
 
   defp extract_external_step(%{event: :tool_call_started, payload: payload}) when is_map(payload) do
     extract_tool_name(payload)
