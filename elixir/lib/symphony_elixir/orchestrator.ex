@@ -908,25 +908,28 @@ defmodule SymphonyElixir.Orchestrator do
     trace_id = dispatch_trace_id(issue, trace_id)
     execution_head = capture_execution_head(issue)
 
-    if stale_execution_head?(execution_head) do
-      block_stale_workspace_head(
-        state,
-        issue,
-        attempt,
-        trace_id,
-        resolved_resume_checkpoint,
-        execution_head
-      )
-    else
-      dispatch_ready_issue(
-        state,
-        issue,
-        attempt,
-        trace_id,
-        retry_delay_type,
-        resolved_resume_checkpoint,
-        execution_head
-      )
+    case stale_execution_head_reason(execution_head) do
+      nil ->
+        dispatch_ready_issue(
+          state,
+          issue,
+          attempt,
+          trace_id,
+          retry_delay_type,
+          resolved_resume_checkpoint,
+          execution_head
+        )
+
+      stale_reason ->
+        block_stale_workspace_head(
+          state,
+          issue,
+          attempt,
+          trace_id,
+          resolved_resume_checkpoint,
+          execution_head,
+          stale_reason
+        )
     end
   end
 
@@ -4168,9 +4171,10 @@ defmodule SymphonyElixir.Orchestrator do
          attempt,
          trace_id,
          resume_checkpoint,
-         execution_head
+         execution_head,
+         stale_reason
        ) do
-    reason = stale_workspace_head_reason(execution_head)
+    reason = stale_workspace_head_reason(execution_head, stale_reason)
     failure_attempt = dispatch_failure_attempt(attempt)
 
     decision =
@@ -4212,25 +4216,40 @@ defmodule SymphonyElixir.Orchestrator do
     )
   end
 
-  defp stale_execution_head?(%{
+  defp stale_execution_head_reason(%{
          workspace: workspace,
          runtime_head_sha: runtime_head_sha,
          expected_head_sha: expected_head_sha
        }) do
-    known_git_sha?(runtime_head_sha) and
-      known_git_sha?(expected_head_sha) and
-      runtime_head_sha != expected_head_sha and
-      git_status_success?(workspace, ["merge-base", "--is-ancestor", runtime_head_sha, expected_head_sha])
+    cond do
+      not known_git_sha?(runtime_head_sha) or not known_git_sha?(expected_head_sha) ->
+        nil
+
+      runtime_head_sha == expected_head_sha ->
+        nil
+
+      git_status_success?(workspace, ["merge-base", "--is-ancestor", runtime_head_sha, expected_head_sha]) ->
+        :behind
+
+      true ->
+        :known_mismatch_non_behind
+    end
   end
 
-  defp stale_workspace_head_reason(execution_head) do
+  defp stale_workspace_head_reason(execution_head, stale_reason) do
     branch_suffix =
       case Map.get(execution_head, :execution_branch) do
         branch when is_binary(branch) and branch != "" -> " on #{branch}"
         _ -> ""
       end
 
-    "stale_workspace_head: runtime #{Map.get(execution_head, :runtime_head_sha)} is behind expected #{Map.get(execution_head, :expected_head_sha)}#{branch_suffix}"
+    case stale_reason do
+      :behind ->
+        "stale_workspace_head: reason=behind runtime #{Map.get(execution_head, :runtime_head_sha)} is behind expected #{Map.get(execution_head, :expected_head_sha)}#{branch_suffix}"
+
+      :known_mismatch_non_behind ->
+        "stale_workspace_head: reason=known_mismatch_non_behind runtime #{Map.get(execution_head, :runtime_head_sha)} mismatches expected #{Map.get(execution_head, :expected_head_sha)}#{branch_suffix}"
+    end
   end
 
   defp dispatch_failure_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
