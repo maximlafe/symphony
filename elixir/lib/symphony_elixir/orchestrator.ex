@@ -356,30 +356,161 @@ defmodule SymphonyElixir.Orchestrator do
          update,
          tracked_account_id
        ) do
-    case maybe_enforce_running_budget(state, issue_id, updated_running_entry, :token_update) do
+    case maybe_fail_close_verification_guard_failure(
+           state,
+           issue_id,
+           updated_running_entry,
+           update
+         ) do
+      {:verification_guard_stop, state} ->
+        {:noreply, state}
+
+      {:keep_running, state, running_entry_after_verification} ->
+        continue_running_update_after_verification(
+          state,
+          issue_id,
+          running_entry,
+          running_entry_after_verification,
+          update,
+          tracked_account_id
+        )
+    end
+  end
+
+  defp continue_running_update_after_verification(
+         %State{} = state,
+         issue_id,
+         running_entry_before,
+         running_entry_after_verification,
+         update,
+         tracked_account_id
+       ) do
+    case maybe_enforce_running_budget(state, issue_id, running_entry_after_verification, :token_update) do
       {:budget_stop, state} ->
         {:noreply, state}
 
       {:keep_running, state} ->
-        case maybe_enforce_auto_compaction(
-               state,
-               issue_id,
-               running_entry,
-               updated_running_entry,
-               update
-             ) do
-          {:auto_compaction_stop, state} ->
-            {:noreply, state}
-
-          {:keep_running, state, running_entry_to_store} ->
-            maybe_failover_running_issue(
-              state,
-              issue_id,
-              running_entry_to_store,
-              tracked_account_id
-            )
-        end
+        continue_running_update_after_budget(
+          state,
+          issue_id,
+          running_entry_before,
+          running_entry_after_verification,
+          update,
+          tracked_account_id
+        )
     end
+  end
+
+  defp continue_running_update_after_budget(
+         %State{} = state,
+         issue_id,
+         running_entry_before,
+         running_entry_after_verification,
+         update,
+         tracked_account_id
+       ) do
+    case maybe_enforce_auto_compaction(
+           state,
+           issue_id,
+           running_entry_before,
+           running_entry_after_verification,
+           update
+         ) do
+      {:auto_compaction_stop, state} ->
+        {:noreply, state}
+
+      {:keep_running, state, running_entry_to_store} ->
+        maybe_failover_running_issue(
+          state,
+          issue_id,
+          running_entry_to_store,
+          tracked_account_id
+        )
+    end
+  end
+
+  defp maybe_fail_close_verification_guard_failure(
+         %State{} = state,
+         issue_id,
+         running_entry,
+         update
+       )
+       when is_binary(issue_id) and is_map(running_entry) and is_map(update) do
+    with {:ok, manifest} <- failed_verification_manifest(update),
+         %Issue{} = issue <- Map.get(running_entry, :issue) do
+      identifier = Map.get(running_entry, :identifier, issue_id)
+      session_id = running_entry_session_id(running_entry)
+      trace_id = running_entry_trace_id(running_entry)
+      failure_attempt = next_failure_attempt_from_running(running_entry)
+      checkpoint = capture_resume_checkpoint(issue, running_entry)
+      decision = verification_guard_failure_decision(running_entry, manifest)
+
+      with_log_metadata(issue_log_metadata(issue_id, identifier, session_id, trace_id), fn ->
+        Logger.warning("Fail-closing active run after failed verification guard for issue_id=#{issue_id} issue_identifier=#{identifier}")
+      end)
+
+      log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
+
+      state =
+        state
+        |> Map.put(:running, Map.put(state.running, issue_id, running_entry))
+        |> terminate_running_issue(issue_id, false)
+        |> escalate_issue_for_retry_failover_handoff(
+          issue,
+          decision,
+          failure_attempt,
+          %{
+            issue_id: issue_id,
+            identifier: identifier,
+            trace_id: trace_id,
+            codex_account_id: Map.get(running_entry, :codex_account_id),
+            error_class: ErrorClassifier.to_string(:permanent),
+            failure_class: "verification_guard_failed",
+            retry_action: :stop,
+            resume_checkpoint: checkpoint
+          }
+          |> Map.merge(TelemetrySchema.validation_guard_payload(running_entry))
+          |> Map.merge(retry_execution_metadata(running_entry, checkpoint))
+        )
+
+      {:verification_guard_stop, state}
+    else
+      _ -> {:keep_running, state, running_entry}
+    end
+  end
+
+  defp maybe_fail_close_verification_guard_failure(state, _issue_id, running_entry, _update) do
+    {:keep_running, state, running_entry}
+  end
+
+  defp failed_verification_manifest(update) when is_map(update) do
+    with {:ok, manifest} <- verification_manifest_from_update(update),
+         false <- manifest["passed"] == true do
+      {:ok, manifest}
+    else
+      _ -> :error
+    end
+  end
+
+  defp verification_guard_failure_decision(running_entry, manifest)
+       when is_map(running_entry) and is_map(manifest) do
+    profile = Map.get(running_entry, :verification_profile) || manifest["profile"] || "unknown"
+    summary = Map.get(running_entry, :verification_summary) || manifest["summary"] || "verification guard failed"
+    missing_items = normalize_manifest_missing_items(manifest["missing_items"])
+
+    RetryFailoverDecision.decide(%{
+      validation_env_mismatch: %{
+        reason: "verification guard failed for profile `#{profile}`: #{summary}",
+        checkpoint_type: "human-action",
+        risk_level: "high",
+        log_fields: %{
+          validation_guard_name: profile,
+          validation_guard_result: "failed",
+          validation_guard_reason: summary,
+          verification_missing_items: Enum.join(missing_items, ", ")
+        }
+      }
+    })
   end
 
   defp finalize_running_update_result({:failover, state}, _issue_id, _updated_running_entry),
@@ -4940,12 +5071,19 @@ defmodule SymphonyElixir.Orchestrator do
   defp apply_verification_update(running_entry, update) when is_map(running_entry) and is_map(update) do
     case verification_manifest_from_update(update) do
       {:ok, manifest} ->
+        verification_result = if(manifest["passed"] == true, do: "passed", else: "failed")
+        verification_summary = manifest["summary"]
+        verification_profile = manifest["profile"]
+
         Map.merge(running_entry, %{
-          verification_profile: manifest["profile"],
-          verification_result: if(manifest["passed"] == true, do: "passed", else: "failed"),
-          verification_summary: manifest["summary"],
-          verification_missing_items: manifest["missing_items"] || [],
-          verification_checked_at: parse_manifest_checked_at(manifest["checked_at"])
+          verification_profile: verification_profile,
+          verification_result: verification_result,
+          verification_summary: verification_summary,
+          verification_missing_items: normalize_manifest_missing_items(manifest["missing_items"]),
+          verification_checked_at: parse_manifest_checked_at(manifest["checked_at"]),
+          validation_guard_name: verification_profile,
+          validation_guard_result: verification_result,
+          validation_guard_reason: verification_summary
         })
 
       :error ->
@@ -4994,6 +5132,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp extract_manifest_payload(%{"manifest" => manifest}) when is_map(manifest), do: manifest
   defp extract_manifest_payload(manifest) when is_map(manifest), do: manifest
   defp extract_manifest_payload(_payload), do: nil
+
+  defp normalize_manifest_missing_items(items) when is_list(items), do: items
+  defp normalize_manifest_missing_items(_items), do: []
 
   defp normalize_pr_snapshot_payload(payload) when is_map(payload) do
     url = payload["url"]
