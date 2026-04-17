@@ -8,6 +8,20 @@ defmodule SymphonyElixir.ResumeCheckpoint do
   @manifest_rel_path ".symphony/resume/checkpoint.json"
   @workpad_path "workpad.md"
   @workpad_ref_path ".workpad-id"
+  @routing_checkpoint_fields ~w(
+    cost_profile_key
+    cost_profile_reason
+    cost_stage
+    cost_signals
+    command_source
+    codex_model
+    codex_effort
+    observed_model
+    observed_effort
+    observed_signal_source
+    routing_parity_status
+    routing_parity_reason
+  )
   @atom_key_aliases %{
     "id" => :id,
     "identifier" => :identifier,
@@ -65,6 +79,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
         |> Map.put("workpad_ref", read_trimmed(Path.join(workspace, @workpad_ref_path)))
         |> Map.put("workpad_digest", sha256_file(Path.join(workspace, @workpad_path)))
         |> merge_pr_context(running_entry)
+        |> Map.merge(routing_metadata_from_running_entry(running_entry))
         |> Map.merge(TelemetrySchema.validation_guard_payload(running_entry))
         |> evaluate_readiness()
 
@@ -486,6 +501,12 @@ defmodule SymphonyElixir.ResumeCheckpoint do
 
   defp datetime_to_iso8601(%DateTime{} = value), do: DateTime.to_iso8601(value)
   defp datetime_to_iso8601(_value), do: nil
+
+  defp routing_metadata_from_running_entry(running_entry) when is_map(running_entry) do
+    running_entry
+    |> TelemetrySchema.runtime_payload()
+    |> Map.take(@routing_checkpoint_fields)
+  end
 
   defp normalize_boolean(%{} = checkpoint, key) do
     value = Map.get(checkpoint, key)

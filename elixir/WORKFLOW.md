@@ -70,6 +70,8 @@ codex:
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
     type: dangerFullAccess
+  auto_compaction_max_total_tokens: 200000
+  auto_compaction_max_safe_steps: null
   accounts:
     - id: primary
       codex_home: ~/.codex-primary

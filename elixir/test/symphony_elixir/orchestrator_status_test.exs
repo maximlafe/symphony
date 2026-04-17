@@ -152,6 +152,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          event: :session_started,
          trace_id: trace_id,
          session_id: "thread-live-turn-live",
+         cost_profile_key: "cheap_implementation",
+         cost_profile_reason: "stage_default:implementation",
+         cost_stage: "implementation",
+         cost_signals: [],
+         codex_model: "gpt-5.3-codex",
+         codex_effort: "medium",
+         command_source: "cost_profile",
          timestamp: now
        }}
     )
@@ -193,6 +200,113 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.run_phase == "editing"
     assert snapshot_entry.activity_state == "alive"
     assert snapshot_entry.current_command == nil
+    assert snapshot_entry["cost_profile_key"] == "cheap_implementation"
+    assert snapshot_entry["cost_profile_reason"] == "stage_default:implementation"
+    assert snapshot_entry["cost_stage"] == "implementation"
+    assert snapshot_entry["cost_signals"] == []
+    assert snapshot_entry["codex_model"] == "gpt-5.3-codex"
+    assert snapshot_entry["codex_effort"] == "medium"
+    assert snapshot_entry["command_source"] == "cost_profile"
+    assert snapshot_entry["observed_model"] == nil
+    assert snapshot_entry["observed_effort"] == nil
+    assert snapshot_entry["observed_signal_source"] == nil
+    assert snapshot_entry["routing_parity_status"] == "observed_unavailable"
+    assert snapshot_entry["routing_parity_reason"] == "observed routing metadata unavailable"
+  end
+
+  test "orchestrator snapshot computes routing parity from observed payload metadata" do
+    issue_id = "issue-routing-parity"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-ROUTING-PARITY",
+      title: "Routing parity test",
+      description: "Compare intended and observed routing",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-ROUTING-PARITY"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :RoutingParityOrchestrator)
+
+    {:ok, pid} =
+      Orchestrator.start_link(
+        name: orchestrator_name,
+        start_immediately?: false,
+        run_startup_housekeeping?: false
+      )
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    now = DateTime.utc_now()
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :session_started,
+         session_id: "thread-routing-parity-turn-routing-parity",
+         cost_profile_key: "cheap_implementation",
+         codex_model: "gpt-5.3-codex",
+         codex_effort: "medium",
+         timestamp: now
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "turn/completed",
+           "params" => %{
+             "usage" => %{
+               "model" => "gpt-5.4",
+               "reasoning_effort" => "high"
+             }
+           }
+         },
+         timestamp: now
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot, 15_000)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry["codex_model"] == "gpt-5.3-codex"
+    assert snapshot_entry["codex_effort"] == "medium"
+    assert snapshot_entry["observed_model"] == "gpt-5.4"
+    assert snapshot_entry["observed_effort"] == "high"
+    assert snapshot_entry["observed_signal_source"] == "payload"
+    assert snapshot_entry["routing_parity_status"] == "mismatch"
+
+    assert snapshot_entry["routing_parity_reason"] ==
+             "model expected=gpt-5.3-codex observed=gpt-5.4; effort expected=medium observed=high"
   end
 
   test "orchestrator snapshot tracks run phase, heartbeat status, and current command" do
@@ -1185,7 +1299,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     }
 
     orchestrator_name = Module.concat(__MODULE__, :TokenReasonOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    {:ok, pid} =
+      Orchestrator.start_link(
+        name: orchestrator_name,
+        start_immediately?: false,
+        run_startup_housekeeping?: false
+      )
 
     on_exit(fn ->
       if Process.alive?(pid) do
@@ -1841,7 +1961,18 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       due_at_ms: System.monotonic_time(:millisecond) + 5_000,
       identifier: "MT-500",
       error: "agent exited: :boom",
-      error_class: "transient"
+      error_class: "transient",
+      cost_profile_key: "cheap_implementation",
+      cost_profile_reason: "stage_default:implementation",
+      cost_stage: "implementation",
+      command_source: "cost_profile",
+      codex_model: "gpt-5.3-codex",
+      codex_effort: "medium",
+      observed_model: "gpt-5.4",
+      observed_effort: "high",
+      observed_signal_source: "payload",
+      routing_parity_status: "mismatch",
+      routing_parity_reason: "model expected=gpt-5.3-codex observed=gpt-5.4; effort expected=medium observed=high"
     }
 
     initial_state = :sys.get_state(pid)
@@ -1853,12 +1984,23 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert [
              %{
-               issue_id: "mt-500",
-               attempt: 2,
-               due_in_ms: due_in_ms,
-               identifier: "MT-500",
-               error: "agent exited: :boom",
-               error_class: "transient"
+               :issue_id => "mt-500",
+               :attempt => 2,
+               :due_in_ms => due_in_ms,
+               :identifier => "MT-500",
+               :error => "agent exited: :boom",
+               :error_class => "transient",
+               "cost_profile_key" => "cheap_implementation",
+               "cost_profile_reason" => "stage_default:implementation",
+               "cost_stage" => "implementation",
+               "command_source" => "cost_profile",
+               "codex_model" => "gpt-5.3-codex",
+               "codex_effort" => "medium",
+               "observed_model" => "gpt-5.4",
+               "observed_effort" => "high",
+               "observed_signal_source" => "payload",
+               "routing_parity_status" => "mismatch",
+               "routing_parity_reason" => "model expected=gpt-5.3-codex observed=gpt-5.4; effort expected=medium observed=high"
              }
            ] = snapshot.retrying
 
@@ -3093,6 +3235,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           "method" => "item/commandExecution/requestApproval",
           "params" => %{"parsedCmd" => "make symphony-validate"}
         },
+        command: "make symphony-validate",
+        command_surface: "approval_path",
+        policy_action: "rerouted",
+        policy_reason: "background_required",
         decision: "denied",
         wait_routing_decision: "background_required",
         suggested_tool_path: "use exec_background + exec_wait"
@@ -3105,6 +3251,29 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert humanized =~ "background wait required"
     assert humanized =~ "exec_background + exec_wait"
     assert humanized =~ "[denied]"
+  end
+
+  test "status dashboard formats fail-closed direct exec wait policy updates from codex" do
+    message = %{
+      event: :foreground_wait_policy_enforced,
+      message: %{
+        payload: %{
+          "method" => "codex/event/exec_command_begin",
+          "params" => %{"msg" => %{"command" => "make symphony-validate"}}
+        },
+        command: "make symphony-validate",
+        command_surface: "direct_exec",
+        policy_action: "blocked_fail_closed",
+        policy_reason: "background_required",
+        suggested_tool_path: "use exec_background + exec_wait"
+      }
+    }
+
+    humanized = StatusDashboard.humanize_codex_message(message)
+    assert humanized =~ "make symphony-validate"
+    assert humanized =~ "direct exec"
+    assert humanized =~ "blocked fail-closed"
+    assert humanized =~ "exec_background + exec_wait"
   end
 
   test "status dashboard formats auto-answered tool input updates from codex" do

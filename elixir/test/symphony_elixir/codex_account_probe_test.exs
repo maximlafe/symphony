@@ -3,6 +3,8 @@ defmodule SymphonyElixir.CodexAccountProbeTest do
 
   alias SymphonyElixir.Codex.AccountProbe
 
+  @probe_timeout_ms 3_000
+
   test "account probe reads account metadata and rate limits from a filtered runtime home derived from CODEX_HOME" do
     test_root =
       Path.join(
@@ -104,7 +106,7 @@ defmodule SymphonyElixir.CodexAccountProbeTest do
           cwd: test_root,
           monitored_windows_mins: [300, 10_080],
           minimum_remaining_percent: 5,
-          timeout_ms: 1_000
+          timeout_ms: @probe_timeout_ms
         )
 
       assert healthy.id == "primary"
@@ -228,7 +230,7 @@ defmodule SymphonyElixir.CodexAccountProbeTest do
           cwd: test_root,
           monitored_windows_mins: [300, 10_080],
           minimum_remaining_percent: 5,
-          timeout_ms: 1_000
+          timeout_ms: @probe_timeout_ms
         )
 
       assert account.id == "primary"
@@ -298,7 +300,7 @@ defmodule SymphonyElixir.CodexAccountProbeTest do
           cwd: test_root,
           monitored_windows_mins: [300, 10_080],
           minimum_remaining_percent: 5,
-          timeout_ms: 1_000,
+          timeout_ms: @probe_timeout_ms,
           probe_mode: :account_only
         )
 

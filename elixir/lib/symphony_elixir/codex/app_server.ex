@@ -832,38 +832,102 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:approval_required, payload}}
 
       :unhandled ->
-        if needs_input?(method, payload) do
-          emit_message(
-            on_message,
-            :turn_input_required,
-            %{payload: payload, raw: payload_string},
-            metadata
-          )
+        handle_unhandled_turn_method(
+          %{
+            port: port,
+            on_message: on_message,
+            metadata: metadata,
+            timeout_ms: timeout_ms,
+            tool_executor: tool_executor,
+            auto_approve_requests: auto_approve_requests,
+            base_metadata: base_metadata
+          },
+          method,
+          payload,
+          payload_string
+        )
+    end
+  end
 
-          {:error, {:turn_input_required, payload}}
-        else
-          emit_message(
-            on_message,
-            :notification,
-            %{
-              payload: payload,
-              raw: payload_string
-            },
-            metadata
-          )
+  defp handle_unhandled_turn_method(
+         %{
+           port: port,
+           on_message: on_message,
+           metadata: metadata,
+           timeout_ms: timeout_ms,
+           tool_executor: tool_executor,
+           auto_approve_requests: auto_approve_requests,
+           base_metadata: base_metadata
+         },
+         method,
+         payload,
+         payload_string
+       ) do
+    if needs_input?(method, payload) do
+      emit_message(
+        on_message,
+        :turn_input_required,
+        %{payload: payload, raw: payload_string},
+        metadata
+      )
 
-          Logger.debug("Codex notification: #{inspect(method)}")
+      {:error, {:turn_input_required, payload}}
+    else
+      handle_generic_notification(
+        %{
+          port: port,
+          on_message: on_message,
+          metadata: metadata,
+          timeout_ms: timeout_ms,
+          tool_executor: tool_executor,
+          auto_approve_requests: auto_approve_requests,
+          base_metadata: base_metadata
+        },
+        method,
+        payload,
+        payload_string
+      )
+    end
+  end
 
-          receive_loop(
-            port,
-            on_message,
-            timeout_ms,
-            "",
-            tool_executor,
-            auto_approve_requests,
-            base_metadata
-          )
-        end
+  defp handle_generic_notification(
+         %{
+           port: port,
+           on_message: on_message,
+           metadata: metadata,
+           timeout_ms: timeout_ms,
+           tool_executor: tool_executor,
+           auto_approve_requests: auto_approve_requests,
+           base_metadata: base_metadata
+         },
+         method,
+         payload,
+         payload_string
+       ) do
+    case maybe_handle_direct_exec_wait_policy(
+           method,
+           payload,
+           payload_string,
+           on_message,
+           metadata,
+           auto_approve_requests
+         ) do
+      {:error, reason} ->
+        {:error, reason}
+
+      :unhandled ->
+        emit_message(
+          on_message,
+          :notification,
+          %{
+            payload: payload,
+            raw: payload_string
+          },
+          metadata
+        )
+
+        Logger.debug("Codex notification: #{inspect(method)}")
+        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests, base_metadata)
     end
   end
 
@@ -1045,7 +1109,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          metadata,
          true
        ) do
-    command = approval_command(payload)
+    command = payload_command(payload)
 
     if deny_repeated_status_check?(command) do
       decision = command_execution_refusal_decision(payload)
@@ -1059,6 +1123,10 @@ defmodule SymphonyElixir.Codex.AppServer do
           payload: payload,
           raw: payload_string,
           decision: decision,
+          command: command,
+          command_surface: "approval_path",
+          policy_action: "throttled",
+          policy_reason: "quiet_wait_status_throttle",
           wait_routing_decision: "quiet_wait_status_throttle",
           suggested_tool_path: @status_check_refusal_tools
         },
@@ -1079,6 +1147,10 @@ defmodule SymphonyElixir.Codex.AppServer do
               payload: payload,
               raw: payload_string,
               decision: decision,
+              command: command,
+              command_surface: "approval_path",
+              policy_action: "rerouted",
+              policy_reason: "background_required",
               wait_routing_decision: "background_required",
               suggested_tool_path: @foreground_wait_refusal_tools
             },
@@ -1115,6 +1187,84 @@ defmodule SymphonyElixir.Codex.AppServer do
          false
        ) do
     :approval_required
+  end
+
+  defp maybe_handle_direct_exec_wait_policy(
+         "codex/event/exec_command_begin",
+         payload,
+         payload_string,
+         on_message,
+         metadata,
+         true
+       ) do
+    command = payload_command(payload)
+
+    case command_wait_routing_decision_for_command(command) do
+      :background_required ->
+        emit_message(
+          on_message,
+          :foreground_wait_policy_enforced,
+          foreground_wait_policy_details(
+            payload,
+            payload_string,
+            command,
+            "direct_exec",
+            "blocked_fail_closed",
+            "background_required"
+          ),
+          metadata
+        )
+
+        {:error, {:turn_failed, direct_exec_wait_policy_error(command)}}
+
+      :foreground_allowed ->
+        :unhandled
+    end
+  end
+
+  defp maybe_handle_direct_exec_wait_policy(
+         _method,
+         _payload,
+         _payload_string,
+         _on_message,
+         _metadata,
+         _auto_approve_requests
+       ) do
+    :unhandled
+  end
+
+  defp foreground_wait_policy_details(
+         payload,
+         payload_string,
+         command,
+         command_surface,
+         policy_action,
+         policy_reason
+       ) do
+    %{
+      payload: payload,
+      raw: payload_string,
+      command: command,
+      command_surface: command_surface,
+      policy_action: policy_action,
+      policy_reason: policy_reason,
+      suggested_tool_path: @foreground_wait_refusal_tools
+    }
+  end
+
+  defp direct_exec_wait_policy_error(command) do
+    %{
+      "summary" => "broad foreground wait blocked fail-closed on direct exec surface: #{command}",
+      "error_class" => "permanent",
+      "failure_class" => "process_error",
+      "retry_action" => "stop",
+      "account_state" => "ready",
+      "command" => command,
+      "command_surface" => "direct_exec",
+      "policy_action" => "blocked_fail_closed",
+      "policy_reason" => "background_required",
+      "suggested_tool_path" => @foreground_wait_refusal_tools
+    }
   end
 
   defp approve_or_require(
@@ -1323,27 +1473,33 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp normalize_decision(_decision), do: ""
 
-  defp approval_command(payload) when is_map(payload) do
+  defp payload_command(payload) when is_map(payload) do
     payload
     |> approval_params()
-    |> approval_command_value()
+    |> payload_command_value()
     |> normalize_approval_command()
   end
 
-  defp approval_command_value(nil), do: nil
+  defp payload_command_value(nil), do: nil
 
-  defp approval_command_value(params) when is_map(params) do
-    fetch_first(params, [
-      "parsedCmd",
-      :parsedCmd,
-      "command",
-      :command,
-      "cmd",
-      :cmd,
-      "argv",
-      :argv,
-      "args",
-      :args
+  defp payload_command_value(params) when is_map(params) do
+    fetch_first_path(params, [
+      ["msg", "command"],
+      [:msg, :command],
+      ["msg", "parsed_cmd"],
+      [:msg, :parsed_cmd],
+      ["msg", "parsedCmd"],
+      [:msg, :parsedCmd],
+      ["parsedCmd"],
+      [:parsedCmd],
+      ["command"],
+      [:command],
+      ["cmd"],
+      [:cmd],
+      ["argv"],
+      [:argv],
+      ["args"],
+      [:args]
     ])
   end
 
@@ -1399,6 +1555,23 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp fetch_first(_map, _keys), do: nil
+
+  defp fetch_first_path(map, paths) when is_map(map) and is_list(paths) do
+    Enum.find_value(paths, &value_at_path(map, &1))
+  end
+
+  defp fetch_first_path(_map, _paths), do: nil
+
+  defp value_at_path(map, [single]) when is_map(map), do: Map.get(map, single)
+
+  defp value_at_path(map, [first, second]) when is_map(map) do
+    case Map.get(map, first) do
+      nested when is_map(nested) -> Map.get(nested, second)
+      _ -> nil
+    end
+  end
+
+  defp value_at_path(_map, _path), do: nil
 
   defp maybe_auto_answer_tool_request_user_input(
          port,

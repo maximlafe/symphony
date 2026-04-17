@@ -204,6 +204,59 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
            }
   end
 
+  test "capture persists routing parity metadata from running entry" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-resume-checkpoint-routing-parity-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    issue = %Issue{id: "issue-resume-routing", identifier: "LET-516-ROUTING", state: "In Progress"}
+    workspace = Path.join(workspace_root, issue.identifier)
+
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nRouting parity state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-routing-parity")
+    File.write!(Path.join(workspace, "tracked.txt"), "tracked\n")
+    init_git_repo!(workspace)
+
+    checkpoint =
+      ResumeCheckpoint.capture(
+        issue,
+        %{
+          cost_profile_key: "cheap_implementation",
+          cost_profile_reason: "stage_default:implementation",
+          cost_stage: "implementation",
+          command_source: "cost_profile",
+          codex_model: "gpt-5.3-codex",
+          codex_effort: "medium",
+          observed_model: "gpt-5.4",
+          observed_effort: "high",
+          observed_signal_source: "payload",
+          routing_parity_status: "mismatch",
+          routing_parity_reason: "model expected=gpt-5.3-codex observed=gpt-5.4; effort expected=medium observed=high"
+        },
+        workspace_root: workspace_root
+      )
+
+    assert checkpoint["cost_profile_key"] == "cheap_implementation"
+    assert checkpoint["cost_profile_reason"] == "stage_default:implementation"
+    assert checkpoint["cost_stage"] == "implementation"
+    assert checkpoint["command_source"] == "cost_profile"
+    assert checkpoint["codex_model"] == "gpt-5.3-codex"
+    assert checkpoint["codex_effort"] == "medium"
+    assert checkpoint["observed_model"] == "gpt-5.4"
+    assert checkpoint["observed_effort"] == "high"
+    assert checkpoint["observed_signal_source"] == "payload"
+    assert checkpoint["routing_parity_status"] == "mismatch"
+
+    assert checkpoint["routing_parity_reason"] ==
+             "model expected=gpt-5.3-codex observed=gpt-5.4; effort expected=medium observed=high"
+  end
+
   test "capture normalizes active validation snapshot sources and command variants" do
     test_root =
       Path.join(

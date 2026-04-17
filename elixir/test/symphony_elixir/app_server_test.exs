@@ -868,9 +868,179 @@ defmodule SymphonyElixir.AppServerTest do
                )
 
       assert approval_trace_decision(trace_json_lines(trace_file)) == "denied"
-      assert_receive {:app_server_message, %{event: :approval_auto_denied, decision: "denied", wait_routing_decision: "background_required"}}
+
+      assert_receive {:app_server_message,
+                      %{
+                        event: :approval_auto_denied,
+                        decision: "denied",
+                        command: "make symphony-validate",
+                        command_surface: "approval_path",
+                        policy_action: "rerouted",
+                        policy_reason: "background_required",
+                        wait_routing_decision: "background_required"
+                      }}
+
       assert_receive {:tool_call, "exec_background", %{"command" => "make symphony-validate"}}
       assert_receive {:tool_call, "exec_wait", %{"result_ref" => "exec-123"}}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server blocks direct broad foreground waits fail-closed before polling begins" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-direct-exec-guard-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-514")
+      codex_binary = Path.join(test_root, "fake-codex")
+      parent = self()
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-514"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-514"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"codex/event/exec_command_begin","params":{"msg":{"command":"make symphony-validate"}}}'
+            ;;
+          *)
+            sleep 1
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never"
+      )
+
+      issue = %Issue{
+        id: "issue-direct-exec-guard",
+        identifier: "MT-514",
+        title: "Block direct exec broad waits",
+        description: "Ensure direct exec broad waits fail closed before write_stdin polling",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-514",
+        labels: ["backend"]
+      }
+
+      on_message = fn message -> send(parent, {:app_server_message, message}) end
+
+      assert {:error, {:turn_failed, payload}} =
+               AppServer.run(workspace, "Block direct exec broad waits", issue, on_message: on_message)
+
+      assert payload["summary"] =~ "blocked fail-closed"
+      assert payload["command"] == "make symphony-validate"
+      assert payload["command_surface"] == "direct_exec"
+      assert payload["policy_action"] == "blocked_fail_closed"
+      assert payload["policy_reason"] == "background_required"
+      assert payload["failure_class"] == "process_error"
+
+      assert_receive {:app_server_message,
+                      %{
+                        event: :foreground_wait_policy_enforced,
+                        command: "make symphony-validate",
+                        command_surface: "direct_exec",
+                        policy_action: "blocked_fail_closed",
+                        policy_reason: "background_required"
+                      }}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server leaves scoped direct exec commands in the foreground" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-direct-exec-scoped-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-514-SCOPED")
+      codex_binary = Path.join(test_root, "fake-codex")
+      parent = self()
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-514-scoped"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-514-scoped"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"codex/event/exec_command_begin","params":{"msg":{"command":"mix test test/symphony_elixir/app_server_test.exs"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never"
+      )
+
+      issue = %Issue{
+        id: "issue-direct-exec-scoped",
+        identifier: "MT-514-SCOPED",
+        title: "Allow scoped direct exec commands",
+        description: "Ensure scoped direct exec commands stay foreground-allowed",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-514-SCOPED",
+        labels: ["backend"]
+      }
+
+      on_message = fn message -> send(parent, {:app_server_message, message}) end
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "Allow scoped direct exec commands", issue, on_message: on_message)
+
+      assert_receive {:app_server_message, %{event: :notification, payload: %{"method" => "codex/event/exec_command_begin"}}}
+      refute_receive {:app_server_message, %{event: :foreground_wait_policy_enforced}}
     after
       File.rm_rf(test_root)
     end
