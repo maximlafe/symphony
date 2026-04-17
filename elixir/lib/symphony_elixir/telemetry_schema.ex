@@ -3,7 +3,20 @@ defmodule SymphonyElixir.TelemetrySchema do
   Canonical flat-key telemetry contract for runtime decision surfaces.
   """
 
-  @cost_fields [:cost_profile_key, :cost_profile_reason, :cost_stage, :cost_signals, :command_source]
+  @cost_fields [
+    :cost_profile_key,
+    :cost_profile_reason,
+    :cost_stage,
+    :cost_signals,
+    :command_source,
+    :codex_model,
+    :codex_effort,
+    :observed_model,
+    :observed_effort,
+    :observed_signal_source,
+    :routing_parity_status,
+    :routing_parity_reason
+  ]
   @budget_fields [
     :budget_decision,
     :budget_reason,

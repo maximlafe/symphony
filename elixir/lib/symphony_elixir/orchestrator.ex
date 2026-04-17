@@ -1004,6 +1004,23 @@ defmodule SymphonyElixir.Orchestrator do
     error_signature = pick_retry_error_signature(previous_retry, metadata, error)
     issue_token_total = pick_retry_issue_token_total(previous_retry, metadata)
     cost_profile_key = pick_retry_cost_profile_key(previous_retry, metadata)
+    cost_profile_reason = pick_retry_optional_string(previous_retry, metadata, :cost_profile_reason)
+    cost_stage = pick_retry_optional_string(previous_retry, metadata, :cost_stage)
+    command_source = pick_retry_optional_string(previous_retry, metadata, :command_source)
+    codex_model = pick_retry_optional_string(previous_retry, metadata, :codex_model)
+    codex_effort = pick_retry_optional_string(previous_retry, metadata, :codex_effort)
+    observed_model = pick_retry_optional_string(previous_retry, metadata, :observed_model)
+    observed_effort = pick_retry_optional_string(previous_retry, metadata, :observed_effort)
+
+    observed_signal_source =
+      pick_retry_optional_string(previous_retry, metadata, :observed_signal_source)
+
+    routing_parity_status =
+      pick_retry_optional_string(previous_retry, metadata, :routing_parity_status)
+
+    routing_parity_reason =
+      pick_retry_optional_string(previous_retry, metadata, :routing_parity_reason)
+
     budget_decision = pick_retry_budget_decision(previous_retry, metadata)
     feedback_digest = pick_retry_feedback_digest(previous_retry, metadata)
     failure_class = pick_retry_failure_class(previous_retry, metadata)
@@ -1049,6 +1066,16 @@ defmodule SymphonyElixir.Orchestrator do
             error_signature: error_signature,
             issue_token_total: issue_token_total,
             cost_profile_key: cost_profile_key,
+            cost_profile_reason: cost_profile_reason,
+            cost_stage: cost_stage,
+            command_source: command_source,
+            codex_model: codex_model,
+            codex_effort: codex_effort,
+            observed_model: observed_model,
+            observed_effort: observed_effort,
+            observed_signal_source: observed_signal_source,
+            routing_parity_status: routing_parity_status,
+            routing_parity_reason: routing_parity_reason,
             budget_decision: budget_decision,
             feedback_digest: feedback_digest,
             failure_class: failure_class,
@@ -1076,6 +1103,16 @@ defmodule SymphonyElixir.Orchestrator do
           error_signature: Map.get(retry_entry, :error_signature),
           issue_token_total: Map.get(retry_entry, :issue_token_total),
           cost_profile_key: Map.get(retry_entry, :cost_profile_key),
+          cost_profile_reason: Map.get(retry_entry, :cost_profile_reason),
+          cost_stage: Map.get(retry_entry, :cost_stage),
+          command_source: Map.get(retry_entry, :command_source),
+          codex_model: Map.get(retry_entry, :codex_model),
+          codex_effort: Map.get(retry_entry, :codex_effort),
+          observed_model: Map.get(retry_entry, :observed_model),
+          observed_effort: Map.get(retry_entry, :observed_effort),
+          observed_signal_source: Map.get(retry_entry, :observed_signal_source),
+          routing_parity_status: Map.get(retry_entry, :routing_parity_status),
+          routing_parity_reason: Map.get(retry_entry, :routing_parity_reason),
           budget_decision: Map.get(retry_entry, :budget_decision),
           feedback_digest: Map.get(retry_entry, :feedback_digest),
           failure_class: Map.get(retry_entry, :failure_class),
@@ -3429,11 +3466,16 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp pick_retry_cost_profile_key(previous_retry, metadata) do
-    case metadata[:cost_profile_key] || Map.get(previous_retry, :cost_profile_key) do
+  defp pick_retry_optional_string(previous_retry, metadata, key)
+       when is_map(previous_retry) and is_map(metadata) and is_atom(key) do
+    case metadata[key] || Map.get(previous_retry, key) do
       value when is_binary(value) and value != "" -> value
       _ -> nil
     end
+  end
+
+  defp pick_retry_cost_profile_key(previous_retry, metadata) do
+    pick_retry_optional_string(previous_retry, metadata, :cost_profile_key)
   end
 
   defp pick_retry_budget_decision(previous_retry, metadata) do
@@ -3479,7 +3521,53 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retry_execution_metadata(source, resume_checkpoint)
        when is_map(source) and (is_map(resume_checkpoint) or is_nil(resume_checkpoint)) do
+    checkpoint_routing_payload = TelemetrySchema.runtime_payload(resume_checkpoint || %{})
+
     %{}
+    |> maybe_put_retry_metadata(
+      :cost_profile_key,
+      retry_routing_field(source, checkpoint_routing_payload, :cost_profile_key)
+    )
+    |> maybe_put_retry_metadata(
+      :cost_profile_reason,
+      retry_routing_field(source, checkpoint_routing_payload, :cost_profile_reason)
+    )
+    |> maybe_put_retry_metadata(
+      :cost_stage,
+      retry_routing_field(source, checkpoint_routing_payload, :cost_stage)
+    )
+    |> maybe_put_retry_metadata(
+      :command_source,
+      retry_routing_field(source, checkpoint_routing_payload, :command_source)
+    )
+    |> maybe_put_retry_metadata(
+      :codex_model,
+      retry_routing_field(source, checkpoint_routing_payload, :codex_model)
+    )
+    |> maybe_put_retry_metadata(
+      :codex_effort,
+      retry_routing_field(source, checkpoint_routing_payload, :codex_effort)
+    )
+    |> maybe_put_retry_metadata(
+      :observed_model,
+      retry_routing_field(source, checkpoint_routing_payload, :observed_model)
+    )
+    |> maybe_put_retry_metadata(
+      :observed_effort,
+      retry_routing_field(source, checkpoint_routing_payload, :observed_effort)
+    )
+    |> maybe_put_retry_metadata(
+      :observed_signal_source,
+      retry_routing_field(source, checkpoint_routing_payload, :observed_signal_source)
+    )
+    |> maybe_put_retry_metadata(
+      :routing_parity_status,
+      retry_routing_field(source, checkpoint_routing_payload, :routing_parity_status)
+    )
+    |> maybe_put_retry_metadata(
+      :routing_parity_reason,
+      retry_routing_field(source, checkpoint_routing_payload, :routing_parity_reason)
+    )
     |> maybe_put_retry_metadata(:runtime_head_sha, retry_runtime_head_sha(source, resume_checkpoint))
     |> maybe_put_retry_metadata(:expected_head_sha, Map.get(source, :expected_head_sha))
     |> maybe_put_retry_metadata(:execution_branch, Map.get(source, :execution_branch))
@@ -3496,6 +3584,19 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_execution_metadata(_source, _resume_checkpoint), do: %{}
+
+  defp retry_routing_field(source, checkpoint_routing_payload, key)
+       when is_map(source) and is_map(checkpoint_routing_payload) and is_atom(key) do
+    key_string = Atom.to_string(key)
+
+    normalize_optional_string(map_any(source, [key, key_string])) ||
+      normalize_optional_string(Map.get(checkpoint_routing_payload, key_string))
+  end
+
+  defp retry_routing_field(source, _checkpoint_routing_payload, key)
+       when is_map(source) and is_atom(key) do
+    normalize_optional_string(map_any(source, [key, Atom.to_string(key)]))
+  end
 
   defp retry_runtime_head_sha(source, resume_checkpoint) when is_map(source) do
     case Map.get(source, :runtime_head_sha) do
@@ -4161,12 +4262,242 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
         turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
       })
+      |> apply_routing_update(update)
       |> apply_verification_update(update)
       |> apply_pr_context_update(update)
       |> RunPhase.apply_update(update)
 
     {updated_running_entry, token_delta}
   end
+
+  defp apply_routing_update(running_entry, update) when is_map(running_entry) and is_map(update) do
+    running_entry
+    |> merge_present_metadata(routing_intended_fields(update))
+    |> merge_present_metadata(routing_observed_fields(update))
+    |> apply_routing_parity()
+  end
+
+  defp apply_routing_update(running_entry, _update), do: running_entry
+
+  defp routing_intended_fields(update) when is_map(update) do
+    %{
+      cost_profile_key: normalize_optional_string(map_any(update, [:cost_profile_key, "cost_profile_key"])),
+      cost_profile_reason: normalize_optional_string(map_any(update, [:cost_profile_reason, "cost_profile_reason"])),
+      cost_stage: normalize_optional_string(map_any(update, [:cost_stage, "cost_stage"])),
+      cost_signals: normalize_cost_signals(map_any(update, [:cost_signals, "cost_signals"])),
+      codex_model: normalize_optional_string(map_any(update, [:codex_model, "codex_model"])),
+      codex_effort: normalize_optional_string(map_any(update, [:codex_effort, "codex_effort"])),
+      command_source: normalize_optional_string(map_any(update, [:command_source, "command_source"]))
+    }
+  end
+
+  defp routing_observed_fields(update) when is_map(update) do
+    explicit_fields = explicit_observed_fields(update)
+
+    if explicit_fields == %{} do
+      observed_fields_from_sources([
+        {"payload", map_any(update, [:payload, "payload"])},
+        {"usage", map_any(update, [:usage, "usage"])},
+        {"update", update}
+      ])
+    else
+      explicit_fields
+    end
+  end
+
+  defp explicit_observed_fields(update) when is_map(update) do
+    explicit_model = normalize_optional_string(map_any(update, [:observed_model, "observed_model"]))
+    explicit_effort = normalize_optional_string(map_any(update, [:observed_effort, "observed_effort"]))
+
+    explicit_source =
+      normalize_optional_string(map_any(update, [:observed_signal_source, "observed_signal_source"]))
+
+    case {explicit_model, explicit_effort} do
+      {nil, nil} ->
+        %{}
+
+      _ ->
+        %{
+          observed_model: explicit_model,
+          observed_effort: explicit_effort,
+          observed_signal_source: explicit_source || "update"
+        }
+    end
+  end
+
+  defp observed_fields_from_sources(sources) when is_list(sources) do
+    Enum.find_value(sources, %{}, &observed_fields_from_source/1)
+  end
+
+  defp observed_fields_from_source({source, value}) when is_binary(source) and is_map(value) do
+    model = observed_model_from_source(value)
+    effort = observed_effort_from_source(value)
+
+    case {model, effort} do
+      {nil, nil} ->
+        nil
+
+      _ ->
+        %{
+          observed_model: model,
+          observed_effort: effort,
+          observed_signal_source: source
+        }
+    end
+  end
+
+  defp observed_fields_from_source(_source), do: nil
+
+  defp observed_model_from_source(source) when is_map(source) do
+    observed_value_at_paths(source, [
+      ["model"],
+      [:model],
+      ["model_slug"],
+      [:model_slug],
+      ["modelName"],
+      [:modelName],
+      ["params", "model"],
+      [:params, :model],
+      ["params", "msg", "model"],
+      [:params, :msg, :model],
+      ["params", "msg", "info", "model"],
+      [:params, :msg, :info, :model],
+      ["params", "usage", "model"],
+      [:params, :usage, :model],
+      ["usage", "model"],
+      [:usage, :model]
+    ])
+  end
+
+  defp observed_effort_from_source(source) when is_map(source) do
+    observed_value_at_paths(source, [
+      ["effort"],
+      [:effort],
+      ["reasoning_effort"],
+      [:reasoning_effort],
+      ["model_reasoning_effort"],
+      [:model_reasoning_effort],
+      ["reasoningEffort"],
+      [:reasoningEffort],
+      ["params", "effort"],
+      [:params, :effort],
+      ["params", "reasoning_effort"],
+      [:params, :reasoning_effort],
+      ["params", "model_reasoning_effort"],
+      [:params, :model_reasoning_effort],
+      ["params", "usage", "reasoning_effort"],
+      [:params, :usage, :reasoning_effort],
+      ["params", "usage", "model_reasoning_effort"],
+      [:params, :usage, :model_reasoning_effort],
+      ["usage", "reasoning_effort"],
+      [:usage, :reasoning_effort],
+      ["usage", "model_reasoning_effort"],
+      [:usage, :model_reasoning_effort]
+    ])
+  end
+
+  defp observed_value_at_paths(source, paths) when is_map(source) and is_list(paths) do
+    Enum.find_value(paths, fn path ->
+      source
+      |> map_at_path(path)
+      |> normalize_optional_string()
+    end)
+  end
+
+  defp observed_value_at_paths(_source, _paths), do: nil
+
+  defp merge_present_metadata(map, values) when is_map(map) and is_map(values) do
+    Enum.reduce(values, map, fn
+      {_key, nil}, acc -> acc
+      {key, value}, acc -> Map.put(acc, key, value)
+    end)
+  end
+
+  defp merge_present_metadata(map, _values), do: map
+
+  defp normalize_cost_signals(values) when is_list(values) do
+    Enum.reduce(values, [], fn
+      value, acc when is_binary(value) ->
+        case String.trim(value) do
+          "" -> acc
+          normalized -> [normalized | acc]
+        end
+
+      value, acc when is_atom(value) ->
+        [Atom.to_string(value) | acc]
+
+      _value, acc ->
+        acc
+    end)
+    |> Enum.reverse()
+  end
+
+  defp normalize_cost_signals(_values), do: nil
+
+  defp apply_routing_parity(running_entry) when is_map(running_entry) do
+    intended_model = normalize_optional_string(Map.get(running_entry, :codex_model))
+    intended_effort = normalize_optional_string(Map.get(running_entry, :codex_effort))
+    observed_model = normalize_optional_string(Map.get(running_entry, :observed_model))
+    observed_effort = normalize_optional_string(Map.get(running_entry, :observed_effort))
+
+    {status, reason} =
+      routing_parity_status_and_reason(
+        intended_model,
+        intended_effort,
+        observed_model,
+        observed_effort
+      )
+
+    running_entry
+    |> maybe_put_optional_metadata(:routing_parity_status, status)
+    |> maybe_put_optional_metadata(:routing_parity_reason, reason)
+  end
+
+  defp apply_routing_parity(running_entry), do: running_entry
+
+  defp routing_parity_status_and_reason(nil, nil, _observed_model, _observed_effort), do: {nil, nil}
+
+  defp routing_parity_status_and_reason(
+         intended_model,
+         intended_effort,
+         nil,
+         nil
+       )
+       when is_binary(intended_model) or is_binary(intended_effort) do
+    {"observed_unavailable", "observed routing metadata unavailable"}
+  end
+
+  defp routing_parity_status_and_reason(
+         intended_model,
+         intended_effort,
+         observed_model,
+         observed_effort
+       ) do
+    mismatches =
+      []
+      |> maybe_add_routing_mismatch(:model, intended_model, observed_model)
+      |> maybe_add_routing_mismatch(:effort, intended_effort, observed_effort)
+
+    case mismatches do
+      [] ->
+        {"ok", "observed routing matches intended model/effort"}
+
+      _ ->
+        {"mismatch", Enum.join(mismatches, "; ")}
+    end
+  end
+
+  defp maybe_add_routing_mismatch(messages, _label, nil, _observed), do: messages
+
+  defp maybe_add_routing_mismatch(messages, label, intended, observed)
+       when is_binary(intended) and intended != observed do
+    messages ++ ["#{label} expected=#{intended} observed=#{observed || "unknown"}"]
+  end
+
+  defp maybe_add_routing_mismatch(messages, _label, _intended, _observed), do: messages
+
+  defp maybe_put_optional_metadata(map, _key, nil), do: map
+  defp maybe_put_optional_metadata(map, key, value), do: Map.put(map, key, value)
 
   defp apply_verification_update(running_entry, update) when is_map(running_entry) and is_map(update) do
     case verification_manifest_from_update(update) do
