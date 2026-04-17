@@ -4561,6 +4561,162 @@ defmodule SymphonyElixir.CoreTest do
     cancel_retry_timer(updated_state.retry_attempts[issue_id])
   end
 
+  test "editing auto-compaction treats item completed command execution as safe boundary" do
+    issue_id = "issue-auto-compaction-item-completed"
+    issue = %Issue{id: issue_id, identifier: "LET-521", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+    ref = Process.monitor(worker_pid)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      codex_auto_compaction_max_total_tokens: 100
+    )
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: ref,
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-auto-compaction-item-completed",
+          session_id: "thread-auto-compaction-item-completed",
+          run_phase: :editing,
+          current_command: "git status",
+          external_step: nil,
+          codex_total_tokens: 150,
+          issue_token_total: 50,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          auto_compaction_safe_steps: 0,
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    update = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/completed",
+        "params" => %{"item" => %{"type" => "command_execution", "status" => "completed"}}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+    assert %{
+             attempt: 1,
+             delay_type: :continuation,
+             continuation_reason: "auto_compaction",
+             auto_compaction_signal: "total_tokens",
+             auto_compaction_threshold: 100,
+             auto_compaction_observed_total: 150,
+             issue_token_total: 200,
+             resume_checkpoint: checkpoint
+           } = updated_state.retry_attempts[issue_id]
+
+    assert checkpoint["auto_compaction"]["continuation_reason"] == "auto_compaction"
+    assert checkpoint["auto_compaction"]["auto_compaction_signal"] == "total_tokens"
+    assert checkpoint["auto_compaction"]["auto_compaction_threshold"] == 100
+    assert checkpoint["auto_compaction"]["auto_compaction_observed_total"] == 150
+    assert checkpoint["token_budget"]["budget_issue_total_tokens"] == 200
+
+    refute Map.has_key?(updated_state.running, issue_id)
+    refute Process.alive?(worker_pid)
+    cancel_retry_timer(updated_state.retry_attempts[issue_id])
+  end
+
+  test "editing auto-compaction ignores command execution streaming events without completion" do
+    issue_id = "issue-auto-compaction-item-streaming"
+    issue = %Issue{id: issue_id, identifier: "LET-521", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+    ref = Process.monitor(worker_pid)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      codex_auto_compaction_max_total_tokens: 100
+    )
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: ref,
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-auto-compaction-item-streaming",
+          session_id: "thread-auto-compaction-item-streaming",
+          run_phase: :editing,
+          current_command: "git status",
+          external_step: nil,
+          codex_total_tokens: 150,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          auto_compaction_safe_steps: 0,
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    output_delta = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/commandExecution/outputDelta",
+        "params" => %{"outputDelta" => "line"}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert {:noreply, state_after_delta} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, output_delta}, state)
+
+    terminal_interaction = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/commandExecution/terminalInteraction",
+        "params" => %{"type" => "stdin"}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert {:noreply, state_after_terminal} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, terminal_interaction}, state_after_delta)
+
+    assert %{^issue_id => running_entry} = state_after_terminal.running
+    assert running_entry.auto_compaction_safe_steps == 0
+    assert running_entry.run_phase == :editing
+    assert state_after_terminal.retry_attempts == %{}
+    assert Process.alive?(worker_pid)
+  end
+
   test "auto-compaction does not trigger on exec_wait boundary outside editing phase" do
     issue_id = "issue-auto-compaction-exec-wait"
     issue = %Issue{id: issue_id, identifier: "LET-515", state: "In Progress"}

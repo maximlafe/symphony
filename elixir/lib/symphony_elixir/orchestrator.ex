@@ -4613,11 +4613,62 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp auto_compaction_boundary_event?(%{event: :notification, payload: payload})
        when is_map(payload) do
-    normalize_optional_string(map_any(payload, [:method, "method"])) ==
-      "codex/event/exec_command_end"
+    method = normalize_optional_string(map_any(payload, [:method, "method"]))
+
+    method == "codex/event/exec_command_end" or
+      auto_compaction_item_command_completed?(payload, method)
   end
 
   defp auto_compaction_boundary_event?(_update), do: false
+
+  defp auto_compaction_item_command_completed?(payload, method)
+       when is_map(payload) and is_binary(method) do
+    method in ["item/completed", "codex/event/item_completed"] and
+      auto_compaction_command_execution_item_type?(payload)
+  end
+
+  defp auto_compaction_item_command_completed?(_payload, _method), do: false
+
+  defp auto_compaction_command_execution_item_type?(payload) when is_map(payload) do
+    payload
+    |> auto_compaction_item_type()
+    |> auto_compaction_command_execution_type?()
+  end
+
+  defp auto_compaction_item_type(payload) when is_map(payload) do
+    params = map_any(payload, [:params, "params"])
+
+    cond do
+      is_map(params) and is_map(map_any(params, [:item, "item"])) ->
+        params
+        |> map_any([:item, "item"])
+        |> map_any([:type, "type"])
+        |> normalize_optional_string()
+
+      is_map(params) and is_map(map_any(params, [:msg, "msg"])) ->
+        msg = map_any(params, [:msg, "msg"])
+        wrapper_payload = if is_map(msg), do: map_any(msg, [:payload, "payload"]), else: nil
+
+        if is_map(wrapper_payload) do
+          normalize_optional_string(map_any(wrapper_payload, [:type, "type"]))
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  defp auto_compaction_command_execution_type?(type) when is_binary(type) do
+    normalized =
+      type
+      |> String.trim()
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]/u, "")
+
+    normalized == "commandexecution"
+  end
+
+  defp auto_compaction_command_execution_type?(_type), do: false
 
   defp auto_compaction_tool_boundary?(%{payload: payload}) when is_map(payload) do
     tool_name =

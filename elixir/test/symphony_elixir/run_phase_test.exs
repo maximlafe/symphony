@@ -169,6 +169,99 @@ defmodule SymphonyElixir.RunPhaseTest do
     assert exec_wait_finished.external_step == nil
   end
 
+  test "item command execution lifecycle sets command context and clears it on completion" do
+    timestamp = DateTime.utc_now()
+
+    snake_case_started =
+      RunPhase.apply_update(base_entry(), %{
+        event: :notification,
+        timestamp: timestamp,
+        payload: %{
+          "method" => "item/started",
+          "params" => %{
+            "item" => %{
+              "type" => "command_execution",
+              "parsedCmd" => "git",
+              "args" => ["status"]
+            }
+          }
+        }
+      })
+
+    assert snake_case_started.run_phase == :editing
+    assert snake_case_started.current_command == "git status"
+
+    camel_case_started =
+      RunPhase.apply_update(base_entry(), %{
+        event: :notification,
+        timestamp: timestamp,
+        payload: %{
+          "method" => "item/started",
+          "params" => %{
+            "item" => %{
+              "type" => "commandExecution",
+              "command" => %{
+                "parsedCmd" => "mix",
+                "args" => ["test", "test/symphony_elixir/run_phase_test.exs"]
+              }
+            }
+          }
+        }
+      })
+
+    assert camel_case_started.run_phase == :targeted_tests
+    assert camel_case_started.current_command == "mix test test/symphony_elixir/run_phase_test.exs"
+
+    completed_entry =
+      RunPhase.apply_update(
+        %{base_entry() | current_command: "git status", run_phase: :editing},
+        %{
+          event: :notification,
+          timestamp: DateTime.add(timestamp, 1, :second),
+          payload: %{
+            "method" => "item/completed",
+            "params" => %{"item" => %{"type" => "command_execution", "status" => "completed"}}
+          }
+        }
+      )
+
+    assert completed_entry.run_phase == :editing
+    assert completed_entry.current_command == nil
+
+    missing_type_started =
+      RunPhase.apply_update(base_entry(), %{
+        event: :notification,
+        timestamp: DateTime.add(timestamp, 2, :second),
+        payload: %{
+          "method" => "item/started",
+          "params" => %{"item" => %{"parsedCmd" => "git", "args" => ["status"]}}
+        }
+      })
+
+    assert missing_type_started.run_phase == :editing
+    assert missing_type_started.current_command == nil
+
+    blank_method =
+      RunPhase.apply_update(base_entry(), %{
+        event: :notification,
+        timestamp: DateTime.add(timestamp, 3, :second),
+        payload: %{"method" => "   ", "params" => %{"item" => %{}}}
+      })
+
+    assert blank_method.run_phase == :editing
+    assert blank_method.current_command == nil
+
+    invalid_method =
+      RunPhase.apply_update(base_entry(), %{
+        event: :notification,
+        timestamp: DateTime.add(timestamp, 4, :second),
+        payload: %{"method" => 123, "params" => %{"item" => %{}}}
+      })
+
+    assert invalid_method.run_phase == :editing
+    assert invalid_method.current_command == nil
+  end
+
   test "snapshot_fields derives heartbeat state and phase fallbacks" do
     now = DateTime.utc_now()
 
