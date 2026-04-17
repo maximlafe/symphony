@@ -1037,7 +1037,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_dispatch_issue(%State{} = state, issue, attempt, trace_id, retry_delay_type, resume_checkpoint) do
     resolved_resume_checkpoint = resolve_resume_checkpoint(issue, resume_checkpoint)
     trace_id = dispatch_trace_id(issue, trace_id)
-    execution_head = capture_execution_head(issue)
+    execution_head = capture_execution_head(issue, retry_delay_type, resolved_resume_checkpoint)
 
     case stale_execution_head_reason(execution_head) do
       nil ->
@@ -4282,11 +4282,14 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | retry_dedupe_keys: Map.put(state.retry_dedupe_keys, issue_id, key)}
   end
 
-  defp capture_execution_head(issue) do
+  defp capture_execution_head(issue, retry_delay_type, resume_checkpoint) do
     workspace = issue_workspace_path(issue)
     runtime_head_sha = resolve_runtime_head_sha(workspace) || "unknown"
     execution_branch = resolve_execution_branch(workspace)
-    expected_head_sha = resolve_expected_head_sha(workspace, execution_branch) || "unknown"
+
+    expected_head_sha =
+      dispatch_expected_head_sha(workspace, execution_branch, retry_delay_type, resume_checkpoint) ||
+        "unknown"
 
     %{
       workspace: workspace,
@@ -4294,6 +4297,18 @@ defmodule SymphonyElixir.Orchestrator do
       expected_head_sha: expected_head_sha,
       execution_branch: execution_branch
     }
+  end
+
+  defp dispatch_expected_head_sha(workspace, execution_branch, :continuation, resume_checkpoint) do
+    if checkpoint_continuation_reason(resume_checkpoint) == "auto_compaction" do
+      checkpoint_head(resume_checkpoint) || resolve_expected_head_sha(workspace, execution_branch)
+    else
+      resolve_expected_head_sha(workspace, execution_branch) || checkpoint_head(resume_checkpoint)
+    end
+  end
+
+  defp dispatch_expected_head_sha(workspace, execution_branch, _retry_delay_type, resume_checkpoint) do
+    resolve_expected_head_sha(workspace, execution_branch) || checkpoint_head(resume_checkpoint)
   end
 
   defp block_stale_workspace_head(

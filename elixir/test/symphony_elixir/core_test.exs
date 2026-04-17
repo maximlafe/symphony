@@ -4424,6 +4424,126 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "auto-compaction continuation does not stale-block when checkpoint head matches runtime head" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-auto-compaction-stale-head-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-auto-compaction-stale-head"
+    issue_identifier = "MT-AUTO-COMPACTION-HEAD"
+    trace_id = "trace-auto-compaction-stale-head"
+    execution_branch = "merge/auto-compaction-01"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: issue_id,
+          identifier: issue_identifier,
+          title: "Allow auto-compaction continuation",
+          description: "Do not stale-block continuation retries from the same checkpoint head",
+          state: "In Progress",
+          url: "https://example.org/issues/#{issue_identifier}",
+          labels: []
+        }
+      ])
+
+      {runtime_head_sha, expected_head_sha} =
+        create_stale_workspace!(workspace_root, issue_identifier, execution_branch)
+
+      assert runtime_head_sha != expected_head_sha
+
+      orchestrator_name = Module.concat(__MODULE__, :AutoCompactionStaleHeadOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      retry_token = make_ref()
+
+      resume_checkpoint = %{
+        "available" => true,
+        "resume_ready" => true,
+        "branch" => execution_branch,
+        "head" => runtime_head_sha,
+        "workpad_ref" => "workpad-ref",
+        "workpad_digest" => "digest",
+        "continuation_reason" => "auto_compaction",
+        "auto_compaction" => %{
+          "continuation_reason" => "auto_compaction",
+          "auto_compaction_signal" => "total_tokens",
+          "auto_compaction_threshold" => 100,
+          "auto_compaction_observed_total" => 150
+        }
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        base_dispatch_state("primary")
+        |> Map.put(:retry_attempts, %{
+          issue_id => %{
+            attempt: 1,
+            timer_ref: nil,
+            retry_token: retry_token,
+            due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+            identifier: issue_identifier,
+            trace_id: trace_id,
+            delay_type: :continuation,
+            continuation_reason: "auto_compaction",
+            resume_checkpoint: resume_checkpoint,
+            error: "retry auto compaction stale workspace head"
+          }
+        })
+      end)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(
+            %{
+              runtime_head_sha: ^runtime_head_sha,
+              expected_head_sha: ^runtime_head_sha
+            },
+            Map.get(state.running, issue_id)
+          )
+        end)
+
+      assert %{
+               ^issue_id => %{
+                 pid: worker_pid,
+                 runtime_head_sha: ^runtime_head_sha,
+                 expected_head_sha: ^runtime_head_sha
+               }
+             } = state.running
+
+      refute_received {:memory_tracker_state_update, ^issue_id, "Blocked"}
+      refute_received {:memory_tracker_comment, ^issue_id, _comment}
+
+      Process.exit(worker_pid, :kill)
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "matching workspace head does not block dispatch" do
     test_root =
       Path.join(
