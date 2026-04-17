@@ -545,6 +545,8 @@ codex:
       codex_home: /root/.codex/.codex-tatonkasperski8844
   minimum_remaining_percent: 5
   monitored_windows_mins: [300, 10080]
+  auto_compaction_max_total_tokens: 200000
+  auto_compaction_max_safe_steps: null
 server:
   host: "0.0.0.0"
 ---
