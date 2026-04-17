@@ -4484,6 +4484,144 @@ defmodule SymphonyElixir.CoreTest do
            } = state.retry_attempts[issue_id]
   end
 
+  test "editing safe boundary triggers hard auto-compaction continuation retry with diagnostics" do
+    issue_id = "issue-auto-compaction-editing"
+    issue = %Issue{id: issue_id, identifier: "LET-515", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+    ref = Process.monitor(worker_pid)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      codex_auto_compaction_max_total_tokens: 100
+    )
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: ref,
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-auto-compaction-editing",
+          session_id: "thread-auto-compaction-editing",
+          run_phase: :editing,
+          current_command: nil,
+          external_step: nil,
+          codex_total_tokens: 150,
+          issue_token_total: 25,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          auto_compaction_safe_steps: 0,
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    update = %{
+      event: :tool_call_completed,
+      payload: %{"params" => %{"tool" => "github_pr_snapshot"}},
+      timestamp: DateTime.utc_now()
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+    assert %{
+             attempt: 1,
+             delay_type: :continuation,
+             continuation_reason: "auto_compaction",
+             auto_compaction_signal: "total_tokens",
+             auto_compaction_threshold: 100,
+             auto_compaction_observed_total: 150,
+             issue_token_total: 175,
+             resume_checkpoint: checkpoint
+           } = updated_state.retry_attempts[issue_id]
+
+    assert checkpoint["auto_compaction"]["continuation_reason"] == "auto_compaction"
+    assert checkpoint["auto_compaction"]["auto_compaction_signal"] == "total_tokens"
+    assert checkpoint["auto_compaction"]["auto_compaction_threshold"] == 100
+    assert checkpoint["auto_compaction"]["auto_compaction_observed_total"] == 150
+    assert checkpoint["token_budget"]["budget_issue_total_tokens"] == 175
+
+    refute Map.has_key?(updated_state.running, issue_id)
+    refute Process.alive?(worker_pid)
+    cancel_retry_timer(updated_state.retry_attempts[issue_id])
+  end
+
+  test "auto-compaction does not trigger on exec_wait boundary outside editing phase" do
+    issue_id = "issue-auto-compaction-exec-wait"
+    issue = %Issue{id: issue_id, identifier: "LET-515", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+    ref = Process.monitor(worker_pid)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      codex_auto_compaction_max_total_tokens: 100
+    )
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: ref,
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-auto-compaction-exec-wait",
+          session_id: "thread-auto-compaction-exec-wait",
+          run_phase: :waiting_external,
+          current_command: "make symphony-live-e2e",
+          external_step: "exec_wait",
+          codex_total_tokens: 150,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          auto_compaction_safe_steps: 0,
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    update = %{
+      event: :tool_call_completed,
+      payload: %{"params" => %{"tool" => "exec_wait"}},
+      timestamp: DateTime.utc_now()
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+    assert %{^issue_id => running_entry} = updated_state.running
+    assert running_entry.auto_compaction_safe_steps == 0
+    assert running_entry.run_phase == :editing
+    assert updated_state.retry_attempts == %{}
+    assert Process.alive?(worker_pid)
+  end
+
   test "manual refresh coalesces repeated requests and ignores superseded ticks" do
     now_ms = System.monotonic_time(:millisecond)
     stale_tick_token = make_ref()
