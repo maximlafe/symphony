@@ -28,6 +28,13 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
         failover_reason: :account_unhealthy,
         failover_from_account_id: "primary",
         failover_to_account_id: "backup",
+        session_reuse_disposition: "fresh",
+        fresh_reason: "dead_session",
+        session_thread_id: "thread-fresh",
+        session_account_id: "backup",
+        session_policy_fingerprint: "policy-fingerprint-1",
+        session_policy_source: "cost_profile+runtime_settings",
+        session_account_transition: "primary->backup",
         retry_failover_decision: %{
           selected_rule: "retry_dedupe_hit",
           selected_action: :stop_with_classified_handoff,
@@ -63,6 +70,7 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
              "failover_from_account_id" => "primary",
              "failover_reason" => "account_unhealthy",
              "failover_to_account_id" => "backup",
+             "fresh_reason" => "dead_session",
              "feedback_digest" => "feedback-1",
              "head_relation" => "mismatch",
              "retry_dedupe_reason" => "new_surface",
@@ -75,6 +83,12 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
              "retry_failover_selected_action" => "stop_with_classified_handoff",
              "retry_failover_selected_rule" => "retry_dedupe_hit",
              "retry_failover_suppressed_rules" => ["budget_exceeded_per_attempt_downshift"],
+             "session_account_id" => "backup",
+             "session_account_transition" => "primary->backup",
+             "session_policy_fingerprint" => "policy-fingerprint-1",
+             "session_policy_source" => "cost_profile+runtime_settings",
+             "session_reuse_disposition" => "fresh",
+             "session_thread_id" => "thread-fresh",
              "validation_guard_name" => "review-ready",
              "validation_guard_reason" => "all required checks green",
              "validation_guard_result" => "passed",
@@ -121,12 +135,13 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
   end
 
   test "checkpoint_payload computes canonical quality states" do
-    assert TelemetrySchema.checkpoint_payload(%{"resume_ready" => true}, "resume_checkpoint") == %{
-             "checkpoint_origin" => "resume_checkpoint",
-             "checkpoint_quality" => "ready",
-             "checkpoint_fallback_reasons" => [],
-             "resume_ready" => true
-           }
+    assert TelemetrySchema.checkpoint_payload(%{"resume_ready" => true}, "resume_checkpoint") ==
+             %{
+               "checkpoint_origin" => "resume_checkpoint",
+               "checkpoint_quality" => "ready",
+               "checkpoint_fallback_reasons" => [],
+               "resume_ready" => true
+             }
 
     assert TelemetrySchema.checkpoint_payload(
              %{"pending_checks" => true, "resume_ready" => false},
@@ -214,7 +229,11 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
     assert TelemetrySchema.put_runtime_payload(%{"issue_id" => "LET-494"}, %{run_phase: "idle"}) ==
              %{"issue_id" => "LET-494"}
 
-    assert TelemetrySchema.put_checkpoint_payload(%{}, %{"resume_ready" => true}, "resume_checkpoint") ==
+    assert TelemetrySchema.put_checkpoint_payload(
+             %{},
+             %{"resume_ready" => true},
+             "resume_checkpoint"
+           ) ==
              %{
                "checkpoint_origin" => "resume_checkpoint",
                "checkpoint_quality" => "ready",

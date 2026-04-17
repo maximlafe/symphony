@@ -110,6 +110,58 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert checkpoint["checkpoint_quality"] == "pending_review"
   end
 
+  test "capture persists continuation session carrier for cross-run thread reuse" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-resume-checkpoint-session-carrier-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+
+    issue = %Issue{
+      id: "issue-resume-session",
+      identifier: "LET-473-SESSION",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, issue.identifier)
+
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nContinuation state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-session-carrier")
+    File.write!(Path.join(workspace, "tracked.txt"), "tracked\n")
+    init_git_repo!(workspace)
+
+    checkpoint =
+      ResumeCheckpoint.capture(
+        issue,
+        %{
+          session_thread_id: "thread-persisted",
+          session_account_id: "primary",
+          session_policy_fingerprint: "policy-fingerprint-1",
+          session_policy_source: "cost_profile+runtime_settings",
+          session_reuse_disposition: "reused"
+        },
+        workspace_root: workspace_root
+      )
+
+    assert checkpoint["continuation_session"] == %{
+             "account_id" => "primary",
+             "disposition" => "reused",
+             "policy_fingerprint" => "policy-fingerprint-1",
+             "policy_source" => "cost_profile+runtime_settings",
+             "thread_id" => "thread-persisted"
+           }
+
+    loaded = ResumeCheckpoint.load(issue, workspace_root: workspace_root)
+    assert loaded["continuation_session"]["thread_id"] == "thread-persisted"
+    assert loaded["session_account_id"] == "primary"
+    assert loaded["session_policy_fingerprint"] == "policy-fingerprint-1"
+  end
+
   test "capture stores active validation snapshot while exec_wait is in flight" do
     test_root =
       Path.join(
@@ -118,7 +170,13 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
       )
 
     workspace_root = Path.join(test_root, "workspaces")
-    issue = %Issue{id: "issue-resume-active-validation", identifier: "LET-461-ACTIVE", state: "In Progress"}
+
+    issue = %Issue{
+      id: "issue-resume-active-validation",
+      identifier: "LET-461-ACTIVE",
+      state: "In Progress"
+    }
+
     workspace = Path.join(workspace_root, issue.identifier)
 
     on_exit(fn -> File.rm_rf(test_root) end)
@@ -154,7 +212,13 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
       )
 
     workspace_root = Path.join(test_root, "workspaces")
-    issue = %Issue{id: "issue-resume-active-variants", identifier: "LET-461-ACTIVE-VARIANTS", state: "In Progress"}
+
+    issue = %Issue{
+      id: "issue-resume-active-variants",
+      identifier: "LET-461-ACTIVE-VARIANTS",
+      state: "In Progress"
+    }
+
     workspace = Path.join(workspace_root, issue.identifier)
 
     on_exit(fn -> File.rm_rf(test_root) end)
@@ -297,7 +361,13 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
       )
 
     workspace_root = Path.join(test_root, "workspaces")
-    issue = %Issue{id: "issue-resume-workspace-diff", identifier: "LET-461-DIFF", state: "In Progress"}
+
+    issue = %Issue{
+      id: "issue-resume-workspace-diff",
+      identifier: "LET-461-DIFF",
+      state: "In Progress"
+    }
+
     workspace = Path.join(workspace_root, issue.identifier)
 
     on_exit(fn -> File.rm_rf(test_root) end)
@@ -334,7 +404,11 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
 
     assert checkpoint["available"] == false
     assert checkpoint["resume_ready"] == false
-    assert Enum.any?(checkpoint["fallback_reasons"], &String.contains?(&1, "workspace is unavailable"))
+
+    assert Enum.any?(
+             checkpoint["fallback_reasons"],
+             &String.contains?(&1, "workspace is unavailable")
+           )
   end
 
   test "load falls back when checkpoint file is missing, unreadable, or invalid" do
@@ -397,7 +471,11 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     File.write!(Path.join(workspace, ".symphony"), "not-a-directory")
     checkpoint = ResumeCheckpoint.capture(issue, %{}, workspace_root: workspace_root)
     assert checkpoint["resume_ready"] == false
-    assert Enum.any?(checkpoint["fallback_reasons"], &String.contains?(&1, "directory creation failed"))
+
+    assert Enum.any?(
+             checkpoint["fallback_reasons"],
+             &String.contains?(&1, "directory creation failed")
+           )
 
     File.rm!(Path.join(workspace, ".symphony"))
     File.mkdir_p!(Path.join(workspace, ".symphony/resume/checkpoint.json"))
@@ -538,7 +616,10 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     {_, 0} = System.cmd("git", ["-C", workspace, "init", "-b", "main"])
     {_, 0} = System.cmd("git", ["-C", workspace, "config", "user.name", "Resume Checkpoint"])
     {_, 0} = System.cmd("git", ["-C", workspace, "config", "user.email", "resume@example.com"])
-    {_, 0} = System.cmd("git", ["-C", workspace, "add", "tracked.txt", "workpad.md", ".workpad-id"])
+
+    {_, 0} =
+      System.cmd("git", ["-C", workspace, "add", "tracked.txt", "workpad.md", ".workpad-id"])
+
     {_, 0} = System.cmd("git", ["-C", workspace, "commit", "-m", "initial"])
   end
 end

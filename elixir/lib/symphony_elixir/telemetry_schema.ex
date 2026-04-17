@@ -3,7 +3,13 @@ defmodule SymphonyElixir.TelemetrySchema do
   Canonical flat-key telemetry contract for runtime decision surfaces.
   """
 
-  @cost_fields [:cost_profile_key, :cost_profile_reason, :cost_stage, :cost_signals, :command_source]
+  @cost_fields [
+    :cost_profile_key,
+    :cost_profile_reason,
+    :cost_stage,
+    :cost_signals,
+    :command_source
+  ]
   @budget_fields [
     :budget_decision,
     :budget_reason,
@@ -34,6 +40,15 @@ defmodule SymphonyElixir.TelemetrySchema do
     :failover_from_account_id,
     :failover_to_account_id
   ]
+  @session_reuse_fields [
+    :session_reuse_disposition,
+    :fresh_reason,
+    :session_thread_id,
+    :session_account_id,
+    :session_policy_fingerprint,
+    :session_policy_source,
+    :session_account_transition
+  ]
   @wait_fields [:wait_mode, :wait_reason, :wait_source, :wait_tool]
   @checkpoint_fields [
     :checkpoint_quality,
@@ -53,6 +68,7 @@ defmodule SymphonyElixir.TelemetrySchema do
                   @retry_dedupe_fields ++
                   @retry_failover_fields ++
                   @failover_fields ++
+                  @session_reuse_fields ++
                   @wait_fields ++
                   @checkpoint_fields ++
                   @validation_guard_fields ++
@@ -83,6 +99,7 @@ defmodule SymphonyElixir.TelemetrySchema do
     |> Map.merge(retry_dedupe_fields(source))
     |> Map.merge(retry_failover_fields(source))
     |> Map.merge(failover_fields(source))
+    |> Map.merge(session_reuse_fields(source))
     |> Map.merge(cost_fields(source))
   end
 
@@ -240,6 +257,19 @@ defmodule SymphonyElixir.TelemetrySchema do
     |> reject_nil_values()
   end
 
+  defp session_reuse_fields(source) do
+    %{
+      "session_reuse_disposition" => normalize_string(fetch(source, :session_reuse_disposition)),
+      "fresh_reason" => normalize_string(fetch(source, :fresh_reason)),
+      "session_thread_id" => normalize_string(fetch(source, :session_thread_id) || fetch(source, :thread_id)),
+      "session_account_id" => normalize_string(fetch(source, :session_account_id) || fetch(source, :account_id)),
+      "session_policy_fingerprint" => normalize_string(fetch(source, :session_policy_fingerprint)),
+      "session_policy_source" => normalize_string(fetch(source, :session_policy_source)),
+      "session_account_transition" => normalize_string(fetch(source, :session_account_transition))
+    }
+    |> reject_nil_values()
+  end
+
   defp wait_fields(source) do
     run_phase = normalize_string(fetch(source, :run_phase))
     current_command = normalize_string(fetch(source, :current_command))
@@ -336,8 +366,9 @@ defmodule SymphonyElixir.TelemetrySchema do
   defp wait_mode_for_phase("waiting external"), do: "external"
   defp wait_mode_for_phase(_run_phase), do: nil
 
-  defp wait_source(external_step, _current_command, _wait_mode) when external_step not in [nil, ""],
-    do: "external_step"
+  defp wait_source(external_step, _current_command, _wait_mode)
+       when external_step not in [nil, ""],
+       do: "external_step"
 
   defp wait_source(_external_step, current_command, wait_mode)
        when current_command not in [nil, ""] and wait_mode != nil,

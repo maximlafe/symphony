@@ -6,7 +6,16 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
   import Bitwise
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, ErrorClassifier, Linear.Issue, PromptBuilder, Tracker, Workspace}
+
+  alias SymphonyElixir.{
+    Config,
+    ErrorClassifier,
+    Linear.Issue,
+    PromptBuilder,
+    SessionReuse,
+    Tracker,
+    Workspace
+  }
 
   defmodule RunError do
     @moduledoc false
@@ -29,7 +38,8 @@ defmodule SymphonyElixir.AgentRunner do
       case Workspace.create_for_issue(issue_with_trace) do
         {:ok, workspace} ->
           try do
-            with :ok <- Workspace.run_before_run_hook(workspace, issue_with_trace, trace_id: trace_id),
+            with :ok <-
+                   Workspace.run_before_run_hook(workspace, issue_with_trace, trace_id: trace_id),
                  :ok <- run_codex_turns(workspace, issue_with_trace, codex_update_recipient, opts) do
               :ok
             else
@@ -68,25 +78,68 @@ defmodule SymphonyElixir.AgentRunner do
   defp send_codex_update(_recipient, _issue, _message, _trace_id), do: :ok
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts) do
-    max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
-    issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
     codex_account = Keyword.get(opts, :codex_account)
     trace_id = trace_id(issue, opts)
 
     session_opts =
       codex_launch_options(codex_account)
       |> Keyword.put(:issue, issue)
+      |> Keyword.put(:resume_checkpoint, Keyword.get(opts, :resume_checkpoint))
       |> maybe_put_cost_profile_key_opt(Keyword.get(opts, :cost_profile_key))
       |> maybe_put_trace_id_opt(trace_id)
 
+    launch_context =
+      SessionReuse.build_launch_context(
+        issue,
+        workspace,
+        account_id: codex_account_id(codex_account),
+        cost_profile_key: Keyword.get(opts, :cost_profile_key),
+        resume_checkpoint: Keyword.get(opts, :resume_checkpoint)
+      )
+
+    session_opts = Keyword.put(session_opts, :session_reuse_context, launch_context)
+
+    case start_and_run_session(
+           workspace,
+           issue,
+           codex_update_recipient,
+           opts,
+           session_opts,
+           trace_id
+         ) do
+      {:error, {:dead_session, _reason}} when launch_context.disposition == "reused" ->
+        fresh_launch_context = SessionReuse.dead_session_fallback(launch_context)
+
+        start_and_run_session(
+          workspace,
+          issue,
+          codex_update_recipient,
+          opts,
+          Keyword.put(session_opts, :session_reuse_context, fresh_launch_context),
+          trace_id
+        )
+
+      result ->
+        result
+    end
+  end
+
+  defp start_and_run_session(
+         workspace,
+         issue,
+         codex_update_recipient,
+         opts,
+         session_opts,
+         trace_id
+       ) do
     with {:ok, session} <- AppServer.start_session(workspace, session_opts) do
       session_context = %{
         app_session: session,
         workspace: workspace,
         codex_update_recipient: codex_update_recipient,
         opts: opts,
-        issue_state_fetcher: issue_state_fetcher,
-        max_turns: max_turns,
+        issue_state_fetcher: Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1),
+        max_turns: Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns),
         trace_id: trace_id
       }
 
@@ -100,7 +153,9 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp do_run_codex_turns(session_context, issue, turn_number, consecutive_empty) do
     turn_start_ms = System.monotonic_time(:millisecond)
-    prompt = build_turn_prompt(issue, session_context.opts, turn_number, session_context.max_turns)
+
+    prompt =
+      build_turn_prompt(issue, session_context.opts, turn_number, session_context.max_turns)
 
     with {:ok, turn_session} <-
            AppServer.run_turn(
@@ -172,7 +227,13 @@ defmodule SymphonyElixir.AgentRunner do
     :ok
   end
 
-  defp maybe_continue_turn(session_context, refreshed_issue, turn_number, consecutive_empty, empty_turn?) do
+  defp maybe_continue_turn(
+         session_context,
+         refreshed_issue,
+         turn_number,
+         consecutive_empty,
+         empty_turn?
+       ) do
     next_consecutive_empty = next_consecutive_empty_turns(consecutive_empty, empty_turn?)
 
     if next_consecutive_empty >= @max_consecutive_empty_turns do
@@ -192,14 +253,20 @@ defmodule SymphonyElixir.AgentRunner do
 
       Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{session_context.max_turns}")
 
-      do_run_codex_turns(session_context, refreshed_issue, turn_number + 1, next_consecutive_empty)
+      do_run_codex_turns(
+        session_context,
+        refreshed_issue,
+        turn_number + 1,
+        next_consecutive_empty
+      )
     end
   end
 
   defp next_consecutive_empty_turns(consecutive_empty, true), do: consecutive_empty + 1
   defp next_consecutive_empty_turns(_consecutive_empty, false), do: 0
 
-  defp maybe_backoff_empty_turn(_issue, _turn_number, _max_turns, false, _consecutive_empty), do: :ok
+  defp maybe_backoff_empty_turn(_issue, _turn_number, _max_turns, false, _consecutive_empty),
+    do: :ok
 
   defp maybe_backoff_empty_turn(issue, turn_number, max_turns, true, consecutive_empty) do
     backoff_ms = @empty_turn_backoff_base_ms * (1 <<< min(consecutive_empty - 1, 4))
@@ -223,7 +290,8 @@ defmodule SymphonyElixir.AgentRunner do
     """
   end
 
-  defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
+  defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher)
+       when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
         if active_issue_state?(refreshed_issue.state) do
@@ -331,8 +399,14 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp codex_launch_options(_codex_account), do: []
 
-  defp maybe_put_cost_profile_key_opt(opts, profile_key) when is_binary(profile_key) and profile_key != "",
-    do: Keyword.put(opts, :cost_profile_key, profile_key)
+  defp maybe_put_cost_profile_key_opt(opts, profile_key)
+       when is_binary(profile_key) and profile_key != "",
+       do: Keyword.put(opts, :cost_profile_key, profile_key)
 
   defp maybe_put_cost_profile_key_opt(opts, _profile_key), do: opts
+
+  defp codex_account_id(%{id: account_id}) when is_binary(account_id) and account_id != "",
+    do: account_id
+
+  defp codex_account_id(_codex_account), do: nil
 end

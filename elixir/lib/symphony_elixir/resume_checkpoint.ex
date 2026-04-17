@@ -3,7 +3,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
   Builds and validates a compact retry/handoff resume checkpoint for unattended runs.
   """
 
-  alias SymphonyElixir.{Config, TelemetrySchema}
+  alias SymphonyElixir.{Config, SessionReuse, TelemetrySchema}
 
   @manifest_rel_path ".symphony/resume/checkpoint.json"
   @workpad_path "workpad.md"
@@ -41,9 +41,16 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       when (is_map(issue) or is_nil(issue)) and is_map(running_entry) and is_list(opts) do
     checkpoint =
       base_checkpoint(issue)
-      |> Map.put("captured_at", DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601())
+      |> Map.put(
+        "captured_at",
+        DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+      )
       |> Map.put("last_validation_status", validation_status_from_running_entry(running_entry))
-      |> Map.put("active_validation_snapshot", active_validation_snapshot_from_context(running_entry))
+      |> Map.put(
+        "active_validation_snapshot",
+        active_validation_snapshot_from_context(running_entry)
+      )
+      |> Map.merge(SessionReuse.checkpoint_payload(running_entry))
 
     with workspace when is_binary(workspace) <- workspace_for_issue(issue, opts),
          true <- File.dir?(workspace) do
@@ -103,7 +110,8 @@ defmodule SymphonyElixir.ResumeCheckpoint do
 
   def for_prompt(_checkpoint), do: evaluate_readiness(base_checkpoint(nil))
 
-  defp persist_checkpoint(%{"manifest_path" => path} = checkpoint) when is_binary(path) and path != "" do
+  defp persist_checkpoint(%{"manifest_path" => path} = checkpoint)
+       when is_binary(path) and path != "" do
     checkpoint
     |> ensure_checkpoint_dir(path)
     |> write_checkpoint_file(path)
@@ -116,7 +124,10 @@ defmodule SymphonyElixir.ResumeCheckpoint do
         checkpoint
 
       {:error, reason} ->
-        add_fallback_reason(checkpoint, "resume checkpoint directory creation failed: #{inspect(reason)}")
+        add_fallback_reason(
+          checkpoint,
+          "resume checkpoint directory creation failed: #{inspect(reason)}"
+        )
     end
   end
 
@@ -135,13 +146,27 @@ defmodule SymphonyElixir.ResumeCheckpoint do
 
     checkpoint
     |> then(fn map -> Map.merge(base, map) end)
+    |> Map.put("continuation_session", SessionReuse.checkpoint_carrier(checkpoint))
     |> Map.update("changed_files", [], &normalize_changed_files/1)
     |> Map.update("fallback_reasons", [], &normalize_reasons/1)
-    |> Map.update("last_validation_status", base["last_validation_status"], &normalize_validation_status/1)
-    |> Map.put("active_validation_snapshot", normalize_active_validation_snapshot(Map.get(checkpoint, "active_validation_snapshot")))
+    |> Map.update(
+      "last_validation_status",
+      base["last_validation_status"],
+      &normalize_validation_status/1
+    )
+    |> Map.put(
+      "active_validation_snapshot",
+      normalize_active_validation_snapshot(Map.get(checkpoint, "active_validation_snapshot"))
+    )
     |> Map.put("open_pr", normalize_open_pr(Map.get(checkpoint, "open_pr")))
-    |> Map.put("feedback_digest", normalize_optional_string(Map.get(checkpoint, "feedback_digest")))
-    |> Map.put("workspace_diff_fingerprint", normalize_optional_string(Map.get(checkpoint, "workspace_diff_fingerprint")))
+    |> Map.put(
+      "feedback_digest",
+      normalize_optional_string(Map.get(checkpoint, "feedback_digest"))
+    )
+    |> Map.put(
+      "workspace_diff_fingerprint",
+      normalize_optional_string(Map.get(checkpoint, "workspace_diff_fingerprint"))
+    )
     |> normalize_boolean("pending_checks")
     |> normalize_boolean("open_feedback")
   end
@@ -156,7 +181,11 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     checkpoint
     |> maybe_add_mismatch_reason("branch", Map.get(checkpoint, "branch"), current_branch)
     |> maybe_add_mismatch_reason("head", Map.get(checkpoint, "head"), current_head)
-    |> maybe_add_mismatch_reason("workpad_digest", Map.get(checkpoint, "workpad_digest"), current_workpad_digest)
+    |> maybe_add_mismatch_reason(
+      "workpad_digest",
+      Map.get(checkpoint, "workpad_digest"),
+      current_workpad_digest
+    )
   end
 
   defp evaluate_readiness(%{} = checkpoint) do
@@ -249,7 +278,10 @@ defmodule SymphonyElixir.ResumeCheckpoint do
 
     checkpoint
     |> Map.put("open_pr", open_pr_from_context(snapshot, resume_checkpoint))
-    |> Map.put("pending_checks", pending_checks_from_context(snapshot, ci_wait_result, resume_checkpoint))
+    |> Map.put(
+      "pending_checks",
+      pending_checks_from_context(snapshot, ci_wait_result, resume_checkpoint)
+    )
     |> Map.put("open_feedback", open_feedback_from_context(snapshot, resume_checkpoint))
     |> Map.put("feedback_digest", feedback_digest_from_context(snapshot, resume_checkpoint))
   end
@@ -291,7 +323,8 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     if is_boolean(value), do: value
   end
 
-  defp open_feedback_from_context(%{} = snapshot, _resume_checkpoint), do: open_feedback_from_snapshot(snapshot)
+  defp open_feedback_from_context(%{} = snapshot, _resume_checkpoint),
+    do: open_feedback_from_snapshot(snapshot)
 
   defp open_feedback_from_context(_snapshot, %{} = resume_checkpoint) do
     case Map.get(resume_checkpoint, "open_feedback") do
@@ -311,7 +344,9 @@ defmodule SymphonyElixir.ResumeCheckpoint do
   defp active_validation_snapshot_from_context(%{} = running_entry) do
     current_command = normalize_optional_string(Map.get(running_entry, :current_command))
     external_step = normalize_optional_string(Map.get(running_entry, :external_step))
-    running_snapshot = normalize_active_validation_snapshot(Map.get(running_entry, :active_validation_snapshot))
+
+    running_snapshot =
+      normalize_active_validation_snapshot(Map.get(running_entry, :active_validation_snapshot))
 
     cond do
       is_map(running_snapshot) ->
@@ -403,7 +438,10 @@ defmodule SymphonyElixir.ResumeCheckpoint do
   defp normalize_active_validation_snapshot(%{} = snapshot) do
     command = normalize_optional_string(map_get(snapshot, "command"))
     external_step = normalize_optional_string(map_get(snapshot, "external_step"))
-    validation_bundle_fingerprint = normalize_optional_string(map_get(snapshot, "validation_bundle_fingerprint"))
+
+    validation_bundle_fingerprint =
+      normalize_optional_string(map_get(snapshot, "validation_bundle_fingerprint"))
+
     wait_state = normalize_optional_string(map_get(snapshot, "wait_state"))
     result_ref = normalize_optional_string(map_get(snapshot, "result_ref"))
 
@@ -431,7 +469,8 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     |> Map.put("checked_at", map_get(status, "checked_at"))
   end
 
-  defp normalize_validation_status(_status), do: %{"result" => "unknown", "summary" => nil, "checked_at" => nil}
+  defp normalize_validation_status(_status),
+    do: %{"result" => "unknown", "summary" => nil, "checked_at" => nil}
 
   defp validation_status_from_running_entry(running_entry) do
     result = Map.get(running_entry, :verification_result) || "unknown"

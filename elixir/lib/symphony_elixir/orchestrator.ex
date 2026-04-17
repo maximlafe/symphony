@@ -380,6 +380,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, :missing_linear_polling_scope} ->
         Logger.error("Linear polling scope missing in WORKFLOW.md (set tracker.project_slug or tracker.team_key)")
+
         state
 
       {:error, :missing_linear_project_slug} ->
@@ -623,8 +624,14 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp restart_stalled_issue(state, _issue_id, %{worker_kind: :controller_finalizer}, _now, _timeout_ms),
-    do: state
+  defp restart_stalled_issue(
+         state,
+         _issue_id,
+         %{worker_kind: :controller_finalizer},
+         _now,
+         _timeout_ms
+       ),
+       do: state
 
   defp restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
     elapsed_ms = stall_elapsed_ms(running_entry, now)
@@ -870,7 +877,14 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, trace_id, retry_delay_type, resume_checkpoint) do
+  defp do_dispatch_issue(
+         %State{} = state,
+         issue,
+         attempt,
+         trace_id,
+         retry_delay_type,
+         resume_checkpoint
+       ) do
     resolved_resume_checkpoint = resolve_resume_checkpoint(issue, resume_checkpoint)
     trace_id = dispatch_trace_id(issue, trace_id)
     execution_head = capture_execution_head(issue)
@@ -1178,7 +1192,9 @@ defmodule SymphonyElixir.Orchestrator do
        ) do
     continuation_attempt = next_continuation_attempt(running_entry)
     resume_checkpoint = capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
-    budget_context = budget_context_from_running(running_entry, continuation_attempt, :continuation)
+
+    budget_context =
+      budget_context_from_running(running_entry, continuation_attempt, :continuation)
 
     case BudgetGuardrails.decide(budget_context) do
       {:allow, budget_totals} ->
@@ -1207,7 +1223,15 @@ defmodule SymphonyElixir.Orchestrator do
       {:downshift, budget_decision} ->
         decision = retry_failover_budget_decision({:downshift, budget_decision})
 
-        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, budget_decision)
+        log_budget_decision(
+          issue_id,
+          identifier,
+          session_id,
+          trace_id,
+          :downshift,
+          budget_decision
+        )
+
         log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
 
         state
@@ -1271,7 +1295,13 @@ defmodule SymphonyElixir.Orchestrator do
     )
 
     resume_checkpoint = capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
-    budget_context = budget_context_from_running(running_entry, failure_attempt, Map.get(running_entry, :retry_delay_type))
+
+    budget_context =
+      budget_context_from_running(
+        running_entry,
+        failure_attempt,
+        Map.get(running_entry, :retry_delay_type)
+      )
 
     case BudgetGuardrails.decide(budget_context) do
       {:allow, budget_totals} ->
@@ -1290,13 +1320,26 @@ defmodule SymphonyElixir.Orchestrator do
             resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_totals),
             issue_token_total: budget_totals.budget_issue_total_tokens
           }
-          |> Map.merge(retry_execution_metadata(running_entry, put_budget_checkpoint(resume_checkpoint, budget_totals)))
+          |> Map.merge(
+            retry_execution_metadata(
+              running_entry,
+              put_budget_checkpoint(resume_checkpoint, budget_totals)
+            )
+          )
         )
 
       {:downshift, budget_decision} ->
         decision = retry_failover_budget_decision({:downshift, budget_decision})
 
-        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, budget_decision)
+        log_budget_decision(
+          issue_id,
+          identifier,
+          session_id,
+          trace_id,
+          :downshift,
+          budget_decision
+        )
+
         log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
 
         schedule_issue_retry(
@@ -1457,7 +1500,8 @@ defmodule SymphonyElixir.Orchestrator do
     )
   end
 
-  defp maybe_store_finalizer_checkpoint(state, _issue_id, checkpoint) when not is_map(checkpoint), do: state
+  defp maybe_store_finalizer_checkpoint(state, _issue_id, checkpoint) when not is_map(checkpoint),
+    do: state
 
   defp maybe_store_finalizer_checkpoint(state, issue_id, checkpoint) do
     if Map.has_key?(state.retry_attempts, issue_id) do
@@ -1694,8 +1738,11 @@ defmodule SymphonyElixir.Orchestrator do
            replacement_account_id
          ) do
       {:preempt, failover_reason} ->
-        resume_checkpoint = capture_resume_checkpoint(Map.get(updated_running_entry, :issue), updated_running_entry)
-        health_reason = codex_account_health_reason(state, tracked_account_id) || "account became unhealthy"
+        resume_checkpoint =
+          capture_resume_checkpoint(Map.get(updated_running_entry, :issue), updated_running_entry)
+
+        health_reason =
+          codex_account_health_reason(state, tracked_account_id) || "account became unhealthy"
 
         decision =
           RetryFailoverDecision.decide(retry_failover_account_unhealthy_signals(health_reason, resume_checkpoint))
@@ -1766,7 +1813,8 @@ defmodule SymphonyElixir.Orchestrator do
          false,
          replacement_account_id
        )
-       when is_map(running_entry) and is_binary(tracked_account_id) and is_binary(replacement_account_id) do
+       when is_map(running_entry) and is_binary(tracked_account_id) and
+              is_binary(replacement_account_id) do
     cond do
       Map.get(running_entry, :codex_account_id) != tracked_account_id ->
         {:keep_running, :account_mismatch}
@@ -1785,13 +1833,21 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp running_failover_decision(_state, _tracked_account_id, _running_entry, _account_health_after, _replacement_account_id),
-    do: {:keep_running, :account_healthy_or_no_replacement}
+  defp running_failover_decision(
+         _state,
+         _tracked_account_id,
+         _running_entry,
+         _account_health_after,
+         _replacement_account_id
+       ),
+       do: {:keep_running, :account_healthy_or_no_replacement}
 
   defp unsafe_failover_account_state?(%State{} = state, account_id) when is_binary(account_id) do
     account = Map.get(state.codex_accounts, account_id, %{})
     runtime_state = Map.get(account, :runtime_state)
-    health_reason = Map.get(account, :health_reason) || Map.get(account, :runtime_health_reason) || ""
+
+    health_reason =
+      Map.get(account, :health_reason) || Map.get(account, :runtime_health_reason) || ""
 
     runtime_state == :broken or
       (is_binary(health_reason) and String.contains?(String.downcase(health_reason), "auth"))
@@ -1825,7 +1881,14 @@ defmodule SymphonyElixir.Orchestrator do
   defp safe_phase_signal(running_entry) do
     phase = Map.get(running_entry, :run_phase)
 
-    if phase in [:targeted_tests, :verification, :runtime_proof, :full_validate, :waiting_ci, :publishing_pr] do
+    if phase in [
+         :targeted_tests,
+         :verification,
+         :runtime_proof,
+         :full_validate,
+         :waiting_ci,
+         :publishing_pr
+       ] do
       "run_phase:#{RunPhase.phase_label(phase)}"
     end
   end
@@ -1834,7 +1897,10 @@ defmodule SymphonyElixir.Orchestrator do
     with "exec_wait" <- normalize_optional_string(Map.get(running_entry, :external_step)),
          validation_bundle_fingerprint
          when is_binary(validation_bundle_fingerprint) and validation_bundle_fingerprint != "" <-
-           retry_validation_bundle_fingerprint(running_entry, Map.get(running_entry, :resume_checkpoint)) do
+           retry_validation_bundle_fingerprint(
+             running_entry,
+             Map.get(running_entry, :resume_checkpoint)
+           ) do
       "active_validation_snapshot:#{validation_bundle_fingerprint}"
     end
   end
@@ -1925,7 +1991,9 @@ defmodule SymphonyElixir.Orchestrator do
     identifier = Map.get(running_entry, :identifier, issue_id)
     trace_id = Map.get(running_entry, :trace_id)
     session_id = running_entry_session_id(running_entry)
-    health_reason = codex_account_health_reason(state, from_account_id) || "account became unhealthy"
+
+    health_reason =
+      codex_account_health_reason(state, from_account_id) || "account became unhealthy"
 
     decision = %{
       disposition: :drain,
@@ -1947,7 +2015,12 @@ defmodule SymphonyElixir.Orchestrator do
     Map.put(running_entry, :failover_drain_decision, decision)
   end
 
-  defp preempt_running_issue_for_failover(%State{} = state, issue_id, running_entry, failover_context)
+  defp preempt_running_issue_for_failover(
+         %State{} = state,
+         issue_id,
+         running_entry,
+         failover_context
+       )
        when is_map(failover_context) do
     identifier = Map.get(running_entry, :identifier, issue_id)
     trace_id = Map.get(running_entry, :trace_id)
@@ -2025,7 +2098,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp idle_housekeeping_due?(%State{last_housekeeping_at_ms: last_housekeeping_at_ms})
        when is_integer(last_housekeeping_at_ms) do
-    System.monotonic_time(:millisecond) - last_housekeeping_at_ms >= @idle_housekeeping_interval_ms
+    System.monotonic_time(:millisecond) - last_housekeeping_at_ms >=
+      @idle_housekeeping_interval_ms
   end
 
   defp idle_housekeeping_due?(_state), do: true
@@ -2069,7 +2143,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp idle_codex_account_probe_due?(%State{last_codex_account_probe_at_ms: last_probe_at_ms})
        when is_integer(last_probe_at_ms) do
-    System.monotonic_time(:millisecond) - last_probe_at_ms >= @idle_codex_account_probe_interval_ms
+    System.monotonic_time(:millisecond) - last_probe_at_ms >=
+      @idle_codex_account_probe_interval_ms
   end
 
   defp idle_codex_account_probe_due?(_state), do: true
@@ -2443,8 +2518,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp terminal_cleanup_issue_identifier(%{identifier: identifier}) when is_binary(identifier),
     do: identifier
 
-  defp terminal_cleanup_issue_identifier(%{"identifier" => identifier}) when is_binary(identifier),
-    do: identifier
+  defp terminal_cleanup_issue_identifier(%{"identifier" => identifier})
+       when is_binary(identifier),
+       do: identifier
 
   defp terminal_cleanup_issue_identifier(_issue), do: nil
 
@@ -2670,7 +2746,15 @@ defmodule SymphonyElixir.Orchestrator do
         trace_id = running_entry_trace_id(running_entry)
         decision = retry_failover_budget_decision({:downshift, budget_decision})
 
-        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, budget_decision)
+        log_budget_decision(
+          issue_id,
+          identifier,
+          session_id,
+          trace_id,
+          :downshift,
+          budget_decision
+        )
+
         log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
 
         checkpoint =
@@ -2727,7 +2811,8 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp maybe_enforce_running_budget(state, _issue_id, _running_entry, _source), do: {:keep_running, state}
+  defp maybe_enforce_running_budget(state, _issue_id, _running_entry, _source),
+    do: {:keep_running, state}
 
   defp running_budget_attempt(%{retry_delay_type: :continuation} = running_entry),
     do: next_continuation_attempt(running_entry)
@@ -2737,7 +2822,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp running_budget_delay_type(%{retry_delay_type: delay_type}, _source), do: delay_type
   defp running_budget_delay_type(_running_entry, :token_update), do: nil
 
-  defp budget_context_from_running(running_entry, attempt, delay_type) when is_map(running_entry) do
+  defp budget_context_from_running(running_entry, attempt, delay_type)
+       when is_map(running_entry) do
     %{
       issue: Map.get(running_entry, :issue),
       attempt: attempt,
@@ -2852,7 +2938,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_failover_budget_scope(%{budget_reason: :max_total_tokens_exceeded}), do: :cumulative
-  defp retry_failover_budget_scope(%{budget_reason: :max_tokens_per_attempt_exceeded}), do: :per_attempt
+
+  defp retry_failover_budget_scope(%{budget_reason: :max_tokens_per_attempt_exceeded}),
+    do: :per_attempt
 
   defp retry_failover_metadata(%RetryFailoverDecision{} = decision) do
     %{
@@ -2861,7 +2949,13 @@ defmodule SymphonyElixir.Orchestrator do
     |> Map.merge(decision.retry_metadata)
   end
 
-  defp log_retry_failover_decision(issue_id, identifier, session_id, trace_id, %RetryFailoverDecision{} = decision) do
+  defp log_retry_failover_decision(
+         issue_id,
+         identifier,
+         session_id,
+         trace_id,
+         %RetryFailoverDecision{} = decision
+       ) do
     metadata =
       issue_log_metadata(issue_id, identifier, session_id, trace_id)
       |> Enum.into(%{})
@@ -2934,9 +3028,18 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp escalate_issue_for_budget_handoff(state, issue, budget_decision, trace_id, retry_failover_decision) do
+  defp escalate_issue_for_budget_handoff(
+         state,
+         issue,
+         budget_decision,
+         trace_id,
+         retry_failover_decision
+       ) do
     issue_id = Map.get(budget_decision, :issue_id) || Map.get(issue || %{}, :id)
-    identifier = Map.get(budget_decision, :issue_identifier) || Map.get(issue || %{}, :identifier) || issue_id
+
+    identifier =
+      Map.get(budget_decision, :issue_identifier) || Map.get(issue || %{}, :identifier) ||
+        issue_id
 
     if is_binary(issue_id) do
       schedule_issue_retry(
@@ -2957,10 +3060,17 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp budget_retry_attempt(%{attempt: attempt}) when is_integer(attempt) and attempt > 0, do: attempt
+  defp budget_retry_attempt(%{attempt: attempt}) when is_integer(attempt) and attempt > 0,
+    do: attempt
+
   defp budget_retry_attempt(_decision), do: 1
 
-  defp budget_handoff_comment_body(%Issue{} = issue, budget_decision, trace_id, retry_failover_decision) do
+  defp budget_handoff_comment_body(
+         %Issue{} = issue,
+         budget_decision,
+         trace_id,
+         retry_failover_decision
+       ) do
     decision_comment_body(
       retry_failover_decision,
       issue.identifier || issue.id,
@@ -3022,7 +3132,9 @@ defmodule SymphonyElixir.Orchestrator do
           checkpoint_type: "human-action",
           risk_level: "medium",
           log_fields: %{
-            error_signature: metadata[:error_signature] || normalize_error_signature(metadata[:error]) || "unknown",
+            error_signature:
+              metadata[:error_signature] || normalize_error_signature(metadata[:error]) ||
+                "unknown",
             failure_class: metadata[:failure_class] || "unknown",
             runtime_head_sha: metadata[:runtime_head_sha] || "unknown",
             feedback_digest: metadata[:feedback_digest] || "unknown",
@@ -3268,7 +3380,12 @@ defmodule SymphonyElixir.Orchestrator do
     """
   end
 
-  defp decision_comment_body(%RetryFailoverDecision{} = decision, identifier, trace_id, extra_fields) do
+  defp decision_comment_body(
+         %RetryFailoverDecision{} = decision,
+         identifier,
+         trace_id,
+         extra_fields
+       ) do
     suppressed_rules =
       case RetryFailoverDecision.suppressed_rule_labels(decision) do
         [] -> "[]"
@@ -3480,10 +3597,16 @@ defmodule SymphonyElixir.Orchestrator do
   defp retry_execution_metadata(source, resume_checkpoint)
        when is_map(source) and (is_map(resume_checkpoint) or is_nil(resume_checkpoint)) do
     %{}
-    |> maybe_put_retry_metadata(:runtime_head_sha, retry_runtime_head_sha(source, resume_checkpoint))
+    |> maybe_put_retry_metadata(
+      :runtime_head_sha,
+      retry_runtime_head_sha(source, resume_checkpoint)
+    )
     |> maybe_put_retry_metadata(:expected_head_sha, Map.get(source, :expected_head_sha))
     |> maybe_put_retry_metadata(:execution_branch, Map.get(source, :execution_branch))
-    |> maybe_put_retry_metadata(:feedback_digest, retry_feedback_digest(source, resume_checkpoint))
+    |> maybe_put_retry_metadata(
+      :feedback_digest,
+      retry_feedback_digest(source, resume_checkpoint)
+    )
     |> maybe_put_retry_metadata(:failure_class, Map.get(source, :failure_class))
     |> maybe_put_retry_metadata(
       :validation_bundle_fingerprint,
@@ -3529,7 +3652,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retry_validation_bundle_fingerprint(source, resume_checkpoint)
        when is_map(source) and (is_map(resume_checkpoint) or is_nil(resume_checkpoint)) do
-    case Map.get(source, :validation_bundle_fingerprint) || Map.get(source, "validation_bundle_fingerprint") do
+    case Map.get(source, :validation_bundle_fingerprint) ||
+           Map.get(source, "validation_bundle_fingerprint") do
       value when is_binary(value) and value != "" ->
         value
 
@@ -3543,7 +3667,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_workspace_diff_fingerprint(source, resume_checkpoint) when is_map(source) do
-    case Map.get(source, :workspace_diff_fingerprint) || Map.get(source, "workspace_diff_fingerprint") do
+    case Map.get(source, :workspace_diff_fingerprint) ||
+           Map.get(source, "workspace_diff_fingerprint") do
       value when is_binary(value) and value != "" ->
         value
 
@@ -3581,9 +3706,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_dedupe_reason(metadata) when is_map(metadata) do
-    error_signature = metadata[:error_signature] || normalize_error_signature(metadata[:error]) || "unknown"
+    error_signature =
+      metadata[:error_signature] || normalize_error_signature(metadata[:error]) || "unknown"
+
     failure_class = normalize_optional_string(metadata[:failure_class]) || "unknown"
-    validation_bundle_fingerprint = normalize_optional_string(metadata[:validation_bundle_fingerprint])
+
+    validation_bundle_fingerprint =
+      normalize_optional_string(metadata[:validation_bundle_fingerprint])
+
     workspace_diff_fingerprint = normalize_optional_string(metadata[:workspace_diff_fingerprint])
     runtime_head_sha = metadata[:runtime_head_sha] || "unknown"
     feedback_digest = metadata[:feedback_digest] || "unknown"
@@ -3669,14 +3799,18 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp checkpoint_active_validation_bundle_fingerprint(%{} = resume_checkpoint) do
     resume_checkpoint
-    |> Map.get("active_validation_snapshot", Map.get(resume_checkpoint, :active_validation_snapshot))
+    |> Map.get(
+      "active_validation_snapshot",
+      Map.get(resume_checkpoint, :active_validation_snapshot)
+    )
     |> active_validation_snapshot_bundle()
   end
 
   defp checkpoint_active_validation_bundle_fingerprint(_resume_checkpoint), do: nil
 
   defp active_validation_snapshot_bundle(%{} = snapshot) do
-    case Map.get(snapshot, "validation_bundle_fingerprint") || Map.get(snapshot, :validation_bundle_fingerprint) do
+    case Map.get(snapshot, "validation_bundle_fingerprint") ||
+           Map.get(snapshot, :validation_bundle_fingerprint) do
       value when is_binary(value) and value != "" -> value
       _ -> nil
     end
@@ -3699,7 +3833,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp checkpoint_workspace_diff_fallback_fingerprint(%{} = resume_checkpoint) do
     head = normalize_optional_string(Map.get(resume_checkpoint, "head"))
     workpad_digest = normalize_optional_string(Map.get(resume_checkpoint, "workpad_digest"))
-    changed_files = normalize_checkpoint_changed_files(Map.get(resume_checkpoint, "changed_files"))
+
+    changed_files =
+      normalize_checkpoint_changed_files(Map.get(resume_checkpoint, "changed_files"))
 
     if is_binary(head) or is_binary(workpad_digest) or changed_files != [] do
       digest_source =
@@ -3801,7 +3937,12 @@ defmodule SymphonyElixir.Orchestrator do
     known_git_sha?(runtime_head_sha) and
       known_git_sha?(expected_head_sha) and
       runtime_head_sha != expected_head_sha and
-      git_status_success?(workspace, ["merge-base", "--is-ancestor", runtime_head_sha, expected_head_sha])
+      git_status_success?(workspace, [
+        "merge-base",
+        "--is-ancestor",
+        runtime_head_sha,
+        expected_head_sha
+      ])
   end
 
   defp stale_workspace_head_reason(execution_head) do
@@ -3817,9 +3958,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp dispatch_failure_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
   defp dispatch_failure_attempt(_attempt), do: 1
 
-  defp issue_workspace_path(%Issue{identifier: identifier}), do: issue_workspace_path(%{identifier: identifier})
+  defp issue_workspace_path(%Issue{identifier: identifier}),
+    do: issue_workspace_path(%{identifier: identifier})
 
-  defp issue_workspace_path(%{identifier: identifier}) when is_binary(identifier) and identifier != "" do
+  defp issue_workspace_path(%{identifier: identifier})
+       when is_binary(identifier) and identifier != "" do
     safe_identifier = String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
     Path.expand(Path.join(Config.settings!().workspace.root, safe_identifier))
   end
@@ -3908,7 +4051,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp merge_loaded_resume_checkpoint(%{} = provided, %Issue{} = issue) do
     provided = ResumeCheckpoint.for_prompt(provided)
     loaded = issue |> ResumeCheckpoint.load() |> ResumeCheckpoint.for_prompt()
-    loaded_reasons = if loaded["available"] == true, do: Map.get(loaded, "fallback_reasons", []), else: []
+
+    loaded_reasons =
+      if loaded["available"] == true, do: Map.get(loaded, "fallback_reasons", []), else: []
 
     cond do
       loaded["resume_ready"] == true and provided["resume_ready"] != true ->
@@ -3951,8 +4096,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp running_entry_trace_id(%{trace_id: trace_id}) when is_binary(trace_id), do: trace_id
   defp running_entry_trace_id(_running_entry), do: nil
 
-  defp running_entry_worker_kind(%{worker_kind: worker_kind}) when worker_kind in [:agent, :controller_finalizer],
-    do: worker_kind
+  defp running_entry_worker_kind(%{worker_kind: worker_kind})
+       when worker_kind in [:agent, :controller_finalizer],
+       do: worker_kind
 
   defp running_entry_worker_kind(_running_entry), do: :agent
 
@@ -4161,6 +4307,7 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
         turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
       })
+      |> apply_session_reuse_update(update)
       |> apply_verification_update(update)
       |> apply_pr_context_update(update)
       |> RunPhase.apply_update(update)
@@ -4168,7 +4315,8 @@ defmodule SymphonyElixir.Orchestrator do
     {updated_running_entry, token_delta}
   end
 
-  defp apply_verification_update(running_entry, update) when is_map(running_entry) and is_map(update) do
+  defp apply_verification_update(running_entry, update)
+       when is_map(running_entry) and is_map(update) do
     case verification_manifest_from_update(update) do
       {:ok, manifest} ->
         Map.merge(running_entry, %{
@@ -4184,7 +4332,33 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp apply_pr_context_update(running_entry, update) when is_map(running_entry) and is_map(update) do
+  defp apply_session_reuse_update(running_entry, update)
+       when is_map(running_entry) and is_map(update) do
+    running_entry
+    |> maybe_put_update_field(:session_reuse_disposition, update)
+    |> maybe_put_update_field(:fresh_reason, update)
+    |> maybe_put_update_field(:session_thread_id, update)
+    |> maybe_put_update_field(:session_policy_fingerprint, update)
+    |> maybe_put_update_field(:session_policy_source, update)
+    |> maybe_put_update_field(:session_account_transition, update)
+    |> maybe_put_update_field(:session_account_id, update, :codex_account_id)
+  end
+
+  defp maybe_put_update_field(running_entry, field, update, fallback_field \\ nil) do
+    value =
+      Map.get(update, field) ||
+        Map.get(update, to_string(field)) ||
+        fallback_update_value(running_entry, fallback_field)
+
+    if is_binary(value) and value != "" do
+      Map.put(running_entry, field, value)
+    else
+      running_entry
+    end
+  end
+
+  defp apply_pr_context_update(running_entry, update)
+       when is_map(running_entry) and is_map(update) do
     running_entry
     |> maybe_put_pr_snapshot(update)
     |> maybe_put_ci_wait_result(update)
@@ -4200,7 +4374,15 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp maybe_put_pr_snapshot(running_entry, update) when is_map(running_entry) and is_map(update) do
+  defp fallback_update_value(running_entry, fallback_field)
+       when is_atom(fallback_field) and not is_nil(fallback_field) do
+    Map.get(running_entry, fallback_field)
+  end
+
+  defp fallback_update_value(_running_entry, _fallback_field), do: nil
+
+  defp maybe_put_pr_snapshot(running_entry, update)
+       when is_map(running_entry) and is_map(update) do
     with {:ok, @github_pr_snapshot_tool, _result} <- dynamic_tool_result(update),
          {:ok, payload} <- parse_dynamic_tool_result_payload(update),
          normalized when is_map(normalized) <- normalize_pr_snapshot_payload(payload) do
@@ -4210,7 +4392,8 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp maybe_put_ci_wait_result(running_entry, update) when is_map(running_entry) and is_map(update) do
+  defp maybe_put_ci_wait_result(running_entry, update)
+       when is_map(running_entry) and is_map(update) do
     with {:ok, @github_wait_for_checks_tool, _result} <- dynamic_tool_result(update),
          {:ok, payload} <- parse_dynamic_tool_result_payload(update),
          normalized when is_map(normalized) <- normalize_ci_wait_payload(payload) do
@@ -4290,7 +4473,9 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp result_payload_text(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text), do: text
+  defp result_payload_text(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text),
+    do: text
+
   defp result_payload_text(%{contentItems: [%{text: text} | _]}) when is_binary(text), do: text
   defp result_payload_text(_result), do: nil
 
@@ -4335,7 +4520,9 @@ defmodule SymphonyElixir.Orchestrator do
       |> Map.get(:pending_milestones, MapSet.new())
       |> normalize_milestone_set()
 
-    transition_milestones = RunPhase.transition_milestones(previous_running_entry, current_running_entry)
+    transition_milestones =
+      RunPhase.transition_milestones(previous_running_entry, current_running_entry)
+
     tool_milestones = tool_update_milestones(update)
 
     milestones_to_publish =
@@ -4364,6 +4551,7 @@ defmodule SymphonyElixir.Orchestrator do
 
         {:error, reason} ->
           Logger.warning("Failed to publish run milestone #{RunPhase.milestone_label(milestone)} for issue_id=#{issue_id}: #{inspect(reason)}")
+
           RunPhase.mark_milestone_pending(running_entry, milestone)
       end
     end
@@ -4740,7 +4928,8 @@ defmodule SymphonyElixir.Orchestrator do
     category = token_reason_category(running_entry, update)
     totals = normalize_token_reason_totals(state.codex_token_reason_totals)
 
-    category_totals = Map.get(totals, category, %{input_tokens: 0, output_tokens: 0, total_tokens: 0})
+    category_totals =
+      Map.get(totals, category, %{input_tokens: 0, output_tokens: 0, total_tokens: 0})
 
     updated_category_totals = %{
       input_tokens: max(0, Map.get(category_totals, :input_tokens, 0) + token_delta.input_tokens),

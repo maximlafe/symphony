@@ -4,7 +4,14 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Codex.RuntimeHome, Config, PathSafety, WorkspaceCapability}
+
+  alias SymphonyElixir.{
+    Codex.DynamicTool,
+    Codex.RuntimeHome,
+    Config,
+    PathSafety,
+    WorkspaceCapability
+  }
 
   @initialize_id 1
   @thread_start_id 2
@@ -26,6 +33,11 @@ defmodule SymphonyElixir.Codex.AppServer do
           thread_sandbox: String.t(),
           turn_sandbox_policy: map(),
           thread_id: String.t(),
+          session_reuse_disposition: String.t() | nil,
+          fresh_reason: String.t() | nil,
+          session_policy_fingerprint: String.t() | nil,
+          session_policy_source: String.t() | nil,
+          session_account_transition: String.t() | nil,
           workspace: Path.t()
         }
 
@@ -63,14 +75,17 @@ defmodule SymphonyElixir.Codex.AppServer do
              Keyword.get(opts, :cost_profile_key)
            ) do
       account_id = Keyword.get(opts, :account_id)
+      session_reuse_context = Keyword.get(opts, :session_reuse_context, %{})
 
       metadata =
         port
         |> session_metadata(opts, cost_decision)
         |> maybe_put_account_id(account_id)
+        |> put_session_reuse_metadata(session_reuse_context)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace),
-           {:ok, thread_id} <- do_start_session(port, expanded_workspace, session_policies) do
+           {:ok, thread_id} <-
+             do_start_session(port, expanded_workspace, session_policies, session_reuse_context) do
         {:ok,
          %{
            port: port,
@@ -81,6 +96,11 @@ defmodule SymphonyElixir.Codex.AppServer do
            thread_sandbox: session_policies.thread_sandbox,
            turn_sandbox_policy: session_policies.turn_sandbox_policy,
            thread_id: thread_id,
+           session_reuse_disposition: Map.get(session_reuse_context, :disposition),
+           fresh_reason: Map.get(session_reuse_context, :fresh_reason),
+           session_policy_fingerprint: Map.get(session_reuse_context, :policy_fingerprint),
+           session_policy_source: Map.get(session_reuse_context, :policy_source),
+           session_account_transition: Map.get(session_reuse_context, :account_transition),
            workspace: expanded_workspace
          }}
       else
@@ -149,6 +169,11 @@ defmodule SymphonyElixir.Codex.AppServer do
           auto_approve_requests: auto_approve_requests,
           turn_sandbox_policy: turn_sandbox_policy,
           thread_id: thread_id,
+          session_reuse_disposition: session_reuse_disposition,
+          fresh_reason: fresh_reason,
+          session_policy_fingerprint: session_policy_fingerprint,
+          session_policy_source: session_policy_source,
+          session_account_transition: session_account_transition,
           workspace: workspace
         },
         prompt,
@@ -163,7 +188,15 @@ defmodule SymphonyElixir.Codex.AppServer do
       end)
 
     with_logger_metadata(metadata, fn ->
-      case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
+      case start_turn(
+             port,
+             thread_id,
+             prompt,
+             issue,
+             workspace,
+             approval_policy,
+             turn_sandbox_policy
+           ) do
         {:ok, turn_id} ->
           handle_started_turn(
             %{
@@ -174,15 +207,22 @@ defmodule SymphonyElixir.Codex.AppServer do
               account_id: account_id,
               tool_executor: tool_executor,
               auto_approve_requests: auto_approve_requests,
-              thread_id: thread_id
+              thread_id: thread_id,
+              session_reuse_disposition: session_reuse_disposition,
+              fresh_reason: fresh_reason,
+              session_policy_fingerprint: session_policy_fingerprint,
+              session_policy_source: session_policy_source,
+              session_account_transition: session_account_transition
             },
             turn_id
           )
 
         {:error, reason} ->
-          Logger.error("Codex session failed for #{issue_context(issue)}: #{inspect(reason)}")
-          emit_message(on_message, :startup_failed, %{reason: reason}, metadata)
-          {:error, reason}
+          failed_reason = startup_failure_reason(reason, session_reuse_disposition)
+          Logger.error("Codex session failed for #{issue_context(issue)}: #{inspect(failed_reason)}")
+
+          emit_message(on_message, :startup_failed, %{reason: failed_reason}, metadata)
+          {:error, failed_reason}
       end
     end)
   end
@@ -250,7 +290,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp cost_decision_context(issue, profile_key) when is_binary(profile_key) and profile_key != "" do
+  defp cost_decision_context(issue, profile_key)
+       when is_binary(profile_key) and profile_key != "" do
     issue
     |> cost_context_map()
     |> Map.put(:cost_profile_key, profile_key)
@@ -309,6 +350,27 @@ defmodule SymphonyElixir.Codex.AppServer do
     |> maybe_put_metadata(:issue_id, Map.get(issue, :id))
     |> maybe_put_metadata(:issue_identifier, Map.get(issue, :identifier))
   end
+
+  defp put_session_reuse_metadata(metadata, %{} = session_reuse_context) do
+    metadata
+    |> maybe_put_metadata(
+      :session_reuse_disposition,
+      Map.get(session_reuse_context, :disposition)
+    )
+    |> maybe_put_metadata(:fresh_reason, Map.get(session_reuse_context, :fresh_reason))
+    |> maybe_put_metadata(:session_thread_id, Map.get(session_reuse_context, :thread_id))
+    |> maybe_put_metadata(
+      :session_policy_fingerprint,
+      Map.get(session_reuse_context, :policy_fingerprint)
+    )
+    |> maybe_put_metadata(:session_policy_source, Map.get(session_reuse_context, :policy_source))
+    |> maybe_put_metadata(
+      :session_account_transition,
+      Map.get(session_reuse_context, :account_transition)
+    )
+  end
+
+  defp put_session_reuse_metadata(metadata, _session_reuse_context), do: metadata
 
   defp log_codex_cost_decision(issue, cost_decision) when is_map(cost_decision) do
     metadata = cost_metadata(cost_decision)
@@ -369,14 +431,32 @@ defmodule SymphonyElixir.Codex.AppServer do
     Config.codex_runtime_settings(workspace)
   end
 
-  defp do_start_session(port, workspace, session_policies) do
+  defp do_start_session(port, workspace, session_policies, session_reuse_context) do
     case send_initialize(port) do
-      :ok -> start_thread(port, workspace, session_policies)
+      :ok -> start_or_reuse_thread(port, workspace, session_policies, session_reuse_context)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp start_thread(port, workspace, %{approval_policy: approval_policy, thread_sandbox: thread_sandbox}) do
+  defp start_or_reuse_thread(_port, _workspace, _session_policies, %{
+         disposition: "reused",
+         thread_id: thread_id
+       })
+       when is_binary(thread_id) and thread_id != "" do
+    {:ok, thread_id}
+  end
+
+  defp start_or_reuse_thread(port, workspace, session_policies, _session_reuse_context) do
+    start_thread(port, workspace, session_policies)
+  end
+
+  defp startup_failure_reason(reason, "reused"), do: {:dead_session, reason}
+  defp startup_failure_reason(reason, _session_reuse_disposition), do: reason
+
+  defp start_thread(port, workspace, %{
+         approval_policy: approval_policy,
+         thread_sandbox: thread_sandbox
+       }) do
     send_message(port, %{
       "method" => "thread/start",
       "id" => @thread_start_id,
@@ -425,7 +505,13 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests, base_metadata) do
+  defp await_turn_completion(
+         port,
+         on_message,
+         tool_executor,
+         auto_approve_requests,
+         base_metadata
+       ) do
     receive_loop(
       port,
       on_message,
@@ -446,7 +532,12 @@ defmodule SymphonyElixir.Codex.AppServer do
            account_id: account_id,
            tool_executor: tool_executor,
            auto_approve_requests: auto_approve_requests,
-           thread_id: thread_id
+           thread_id: thread_id,
+           session_reuse_disposition: session_reuse_disposition,
+           fresh_reason: fresh_reason,
+           session_policy_fingerprint: session_policy_fingerprint,
+           session_policy_source: session_policy_source,
+           session_account_transition: session_account_transition
          },
          turn_id
        ) do
@@ -460,7 +551,13 @@ defmodule SymphonyElixir.Codex.AppServer do
       %{
         session_id: session_id,
         thread_id: thread_id,
-        turn_id: turn_id
+        turn_id: turn_id,
+        session_reuse_disposition: session_reuse_disposition,
+        fresh_reason: fresh_reason,
+        session_thread_id: thread_id,
+        session_policy_fingerprint: session_policy_fingerprint,
+        session_policy_source: session_policy_source,
+        session_account_transition: session_account_transition
       },
       metadata
     )
@@ -502,7 +599,15 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests, base_metadata) do
+  defp receive_loop(
+         port,
+         on_message,
+         timeout_ms,
+         pending_line,
+         tool_executor,
+         auto_approve_requests,
+         base_metadata
+       ) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
@@ -536,12 +641,29 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp handle_incoming(port, on_message, data, timeout_ms, tool_executor, auto_approve_requests, base_metadata) do
+  defp handle_incoming(
+         port,
+         on_message,
+         data,
+         timeout_ms,
+         tool_executor,
+         auto_approve_requests,
+         base_metadata
+       ) do
     payload_string = to_string(data)
 
     case Jason.decode(payload_string) do
       {:ok, %{"method" => "turn/completed"} = payload} ->
-        emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload, base_metadata)
+        emit_turn_event(
+          on_message,
+          :turn_completed,
+          payload,
+          payload_string,
+          port,
+          payload,
+          base_metadata
+        )
+
         {:ok, :turn_completed}
 
       {:ok, %{"method" => "turn/failed", "params" => _} = payload} ->
@@ -597,7 +719,15 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata_from_message(port, payload, base_metadata)
         )
 
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests, base_metadata)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          tool_executor,
+          auto_approve_requests,
+          base_metadata
+        )
 
       {:error, _reason} ->
         log_non_json_stream_line(payload_string, "turn stream")
@@ -612,11 +742,27 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata_from_message(port, %{raw: payload_string}, base_metadata)
         )
 
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests, base_metadata)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          tool_executor,
+          auto_approve_requests,
+          base_metadata
+        )
     end
   end
 
-  defp emit_turn_event(on_message, event, payload, payload_string, port, payload_details, base_metadata) do
+  defp emit_turn_event(
+         on_message,
+         event,
+         payload,
+         payload_string,
+         port,
+         payload_details,
+         base_metadata
+       ) do
     emit_message(
       on_message,
       event,
@@ -665,7 +811,15 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:turn_input_required, payload}}
 
       :approved ->
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests, base_metadata)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          tool_executor,
+          auto_approve_requests,
+          base_metadata
+        )
 
       :approval_required ->
         emit_message(
@@ -699,7 +853,16 @@ defmodule SymphonyElixir.Codex.AppServer do
           )
 
           Logger.debug("Codex notification: #{inspect(method)}")
-          receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests, base_metadata)
+
+          receive_loop(
+            port,
+            on_message,
+            timeout_ms,
+            "",
+            tool_executor,
+            auto_approve_requests,
+            base_metadata
+          )
         end
     end
   end
@@ -739,7 +902,12 @@ defmodule SymphonyElixir.Codex.AppServer do
     tool_name = tool_call_name(params)
     arguments = tool_call_arguments(params)
 
-    emit_message(on_message, :tool_call_started, %{payload: payload, raw: payload_string}, metadata)
+    emit_message(
+      on_message,
+      :tool_call_started,
+      %{payload: payload, raw: payload_string},
+      metadata
+    )
 
     result = tool_executor.(tool_name, arguments)
     update_wait_guard_from_tool_result(tool_name, arguments, result)
@@ -756,7 +924,12 @@ defmodule SymphonyElixir.Codex.AppServer do
         _ -> :tool_call_failed
       end
 
-    emit_message(on_message, event, %{payload: payload, raw: payload_string, result: result}, metadata)
+    emit_message(
+      on_message,
+      event,
+      %{payload: payload, raw: payload_string, result: result},
+      metadata
+    )
 
     :approved
   end
@@ -1030,7 +1203,10 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp broad_make_gate?(["make", "symphony-validate" | _rest]), do: true
   defp broad_make_gate?(["make", "symphony-live-e2e" | _rest]), do: true
   defp broad_make_gate?(["make", "test" | _rest]), do: true
-  defp broad_make_gate?(["make", flag, "elixir", "all" | _rest]) when flag in ["-C", "-c"], do: true
+
+  defp broad_make_gate?(["make", flag, "elixir", "all" | _rest]) when flag in ["-C", "-c"],
+    do: true
+
   defp broad_make_gate?(["make", "all" | _rest]), do: true
   defp broad_make_gate?(["make", "team-master-ui-e2e" | _rest]), do: true
   defp broad_make_gate?(_argv), do: false
@@ -1071,8 +1247,9 @@ defmodule SymphonyElixir.Codex.AppServer do
     scoped?
   end
 
-  defp explicit_scope_option?(option) when option in ["--only", "--exclude", "--include", "-k", "-m"],
-    do: true
+  defp explicit_scope_option?(option)
+       when option in ["--only", "--exclude", "--include", "-k", "-m"],
+       do: true
 
   defp explicit_scope_option?(_option), do: false
 
@@ -1113,7 +1290,12 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp approval_available_decisions_value(nil), do: []
 
   defp approval_available_decisions_value(params) when is_map(params) do
-    fetch_first(params, ["available_decisions", :available_decisions, "availableDecisions", :availableDecisions]) || []
+    fetch_first(params, [
+      "available_decisions",
+      :available_decisions,
+      "availableDecisions",
+      :availableDecisions
+    ]) || []
   end
 
   defp choose_refusal_decision(decisions) when is_list(decisions) do
@@ -1125,7 +1307,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp approval_allow_decision?(decision) when is_binary(decision) do
     normalized = normalize_decision(decision)
-    String.starts_with?(normalized, "accept") or String.starts_with?(normalized, "approve") or String.starts_with?(normalized, "allow")
+
+    String.starts_with?(normalized, "accept") or String.starts_with?(normalized, "approve") or
+      String.starts_with?(normalized, "allow")
   end
 
   defp approval_allow_decision?(_decision), do: false
@@ -1197,7 +1381,9 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp normalize_approval_command(_command), do: nil
 
   defp approval_command_parts(command) when is_map(command) do
-    binary_command = fetch_first(command, ["parsedCmd", :parsedCmd, "command", :command, "cmd", :cmd])
+    binary_command =
+      fetch_first(command, ["parsedCmd", :parsedCmd, "command", :command, "cmd", :cmd])
+
     args = fetch_first(command, ["args", :args, "argv", :argv])
 
     case {binary_command, args} do
@@ -1271,7 +1457,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     )
   end
 
-  defp tool_request_user_input_approval_answers(%{"questions" => questions}) when is_list(questions) do
+  defp tool_request_user_input_approval_answers(%{"questions" => questions})
+       when is_list(questions) do
     answers =
       Enum.reduce_while(questions, %{}, fn question, acc ->
         case tool_request_user_input_approval_answer(question) do
@@ -1319,7 +1506,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp tool_request_user_input_unavailable_answers(%{"questions" => questions}) when is_list(questions) do
+  defp tool_request_user_input_unavailable_answers(%{"questions" => questions})
+       when is_list(questions) do
     answers =
       Enum.reduce_while(questions, %{}, fn question, acc ->
         case tool_request_user_input_question_id(question) do
@@ -1376,7 +1564,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       |> String.trim()
       |> String.downcase()
 
-    String.starts_with?(normalized_label, "approve") or String.starts_with?(normalized_label, "allow")
+    String.starts_with?(normalized_label, "approve") or
+      String.starts_with?(normalized_label, "allow")
   end
 
   defp wait_guard_state do
@@ -1456,7 +1645,10 @@ defmodule SymphonyElixir.Codex.AppServer do
        when is_map(arguments) and is_map(result) do
     wait_payload = decode_tool_payload(result)
     status = Map.get(wait_payload, "status")
-    quiet_wait_active = Map.get(wait_payload, "quiet_wait") == true or Map.get(wait_payload, "wait_mode") == "quiet"
+
+    quiet_wait_active =
+      Map.get(wait_payload, "quiet_wait") == true or Map.get(wait_payload, "wait_mode") == "quiet"
+
     result_ref = Map.get(wait_payload, "result_ref") || Map.get(arguments, "result_ref")
 
     updated =
@@ -1573,7 +1765,12 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp emit_message(on_message, event, details, metadata) when is_function(on_message, 1) do
-    message = metadata |> Map.merge(details) |> Map.put(:event, event) |> Map.put(:timestamp, DateTime.utc_now())
+    message =
+      metadata
+      |> Map.merge(details)
+      |> Map.put(:event, event)
+      |> Map.put(:timestamp, DateTime.utc_now())
+
     on_message.(message)
   end
 
@@ -1622,6 +1819,24 @@ defmodule SymphonyElixir.Codex.AppServer do
       |> maybe_put_logger_metadata(:codex_model, Map.get(metadata, :codex_model))
       |> maybe_put_logger_metadata(:codex_effort, Map.get(metadata, :codex_effort))
       |> maybe_put_logger_metadata(:command_source, Map.get(metadata, :command_source))
+      |> maybe_put_logger_metadata(
+        :session_reuse_disposition,
+        Map.get(metadata, :session_reuse_disposition)
+      )
+      |> maybe_put_logger_metadata(:fresh_reason, Map.get(metadata, :fresh_reason))
+      |> maybe_put_logger_metadata(:session_thread_id, Map.get(metadata, :session_thread_id))
+      |> maybe_put_logger_metadata(
+        :session_policy_fingerprint,
+        Map.get(metadata, :session_policy_fingerprint)
+      )
+      |> maybe_put_logger_metadata(
+        :session_policy_source,
+        Map.get(metadata, :session_policy_source)
+      )
+      |> maybe_put_logger_metadata(
+        :session_account_transition,
+        Map.get(metadata, :session_account_transition)
+      )
 
     if logger_metadata != [] do
       Logger.metadata(logger_metadata)
@@ -1669,7 +1884,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp port_env(_command_env), do: []
 
   defp tool_call_name(params) when is_map(params) do
-    case Map.get(params, "tool") || Map.get(params, :tool) || Map.get(params, "name") || Map.get(params, :name) do
+    case Map.get(params, "tool") || Map.get(params, :tool) || Map.get(params, "name") ||
+           Map.get(params, :name) do
       name when is_binary(name) ->
         case String.trim(name) do
           "" -> nil

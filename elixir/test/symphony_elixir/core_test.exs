@@ -15,7 +15,15 @@ defmodule SymphonyElixir.CoreTest do
     assert config.polling.interval_ms == 30_000
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.manual_intervention_state == "Blocked"
-    assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+
+    assert config.tracker.terminal_states == [
+             "Closed",
+             "Cancelled",
+             "Canceled",
+             "Duplicate",
+             "Done"
+           ]
+
     assert config.tracker.assignee == nil
     assert config.tracker.team_key == nil
     assert config.agent.max_turns == 20
@@ -93,7 +101,10 @@ defmodule SymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "/bin/sh app-server")
     assert :ok = Config.validate!()
 
-    write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: "definitely-not-valid")
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_approval_policy: "definitely-not-valid"
+    )
+
     assert :ok = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_thread_sandbox: "unsafe-ish")
@@ -140,7 +151,10 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.get(hooks, "after_create") =~ "SYMPHONY_SOURCE_REPO_URL"
     assert Map.get(hooks, "after_create") =~ "https://github.com/maximlafe/symphony.git"
     assert Map.get(hooks, "after_create") =~ "make symphony-bootstrap"
-    assert Map.get(hooks, "before_remove") =~ "gh pr list --head \"$branch\" --state open --json number"
+
+    assert Map.get(hooks, "before_remove") =~
+             "gh pr list --head \"$branch\" --state open --json number"
+
     assert Map.get(hooks, "before_remove") =~ "gh pr close \"$pr\" --comment"
 
     assert String.trim(prompt) != ""
@@ -157,7 +171,10 @@ defmodule SymphonyElixir.CoreTest do
     makefile = File.read!(makefile_path)
 
     assert makefile =~ ".PHONY:"
-    assert makefile =~ "test: symphony-validate symphony-dashboard-checks symphony-nginx-proxy-contract"
+
+    assert makefile =~
+             "test: symphony-validate symphony-dashboard-checks symphony-nginx-proxy-contract"
+
     assert makefile =~ "symphony-preflight:"
     assert makefile =~ "symphony-bootstrap:"
     assert makefile =~ "symphony-dashboard-checks:"
@@ -234,7 +251,9 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "workflow load accepts prompt-only files without front matter" do
-    workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "PROMPT_ONLY_WORKFLOW.md")
+    workflow_path =
+      Path.join(Path.dirname(Workflow.workflow_file_path()), "PROMPT_ONLY_WORKFLOW.md")
+
     File.write!(workflow_path, "Prompt only\n")
 
     assert {:ok, %{config: %{}, prompt: "Prompt only", prompt_template: "Prompt only"}} =
@@ -242,7 +261,9 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "workflow load accepts unterminated front matter with an empty prompt" do
-    workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "UNTERMINATED_WORKFLOW.md")
+    workflow_path =
+      Path.join(Path.dirname(Workflow.workflow_file_path()), "UNTERMINATED_WORKFLOW.md")
+
     File.write!(workflow_path, "---\ntracker:\n  kind: linear\n")
 
     assert {:ok, %{config: %{"tracker" => %{"kind" => "linear"}}, prompt: "", prompt_template: ""}} =
@@ -250,7 +271,9 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "workflow load rejects non-map front matter" do
-    workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "INVALID_FRONT_MATTER_WORKFLOW.md")
+    workflow_path =
+      Path.join(Path.dirname(Workflow.workflow_file_path()), "INVALID_FRONT_MATTER_WORKFLOW.md")
+
     File.write!(workflow_path, "---\n- not-a-map\n---\nPrompt body\n")
 
     assert {:error, :workflow_front_matter_not_a_map} = Workflow.load(workflow_path)
@@ -271,7 +294,8 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     if is_pid(orchestrator_pid) do
-      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+      assert :ok =
+               Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
     end
 
     assert {:ok, pid} = SymphonyElixir.start_link()
@@ -357,7 +381,10 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-2"
     issue_identifier = "MT-556"
     workspace = Path.join(test_root, issue_identifier)
-    issue_tmp_dir = Path.join("/tmp", "symphony-#{issue_identifier}-#{System.unique_integer([:positive])}")
+
+    issue_tmp_dir =
+      Path.join("/tmp", "symphony-#{issue_identifier}-#{System.unique_integer([:positive])}")
+
     previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
 
     try do
@@ -501,7 +528,8 @@ defmodule SymphonyElixir.CoreTest do
 
       state =
         wait_for_orchestrator_state(pid, fn state ->
-          not Map.has_key?(state.running, issue_id) and not MapSet.member?(state.claimed, issue_id)
+          not Map.has_key?(state.running, issue_id) and
+            not MapSet.member?(state.claimed, issue_id)
         end)
 
       refute Map.has_key?(state.running, issue_id)
@@ -1156,7 +1184,8 @@ defmodule SymphonyElixir.CoreTest do
 
       state =
         wait_for_orchestrator_state(pid, fn state ->
-          not MapSet.member?(state.claimed, issue_id) and not Map.has_key?(state.retry_attempts, issue_id)
+          not MapSet.member?(state.claimed, issue_id) and
+            not Map.has_key?(state.retry_attempts, issue_id)
         end)
 
       refute Map.has_key?(state.retry_attempts, issue_id)
@@ -1223,7 +1252,10 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:claimed, MapSet.new([issue_id]))
       end)
 
-      send(pid, {:DOWN, retry_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(
+        pid,
+        {:DOWN, retry_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}}
+      )
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
       assert blocker_body =~ "error_class: `semi_permanent`"
@@ -1231,7 +1263,8 @@ defmodule SymphonyElixir.CoreTest do
 
       final_state =
         wait_for_orchestrator_state(pid, fn state ->
-          not MapSet.member?(state.claimed, issue_id) and not Map.has_key?(state.retry_attempts, issue_id)
+          not MapSet.member?(state.claimed, issue_id) and
+            not Map.has_key?(state.retry_attempts, issue_id)
         end)
 
       refute Map.has_key?(final_state.retry_attempts, issue_id)
@@ -1527,7 +1560,10 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:active_codex_account_id, "primary")
       end)
 
-      send(pid, {:DOWN, ref, :process, self(), {:agent_run_failed, "invalid api key for this account"}})
+      send(
+        pid,
+        {:DOWN, ref, :process, self(), {:agent_run_failed, "invalid api key for this account"}}
+      )
 
       state =
         wait_for_orchestrator_state(pid, fn state ->
@@ -1607,7 +1643,10 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:active_codex_account_id, "primary")
       end)
 
-      send(pid, {:DOWN, ref, :process, self(), {:agent_run_failed, "invalid api key for this account"}})
+      send(
+        pid,
+        {:DOWN, ref, :process, self(), {:agent_run_failed, "invalid api key for this account"}}
+      )
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
       assert blocker_body =~ "error_class: `semi_permanent`"
@@ -1641,7 +1680,13 @@ defmodule SymphonyElixir.CoreTest do
     trace_id = "trace-feedback-dedupe-block"
     runtime_head_sha = "runtime-head-feedback-dedupe"
     feedback_digest = "feedback-digest-stable"
-    test_root = Path.join(System.tmp_dir!(), "symphony-elixir-feedback-dedupe-block-#{System.unique_integer([:positive])}")
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-feedback-dedupe-block-#{System.unique_integer([:positive])}"
+      )
+
     workspace_root = Path.join(test_root, "workspaces")
 
     try do
@@ -1687,7 +1732,10 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_attempts, %{})
       end)
 
-      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(
+        pid,
+        {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}}
+      )
 
       state_after_first_failure =
         wait_for_orchestrator_state(pid, fn state ->
@@ -1728,7 +1776,10 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_attempts, %{})
       end)
 
-      send(pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(
+        pid,
+        {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}}
+      )
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
       assert blocker_body =~ "selected_rule: `retry_dedupe_hit`"
@@ -1774,7 +1825,12 @@ defmodule SymphonyElixir.CoreTest do
 
     try do
       workspace = init_workspace_repo!(workspace_root, issue_identifier)
-      File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nValidation dedupe state")
+
+      File.write!(
+        Path.join(workspace, "workpad.md"),
+        "## Codex Workpad\n\nValidation dedupe state"
+      )
+
       File.write!(Path.join(workspace, ".workpad-id"), "comment-validation-dedupe")
 
       issue = %Issue{
@@ -1829,7 +1885,10 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_attempts, %{})
       end)
 
-      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(
+        pid,
+        {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}}
+      )
 
       state_after_first_failure =
         wait_for_orchestrator_state(pid, fn state ->
@@ -1857,7 +1916,10 @@ defmodule SymphonyElixir.CoreTest do
       stop_orchestrator(pid)
 
       second_ref = make_ref()
-      retry_orchestrator_name = Module.concat(__MODULE__, :ValidationDedupeNoFeedbackRetryOrchestrator)
+
+      retry_orchestrator_name =
+        Module.concat(__MODULE__, :ValidationDedupeNoFeedbackRetryOrchestrator)
+
       {:ok, retry_pid} = Orchestrator.start_link(name: retry_orchestrator_name)
 
       on_exit(fn ->
@@ -1882,7 +1944,10 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_dedupe_keys, %{issue_id => first_retry_key})
       end)
 
-      send(retry_pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(
+        retry_pid,
+        {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}}
+      )
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
       assert blocker_body =~ "selected_rule: `retry_dedupe_hit`"
@@ -1913,7 +1978,12 @@ defmodule SymphonyElixir.CoreTest do
 
     try do
       workspace = init_workspace_repo!(workspace_root, issue_identifier)
-      File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nValidation stall dedupe state")
+
+      File.write!(
+        Path.join(workspace, "workpad.md"),
+        "## Codex Workpad\n\nValidation stall dedupe state"
+      )
+
       File.write!(Path.join(workspace, ".workpad-id"), "comment-validation-stall-dedupe")
 
       issue = %Issue{
@@ -1976,7 +2046,10 @@ defmodule SymphonyElixir.CoreTest do
 
       state_after_first_failure =
         wait_for_orchestrator_state(pid, fn state ->
-          match?(%{attempt: 1, validation_bundle_fingerprint: "validation:repo-validate"}, state.retry_attempts[issue_id])
+          match?(
+            %{attempt: 1, validation_bundle_fingerprint: "validation:repo-validate"},
+            state.retry_attempts[issue_id]
+          )
         end)
         |> then(fn state ->
           cancel_retry_timer(state.retry_attempts[issue_id])
@@ -2048,7 +2121,12 @@ defmodule SymphonyElixir.CoreTest do
 
     try do
       workspace = init_workspace_repo!(workspace_root, issue_identifier)
-      File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nDialyzer stall dedupe state")
+
+      File.write!(
+        Path.join(workspace, "workpad.md"),
+        "## Codex Workpad\n\nDialyzer stall dedupe state"
+      )
+
       File.write!(Path.join(workspace, ".workpad-id"), "comment-dialyzer-stall-dedupe")
 
       issue = %Issue{
@@ -2111,7 +2189,10 @@ defmodule SymphonyElixir.CoreTest do
 
       state_after_first_failure =
         wait_for_orchestrator_state(pid, fn state ->
-          match?(%{attempt: 1, validation_bundle_fingerprint: "validation:dialyzer"}, state.retry_attempts[issue_id])
+          match?(
+            %{attempt: 1, validation_bundle_fingerprint: "validation:dialyzer"},
+            state.retry_attempts[issue_id]
+          )
         end)
         |> then(fn state ->
           cancel_retry_timer(state.retry_attempts[issue_id])
@@ -2183,7 +2264,12 @@ defmodule SymphonyElixir.CoreTest do
 
     try do
       workspace = init_workspace_repo!(workspace_root, issue_identifier)
-      File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nValidation dedupe state")
+
+      File.write!(
+        Path.join(workspace, "workpad.md"),
+        "## Codex Workpad\n\nValidation dedupe state"
+      )
+
       File.write!(Path.join(workspace, ".workpad-id"), "comment-validation-dedupe")
 
       issue = %Issue{
@@ -2238,11 +2324,17 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_attempts, %{})
       end)
 
-      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(
+        pid,
+        {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}}
+      )
 
       state_after_first_failure =
         wait_for_orchestrator_state(pid, fn state ->
-          match?(%{attempt: 1, validation_bundle_fingerprint: "validation:test"}, state.retry_attempts[issue_id])
+          match?(
+            %{attempt: 1, validation_bundle_fingerprint: "validation:test"},
+            state.retry_attempts[issue_id]
+          )
         end)
         |> then(fn state ->
           cancel_retry_timer(state.retry_attempts[issue_id])
@@ -2259,7 +2351,10 @@ defmodule SymphonyElixir.CoreTest do
       File.write!(Path.join(workspace, "tracked.txt"), "runtime head updated\n")
 
       second_ref = make_ref()
-      retry_orchestrator_name = Module.concat(__MODULE__, :ValidationDedupeWorkspaceChangeRetryOrchestrator)
+
+      retry_orchestrator_name =
+        Module.concat(__MODULE__, :ValidationDedupeWorkspaceChangeRetryOrchestrator)
+
       {:ok, retry_pid} = Orchestrator.start_link(name: retry_orchestrator_name)
 
       on_exit(fn ->
@@ -2284,11 +2379,17 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_dedupe_keys, %{issue_id => first_retry_key})
       end)
 
-      send(retry_pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(
+        retry_pid,
+        {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}}
+      )
 
       state_after_second_failure =
         wait_for_orchestrator_state(retry_pid, fn state ->
-          match?(%{attempt: 2, validation_bundle_fingerprint: "validation:test"}, state.retry_attempts[issue_id])
+          match?(
+            %{attempt: 2, validation_bundle_fingerprint: "validation:test"},
+            state.retry_attempts[issue_id]
+          )
         end)
 
       assert %{attempt: 2} = state_after_second_failure.retry_attempts[issue_id]
@@ -2312,7 +2413,13 @@ defmodule SymphonyElixir.CoreTest do
     issue_identifier = "MT-FEEDBACK-DEDUPE-FEEDBACK"
     trace_id = "trace-feedback-dedupe-feedback-change"
     runtime_head_sha = "runtime-head-feedback-change"
-    test_root = Path.join(System.tmp_dir!(), "symphony-elixir-feedback-dedupe-feedback-change-#{System.unique_integer([:positive])}")
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-feedback-dedupe-feedback-change-#{System.unique_integer([:positive])}"
+      )
+
     workspace_root = Path.join(test_root, "workspaces")
 
     try do
@@ -2358,11 +2465,17 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_attempts, %{})
       end)
 
-      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(
+        pid,
+        {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}}
+      )
 
       state_after_first_failure =
         wait_for_orchestrator_state(pid, fn state ->
-          match?(%{attempt: 1, feedback_digest: "feedback-digest-a"}, state.retry_attempts[issue_id])
+          match?(
+            %{attempt: 1, feedback_digest: "feedback-digest-a"},
+            state.retry_attempts[issue_id]
+          )
         end)
         |> then(fn state ->
           cancel_retry_timer(state.retry_attempts[issue_id])
@@ -2374,7 +2487,10 @@ defmodule SymphonyElixir.CoreTest do
       stop_orchestrator(pid)
 
       second_ref = make_ref()
-      retry_orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeFeedbackChangeRetryOrchestrator)
+
+      retry_orchestrator_name =
+        Module.concat(__MODULE__, :FeedbackDedupeFeedbackChangeRetryOrchestrator)
+
       {:ok, retry_pid} = Orchestrator.start_link(name: retry_orchestrator_name)
 
       on_exit(fn ->
@@ -2399,11 +2515,17 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_dedupe_keys, %{issue_id => first_retry_key})
       end)
 
-      send(retry_pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(
+        retry_pid,
+        {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}}
+      )
 
       state_after_second_failure =
         wait_for_orchestrator_state(retry_pid, fn state ->
-          match?(%{attempt: 2, feedback_digest: "feedback-digest-b"}, state.retry_attempts[issue_id])
+          match?(
+            %{attempt: 2, feedback_digest: "feedback-digest-b"},
+            state.retry_attempts[issue_id]
+          )
         end)
 
       assert %{attempt: 2, feedback_digest: "feedback-digest-b"} =
@@ -2425,7 +2547,13 @@ defmodule SymphonyElixir.CoreTest do
     issue_identifier = "MT-FEEDBACK-DEDUPE-HEAD"
     trace_id = "trace-feedback-dedupe-head-change"
     feedback_digest = "feedback-digest-stable"
-    test_root = Path.join(System.tmp_dir!(), "symphony-elixir-feedback-dedupe-head-change-#{System.unique_integer([:positive])}")
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-feedback-dedupe-head-change-#{System.unique_integer([:positive])}"
+      )
+
     workspace_root = Path.join(test_root, "workspaces")
 
     try do
@@ -2471,11 +2599,17 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_attempts, %{})
       end)
 
-      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(
+        pid,
+        {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}}
+      )
 
       state_after_first_failure =
         wait_for_orchestrator_state(pid, fn state ->
-          match?(%{attempt: 1, runtime_head_sha: "runtime-head-a"}, state.retry_attempts[issue_id])
+          match?(
+            %{attempt: 1, runtime_head_sha: "runtime-head-a"},
+            state.retry_attempts[issue_id]
+          )
         end)
         |> then(fn state ->
           cancel_retry_timer(state.retry_attempts[issue_id])
@@ -2487,7 +2621,10 @@ defmodule SymphonyElixir.CoreTest do
       stop_orchestrator(pid)
 
       second_ref = make_ref()
-      retry_orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeHeadChangeRetryOrchestrator)
+
+      retry_orchestrator_name =
+        Module.concat(__MODULE__, :FeedbackDedupeHeadChangeRetryOrchestrator)
+
       {:ok, retry_pid} = Orchestrator.start_link(name: retry_orchestrator_name)
 
       on_exit(fn ->
@@ -2512,11 +2649,17 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_dedupe_keys, %{issue_id => first_retry_key})
       end)
 
-      send(retry_pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(
+        retry_pid,
+        {:DOWN, second_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}}
+      )
 
       state_after_second_failure =
         wait_for_orchestrator_state(retry_pid, fn state ->
-          match?(%{attempt: 2, runtime_head_sha: "runtime-head-b"}, state.retry_attempts[issue_id])
+          match?(
+            %{attempt: 2, runtime_head_sha: "runtime-head-b"},
+            state.retry_attempts[issue_id]
+          )
         end)
 
       assert %{attempt: 2, runtime_head_sha: "runtime-head-b"} =
@@ -2539,7 +2682,13 @@ defmodule SymphonyElixir.CoreTest do
     trace_id = "trace-feedback-dedupe-error-change"
     runtime_head_sha = "runtime-head-error-change"
     feedback_digest = "feedback-digest-error-change"
-    test_root = Path.join(System.tmp_dir!(), "symphony-elixir-feedback-dedupe-error-change-#{System.unique_integer([:positive])}")
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-feedback-dedupe-error-change-#{System.unique_integer([:positive])}"
+      )
+
     workspace_root = Path.join(test_root, "workspaces")
 
     try do
@@ -2585,7 +2734,10 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_attempts, %{})
       end)
 
-      send(pid, {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}})
+      send(
+        pid,
+        {:DOWN, first_ref, :process, self(), {:agent_run_failed, "mix test failed in CI"}}
+      )
 
       state_after_first_failure =
         wait_for_orchestrator_state(pid, fn state ->
@@ -2596,13 +2748,18 @@ defmodule SymphonyElixir.CoreTest do
           state
         end)
 
-      assert %{error_signature: first_error_signature} = state_after_first_failure.retry_attempts[issue_id]
+      assert %{error_signature: first_error_signature} =
+               state_after_first_failure.retry_attempts[issue_id]
+
       first_retry_key = state_after_first_failure.retry_dedupe_keys[issue_id]
       assert is_binary(first_retry_key)
       stop_orchestrator(pid)
 
       second_ref = make_ref()
-      retry_orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeErrorChangeRetryOrchestrator)
+
+      retry_orchestrator_name =
+        Module.concat(__MODULE__, :FeedbackDedupeErrorChangeRetryOrchestrator)
+
       {:ok, retry_pid} = Orchestrator.start_link(name: retry_orchestrator_name)
 
       on_exit(fn ->
@@ -2627,7 +2784,10 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_dedupe_keys, %{issue_id => first_retry_key})
       end)
 
-      send(retry_pid, {:DOWN, second_ref, :process, self(), {:agent_run_failed, "connection reset by peer"}})
+      send(
+        retry_pid,
+        {:DOWN, second_ref, :process, self(), {:agent_run_failed, "connection reset by peer"}}
+      )
 
       state_after_second_failure =
         wait_for_orchestrator_state(retry_pid, fn state ->
@@ -2718,7 +2878,8 @@ defmodule SymphonyElixir.CoreTest do
           match?(%{attempt: 1, error_class: "semi_permanent"}, state.retry_attempts[issue_id]) and
             MapSet.member?(state.claimed, issue_id) and
             state.active_codex_account_id == "primary" and
-            is_map(primary) and primary.healthy == true and is_nil(Map.get(primary, :runtime_state))
+            is_map(primary) and primary.healthy == true and
+            is_nil(Map.get(primary, :runtime_state))
         end)
 
       assert %{attempt: 1, error_class: "semi_permanent"} = state.retry_attempts[issue_id]
@@ -2880,7 +3041,10 @@ defmodule SymphonyElixir.CoreTest do
            } = updated_state.retry_attempts[issue_id]
 
     assert error =~ "account failover forced_preemption=no_safe_drain_signal:"
-    assert %{healthy: false, health_reason: health_reason} = updated_state.codex_accounts["primary"]
+
+    assert %{healthy: false, health_reason: health_reason} =
+             updated_state.codex_accounts["primary"]
+
     assert health_reason =~ "threshold exceeded"
 
     assert {:noreply, late_down_state} =
@@ -3045,8 +3209,18 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "live rate-limit exhaustion also fails over sibling runs already on the exhausted account" do
-    issue_a = %Issue{id: "issue-live-rate-limit-failover-a", identifier: "MT-LIVE-FAILOVER-A", state: "In Progress"}
-    issue_b = %Issue{id: "issue-live-rate-limit-failover-b", identifier: "MT-LIVE-FAILOVER-B", state: "In Progress"}
+    issue_a = %Issue{
+      id: "issue-live-rate-limit-failover-a",
+      identifier: "MT-LIVE-FAILOVER-A",
+      state: "In Progress"
+    }
+
+    issue_b = %Issue{
+      id: "issue-live-rate-limit-failover-b",
+      identifier: "MT-LIVE-FAILOVER-B",
+      state: "In Progress"
+    }
+
     issue_a_id = issue_a.id
     issue_b_id = issue_b.id
     worker_a = spawn(fn -> Process.sleep(:infinity) end)
@@ -3189,7 +3363,10 @@ defmodule SymphonyElixir.CoreTest do
     assert Process.alive?(worker_b)
 
     assert {:noreply, after_second_failover} =
-             Orchestrator.handle_info({:codex_worker_update, issue_b_id, update}, after_first_failover)
+             Orchestrator.handle_info(
+               {:codex_worker_update, issue_b_id, update},
+               after_first_failover
+             )
 
     assert_receive {:retry_issue, ^issue_b_id, _retry_token_b}, 200
     Process.sleep(10)
@@ -3356,7 +3533,10 @@ defmodule SymphonyElixir.CoreTest do
              Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
 
     assert updated_state.active_codex_account_id == "secondary"
-    assert %{healthy: false, health_reason: health_reason} = updated_state.codex_accounts["primary"]
+
+    assert %{healthy: false, health_reason: health_reason} =
+             updated_state.codex_accounts["primary"]
+
     assert health_reason =~ "threshold exceeded"
 
     assert %{
@@ -3510,7 +3690,10 @@ defmodule SymphonyElixir.CoreTest do
              Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
 
     assert updated_state.active_codex_account_id == "secondary"
-    assert %{healthy: false, health_reason: health_reason} = updated_state.codex_accounts["primary"]
+
+    assert %{healthy: false, health_reason: health_reason} =
+             updated_state.codex_accounts["primary"]
+
     assert health_reason =~ "threshold exceeded"
 
     assert %{
@@ -3793,7 +3976,10 @@ defmodule SymphonyElixir.CoreTest do
 
     assert %{codex_account_id: "primary"} = updated_state.running[issue_id]
     assert updated_state.active_codex_account_id == nil
-    assert %{healthy: false, health_reason: health_reason} = updated_state.codex_accounts["primary"]
+
+    assert %{healthy: false, health_reason: health_reason} =
+             updated_state.codex_accounts["primary"]
+
     assert health_reason =~ "threshold exceeded"
     assert updated_state.retry_attempts == %{}
     assert Process.alive?(worker_pid)
@@ -4511,7 +4697,9 @@ defmodule SymphonyElixir.CoreTest do
              Orchestrator.handle_call(:request_refresh, {self(), make_ref()}, refreshed_state)
 
     assert coalesced_state.tick_token == refreshed_state.tick_token
-    assert {:noreply, ^coalesced_state} = Orchestrator.handle_info({:tick, stale_tick_token}, coalesced_state)
+
+    assert {:noreply, ^coalesced_state} =
+             Orchestrator.handle_info({:tick, stale_tick_token}, coalesced_state)
   end
 
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
@@ -4629,7 +4817,8 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "prompt builder renders issue datetime fields without crashing" do
-    workflow_prompt = "Ticket {{ issue.identifier }} created={{ issue.created_at }} updated={{ issue.updated_at }}"
+    workflow_prompt =
+      "Ticket {{ issue.identifier }} created={{ issue.created_at }} updated={{ issue.updated_at }}"
 
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
 
@@ -4786,7 +4975,8 @@ defmodule SymphonyElixir.CoreTest do
       end
     end)
 
-    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
+    assert :ok =
+             Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
 
     Workflow.set_workflow_file_path(Path.join(System.tmp_dir!(), "missing-workflow-#{System.unique_integer([:positive])}.md"))
 
@@ -4990,12 +5180,87 @@ defmodule SymphonyElixir.CoreTest do
       assert error.issue_id == "issue-run-error"
       assert error.issue_identifier == "MT-ERR"
       assert error.error_class == :permanent
-      assert error.reason == {:workspace_hook_failed, "before_run", 1, "CompileError: undefined function\n"}
+
+      assert error.reason ==
+               {:workspace_hook_failed, "before_run", 1, "CompileError: undefined function\n"}
+
       assert error.message =~ "error_class=permanent"
       assert error.message =~ "MT-ERR"
     after
       File.rm_rf(test_root)
     end
+  end
+
+  @tag :persistent_session_reuse
+  test "continuation retry reuses persisted thread when account and policy remain compatible" do
+    session_reuse_test!(%{
+      scenario: :reuse_success,
+      issue_id: "issue-session-reuse",
+      issue_identifier: "MT-REUSE",
+      current_account_id: "primary",
+      persisted_account_id: "primary",
+      expect_thread_reuse?: true,
+      expected_disposition: "reused",
+      expected_fresh_reason: nil
+    })
+  end
+
+  @tag :persistent_session_reuse
+  test "dead persisted thread falls back to one fresh session with dead_session reason" do
+    session_reuse_test!(%{
+      scenario: :dead_session_fallback,
+      issue_id: "issue-session-dead",
+      issue_identifier: "MT-DEAD",
+      current_account_id: "primary",
+      persisted_account_id: "primary",
+      expect_thread_reuse?: false,
+      expected_disposition: "fresh",
+      expected_fresh_reason: "dead_session"
+    })
+  end
+
+  @tag :persistent_session_reuse
+  test "account failover forces a fresh session instead of reusing the old thread" do
+    session_reuse_test!(%{
+      scenario: :fresh_success,
+      issue_id: "issue-session-account-failover",
+      issue_identifier: "MT-FAILOVER",
+      current_account_id: "secondary",
+      persisted_account_id: "primary",
+      expect_thread_reuse?: false,
+      expected_disposition: "fresh",
+      expected_fresh_reason: "account_failover"
+    })
+  end
+
+  @tag :persistent_session_reuse
+  test "explicit reset forces a fresh session and rotates continuation metadata" do
+    session_reuse_test!(%{
+      scenario: :fresh_success,
+      issue_id: "issue-session-explicit-reset",
+      issue_identifier: "MT-RESET",
+      current_account_id: "primary",
+      persisted_account_id: "primary",
+      explicit_reset?: true,
+      expect_thread_reuse?: false,
+      expected_disposition: "fresh",
+      expected_fresh_reason: "explicit_reset"
+    })
+  end
+
+  @tag :persistent_session_reuse
+  test "policy fingerprint mismatch across a phase boundary starts fresh" do
+    session_reuse_test!(%{
+      scenario: :fresh_success,
+      issue_id: "issue-session-phase-boundary",
+      issue_identifier: "MT-PHASE",
+      current_account_id: "primary",
+      persisted_account_id: "primary",
+      persisted_policy_fingerprint: "stale-policy-fingerprint",
+      expect_thread_reuse?: false,
+      expected_disposition: "fresh",
+      expected_fresh_reason: "phase_boundary"
+    })
   end
 
   test "agent runner forwards timestamped codex updates to recipient" do
@@ -5202,7 +5467,10 @@ defmodule SymphonyElixir.CoreTest do
         |> Enum.filter(&(&1["method"] == "turn/start"))
 
       assert length(turn_payloads) == 2
-      assert Enum.uniq(Enum.map(turn_payloads, &get_in(&1, ["params", "threadId"]))) == ["thread-cont"]
+
+      assert Enum.uniq(Enum.map(turn_payloads, &get_in(&1, ["params", "threadId"]))) == [
+               "thread-cont"
+             ]
 
       turn_texts =
         Enum.map(turn_payloads, fn payload ->
@@ -5894,4 +6162,219 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   defp wait_for_orchestrator_state(pid, _predicate, 0), do: :sys.get_state(pid)
+
+  defp session_reuse_test!(config) do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-session-reuse-#{config.issue_identifier}-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      template_repo = Path.join(test_root, "source")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "#{config.issue_identifier}.trace")
+      workspace = Path.join(workspace_root, config.issue_identifier)
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+      File.mkdir_p!(workspace)
+
+      write_session_reuse_codex!(codex_binary, trace_file, config.scenario)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server",
+        max_turns: 1
+      )
+
+      issue = %Issue{
+        id: config.issue_id,
+        identifier: config.issue_identifier,
+        title: "Session reuse test",
+        description: "Validate persisted thread continuity",
+        state: "In Progress",
+        url: "https://example.org/issues/#{config.issue_identifier}",
+        labels: []
+      }
+
+      current_policy_fingerprint =
+        SymphonyElixir.SessionReuse.build_launch_context(
+          issue,
+          workspace,
+          account_id: config.current_account_id
+        ).policy_fingerprint
+
+      persisted_policy_fingerprint =
+        Map.get(config, :persisted_policy_fingerprint, current_policy_fingerprint)
+
+      resume_checkpoint =
+        SymphonyElixir.ResumeCheckpoint.for_prompt(%{
+          "resume_ready" => true,
+          "continuation_session" => %{
+            "thread_id" => "thread-existing",
+            "account_id" => config.persisted_account_id,
+            "policy_fingerprint" => persisted_policy_fingerprint,
+            "policy_source" => "cost_profile+runtime_settings",
+            "disposition" => "reused"
+          },
+          "session_reset_requested" => Map.get(config, :explicit_reset?, false)
+        })
+
+      codex_account = %{id: config.current_account_id, codex_home: System.tmp_dir!()}
+      issue_id = config.issue_id
+
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 self(),
+                 codex_account: codex_account,
+                 resume_checkpoint: resume_checkpoint,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      assert_receive {:codex_worker_update, ^issue_id,
+                      %{
+                        event: :session_started,
+                        session_reuse_disposition: disposition,
+                        fresh_reason: fresh_reason,
+                        thread_id: started_thread_id
+                      }},
+                     500
+
+      assert disposition == config.expected_disposition
+      assert fresh_reason == config.expected_fresh_reason
+
+      trace = File.read!(trace_file)
+      lines = String.split(trace, "\n", trim: true)
+
+      if config.expect_thread_reuse? do
+        refute Enum.any?(lines, &String.contains?(&1, "\"method\":\"thread/start\""))
+        assert Enum.any?(lines, &String.contains?(&1, "\"threadId\":\"thread-existing\""))
+        assert started_thread_id == "thread-existing"
+      else
+        assert Enum.any?(lines, &String.contains?(&1, "\"method\":\"thread/start\""))
+        refute started_thread_id == "thread-existing"
+      end
+
+      if Map.get(config, :explicit_reset?, false) do
+        checkpoint_after_run =
+          SymphonyElixir.ResumeCheckpoint.capture(
+            issue,
+            %{
+              session_thread_id: started_thread_id,
+              session_account_id: config.current_account_id,
+              session_policy_fingerprint: current_policy_fingerprint,
+              session_policy_source: "cost_profile+runtime_settings",
+              session_reuse_disposition: config.expected_disposition,
+              fresh_reason: config.expected_fresh_reason
+            },
+            workspace_root: workspace_root
+          )
+
+        assert checkpoint_after_run["session_thread_id"] == started_thread_id
+        refute Map.get(checkpoint_after_run, "session_reset_requested")
+      end
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp write_session_reuse_codex!(path, trace_file, scenario) do
+    body =
+      case scenario do
+        :reuse_success ->
+          """
+          #!/bin/sh
+          trace_file="#{trace_file}"
+          count=0
+
+          while IFS= read -r line; do
+            count=$((count + 1))
+            printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+            case "$count" in
+              1)
+                printf '%s\\n' '{"id":1,"result":{}}'
+                ;;
+              2)
+                ;;
+              3)
+                printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-reused"}}}'
+                printf '%s\\n' '{"method":"turn/completed"}'
+                ;;
+            esac
+          done
+          """
+
+        :dead_session_fallback ->
+          """
+          #!/bin/sh
+          trace_file="#{trace_file}"
+          count=0
+          printf 'RUN:%s\\n' "$$" >> "$trace_file"
+
+          while IFS= read -r line; do
+            count=$((count + 1))
+            printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+            case "$count" in
+              1)
+                printf '%s\\n' '{"id":1,"result":{}}'
+                ;;
+              2)
+                ;;
+              3)
+                if printf '%s' "$line" | grep -q '"threadId":"thread-existing"'; then
+                  printf '%s\\n' '{"id":3,"error":{"message":"thread missing"}}'
+                else
+                  printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-fresh"}}}'
+                fi
+                ;;
+              4)
+                printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-fresh"}}}'
+                printf '%s\\n' '{"method":"turn/completed"}'
+                ;;
+            esac
+          done
+          """
+
+        :fresh_success ->
+          """
+          #!/bin/sh
+          trace_file="#{trace_file}"
+          count=0
+
+          while IFS= read -r line; do
+            count=$((count + 1))
+            printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+            case "$count" in
+              1)
+                printf '%s\\n' '{"id":1,"result":{}}'
+                ;;
+              2)
+                ;;
+              3)
+                printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-fresh"}}}'
+                ;;
+              4)
+                printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-fresh"}}}'
+                printf '%s\\n' '{"method":"turn/completed"}'
+                ;;
+            esac
+          done
+          """
+      end
+
+    File.write!(path, body)
+    File.chmod!(path, 0o755)
+  end
 end
