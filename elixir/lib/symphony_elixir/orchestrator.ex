@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   alias SymphonyElixir.{
     AgentRunner,
+    AutoCompaction,
     BudgetGuardrails,
     Config,
     ControllerFinalizer,
@@ -250,33 +251,15 @@ defmodule SymphonyElixir.Orchestrator do
 
         notify_dashboard()
 
-        budget_result =
-          case maybe_enforce_running_budget(state, issue_id, updated_running_entry, :token_update) do
-            {:budget_stop, state} ->
-              {:noreply, state}
-
-            {:keep_running, state} ->
-              maybe_failover_running_issue(
-                state,
-                issue_id,
-                updated_running_entry,
-                tracked_account_id
-              )
-          end
-
-        case budget_result do
-          {:failover, state} ->
-            {:noreply, state}
-
-          {:keep_running, state, running_entry_to_store} ->
-            {:noreply, %{state | running: Map.put(state.running, issue_id, running_entry_to_store)}}
-
-          {:keep_running, state} ->
-            {:noreply, %{state | running: Map.put(state.running, issue_id, updated_running_entry)}}
-
-          {:noreply, state} ->
-            {:noreply, state}
-        end
+        state
+        |> apply_running_update_policies(
+          issue_id,
+          running_entry,
+          updated_running_entry,
+          update,
+          tracked_account_id
+        )
+        |> finalize_running_update_result(issue_id, updated_running_entry)
     end
   end
 
@@ -364,6 +347,56 @@ defmodule SymphonyElixir.Orchestrator do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
   end
+
+  defp apply_running_update_policies(
+         %State{} = state,
+         issue_id,
+         running_entry,
+         updated_running_entry,
+         update,
+         tracked_account_id
+       ) do
+    case maybe_enforce_running_budget(state, issue_id, updated_running_entry, :token_update) do
+      {:budget_stop, state} ->
+        {:noreply, state}
+
+      {:keep_running, state} ->
+        case maybe_enforce_auto_compaction(
+               state,
+               issue_id,
+               running_entry,
+               updated_running_entry,
+               update
+             ) do
+          {:auto_compaction_stop, state} ->
+            {:noreply, state}
+
+          {:keep_running, state, running_entry_to_store} ->
+            maybe_failover_running_issue(
+              state,
+              issue_id,
+              running_entry_to_store,
+              tracked_account_id
+            )
+        end
+    end
+  end
+
+  defp finalize_running_update_result({:failover, state}, _issue_id, _updated_running_entry),
+    do: {:noreply, state}
+
+  defp finalize_running_update_result(
+         {:keep_running, state, running_entry_to_store},
+         issue_id,
+         _updated_running_entry
+       ),
+       do: {:noreply, %{state | running: Map.put(state.running, issue_id, running_entry_to_store)}}
+
+  defp finalize_running_update_result({:keep_running, state}, issue_id, updated_running_entry),
+    do: {:noreply, %{state | running: Map.put(state.running, issue_id, updated_running_entry)}}
+
+  defp finalize_running_update_result({:noreply, state}, _issue_id, _updated_running_entry),
+    do: {:noreply, state}
 
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
@@ -1021,6 +1054,18 @@ defmodule SymphonyElixir.Orchestrator do
     routing_parity_reason =
       pick_retry_optional_string(previous_retry, metadata, :routing_parity_reason)
 
+    continuation_reason =
+      pick_retry_optional_string(previous_retry, metadata, :continuation_reason)
+
+    auto_compaction_signal =
+      pick_retry_optional_string(previous_retry, metadata, :auto_compaction_signal)
+
+    auto_compaction_threshold =
+      pick_retry_non_negative_integer(previous_retry, metadata, :auto_compaction_threshold)
+
+    auto_compaction_observed_total =
+      pick_retry_non_negative_integer(previous_retry, metadata, :auto_compaction_observed_total)
+
     budget_decision = pick_retry_budget_decision(previous_retry, metadata)
     feedback_digest = pick_retry_feedback_digest(previous_retry, metadata)
     failure_class = pick_retry_failure_class(previous_retry, metadata)
@@ -1076,6 +1121,10 @@ defmodule SymphonyElixir.Orchestrator do
             observed_signal_source: observed_signal_source,
             routing_parity_status: routing_parity_status,
             routing_parity_reason: routing_parity_reason,
+            continuation_reason: continuation_reason,
+            auto_compaction_signal: auto_compaction_signal,
+            auto_compaction_threshold: auto_compaction_threshold,
+            auto_compaction_observed_total: auto_compaction_observed_total,
             budget_decision: budget_decision,
             feedback_digest: feedback_digest,
             failure_class: failure_class,
@@ -1113,6 +1162,10 @@ defmodule SymphonyElixir.Orchestrator do
           observed_signal_source: Map.get(retry_entry, :observed_signal_source),
           routing_parity_status: Map.get(retry_entry, :routing_parity_status),
           routing_parity_reason: Map.get(retry_entry, :routing_parity_reason),
+          continuation_reason: Map.get(retry_entry, :continuation_reason),
+          auto_compaction_signal: Map.get(retry_entry, :auto_compaction_signal),
+          auto_compaction_threshold: Map.get(retry_entry, :auto_compaction_threshold),
+          auto_compaction_observed_total: Map.get(retry_entry, :auto_compaction_observed_total),
           budget_decision: Map.get(retry_entry, :budget_decision),
           feedback_digest: Map.get(retry_entry, :feedback_digest),
           failure_class: Map.get(retry_entry, :failure_class),
@@ -1571,6 +1624,10 @@ defmodule SymphonyElixir.Orchestrator do
                 runtime_head_sha: Map.get(execution_head, :runtime_head_sha),
                 expected_head_sha: Map.get(execution_head, :expected_head_sha),
                 execution_branch: Map.get(execution_head, :execution_branch),
+                continuation_reason: checkpoint_continuation_reason(resume_checkpoint),
+                auto_compaction_signal: checkpoint_auto_compaction_signal(resume_checkpoint),
+                auto_compaction_threshold: checkpoint_auto_compaction_threshold(resume_checkpoint),
+                auto_compaction_observed_total: checkpoint_auto_compaction_observed_total(resume_checkpoint),
                 issue_token_total: budget_issue_total(resume_checkpoint),
                 budget_cost_profile_key: budget_cost_profile_key(resume_checkpoint),
                 last_codex_message: nil,
@@ -1583,6 +1640,7 @@ defmodule SymphonyElixir.Orchestrator do
                 codex_last_reported_input_tokens: 0,
                 codex_last_reported_output_tokens: 0,
                 codex_last_reported_total_tokens: 0,
+                auto_compaction_safe_steps: 0,
                 turn_count: 0,
                 retry_attempt: normalize_retry_attempt(attempt),
                 retry_delay_type: retry_delay_type,
@@ -1661,6 +1719,10 @@ defmodule SymphonyElixir.Orchestrator do
                 runtime_head_sha: Map.get(execution_head, :runtime_head_sha),
                 expected_head_sha: Map.get(execution_head, :expected_head_sha),
                 execution_branch: Map.get(execution_head, :execution_branch),
+                continuation_reason: checkpoint_continuation_reason(resume_checkpoint),
+                auto_compaction_signal: checkpoint_auto_compaction_signal(resume_checkpoint),
+                auto_compaction_threshold: checkpoint_auto_compaction_threshold(resume_checkpoint),
+                auto_compaction_observed_total: checkpoint_auto_compaction_observed_total(resume_checkpoint),
                 issue_token_total: budget_issue_total(resume_checkpoint),
                 budget_cost_profile_key: budget_cost_profile_key(resume_checkpoint),
                 last_codex_message: nil,
@@ -1673,6 +1735,7 @@ defmodule SymphonyElixir.Orchestrator do
                 codex_last_reported_input_tokens: 0,
                 codex_last_reported_output_tokens: 0,
                 codex_last_reported_total_tokens: 0,
+                auto_compaction_safe_steps: 0,
                 turn_count: 0,
                 retry_attempt: normalize_retry_attempt(attempt),
                 retry_delay_type: retry_delay_type,
@@ -2766,6 +2829,107 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_enforce_running_budget(state, _issue_id, _running_entry, _source), do: {:keep_running, state}
 
+  defp maybe_enforce_auto_compaction(
+         %State{} = state,
+         issue_id,
+         running_entry_before,
+         running_entry_after,
+         update
+       )
+       when is_binary(issue_id) and is_map(running_entry_before) and is_map(running_entry_after) and
+              is_map(update) do
+    if auto_compaction_edit_safe_boundary?(running_entry_before, update) do
+      context = %{
+        run_phase_before: Map.get(running_entry_before, :run_phase),
+        safe_boundary: true,
+        attempt_tokens: normalize_non_negative_integer(Map.get(running_entry_after, :codex_total_tokens)),
+        safe_steps: normalize_non_negative_integer(Map.get(running_entry_after, :auto_compaction_safe_steps))
+      }
+
+      case AutoCompaction.decide(context) do
+        :skip ->
+          {:keep_running, state, running_entry_after}
+
+        {:compact, decision} ->
+          maybe_schedule_auto_compaction_retry(state, issue_id, running_entry_after, decision)
+      end
+    else
+      {:keep_running, state, running_entry_after}
+    end
+  end
+
+  defp maybe_enforce_auto_compaction(
+         state,
+         _issue_id,
+         _running_entry_before,
+         running_entry_after,
+         _update
+       ) do
+    {:keep_running, state, running_entry_after}
+  end
+
+  defp maybe_schedule_auto_compaction_retry(%State{} = state, issue_id, running_entry, decision)
+       when is_binary(issue_id) and is_map(running_entry) and is_map(decision) do
+    identifier = Map.get(running_entry, :identifier, issue_id)
+    session_id = running_entry_session_id(running_entry)
+    trace_id = running_entry_trace_id(running_entry)
+    continuation_attempt = next_continuation_attempt(running_entry)
+    issue_token_total = issue_token_total_after_attempt(running_entry)
+
+    checkpoint =
+      running_entry
+      |> Map.get(:issue)
+      |> capture_resume_checkpoint(running_entry)
+      |> put_budget_checkpoint(%{
+        budget_issue_total_tokens: issue_token_total,
+        budget_attempt_tokens: normalize_non_negative_integer(Map.get(running_entry, :codex_total_tokens)),
+        budget_reason: "auto_compaction",
+        budget_decision: "allow",
+        budget_observed_total: issue_token_total,
+        budget_next_cost_profile_key: Map.get(running_entry, :budget_cost_profile_key)
+      })
+      |> put_auto_compaction_checkpoint(decision)
+
+    enriched_running_entry =
+      running_entry
+      |> Map.merge(decision)
+      |> Map.put(:issue_token_total, issue_token_total)
+
+    log_metadata =
+      issue_log_metadata(issue_id, identifier, session_id, trace_id)
+      |> Enum.into(%{})
+      |> Map.merge(TelemetrySchema.logger_metadata(decision))
+      |> Map.to_list()
+
+    with_log_metadata(log_metadata, fn ->
+      Logger.info("Auto compaction triggered issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} attempt=#{continuation_attempt}")
+    end)
+
+    state =
+      state
+      |> Map.put(:running, Map.put(state.running, issue_id, enriched_running_entry))
+      |> terminate_running_issue(issue_id, false)
+      |> schedule_issue_retry(
+        issue_id,
+        continuation_attempt,
+        %{
+          identifier: identifier,
+          trace_id: trace_id,
+          delay_type: :continuation,
+          resume_checkpoint: checkpoint,
+          issue_token_total: issue_token_total
+        }
+        |> Map.merge(decision)
+        |> Map.merge(retry_execution_metadata(enriched_running_entry, checkpoint))
+      )
+
+    {:auto_compaction_stop, state}
+  end
+
+  defp maybe_schedule_auto_compaction_retry(state, _issue_id, running_entry, _decision) do
+    {:keep_running, state, running_entry}
+  end
+
   defp running_budget_attempt(%{retry_delay_type: :continuation} = running_entry),
     do: next_continuation_attempt(running_entry)
 
@@ -2790,6 +2954,11 @@ defmodule SymphonyElixir.Orchestrator do
       value when is_integer(value) and value >= 0 -> value
       _ -> 0
     end
+  end
+
+  defp issue_token_total_after_attempt(running_entry) when is_map(running_entry) do
+    issue_token_total_before_attempt(running_entry) +
+      normalize_non_negative_integer(Map.get(running_entry, :codex_total_tokens))
   end
 
   defp put_budget_checkpoint(checkpoint, budget) when is_map(checkpoint) and is_map(budget) do
@@ -2841,6 +3010,86 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp budget_cost_profile_key(_checkpoint), do: nil
+
+  defp put_auto_compaction_checkpoint(checkpoint, decision)
+       when is_map(checkpoint) and is_map(decision) do
+    payload =
+      %{
+        "continuation_reason" => auto_compaction_checkpoint_value(decision, :continuation_reason),
+        "auto_compaction_signal" => auto_compaction_checkpoint_value(decision, :auto_compaction_signal),
+        "auto_compaction_threshold" => auto_compaction_checkpoint_value(decision, :auto_compaction_threshold),
+        "auto_compaction_observed_total" => auto_compaction_checkpoint_value(decision, :auto_compaction_observed_total),
+        "auto_compaction_safe_steps" => auto_compaction_checkpoint_value(decision, :auto_compaction_safe_steps)
+      }
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.new()
+
+    if payload == %{} do
+      checkpoint
+    else
+      Map.put(checkpoint, "auto_compaction", payload)
+    end
+  end
+
+  defp put_auto_compaction_checkpoint(checkpoint, _decision), do: checkpoint
+
+  defp auto_compaction_checkpoint_value(map, key) when is_map(map) do
+    case Map.get(map, key) do
+      value when is_atom(value) -> Atom.to_string(value)
+      value -> value
+    end
+  end
+
+  defp checkpoint_continuation_reason(%{} = checkpoint) do
+    payload = checkpoint_auto_compaction_payload(checkpoint)
+
+    normalize_optional_string(
+      map_any(payload, [:continuation_reason, "continuation_reason"]) ||
+        map_any(checkpoint, [:continuation_reason, "continuation_reason"])
+    )
+  end
+
+  defp checkpoint_continuation_reason(_checkpoint), do: nil
+
+  defp checkpoint_auto_compaction_signal(%{} = checkpoint) do
+    payload = checkpoint_auto_compaction_payload(checkpoint)
+
+    normalize_optional_string(
+      map_any(payload, [:auto_compaction_signal, "auto_compaction_signal"]) ||
+        map_any(checkpoint, [:auto_compaction_signal, "auto_compaction_signal"])
+    )
+  end
+
+  defp checkpoint_auto_compaction_signal(_checkpoint), do: nil
+
+  defp checkpoint_auto_compaction_threshold(%{} = checkpoint) do
+    payload = checkpoint_auto_compaction_payload(checkpoint)
+
+    non_negative_integer_or_nil(
+      map_any(payload, [:auto_compaction_threshold, "auto_compaction_threshold"]) ||
+        map_any(checkpoint, [:auto_compaction_threshold, "auto_compaction_threshold"])
+    )
+  end
+
+  defp checkpoint_auto_compaction_threshold(_checkpoint), do: nil
+
+  defp checkpoint_auto_compaction_observed_total(%{} = checkpoint) do
+    payload = checkpoint_auto_compaction_payload(checkpoint)
+
+    non_negative_integer_or_nil(
+      map_any(payload, [:auto_compaction_observed_total, "auto_compaction_observed_total"]) ||
+        map_any(checkpoint, [:auto_compaction_observed_total, "auto_compaction_observed_total"])
+    )
+  end
+
+  defp checkpoint_auto_compaction_observed_total(_checkpoint), do: nil
+
+  defp checkpoint_auto_compaction_payload(%{} = checkpoint) do
+    case map_any(checkpoint, [:auto_compaction, "auto_compaction"]) do
+      payload when is_map(payload) -> payload
+      _ -> %{}
+    end
+  end
 
   defp log_budget_decision(issue_id, identifier, session_id, trace_id, decision, budget) do
     metadata =
@@ -3474,6 +3723,24 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp pick_retry_non_negative_integer(previous_retry, metadata, key)
+       when is_map(previous_retry) and is_map(metadata) and is_atom(key) do
+    metadata[key]
+    |> Kernel.||(Map.get(previous_retry, key))
+    |> non_negative_integer_or_nil()
+  end
+
+  defp non_negative_integer_or_nil(value) when is_integer(value) and value >= 0, do: value
+
+  defp non_negative_integer_or_nil(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, ""} when integer >= 0 -> integer
+      _ -> nil
+    end
+  end
+
+  defp non_negative_integer_or_nil(_value), do: nil
+
   defp pick_retry_cost_profile_key(previous_retry, metadata) do
     pick_retry_optional_string(previous_retry, metadata, :cost_profile_key)
   end
@@ -3568,6 +3835,19 @@ defmodule SymphonyElixir.Orchestrator do
       :routing_parity_reason,
       retry_routing_field(source, checkpoint_routing_payload, :routing_parity_reason)
     )
+    |> maybe_put_retry_metadata(:continuation_reason, retry_continuation_reason(source, resume_checkpoint))
+    |> maybe_put_retry_metadata(
+      :auto_compaction_signal,
+      retry_auto_compaction_signal(source, resume_checkpoint)
+    )
+    |> maybe_put_retry_non_negative_integer(
+      :auto_compaction_threshold,
+      retry_auto_compaction_threshold(source, resume_checkpoint)
+    )
+    |> maybe_put_retry_non_negative_integer(
+      :auto_compaction_observed_total,
+      retry_auto_compaction_observed_total(source, resume_checkpoint)
+    )
     |> maybe_put_retry_metadata(:runtime_head_sha, retry_runtime_head_sha(source, resume_checkpoint))
     |> maybe_put_retry_metadata(:expected_head_sha, Map.get(source, :expected_head_sha))
     |> maybe_put_retry_metadata(:execution_branch, Map.get(source, :execution_branch))
@@ -3606,11 +3886,49 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp retry_continuation_reason(source, resume_checkpoint) when is_map(source) do
+    normalize_optional_string(map_any(source, [:continuation_reason, "continuation_reason"])) ||
+      checkpoint_continuation_reason(resume_checkpoint)
+  end
+
+  defp retry_auto_compaction_signal(source, resume_checkpoint) when is_map(source) do
+    source_signal =
+      source
+      |> map_any([:auto_compaction_signal, "auto_compaction_signal"])
+      |> normalize_optional_string()
+
+    source_signal || checkpoint_auto_compaction_signal(resume_checkpoint)
+  end
+
+  defp retry_auto_compaction_threshold(source, resume_checkpoint) when is_map(source) do
+    source_threshold =
+      source
+      |> map_any([:auto_compaction_threshold, "auto_compaction_threshold"])
+      |> non_negative_integer_or_nil()
+
+    source_threshold || checkpoint_auto_compaction_threshold(resume_checkpoint)
+  end
+
+  defp retry_auto_compaction_observed_total(source, resume_checkpoint) when is_map(source) do
+    source_observed_total =
+      source
+      |> map_any([:auto_compaction_observed_total, "auto_compaction_observed_total"])
+      |> non_negative_integer_or_nil()
+
+    source_observed_total || checkpoint_auto_compaction_observed_total(resume_checkpoint)
+  end
+
   defp maybe_put_retry_metadata(metadata, _key, value)
        when not is_binary(value) or value == "",
        do: metadata
 
   defp maybe_put_retry_metadata(metadata, key, value), do: Map.put(metadata, key, value)
+
+  defp maybe_put_retry_non_negative_integer(metadata, _key, value)
+       when not (is_integer(value) and value >= 0),
+       do: metadata
+
+  defp maybe_put_retry_non_negative_integer(metadata, key, value), do: Map.put(metadata, key, value)
 
   defp checkpoint_head(%{"head" => head}) when is_binary(head) and head != "", do: head
   defp checkpoint_head(_resume_checkpoint), do: nil
@@ -4244,6 +4562,13 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
 
+    auto_compaction_safe_steps =
+      running_entry
+      |> Map.get(:auto_compaction_safe_steps, 0)
+      |> normalize_non_negative_integer()
+
+    auto_compaction_safe_step_delta = if auto_compaction_edit_safe_boundary?(running_entry, update), do: 1, else: 0
+
     updated_running_entry =
       running_entry
       |> Map.merge(%{
@@ -4260,6 +4585,7 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
+        auto_compaction_safe_steps: auto_compaction_safe_steps + auto_compaction_safe_step_delta,
         turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
       })
       |> apply_routing_update(update)
@@ -4269,6 +4595,48 @@ defmodule SymphonyElixir.Orchestrator do
 
     {updated_running_entry, token_delta}
   end
+
+  defp auto_compaction_edit_safe_boundary?(running_entry, update)
+       when is_map(running_entry) and is_map(update) do
+    normalize_auto_compaction_phase(Map.get(running_entry, :run_phase)) == :editing and
+      auto_compaction_boundary_event?(update)
+  end
+
+  defp auto_compaction_edit_safe_boundary?(_running_entry, _update), do: false
+
+  defp auto_compaction_boundary_event?(%{event: :turn_completed}), do: true
+
+  defp auto_compaction_boundary_event?(%{event: event} = update)
+       when event in [:tool_call_completed, :tool_call_failed, :unsupported_tool_call] do
+    auto_compaction_tool_boundary?(update)
+  end
+
+  defp auto_compaction_boundary_event?(%{event: :notification, payload: payload})
+       when is_map(payload) do
+    normalize_optional_string(map_any(payload, [:method, "method"])) ==
+      "codex/event/exec_command_end"
+  end
+
+  defp auto_compaction_boundary_event?(_update), do: false
+
+  defp auto_compaction_tool_boundary?(%{payload: payload}) when is_map(payload) do
+    tool_name =
+      case map_any(payload, [:params, "params"]) do
+        params when is_map(params) ->
+          normalize_optional_string(map_any(params, [:tool, "tool", :name, "name"]))
+
+        _ ->
+          nil
+      end
+
+    tool_name != "exec_wait"
+  end
+
+  defp auto_compaction_tool_boundary?(_update), do: true
+
+  defp normalize_auto_compaction_phase(:editing), do: :editing
+  defp normalize_auto_compaction_phase("editing"), do: :editing
+  defp normalize_auto_compaction_phase(_phase), do: nil
 
   defp apply_routing_update(running_entry, update) when is_map(running_entry) and is_map(update) do
     running_entry

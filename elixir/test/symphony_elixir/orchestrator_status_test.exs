@@ -1299,7 +1299,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     }
 
     orchestrator_name = Module.concat(__MODULE__, :TokenReasonOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    {:ok, pid} =
+      Orchestrator.start_link(
+        name: orchestrator_name,
+        start_immediately?: false,
+        run_startup_housekeeping?: false
+      )
 
     on_exit(fn ->
       if Process.alive?(pid) do

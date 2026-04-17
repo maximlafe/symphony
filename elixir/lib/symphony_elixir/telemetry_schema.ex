@@ -47,6 +47,12 @@ defmodule SymphonyElixir.TelemetrySchema do
     :failover_from_account_id,
     :failover_to_account_id
   ]
+  @continuation_fields [
+    :continuation_reason,
+    :auto_compaction_signal,
+    :auto_compaction_threshold,
+    :auto_compaction_observed_total
+  ]
   @wait_fields [:wait_mode, :wait_reason, :wait_source, :wait_tool]
   @checkpoint_fields [
     :checkpoint_quality,
@@ -66,6 +72,7 @@ defmodule SymphonyElixir.TelemetrySchema do
                   @retry_dedupe_fields ++
                   @retry_failover_fields ++
                   @failover_fields ++
+                  @continuation_fields ++
                   @wait_fields ++
                   @checkpoint_fields ++
                   @validation_guard_fields ++
@@ -91,6 +98,7 @@ defmodule SymphonyElixir.TelemetrySchema do
     %{}
     |> Map.merge(head_fields(source))
     |> Map.merge(wait_fields(source))
+    |> Map.merge(continuation_fields(source))
     |> Map.merge(validation_guard_fields(source))
     |> Map.merge(budget_fields(source))
     |> Map.merge(retry_dedupe_fields(source))
@@ -249,6 +257,16 @@ defmodule SymphonyElixir.TelemetrySchema do
       "failover_reason" => normalize_string(fetch(source, :failover_reason)),
       "failover_from_account_id" => normalize_string(fetch(source, :failover_from_account_id)),
       "failover_to_account_id" => normalize_string(fetch(source, :failover_to_account_id))
+    }
+    |> reject_nil_values()
+  end
+
+  defp continuation_fields(source) do
+    %{
+      "continuation_reason" => normalize_string(fetch(source, :continuation_reason)),
+      "auto_compaction_signal" => normalize_string(fetch(source, :auto_compaction_signal)),
+      "auto_compaction_threshold" => fetch(source, :auto_compaction_threshold),
+      "auto_compaction_observed_total" => fetch(source, :auto_compaction_observed_total)
     }
     |> reject_nil_values()
   end
