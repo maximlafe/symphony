@@ -3229,6 +3229,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           "method" => "item/commandExecution/requestApproval",
           "params" => %{"parsedCmd" => "make symphony-validate"}
         },
+        command: "make symphony-validate",
+        command_surface: "approval_path",
+        policy_action: "rerouted",
+        policy_reason: "background_required",
         decision: "denied",
         wait_routing_decision: "background_required",
         suggested_tool_path: "use exec_background + exec_wait"
@@ -3241,6 +3245,29 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert humanized =~ "background wait required"
     assert humanized =~ "exec_background + exec_wait"
     assert humanized =~ "[denied]"
+  end
+
+  test "status dashboard formats fail-closed direct exec wait policy updates from codex" do
+    message = %{
+      event: :foreground_wait_policy_enforced,
+      message: %{
+        payload: %{
+          "method" => "codex/event/exec_command_begin",
+          "params" => %{"msg" => %{"command" => "make symphony-validate"}}
+        },
+        command: "make symphony-validate",
+        command_surface: "direct_exec",
+        policy_action: "blocked_fail_closed",
+        policy_reason: "background_required",
+        suggested_tool_path: "use exec_background + exec_wait"
+      }
+    }
+
+    humanized = StatusDashboard.humanize_codex_message(message)
+    assert humanized =~ "make symphony-validate"
+    assert humanized =~ "direct exec"
+    assert humanized =~ "blocked fail-closed"
+    assert humanized =~ "exec_background + exec_wait"
   end
 
   test "status dashboard formats auto-answered tool input updates from codex" do

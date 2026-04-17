@@ -1281,6 +1281,20 @@ defmodule SymphonyElixir.StatusDashboard do
     base <> routing_suffix <> decision_suffix
   end
 
+  defp humanize_codex_event(:foreground_wait_policy_enforced, message, _payload) do
+    command = map_value(message, ["command", :command])
+    command_surface = map_value(message, ["command_surface", :command_surface])
+    policy_action = map_value(message, ["policy_action", :policy_action])
+    suggested_tool_path = map_value(message, ["suggested_tool_path", :suggested_tool_path])
+
+    command
+    |> foreground_wait_policy_base_text(
+      command_surface_label(command_surface),
+      policy_action_label(policy_action)
+    )
+    |> maybe_append_suggested_tool_path(suggested_tool_path)
+  end
+
   defp humanize_codex_event(:tool_input_auto_answered, message, payload) do
     answer = map_value(message, ["answer", :answer])
 
@@ -1322,6 +1336,47 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp unwrap_codex_message_payload(message), do: message
+
+  defp command_surface_label("approval_path"), do: "approval path"
+  defp command_surface_label("direct_exec"), do: "direct exec"
+  defp command_surface_label(value) when is_binary(value), do: String.replace(value, "_", " ")
+  defp command_surface_label(_value), do: nil
+
+  defp policy_action_label("blocked_fail_closed"), do: "blocked fail-closed"
+  defp policy_action_label("rerouted"), do: "rerouted"
+  defp policy_action_label("throttled"), do: "throttled"
+  defp policy_action_label(value) when is_binary(value), do: String.replace(value, "_", " ")
+  defp policy_action_label(_value), do: nil
+
+  defp foreground_wait_policy_base_text(command, surface, action)
+       when is_binary(command) and is_binary(surface) and is_binary(action),
+       do: "#{command} (#{surface} #{action})"
+
+  defp foreground_wait_policy_base_text(command, _surface, action)
+       when is_binary(command) and is_binary(action),
+       do: "#{command} (#{action})"
+
+  defp foreground_wait_policy_base_text(command, surface, _action)
+       when is_binary(command) and is_binary(surface),
+       do: "#{command} (#{surface})"
+
+  defp foreground_wait_policy_base_text(command, _surface, _action) when is_binary(command),
+    do: command
+
+  defp foreground_wait_policy_base_text(_command, surface, action)
+       when is_binary(surface) and is_binary(action),
+       do: "foreground wait policy enforced (#{surface} #{action})"
+
+  defp foreground_wait_policy_base_text(_command, _surface, action) when is_binary(action),
+    do: "foreground wait policy enforced (#{action})"
+
+  defp foreground_wait_policy_base_text(_command, _surface, _action),
+    do: "foreground wait policy enforced"
+
+  defp maybe_append_suggested_tool_path(base, suggested_tool_path) when is_binary(suggested_tool_path),
+    do: "#{base}; #{suggested_tool_path}"
+
+  defp maybe_append_suggested_tool_path(base, _suggested_tool_path), do: base
 
   defp humanize_codex_payload(%{} = payload) do
     case map_value(payload, ["method", :method]) do
