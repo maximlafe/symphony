@@ -1041,6 +1041,26 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert payload.reason =~ ".workpad-id is missing"
   end
 
+  test "run/3 returns not_applicable when workpad.md is missing but .workpad-id is present" do
+    issue = %Issue{id: "issue-workpad-benign-missing", identifier: "LET-530-WORKPAD-MISSING", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier, with_workpad: false, with_workpad_ref: true)
+
+    checkpoint = %{
+      "head" => "head-workpad-benign-missing",
+      "open_pr" => %{"number" => 112, "url" => "https://github.com/acme/symphony/pull/112"}
+    }
+
+    assert {:not_applicable, payload} =
+             ControllerFinalizer.run(issue, checkpoint, repo: "acme/symphony")
+
+    assert payload.reason == "workpad.md is missing for controller finalizer"
+    assert payload.checkpoint["controller_finalizer"]["status"] == "not_applicable"
+    assert payload.checkpoint["controller_finalizer"]["reason"] == "workpad.md is missing for controller finalizer"
+    assert payload.checkpoint["controller_finalizer"]["blocked_head"] == nil
+    assert payload.details["workpad_path"] =~ "workpad.md"
+    assert payload.details["workpad_ref_path"] =~ ".workpad-id"
+  end
+
   defp create_workspace!(identifier) do
     create_workspace!(identifier, [])
   end

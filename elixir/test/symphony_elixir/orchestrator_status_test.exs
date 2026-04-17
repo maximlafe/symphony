@@ -497,6 +497,187 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
   end
 
+  test "orchestrator routes controller finalizer not_applicable to agent path without action-required retry" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-controller-finalizer-not-applicable-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "issue-controller-finalizer-not-applicable"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-FINALIZER-NOT-APPLICABLE",
+      title: "Controller finalizer not applicable",
+      description: "Controller finalizer should hand off to agent path",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-FINALIZER-NOT-APPLICABLE",
+      updated_at: DateTime.utc_now()
+    }
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_memory_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    parent = self()
+    orchestrator_name = Module.concat(__MODULE__, :ControllerFinalizerNotApplicableOrchestrator)
+    {:ok, eligibility_agent} = Agent.start_link(fn -> true end)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_active_states: ["Todo", "In Progress", "Merging", "Rework"],
+        codex_accounts: [%{id: "primary", codex_home: Path.join(test_root, "codex-primary")}],
+        poll_interval_ms: 25
+      )
+
+      {:ok, pid} =
+        Orchestrator.start_link(
+          name: orchestrator_name,
+          codex_account_probe_fun: fn accounts, _opts ->
+            Enum.map(accounts, fn account ->
+              %{
+                id: account.id,
+                codex_home: account.codex_home,
+                explicit?: Map.get(account, :explicit?, true),
+                checked_at: DateTime.utc_now(),
+                healthy: true,
+                health_reason: nil,
+                auth_mode: "device_code",
+                email: "worker@example.com",
+                plan_type: "plus",
+                requires_openai_auth: true,
+                rate_limits: nil,
+                account: nil,
+                missing_windows_mins: [],
+                insufficient_windows_mins: []
+              }
+            end)
+          end,
+          controller_finalizer_eligible_fun: fn _issue, _checkpoint ->
+            Agent.get_and_update(eligibility_agent, fn
+              true -> {true, false}
+              false -> {false, false}
+            end)
+          end,
+          controller_finalizer_fun: fn issue, checkpoint, _opts ->
+            send(parent, {:controller_finalizer_invoked, issue.id})
+
+            {:not_applicable,
+             %{
+               checkpoint:
+                 Map.put(
+                   checkpoint || %{},
+                   "controller_finalizer",
+                   %{
+                     "status" => "not_applicable",
+                     "reason" => "workpad.md is missing for controller finalizer"
+                   }
+                 ),
+               reason: "workpad.md is missing for controller finalizer",
+               details: %{}
+             }}
+          end
+        )
+
+      _ = Orchestrator.request_refresh(orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      assert_receive {:controller_finalizer_invoked, ^issue_id}, 5_000
+
+      state =
+        wait_for_orchestrator_state(
+          pid,
+          fn state ->
+            running_entry = Map.get(state.running, issue_id)
+            retry_entry = Map.get(state.retry_attempts, issue_id)
+
+            agent_running? =
+              case running_entry do
+                %{codex_account_id: codex_account_id}
+                when is_binary(codex_account_id) and codex_account_id != "" ->
+                  Map.get(running_entry, :worker_kind) != :controller_finalizer
+
+                _ ->
+                  false
+              end
+
+            continuation_retry? =
+              case retry_entry do
+                %{delay_type: :continuation} -> true
+                _ -> false
+              end
+
+            action_required_retry? =
+              case retry_entry do
+                %{error: error} when is_binary(error) ->
+                  String.contains?(error, "workpad.md is missing for controller finalizer")
+
+                _ ->
+                  false
+              end
+
+            agent_running? or continuation_retry? or action_required_retry?
+          end,
+          5_000
+        )
+
+      retry_entry = Map.get(state.retry_attempts, issue_id)
+
+      action_required_retry? =
+        case retry_entry do
+          %{error: error} when is_binary(error) ->
+            String.contains?(error, "workpad.md is missing for controller finalizer")
+
+          _ ->
+            false
+        end
+
+      refute action_required_retry?
+
+      case Map.get(state.running, issue_id) do
+        %{codex_account_id: codex_account_id} = running_entry ->
+          refute Map.get(running_entry, :worker_kind) == :controller_finalizer
+          assert is_binary(codex_account_id) and codex_account_id != ""
+
+        _ ->
+          assert is_map(retry_entry)
+          assert retry_entry.delay_type == :continuation
+      end
+    after
+      case Process.whereis(orchestrator_name) do
+        pid when is_pid(pid) -> Process.exit(pid, :normal)
+        _ -> :ok
+      end
+
+      if is_nil(previous_memory_issues) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_memory_issues)
+      end
+
+      if is_nil(previous_memory_recipient) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_recipient, previous_memory_recipient)
+      end
+
+      if Process.alive?(eligibility_agent) do
+        Process.exit(eligibility_agent, :normal)
+      end
+
+      File.rm_rf(test_root)
+    end
+  end
+
   test "orchestrator publishes milestone-only run commentary and suppresses non-milestones" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     previous_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)

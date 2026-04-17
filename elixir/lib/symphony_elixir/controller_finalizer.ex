@@ -70,6 +70,16 @@ defmodule SymphonyElixir.ControllerFinalizer do
       {:ok, context} ->
         run_pipeline(context, checkpoint, opts)
 
+      {:not_applicable, %{message: message} = skip} ->
+        not_applicable_checkpoint = checkpoint_status(checkpoint, "not_applicable", message, nil)
+
+        {:not_applicable,
+         %{
+           checkpoint: not_applicable_checkpoint,
+           reason: message,
+           details: Map.drop(skip, [:message])
+         }}
+
       {:error, %{message: message} = error} ->
         fallback_checkpoint = checkpoint_status(checkpoint, "action_required", message, checkpoint["head"])
 
@@ -317,8 +327,60 @@ defmodule SymphonyElixir.ControllerFinalizer do
     pr_number = checkpoint_pr_number(checkpoint)
 
     if File.dir?(workspace) do
-      with {:ok, workpad_path, comment_id} <- resolve_workpad_paths(workspace),
-           {:ok, repo} <- resolve_repo(workspace, opts) do
+      build_context_for_workspace(
+        issue,
+        opts,
+        workspace,
+        issue_id,
+        identifier,
+        pr_number
+      )
+    else
+      {:error, %{message: "workspace is unavailable for controller finalizer", transient?: false}}
+    end
+  end
+
+  defp build_context_for_workspace(
+         issue,
+         opts,
+         workspace,
+         issue_id,
+         identifier,
+         pr_number
+       ) do
+    case resolve_workpad_paths(workspace) do
+      {:ok, workpad_path, comment_id} ->
+        build_context_with_repo(
+          issue,
+          opts,
+          workspace,
+          workpad_path,
+          comment_id,
+          issue_id,
+          identifier,
+          pr_number
+        )
+
+      {:not_applicable, message, details} ->
+        {:not_applicable, Map.merge(%{message: message}, details)}
+
+      {:error, message} ->
+        {:error, %{message: message, transient?: false}}
+    end
+  end
+
+  defp build_context_with_repo(
+         issue,
+         opts,
+         workspace,
+         workpad_path,
+         comment_id,
+         issue_id,
+         identifier,
+         pr_number
+       ) do
+    case resolve_repo(workspace, opts) do
+      {:ok, repo} ->
         {:ok,
          %{
            issue_id: issue_id,
@@ -330,12 +392,9 @@ defmodule SymphonyElixir.ControllerFinalizer do
            repo: repo,
            issue_labels: issue_labels(issue)
          }}
-      else
-        {:error, message} ->
-          {:error, %{message: message, transient?: false}}
-      end
-    else
-      {:error, %{message: "workspace is unavailable for controller finalizer", transient?: false}}
+
+      {:error, message} ->
+        {:error, %{message: message, transient?: false}}
     end
   end
 
@@ -516,12 +575,21 @@ defmodule SymphonyElixir.ControllerFinalizer do
   defp resolve_workpad_paths(workspace) when is_binary(workspace) do
     workpad_path = Path.join(workspace, @workpad_file)
     comment_id_path = Path.join(workspace, @workpad_ref_file)
+    comment_id = read_trimmed(comment_id_path)
 
-    with true <- File.exists?(workpad_path) or {:error, "workpad.md is missing for controller finalizer"},
-         true <- non_empty_binary?(read_trimmed(comment_id_path)) or {:error, ".workpad-id is missing for controller finalizer"} do
-      {:ok, workpad_path, read_trimmed(comment_id_path)}
-    else
-      {:error, message} -> {:error, message}
+    cond do
+      not non_empty_binary?(comment_id) ->
+        {:error, ".workpad-id is missing for controller finalizer"}
+
+      File.exists?(workpad_path) ->
+        {:ok, workpad_path, comment_id}
+
+      true ->
+        {:not_applicable, "workpad.md is missing for controller finalizer",
+         %{
+           "workpad_path" => workpad_path,
+           "workpad_ref_path" => comment_id_path
+         }}
     end
   end
 
