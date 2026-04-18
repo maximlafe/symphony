@@ -18,6 +18,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
           | :retry_dedupe_hit
           | :continuation_attempt_limit_exceeded
           | :budget_exceeded_cumulative
+          | :budget_exceeded_per_attempt_progressing
           | :budget_exceeded_per_attempt_handoff
           | :account_unhealthy_milestone_near
           | :account_unhealthy_checkpoint_available
@@ -140,11 +141,36 @@ defmodule SymphonyElixir.RetryFailoverDecision do
     normalized = atomize_keys(value)
     scope = normalize_budget_scope(normalized[:scope] || normalized[:kind] || normalized[:mode])
     active = normalized[:active] != false and not is_nil(scope)
+    progress_status_present? = Map.has_key?(normalized, :progress_status)
+    progress_status = normalize_progress_status_string(normalized[:progress_status])
+    progress_changed_present? = Map.has_key?(normalized, :progress_changed?)
+    progress_changed = normalized[:progress_changed?] == true or progress_status == "changed"
+    checkpoint_usable_present? = Map.has_key?(normalized, :checkpoint_usable?)
+    progress_repeat_count_present? = Map.has_key?(normalized, :progress_repeat_count)
+    progress_repeat_count = normalize_non_negative_integer(normalized[:progress_repeat_count])
+    progress_fingerprint_present? = Map.has_key?(normalized, :progress_fingerprint)
+    progress_fingerprint = normalize_non_empty_string(normalized[:progress_fingerprint])
+    budget_signal_role_present? = Map.has_key?(normalized, :budget_signal_role)
+    budget_signal_role = normalize_non_empty_string(normalized[:budget_signal_role])
 
     normalized
     |> Map.put(:active, active)
     |> Map.put(:scope, scope)
     |> Map.put_new(:cheaper_profile?, cheaper_profile?(normalized))
+    |> maybe_put_budget_signal_field(
+      checkpoint_usable_present?,
+      :checkpoint_usable?,
+      normalized[:checkpoint_usable?] == true
+    )
+    |> maybe_put_budget_signal_field(progress_status_present?, :progress_status, progress_status)
+    |> maybe_put_budget_signal_field(
+      progress_changed_present? || progress_status_present?,
+      :progress_changed?,
+      progress_changed
+    )
+    |> maybe_put_budget_signal_field(progress_repeat_count_present?, :progress_repeat_count, progress_repeat_count)
+    |> maybe_put_budget_signal_field(progress_fingerprint_present?, :progress_fingerprint, progress_fingerprint)
+    |> maybe_put_budget_signal_field(budget_signal_role_present?, :budget_signal_role, budget_signal_role)
   end
 
   defp normalize_budget_signal(_value), do: %{active: false, scope: nil}
@@ -163,6 +189,10 @@ defmodule SymphonyElixir.RetryFailoverDecision do
     |> maybe_add_rule(
       :budget_exceeded_per_attempt_handoff,
       per_attempt_budget_handoff?(signals.budget_exceeded)
+    )
+    |> maybe_add_rule(
+      :budget_exceeded_per_attempt_progressing,
+      per_attempt_budget_progressing?(signals.budget_exceeded)
     )
     |> maybe_add_rule(
       :account_unhealthy_milestone_near,
@@ -191,6 +221,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp action_for_rule(:retry_dedupe_hit), do: :stop_with_classified_handoff
   defp action_for_rule(:continuation_attempt_limit_exceeded), do: :stop_with_classified_handoff
   defp action_for_rule(:budget_exceeded_cumulative), do: :stop_with_classified_handoff
+  defp action_for_rule(:budget_exceeded_per_attempt_progressing), do: :allow_retry
   defp action_for_rule(:budget_exceeded_per_attempt_handoff), do: :stop_with_classified_handoff
   defp action_for_rule(:account_unhealthy_milestone_near), do: :drain_to_milestone
   defp action_for_rule(:account_unhealthy_checkpoint_available), do: :checkpoint_and_failover
@@ -219,6 +250,9 @@ defmodule SymphonyElixir.RetryFailoverDecision do
 
   defp reason_for_rule(:budget_exceeded_cumulative, signals),
     do: signal_reason(signals.budget_exceeded, "budget_exceeded_cumulative")
+
+  defp reason_for_rule(:budget_exceeded_per_attempt_progressing, signals),
+    do: signal_reason(signals.budget_exceeded, "budget_exceeded_per_attempt_progressing")
 
   defp reason_for_rule(:budget_exceeded_per_attempt_handoff, signals),
     do: signal_reason(signals.budget_exceeded, "budget_exceeded_per_attempt_handoff")
@@ -256,6 +290,9 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp checkpoint_type_for_rule(:budget_exceeded_cumulative, signals),
     do: signal_field(signals.budget_exceeded, :checkpoint_type, "decision")
 
+  defp checkpoint_type_for_rule(:budget_exceeded_per_attempt_progressing, signals),
+    do: signal_field(signals.budget_exceeded, :checkpoint_type, "decision")
+
   defp checkpoint_type_for_rule(:budget_exceeded_per_attempt_handoff, signals),
     do: signal_field(signals.budget_exceeded, :checkpoint_type, "decision")
 
@@ -284,6 +321,9 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp risk_level_for_rule(:budget_exceeded_cumulative, signals),
     do: signal_field(signals.budget_exceeded, :risk_level, "medium")
 
+  defp risk_level_for_rule(:budget_exceeded_per_attempt_progressing, signals),
+    do: signal_field(signals.budget_exceeded, :risk_level, "medium")
+
   defp risk_level_for_rule(:budget_exceeded_per_attempt_handoff, signals),
     do: signal_field(signals.budget_exceeded, :risk_level, "medium")
 
@@ -297,6 +337,9 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp risk_level_for_rule(_rule, _signals), do: nil
 
   defp retry_metadata_for_rule(:budget_exceeded_cumulative, signals),
+    do: signal_retry_metadata(signals.budget_exceeded)
+
+  defp retry_metadata_for_rule(:budget_exceeded_per_attempt_progressing, signals),
     do: signal_retry_metadata(signals.budget_exceeded)
 
   defp retry_metadata_for_rule(:budget_exceeded_per_attempt_handoff, signals),
@@ -356,6 +399,11 @@ defmodule SymphonyElixir.RetryFailoverDecision do
     |> signal_payload()
     |> maybe_put(:scope, normalize_budget_scope_string(signal[:scope]))
     |> maybe_put(:cheaper_profile?, signal[:cheaper_profile?] == true)
+    |> maybe_put_budget_payload_field(signal, :checkpoint_usable?)
+    |> maybe_put_budget_payload_field(signal, :progress_status)
+    |> maybe_put_budget_payload_field(signal, :progress_fingerprint)
+    |> maybe_put_budget_payload_field(signal, :progress_repeat_count)
+    |> maybe_put_budget_payload_field(signal, :budget_signal_role)
   end
 
   defp maybe_add_rule(rules, _rule, false), do: rules
@@ -367,15 +415,49 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp cumulative_budget?(%{active: true, scope: :cumulative}), do: true
   defp cumulative_budget?(_signal), do: false
 
-  defp per_attempt_budget_handoff?(%{active: true, scope: :per_attempt, cheaper_profile?: false}),
-    do: true
+  defp per_attempt_budget_handoff?(%{active: true, scope: :per_attempt} = signal) do
+    cond do
+      not per_attempt_budget_progress_allows_retry?(signal) -> true
+      signal[:cheaper_profile?] == true -> false
+      explicit_progress_signal?(signal) -> false
+      true -> true
+    end
+  end
 
   defp per_attempt_budget_handoff?(_signal), do: false
 
-  defp per_attempt_budget_downshift?(%{active: true, scope: :per_attempt, cheaper_profile?: true}),
-    do: true
+  defp per_attempt_budget_progressing?(%{active: true, scope: :per_attempt} = signal) do
+    explicit_progress_signal?(signal) and signal[:cheaper_profile?] != true and
+      per_attempt_budget_progress_allows_retry?(signal)
+  end
+
+  defp per_attempt_budget_progressing?(_signal), do: false
+
+  defp per_attempt_budget_downshift?(%{active: true, scope: :per_attempt} = signal) do
+    signal[:cheaper_profile?] == true and per_attempt_budget_progress_allows_retry?(signal)
+  end
 
   defp per_attempt_budget_downshift?(_signal), do: false
+
+  defp per_attempt_budget_progress_allows_retry?(signal) when is_map(signal) do
+    if explicit_progress_signal?(signal) do
+      signal[:checkpoint_usable?] == true and progress_changed?(signal)
+    else
+      true
+    end
+  end
+
+  defp explicit_progress_signal?(signal) when is_map(signal) do
+    Map.has_key?(signal, :checkpoint_usable?) or
+      Map.has_key?(signal, :progress_status) or
+      Map.has_key?(signal, :progress_changed?) or
+      Map.has_key?(signal, :progress_fingerprint) or
+      Map.has_key?(signal, :progress_repeat_count)
+  end
+
+  defp progress_changed?(signal) when is_map(signal) do
+    signal[:progress_changed?] == true or normalize_progress_status(signal[:progress_status]) == :changed
+  end
 
   defp signal_reason(signal, fallback) when is_map(signal) do
     cond do
@@ -392,6 +474,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp signal_for_rule(signals, :retry_dedupe_hit), do: signals.retry_dedupe_hit
   defp signal_for_rule(signals, :continuation_attempt_limit_exceeded), do: signals.continuation_attempt_limit
   defp signal_for_rule(signals, :budget_exceeded_cumulative), do: signals.budget_exceeded
+  defp signal_for_rule(signals, :budget_exceeded_per_attempt_progressing), do: signals.budget_exceeded
   defp signal_for_rule(signals, :budget_exceeded_per_attempt_handoff), do: signals.budget_exceeded
   defp signal_for_rule(signals, :budget_exceeded_per_attempt_downshift), do: signals.budget_exceeded
   defp signal_for_rule(signals, :account_unhealthy_milestone_near), do: signals.account_unhealthy
@@ -434,6 +517,38 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp normalize_budget_scope_string(nil), do: nil
   defp normalize_budget_scope_string(value) when is_atom(value), do: Atom.to_string(value)
 
+  defp normalize_progress_status_string(value) do
+    case normalize_progress_status(value) do
+      nil -> nil
+      status -> Atom.to_string(status)
+    end
+  end
+
+  defp normalize_progress_status(value) when value in [:changed, :repeated, :unavailable], do: value
+
+  defp normalize_progress_status(value) when is_binary(value) do
+    case String.trim(value) do
+      "changed" -> :changed
+      "repeated" -> :repeated
+      "unavailable" -> :unavailable
+      _ -> nil
+    end
+  end
+
+  defp normalize_progress_status(_value), do: nil
+
+  defp normalize_non_empty_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_non_empty_string(_value), do: nil
+
+  defp normalize_non_negative_integer(value) when is_integer(value) and value >= 0, do: value
+  defp normalize_non_negative_integer(_value), do: nil
+
   defp atomize_keys(map) when is_map(map) do
     Map.new(map, fn
       {key, value} when is_binary(key) -> {known_string_key_to_atom(key), value}
@@ -451,9 +566,26 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp known_string_key_to_atom("risk_level"), do: :risk_level
   defp known_string_key_to_atom("cheaper_profile?"), do: :cheaper_profile?
   defp known_string_key_to_atom("cost_profile_key"), do: :cost_profile_key
+  defp known_string_key_to_atom("checkpoint_usable?"), do: :checkpoint_usable?
+  defp known_string_key_to_atom("progress_status"), do: :progress_status
+  defp known_string_key_to_atom("progress_fingerprint"), do: :progress_fingerprint
+  defp known_string_key_to_atom("progress_repeat_count"), do: :progress_repeat_count
+  defp known_string_key_to_atom("progress_changed?"), do: :progress_changed?
+  defp known_string_key_to_atom("budget_signal_role"), do: :budget_signal_role
   defp known_string_key_to_atom("retry_metadata"), do: :retry_metadata
   defp known_string_key_to_atom("log_fields"), do: :log_fields
   defp known_string_key_to_atom(other), do: other
+
+  defp maybe_put_budget_signal_field(signal, true, key, value), do: Map.put(signal, key, value)
+  defp maybe_put_budget_signal_field(signal, false, _key, _value), do: signal
+
+  defp maybe_put_budget_payload_field(payload, signal, key) when is_map(payload) and is_map(signal) do
+    if Map.has_key?(signal, key) do
+      Map.put(payload, key, Map.get(signal, key))
+    else
+      payload
+    end
+  end
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, _key, false), do: map

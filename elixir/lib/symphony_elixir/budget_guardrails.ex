@@ -30,6 +30,7 @@ defmodule SymphonyElixir.BudgetGuardrails do
            budget_threshold: settings.codex.max_total_tokens,
            budget_observed_total: issue_total,
            budget_issue_total_tokens: issue_total,
+           budget_signal_role: "hard_stop",
            budget_decision: "handoff"
          })}
 
@@ -45,32 +46,167 @@ defmodule SymphonyElixir.BudgetGuardrails do
 
   defp per_attempt_decision(context, settings, attempt_tokens, issue_total) do
     %{stage: cost_stage, current_profile_key: current_profile_key} = cost_profile_context(context)
+    progress = progress_surface_signal(context)
 
     attrs =
       %{
         budget_reason: :max_tokens_per_attempt_exceeded,
         budget_threshold: settings.codex.max_tokens_per_attempt,
         budget_observed_total: attempt_tokens,
-        budget_issue_total_tokens: issue_total
+        budget_issue_total_tokens: issue_total,
+        budget_signal_role: "signal"
       }
       |> Map.put(:cost_stage, Atom.to_string(cost_stage))
       |> maybe_put(:budget_current_cost_profile_key, current_profile_key)
+      |> maybe_put(:progress_status, progress_field(progress, :status))
+      |> maybe_put(:progress_fingerprint, progress_field(progress, :fingerprint))
+      |> maybe_put(:progress_repeat_count, progress_field(progress, :repeat_count))
+      |> maybe_put(:checkpoint_usable?, progress_field(progress, :checkpoint_usable?))
+      |> maybe_put(:progress_changed?, progress_field(progress, :changed?))
 
     base =
       decision(context, attrs)
 
     case cheaper_profile(settings, cost_stage, current_profile_key) do
       {:ok, profile_key, downshift_rule} ->
-        {:downshift,
-         base
-         |> Map.put(:budget_decision, "downshift")
-         |> Map.put(:budget_next_cost_profile_key, profile_key)
-         |> Map.put(:budget_downshift_rule, downshift_rule)}
+        if explicit_progress_guard?(progress) and not explicit_progress_allows_retry?(progress) do
+          {:handoff, Map.put(base, :budget_decision, "handoff")}
+        else
+          {:downshift,
+           base
+           |> Map.put(:budget_decision, "downshift")
+           |> Map.put(:budget_next_cost_profile_key, profile_key)
+           |> Map.put(:budget_downshift_rule, downshift_rule)}
+        end
 
       :error ->
-        {:handoff, Map.put(base, :budget_decision, "handoff")}
+        if explicit_progress_allows_retry?(progress) do
+          {:allow, Map.put(base, :budget_decision, "allow")}
+        else
+          {:handoff, Map.put(base, :budget_decision, "handoff")}
+        end
     end
   end
+
+  defp explicit_progress_guard?(%{mode: :explicit}), do: true
+  defp explicit_progress_guard?(_progress), do: false
+
+  defp explicit_progress_allows_retry?(%{mode: :explicit, checkpoint_usable?: true, changed?: true}), do: true
+  defp explicit_progress_allows_retry?(_progress), do: false
+
+  defp progress_surface_signal(context) when is_map(context) do
+    if explicit_progress_context?(context), do: explicit_progress_surface_signal(context), else: %{mode: :implicit}
+  end
+
+  defp explicit_progress_surface_signal(context) when is_map(context) do
+    previous_checkpoint = map_get(context, :previous_resume_checkpoint)
+    current_checkpoint = map_get(context, :resume_checkpoint)
+    previous_fingerprint = progress_fingerprint(previous_checkpoint)
+    current_fingerprint = progress_fingerprint(current_checkpoint)
+
+    checkpoint_usable? =
+      checkpoint_usable?(previous_checkpoint) and checkpoint_usable?(current_checkpoint) and
+        is_binary(previous_fingerprint) and is_binary(current_fingerprint)
+
+    changed? = checkpoint_usable? and previous_fingerprint != current_fingerprint
+
+    %{
+      mode: :explicit,
+      status: progress_status(checkpoint_usable?, changed?),
+      fingerprint: current_fingerprint,
+      repeat_count: progress_repeat_count(checkpoint_usable?, changed?),
+      checkpoint_usable?: checkpoint_usable?,
+      changed?: changed?
+    }
+  end
+
+  defp progress_status(false, _changed), do: "unavailable"
+  defp progress_status(true, true), do: "changed"
+  defp progress_status(true, false), do: "repeated"
+
+  defp progress_repeat_count(false, _changed), do: 0
+  defp progress_repeat_count(true, true), do: 1
+  defp progress_repeat_count(true, false), do: 2
+
+  defp explicit_progress_context?(context) when is_map(context) do
+    Map.has_key?(context, :resume_checkpoint) or
+      Map.has_key?(context, "resume_checkpoint") or
+      Map.has_key?(context, :previous_resume_checkpoint) or
+      Map.has_key?(context, "previous_resume_checkpoint")
+  end
+
+  defp progress_field(%{mode: :explicit} = progress, key), do: Map.get(progress, key)
+  defp progress_field(_progress, _key), do: nil
+
+  defp checkpoint_usable?(%{} = checkpoint) do
+    map_get(checkpoint, :resume_ready) == true or map_get(checkpoint, :available) == true
+  end
+
+  defp checkpoint_usable?(_checkpoint), do: false
+
+  defp progress_fingerprint(%{} = checkpoint) do
+    workpad_digest = checkpoint_workpad_digest(checkpoint)
+    workspace_diff_fingerprint = checkpoint_workspace_diff_fingerprint(checkpoint)
+    validation_bundle_fingerprint = checkpoint_validation_bundle_fingerprint(checkpoint)
+    changed_files = checkpoint_changed_files(checkpoint)
+
+    if is_binary(workpad_digest) or is_binary(workspace_diff_fingerprint) or
+         is_binary(validation_bundle_fingerprint) or changed_files != [] do
+      [
+        "workpad_digest=#{workpad_digest || "none"}",
+        "workspace_diff_fingerprint=#{workspace_diff_fingerprint || "none"}",
+        "validation_bundle_fingerprint=#{validation_bundle_fingerprint || "none"}"
+      ]
+      |> Kernel.++(Enum.map(changed_files, &"changed_file=#{&1}"))
+      |> Enum.join("|")
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+      |> then(&"progress:#{&1}")
+    end
+  end
+
+  defp progress_fingerprint(_checkpoint), do: nil
+
+  defp checkpoint_workpad_digest(%{} = checkpoint) do
+    checkpoint
+    |> map_get(:workpad_digest)
+    |> normalize_optional_string()
+  end
+
+  defp checkpoint_workspace_diff_fingerprint(%{} = checkpoint) do
+    checkpoint
+    |> map_get(:workspace_diff_fingerprint)
+    |> normalize_optional_string()
+  end
+
+  defp checkpoint_validation_bundle_fingerprint(%{} = checkpoint) do
+    normalize_optional_string(map_get(checkpoint, :validation_bundle_fingerprint)) ||
+      case map_get(checkpoint, :active_validation_snapshot) do
+        %{} = snapshot ->
+          snapshot
+          |> map_get(:validation_bundle_fingerprint)
+          |> normalize_optional_string()
+
+        _ ->
+          nil
+      end
+  end
+
+  defp checkpoint_changed_files(%{} = checkpoint) do
+    checkpoint
+    |> map_get(:changed_files)
+    |> normalize_changed_files()
+  end
+
+  defp normalize_changed_files(files) when is_list(files) do
+    files
+    |> Enum.map(&normalize_optional_string/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp normalize_changed_files(_files), do: []
 
   defp decision(context, attrs) do
     issue = Map.get(context, :issue)
@@ -178,6 +314,15 @@ defmodule SymphonyElixir.BudgetGuardrails do
   end
 
   defp normalize_profile_key(_profile_key), do: nil
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_optional_string(_value), do: nil
 
   defp stage_default(cost_policy, stage) when is_map(cost_policy) do
     cost_policy
