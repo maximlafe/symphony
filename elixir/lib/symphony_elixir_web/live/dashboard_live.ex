@@ -213,7 +213,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <col style="width: 8rem;" />
                   <col style="width: 11rem;" />
                   <col style="width: 11rem;" />
+                  <col style="width: 11rem;" />
                   <col style="width: 7.5rem;" />
+                  <col style="width: 8.5rem;" />
                   <col style="width: 8.5rem;" />
                   <col />
                   <col style="width: 10rem;" />
@@ -223,6 +225,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>Issue</th>
                     <th>Linear state</th>
                     <th>Run phase</th>
+                    <th>Lifecycle</th>
                     <th>Activity</th>
                     <th>Account</th>
                     <th>Session</th>
@@ -262,6 +265,25 @@ defmodule SymphonyElixirWeb.DashboardLive do
                           <span :if={entry.verification_profile}>
                             for <span class="mono"><%= entry.verification_profile %></span>
                           </span>
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span class={lifecycle_badge_class(entry.lifecycle_state)}>
+                          <%= entry.lifecycle_state || "n/a" %>
+                        </span>
+                        <span :if={entry.replacement_of_session_id} class="muted cell-break">
+                          replaces
+                          <span class="mono"><%= entry.replacement_of_session_id %></span>
+                        </span>
+                        <span :if={entry.replacement_session_id} class="muted cell-break">
+                          replacement
+                          <span class="mono"><%= entry.replacement_session_id %></span>
+                        </span>
+                        <span :if={entry.continuation_reason} class="muted cell-break">
+                          reason
+                          <span class="mono"><%= entry.continuation_reason %></span>
                         </span>
                       </div>
                     </td>
@@ -689,6 +711,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
       "stalled" -> "#{base} state-badge-danger"
       "slow" -> "#{base} state-badge-warning"
       _ -> "#{base} state-badge-active"
+    end
+  end
+
+  defp lifecycle_badge_class(lifecycle_state) do
+    base = "state-badge"
+
+    case lifecycle_state do
+      "attached" -> "#{base} state-badge-active"
+      "launch_pending" -> "#{base} state-badge-warning"
+      "replacing" -> "#{base} state-badge-warning"
+      "retry_scheduled" -> "#{base} state-badge-warning"
+      _ -> base
     end
   end
 

@@ -54,7 +54,9 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert section_offset(html, "Running sessions") < section_offset(html, "Retry queue")
     assert section_offset(html, "Retry queue") < section_offset(html, "Codex accounts")
     assert html =~ "Run phase"
+    assert html =~ "Lifecycle"
     assert html =~ "full validate"
+    assert html =~ "attached"
     assert html =~ "slow"
     assert html =~ "make symphony-validate"
     assert html =~ "launch-app missing, using local HTTP/UI fallback"
@@ -142,6 +144,22 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert html =~ "7d: 12% used"
     assert html =~ "5h: 76/100 left"
     assert html =~ "7d: 4% used"
+  end
+
+  test "render shows replacing lifecycle and relation metadata when retry is queued for a running issue" do
+    payload =
+      multi_account_snapshot()
+      |> put_in([:retrying, Access.at(0), :identifier], "MT-HTTP")
+      |> put_in([:retrying, Access.at(0), :continuation_reason], "normal_exit")
+      |> payload_from_snapshot()
+
+    html = render_dashboard(%{payload: payload}, codex_accounts_expanded: true)
+
+    assert html =~ "replacing"
+    assert html =~ "replaces"
+    assert html =~ "thread-http"
+    assert html =~ "reason"
+    assert html =~ "normal_exit"
   end
 
   test "render uses danger styling for limit chips on unhealthy accounts" do
@@ -236,6 +254,7 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert running_sessions_offset < retry_queue_offset
     assert retry_queue_offset < codex_accounts_offset
     assert dashboard_body =~ "full validate"
+    assert dashboard_body =~ "attached"
     assert dashboard_body =~ "make symphony-validate"
     assert dashboard_body =~ "launch-app missing, using local HTTP/UI fallback"
     assert dashboard_body =~ "verification failed for profile `runtime`"
@@ -254,6 +273,8 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert api_response.body["active_codex_account_id"] == "primary"
     assert get_in(api_response.body, ["running", Access.at(0), "run_phase"]) == "full validate"
     assert get_in(api_response.body, ["running", Access.at(0), "activity_state"]) == "slow"
+    assert get_in(api_response.body, ["running", Access.at(0), "lifecycle_state"]) == "attached"
+    assert get_in(api_response.body, ["retrying", Access.at(0), "lifecycle_state"]) == "retry_scheduled"
 
     assert get_in(api_response.body, ["running", Access.at(0), "current_command"]) ==
              "make symphony-validate"

@@ -400,6 +400,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_activity_at" => state_payload["running"] |> List.first() |> Map.fetch!("last_activity_at"),
                  "last_event_at" => nil,
                  "run_phase" => "editing",
+                 "lifecycle_state" => "attached",
+                 "replacement_of_session_id" => nil,
+                 "replacement_session_id" => nil,
+                 "continuation_reason" => nil,
                  "operational_notice" => nil,
                  "verification_profile" => nil,
                  "verification_result" => nil,
@@ -417,7 +421,11 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "trace_id" => "trace-retry",
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
-                 "error_class" => "transient"
+                 "error_class" => "transient",
+                 "lifecycle_state" => "retry_scheduled",
+                 "replacement_of_session_id" => nil,
+                 "replacement_session_id" => nil,
+                 "continuation_reason" => nil
                }
              ],
              "codex_totals" => %{
@@ -443,6 +451,10 @@ defmodule SymphonyElixir.ExtensionsTest do
              "issue_id" => "issue-http",
              "trace_id" => "trace-http",
              "status" => "running",
+             "lifecycle_state" => "attached",
+             "replacement_of_session_id" => nil,
+             "replacement_session_id" => nil,
+             "continuation_reason" => nil,
              "workspace" => %{"path" => Path.join(Config.settings!().workspace.root, "MT-HTTP")},
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
@@ -462,6 +474,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_message" => "rendered",
                "last_event_at" => nil,
                "run_phase" => "editing",
+               "lifecycle_state" => "attached",
+               "replacement_of_session_id" => nil,
+               "replacement_session_id" => nil,
+               "continuation_reason" => nil,
                "operational_notice" => nil,
                "verification_profile" => nil,
                "verification_result" => nil,
@@ -479,6 +495,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                "phase_started_at" => issue_payload["tracked"]["phase_started_at"],
                "last_activity_at" => issue_payload["tracked"]["last_activity_at"],
                "activity_state" => "alive",
+               "lifecycle_state" => "attached",
+               "replacement_of_session_id" => nil,
+               "replacement_session_id" => nil,
+               "continuation_reason" => nil,
                "current_command" => nil,
                "external_step" => nil,
                "current_step" => nil,
@@ -608,6 +628,143 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert retry_issue_payload["retry"]["runtime_head_sha"] == "runtime-retry-sha"
     assert retry_issue_payload["retry"]["expected_head_sha"] == "expected-retry-sha"
+  end
+
+  test "phoenix observability api exposes lifecycle axis and replacement relations" do
+    now = DateTime.utc_now()
+
+    snapshot = %{
+      active_codex_account_id: "primary",
+      codex_accounts: [],
+      running: [
+        %{
+          issue_id: "issue-launch",
+          identifier: "MT-LAUNCH",
+          trace_id: "trace-launch",
+          state: "In Progress",
+          codex_account_id: "primary",
+          session_id: nil,
+          turn_count: 0,
+          codex_app_server_pid: nil,
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          started_at: now
+        },
+        %{
+          issue_id: "issue-attached",
+          identifier: "MT-ATTACHED",
+          trace_id: "trace-attached",
+          state: "In Progress",
+          codex_account_id: "primary",
+          session_id: "thread-attached",
+          replacement_of_session_id: "thread-previous",
+          continuation_reason: "normal_exit",
+          turn_count: 1,
+          codex_app_server_pid: nil,
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 1,
+          codex_output_tokens: 1,
+          codex_total_tokens: 2,
+          started_at: now
+        },
+        %{
+          issue_id: "issue-replacing",
+          identifier: "MT-REPLACING",
+          trace_id: "trace-replacing",
+          state: "In Progress",
+          codex_account_id: "primary",
+          session_id: "thread-running",
+          turn_count: 2,
+          codex_app_server_pid: nil,
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 2,
+          codex_output_tokens: 3,
+          codex_total_tokens: 5,
+          started_at: now
+        }
+      ],
+      retrying: [
+        %{
+          issue_id: "issue-replacing",
+          identifier: "MT-REPLACING",
+          attempt: 2,
+          trace_id: "trace-replacing",
+          due_in_ms: 2_000,
+          error: "continuing",
+          error_class: "transient",
+          continuation_reason: "normal_exit"
+        },
+        %{
+          issue_id: "issue-retry-only",
+          identifier: "MT-RETRY-ONLY",
+          attempt: 3,
+          trace_id: "trace-retry-only",
+          due_in_ms: 2_000,
+          error: "still backing off",
+          error_class: "transient"
+        }
+      ],
+      codex_totals: %{input_tokens: 3, output_tokens: 4, total_tokens: 7, seconds_running: 1.0},
+      token_reason_totals: %{},
+      rate_limits: %{},
+      workspace: %{
+        usage_bytes: 1,
+        warning_threshold_bytes: 10,
+        done_closed_keep_count: 5
+      }
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :LifecycleApiOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    launch_issue = json_response(get(build_conn(), "/api/v1/MT-LAUNCH"), 200)
+    assert launch_issue["status"] == "running"
+    assert launch_issue["lifecycle_state"] == "launch_pending"
+    assert launch_issue["replacement_of_session_id"] == nil
+    assert launch_issue["replacement_session_id"] == nil
+
+    attached_issue = json_response(get(build_conn(), "/api/v1/MT-ATTACHED"), 200)
+    assert attached_issue["status"] == "running"
+    assert attached_issue["lifecycle_state"] == "attached"
+    assert attached_issue["replacement_of_session_id"] == "thread-previous"
+    assert attached_issue["replacement_session_id"] == "thread-attached"
+    assert attached_issue["continuation_reason"] == "normal_exit"
+    assert attached_issue["running"]["lifecycle_state"] == "attached"
+    assert attached_issue["running"]["replacement_of_session_id"] == "thread-previous"
+    assert attached_issue["running"]["replacement_session_id"] == "thread-attached"
+    assert attached_issue["tracked"]["lifecycle_state"] == "attached"
+
+    replacing_issue = json_response(get(build_conn(), "/api/v1/MT-REPLACING"), 200)
+    assert replacing_issue["status"] == "running"
+    assert replacing_issue["lifecycle_state"] == "replacing"
+    assert replacing_issue["replacement_of_session_id"] == "thread-running"
+    assert replacing_issue["continuation_reason"] == "normal_exit"
+    assert replacing_issue["running"]["lifecycle_state"] == "replacing"
+    assert replacing_issue["retry"]["lifecycle_state"] == "replacing"
+    assert replacing_issue["retry"]["replacement_of_session_id"] == "thread-running"
+    assert replacing_issue["retry"]["continuation_reason"] == "normal_exit"
+    assert replacing_issue["tracked"]["lifecycle_state"] == "replacing"
+
+    retry_only_issue = json_response(get(build_conn(), "/api/v1/MT-RETRY-ONLY"), 200)
+    assert retry_only_issue["status"] == "retrying"
+    assert retry_only_issue["lifecycle_state"] == "retry_scheduled"
+    assert retry_only_issue["retry"]["lifecycle_state"] == "retry_scheduled"
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do

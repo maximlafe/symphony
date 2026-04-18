@@ -12,6 +12,9 @@ defmodule SymphonyElixirWeb.Presenter do
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
+        running_by_identifier = entries_by_identifier(snapshot.running)
+        retry_by_identifier = entries_by_identifier(snapshot.retrying)
+
         %{
           generated_at: generated_at,
           release: release,
@@ -21,8 +24,14 @@ defmodule SymphonyElixirWeb.Presenter do
           },
           active_codex_account_id: Map.get(snapshot, :active_codex_account_id),
           codex_accounts: Enum.map(Map.get(snapshot, :codex_accounts, []), &account_payload/1),
-          running: Enum.map(snapshot.running, &running_entry_payload/1),
-          retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
+          running:
+            Enum.map(snapshot.running, fn running ->
+              running_entry_payload(running, Map.get(retry_by_identifier, Map.get(running, :identifier)))
+            end),
+          retrying:
+            Enum.map(snapshot.retrying, fn retry ->
+              retry_entry_payload(retry, Map.get(running_by_identifier, Map.get(retry, :identifier)))
+            end),
           codex_totals: snapshot.codex_totals,
           token_reason_totals: Map.get(snapshot, :token_reason_totals, %{}),
           rate_limits: snapshot.rate_limits,
@@ -75,11 +84,17 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp issue_payload_body(issue_identifier, running, retry) do
+    lifecycle = lifecycle_surface(running, retry)
+
     %{
       issue_identifier: issue_identifier,
       issue_id: issue_id_from_entries(running, retry),
       trace_id: trace_id_from_entries(running, retry),
       status: issue_status(running, retry),
+      lifecycle_state: lifecycle.lifecycle_state,
+      replacement_of_session_id: lifecycle.replacement_of_session_id,
+      replacement_session_id: lifecycle.replacement_session_id,
+      continuation_reason: lifecycle.continuation_reason,
       workspace: %{
         path: Path.join(Config.settings!().workspace.root, issue_identifier)
       },
@@ -87,14 +102,14 @@ defmodule SymphonyElixirWeb.Presenter do
         restart_count: restart_count(retry),
         current_retry_attempt: retry_attempt(retry)
       },
-      running: running && running_issue_payload(running),
-      retry: retry && retry_issue_payload(retry),
+      running: running && running_issue_payload(running, retry),
+      retry: retry && retry_issue_payload(retry, running),
       logs: %{
         codex_session_logs: []
       },
       recent_events: (running && recent_events_payload(running)) || [],
       last_error: retry && retry.error,
-      tracked: runtime_payload(running)
+      tracked: runtime_payload(running, retry)
     }
   end
 
@@ -112,7 +127,10 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_status(nil, _retry), do: "retrying"
   defp issue_status(_running, _retry), do: "running"
 
-  defp running_entry_payload(entry) do
+  defp running_entry_payload(entry, retry) do
+    lifecycle = lifecycle_surface(entry, retry)
+    runtime_source = Map.merge(entry, lifecycle)
+
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
@@ -129,6 +147,10 @@ defmodule SymphonyElixirWeb.Presenter do
       phase_started_at: iso8601(Map.get(entry, :phase_started_at) || entry.started_at),
       last_activity_at: iso8601(Map.get(entry, :last_activity_at) || entry.last_codex_timestamp || entry.started_at),
       activity_state: Map.get(entry, :activity_state) || "alive",
+      lifecycle_state: lifecycle.lifecycle_state,
+      replacement_of_session_id: lifecycle.replacement_of_session_id,
+      replacement_session_id: lifecycle.replacement_session_id,
+      continuation_reason: lifecycle.continuation_reason,
       current_command: Map.get(entry, :current_command),
       external_step: Map.get(entry, :external_step),
       current_step:
@@ -146,10 +168,13 @@ defmodule SymphonyElixirWeb.Presenter do
         total_tokens: entry.codex_total_tokens
       }
     }
-    |> Map.merge(TelemetrySchema.runtime_payload(entry))
+    |> Map.merge(TelemetrySchema.runtime_payload(runtime_source))
   end
 
-  defp retry_entry_payload(entry) do
+  defp retry_entry_payload(entry, running) do
+    lifecycle = lifecycle_surface(running, entry)
+    runtime_source = Map.merge(entry, lifecycle)
+
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
@@ -157,12 +182,19 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
-      error_class: Map.get(entry, :error_class)
+      error_class: Map.get(entry, :error_class),
+      lifecycle_state: lifecycle.lifecycle_state,
+      replacement_of_session_id: lifecycle.replacement_of_session_id,
+      replacement_session_id: lifecycle.replacement_session_id,
+      continuation_reason: lifecycle.continuation_reason
     }
-    |> Map.merge(TelemetrySchema.runtime_payload(entry))
+    |> Map.merge(TelemetrySchema.runtime_payload(runtime_source))
   end
 
-  defp running_issue_payload(running) do
+  defp running_issue_payload(running, retry) do
+    lifecycle = lifecycle_surface(running, retry)
+    runtime_source = Map.merge(running, lifecycle)
+
     %{
       codex_account_id: Map.get(running, :codex_account_id),
       trace_id: Map.get(running, :trace_id),
@@ -177,6 +209,10 @@ defmodule SymphonyElixirWeb.Presenter do
       phase_started_at: iso8601(Map.get(running, :phase_started_at) || running.started_at),
       last_activity_at: iso8601(Map.get(running, :last_activity_at) || running.last_codex_timestamp || running.started_at),
       activity_state: Map.get(running, :activity_state) || "alive",
+      lifecycle_state: lifecycle.lifecycle_state,
+      replacement_of_session_id: lifecycle.replacement_of_session_id,
+      replacement_session_id: lifecycle.replacement_session_id,
+      continuation_reason: lifecycle.continuation_reason,
       current_command: Map.get(running, :current_command),
       external_step: Map.get(running, :external_step),
       current_step:
@@ -194,18 +230,25 @@ defmodule SymphonyElixirWeb.Presenter do
         total_tokens: running.codex_total_tokens
       }
     }
-    |> Map.merge(TelemetrySchema.runtime_payload(running))
+    |> Map.merge(TelemetrySchema.runtime_payload(runtime_source))
   end
 
-  defp retry_issue_payload(retry) do
+  defp retry_issue_payload(retry, running) do
+    lifecycle = lifecycle_surface(running, retry)
+    runtime_source = Map.merge(retry, lifecycle)
+
     %{
       trace_id: Map.get(retry, :trace_id),
       attempt: retry.attempt,
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error,
-      error_class: Map.get(retry, :error_class)
+      error_class: Map.get(retry, :error_class),
+      lifecycle_state: lifecycle.lifecycle_state,
+      replacement_of_session_id: lifecycle.replacement_of_session_id,
+      replacement_session_id: lifecycle.replacement_session_id,
+      continuation_reason: lifecycle.continuation_reason
     }
-    |> Map.merge(TelemetrySchema.runtime_payload(retry))
+    |> Map.merge(TelemetrySchema.runtime_payload(runtime_source))
   end
 
   defp recent_events_payload(running) do
@@ -223,14 +266,21 @@ defmodule SymphonyElixirWeb.Presenter do
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
 
-  defp runtime_payload(nil), do: %{}
+  defp runtime_payload(nil, _retry), do: %{}
 
-  defp runtime_payload(running) do
+  defp runtime_payload(running, retry) do
+    lifecycle = lifecycle_surface(running, retry)
+    runtime_source = Map.merge(running, lifecycle)
+
     %{
       run_phase: Map.get(running, :run_phase) || "editing",
       phase_started_at: iso8601(Map.get(running, :phase_started_at) || running.started_at),
       last_activity_at: iso8601(Map.get(running, :last_activity_at) || running.last_codex_timestamp || running.started_at),
       activity_state: Map.get(running, :activity_state) || "alive",
+      lifecycle_state: lifecycle.lifecycle_state,
+      replacement_of_session_id: lifecycle.replacement_of_session_id,
+      replacement_session_id: lifecycle.replacement_session_id,
+      continuation_reason: lifecycle.continuation_reason,
       current_command: Map.get(running, :current_command),
       external_step: Map.get(running, :external_step),
       current_step:
@@ -243,7 +293,81 @@ defmodule SymphonyElixirWeb.Presenter do
       verification_missing_items: Map.get(running, :verification_missing_items, []),
       verification_checked_at: iso8601(Map.get(running, :verification_checked_at))
     }
-    |> Map.merge(TelemetrySchema.runtime_payload(running))
+    |> Map.merge(TelemetrySchema.runtime_payload(runtime_source))
+  end
+
+  defp lifecycle_surface(running, retry) do
+    lifecycle_state = lifecycle_state(running, retry)
+
+    replacement_of_session_id =
+      entry_optional_string(retry, :replacement_of_session_id) ||
+        entry_optional_string(running, :replacement_of_session_id) ||
+        fallback_replacement_of_session_id(running, retry)
+
+    replacement_session_id =
+      entry_optional_string(running, :replacement_session_id) ||
+        entry_optional_string(retry, :replacement_session_id) ||
+        fallback_replacement_session_id(running, retry, replacement_of_session_id)
+
+    continuation_reason =
+      entry_optional_string(retry, :continuation_reason) ||
+        entry_optional_string(running, :continuation_reason)
+
+    %{
+      lifecycle_state: lifecycle_state,
+      replacement_of_session_id: replacement_of_session_id,
+      replacement_session_id: replacement_session_id,
+      continuation_reason: continuation_reason
+    }
+  end
+
+  defp lifecycle_state(%{} = _running, %{} = _retry), do: "replacing"
+
+  defp lifecycle_state(%{} = running, nil) do
+    if session_id(running), do: "attached", else: "launch_pending"
+  end
+
+  defp lifecycle_state(nil, %{}), do: "retry_scheduled"
+  defp lifecycle_state(nil, nil), do: nil
+
+  defp fallback_replacement_of_session_id(%{} = running, %{} = _retry), do: session_id(running)
+  defp fallback_replacement_of_session_id(_running, _retry), do: nil
+
+  defp fallback_replacement_session_id(%{} = running, nil, replacement_of_session_id)
+       when is_binary(replacement_of_session_id),
+       do: session_id(running)
+
+  defp fallback_replacement_session_id(_running, _retry, _replacement_of_session_id), do: nil
+
+  defp session_id(entry), do: entry_optional_string(entry, :session_id)
+
+  defp entries_by_identifier(entries) when is_list(entries) do
+    entries
+    |> Enum.reject(&is_nil/1)
+    |> Map.new(fn entry -> {Map.get(entry, :identifier), entry} end)
+  end
+
+  defp entries_by_identifier(_entries), do: %{}
+
+  defp entry_optional_string(nil, _key), do: nil
+
+  defp entry_optional_string(entry, key) when is_map(entry) and is_atom(key) do
+    key_string = Atom.to_string(key)
+
+    case Map.get(entry, key) || Map.get(entry, key_string) do
+      nil ->
+        nil
+
+      value when is_binary(value) ->
+        trimmed = String.trim(value)
+        if trimmed == "", do: nil, else: trimmed
+
+      value when is_atom(value) ->
+        Atom.to_string(value)
+
+      _ ->
+        nil
+    end
   end
 
   defp account_payload(account) when is_map(account) do
