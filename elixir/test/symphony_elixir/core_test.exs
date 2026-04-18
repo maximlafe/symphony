@@ -805,10 +805,15 @@ defmodule SymphonyElixir.CoreTest do
              due_at_ms: due_at_ms,
              error: error,
              error_class: "transient",
-             delay_type: nil
+             delay_type: nil,
+             resume_mode: "fallback_reread",
+             resume_fallback_reason: "resume_checkpoint_unavailable",
+             resume_checkpoint: resume_checkpoint
            } = updated_state.retry_attempts[issue_id]
 
     assert error =~ "failed to spawn agent:"
+    assert resume_checkpoint["resume_mode"] == "fallback_reread"
+    assert resume_checkpoint["resume_fallback_reason"] == "resume_checkpoint_unavailable"
     assert_due_in_range(due_at_ms, 7_000, 10_500)
   end
 
@@ -997,12 +1002,16 @@ defmodule SymphonyElixir.CoreTest do
              error: error,
              error_class: "transient",
              delay_type: nil,
+             resume_mode: "resume_checkpoint",
+             resume_fallback_reason: nil,
              resume_checkpoint: reloaded_checkpoint
            } = updated_state.retry_attempts[issue_id]
 
     assert error =~ "failed to spawn agent:"
     assert_due_in_range(due_at_ms, 17_000, 20_500)
     assert reloaded_checkpoint["resume_ready"] == true
+    assert reloaded_checkpoint["resume_mode"] == "resume_checkpoint"
+    assert reloaded_checkpoint["resume_fallback_reason"] == nil
     assert reloaded_checkpoint["workpad_ref"] == "comment-789"
     assert reloaded_checkpoint["open_pr"]["number"] == 78
 
@@ -4962,10 +4971,23 @@ defmodule SymphonyElixir.CoreTest do
   test "editing safe boundary triggers hard auto-compaction continuation retry with diagnostics" do
     issue_id = "issue-auto-compaction-editing"
     issue = %Issue{id: issue_id, identifier: "LET-515", state: "In Progress"}
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-auto-compaction-editing-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    workspace = init_workspace_repo!(workspace_root, issue.identifier)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nAuto-compaction ready checkpoint")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-auto-compaction")
     worker_pid = spawn(fn -> Process.sleep(:infinity) end)
     ref = Process.monitor(worker_pid)
 
     on_exit(fn ->
+      File.rm_rf(test_root)
+
       if Process.alive?(worker_pid) do
         Process.exit(worker_pid, :kill)
       end
@@ -4973,6 +4995,7 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
+      workspace_root: workspace_root,
       codex_auto_compaction_max_total_tokens: 100
     )
 
@@ -5018,6 +5041,8 @@ defmodule SymphonyElixir.CoreTest do
              attempt: 1,
              delay_type: :continuation,
              continuation_reason: "auto_compaction",
+             resume_mode: "resume_checkpoint",
+             resume_fallback_reason: nil,
              auto_compaction_signal: "total_tokens",
              auto_compaction_threshold: 100,
              auto_compaction_observed_total: 150,
@@ -5025,6 +5050,7 @@ defmodule SymphonyElixir.CoreTest do
              resume_checkpoint: checkpoint
            } = updated_state.retry_attempts[issue_id]
 
+    assert checkpoint["resume_ready"] == true
     assert checkpoint["auto_compaction"]["continuation_reason"] == "auto_compaction"
     assert checkpoint["auto_compaction"]["auto_compaction_signal"] == "total_tokens"
     assert checkpoint["auto_compaction"]["auto_compaction_threshold"] == 100
@@ -5098,6 +5124,8 @@ defmodule SymphonyElixir.CoreTest do
              attempt: 1,
              delay_type: :continuation,
              continuation_reason: "auto_compaction",
+             resume_mode: "fallback_reread",
+             resume_fallback_reason: "workspace_unavailable",
              auto_compaction_signal: "total_tokens",
              auto_compaction_threshold: 100,
              auto_compaction_observed_total: 150,
@@ -5105,6 +5133,7 @@ defmodule SymphonyElixir.CoreTest do
              resume_checkpoint: checkpoint
            } = updated_state.retry_attempts[issue_id]
 
+    assert checkpoint["resume_ready"] == false
     assert checkpoint["auto_compaction"]["continuation_reason"] == "auto_compaction"
     assert checkpoint["auto_compaction"]["auto_compaction_signal"] == "total_tokens"
     assert checkpoint["auto_compaction"]["auto_compaction_threshold"] == 100
@@ -5677,6 +5706,27 @@ defmodule SymphonyElixir.CoreTest do
     prompt = PromptBuilder.build_prompt(issue, attempt: 2)
 
     assert prompt == "Retry #2"
+  end
+
+  test "prompt builder includes explicit resume mode and fallback reason fields" do
+    workflow_prompt = "{{ resume_checkpoint.resume_mode }}|{{ resume_checkpoint.resume_fallback_reason }}"
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
+
+    issue = %Issue{
+      identifier: "MT-202",
+      title: "Resume metadata is explicit",
+      description: "Fallback flow",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-202",
+      labels: []
+    }
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        resume_checkpoint: %{"fallback_reasons" => ["resume checkpoint is unavailable"]}
+      )
+
+    assert prompt == "fallback_reread|resume_checkpoint_unavailable"
   end
 
   test "agent runner keeps workspace after successful codex run" do

@@ -1191,6 +1191,12 @@ defmodule SymphonyElixir.Orchestrator do
     continuation_reason =
       pick_retry_optional_string(previous_retry, metadata, :continuation_reason)
 
+    resume_mode =
+      pick_retry_optional_string(previous_retry, metadata, :resume_mode)
+
+    resume_fallback_reason =
+      pick_retry_optional_string(previous_retry, metadata, :resume_fallback_reason)
+
     auto_compaction_signal =
       pick_retry_optional_string(previous_retry, metadata, :auto_compaction_signal)
 
@@ -1256,6 +1262,8 @@ defmodule SymphonyElixir.Orchestrator do
             routing_parity_status: routing_parity_status,
             routing_parity_reason: routing_parity_reason,
             continuation_reason: continuation_reason,
+            resume_mode: resume_mode,
+            resume_fallback_reason: resume_fallback_reason,
             auto_compaction_signal: auto_compaction_signal,
             auto_compaction_threshold: auto_compaction_threshold,
             auto_compaction_observed_total: auto_compaction_observed_total,
@@ -1297,6 +1305,8 @@ defmodule SymphonyElixir.Orchestrator do
           routing_parity_status: Map.get(retry_entry, :routing_parity_status),
           routing_parity_reason: Map.get(retry_entry, :routing_parity_reason),
           continuation_reason: Map.get(retry_entry, :continuation_reason),
+          resume_mode: Map.get(retry_entry, :resume_mode),
+          resume_fallback_reason: Map.get(retry_entry, :resume_fallback_reason),
           auto_compaction_signal: Map.get(retry_entry, :auto_compaction_signal),
           auto_compaction_threshold: Map.get(retry_entry, :auto_compaction_threshold),
           auto_compaction_observed_total: Map.get(retry_entry, :auto_compaction_observed_total),
@@ -1759,6 +1769,8 @@ defmodule SymphonyElixir.Orchestrator do
                 expected_head_sha: Map.get(execution_head, :expected_head_sha),
                 execution_branch: Map.get(execution_head, :execution_branch),
                 continuation_reason: checkpoint_continuation_reason(resume_checkpoint),
+                resume_mode: checkpoint_resume_mode(resume_checkpoint),
+                resume_fallback_reason: checkpoint_resume_fallback_reason(resume_checkpoint),
                 auto_compaction_signal: checkpoint_auto_compaction_signal(resume_checkpoint),
                 auto_compaction_threshold: checkpoint_auto_compaction_threshold(resume_checkpoint),
                 auto_compaction_observed_total: checkpoint_auto_compaction_observed_total(resume_checkpoint),
@@ -1854,6 +1866,8 @@ defmodule SymphonyElixir.Orchestrator do
                 expected_head_sha: Map.get(execution_head, :expected_head_sha),
                 execution_branch: Map.get(execution_head, :execution_branch),
                 continuation_reason: checkpoint_continuation_reason(resume_checkpoint),
+                resume_mode: checkpoint_resume_mode(resume_checkpoint),
+                resume_fallback_reason: checkpoint_resume_fallback_reason(resume_checkpoint),
                 auto_compaction_signal: checkpoint_auto_compaction_signal(resume_checkpoint),
                 auto_compaction_threshold: checkpoint_auto_compaction_threshold(resume_checkpoint),
                 auto_compaction_observed_total: checkpoint_auto_compaction_observed_total(resume_checkpoint),
@@ -3188,6 +3202,18 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp checkpoint_continuation_reason(_checkpoint), do: nil
 
+  defp checkpoint_resume_mode(%{} = checkpoint) do
+    normalize_optional_string(map_any(checkpoint, [:resume_mode, "resume_mode"]))
+  end
+
+  defp checkpoint_resume_mode(_checkpoint), do: nil
+
+  defp checkpoint_resume_fallback_reason(%{} = checkpoint) do
+    normalize_optional_string(map_any(checkpoint, [:resume_fallback_reason, "resume_fallback_reason"]))
+  end
+
+  defp checkpoint_resume_fallback_reason(_checkpoint), do: nil
+
   defp checkpoint_auto_compaction_signal(%{} = checkpoint) do
     payload = checkpoint_auto_compaction_payload(checkpoint)
 
@@ -3979,6 +4005,11 @@ defmodule SymphonyElixir.Orchestrator do
       retry_routing_field(source, checkpoint_routing_payload, :routing_parity_reason)
     )
     |> maybe_put_retry_metadata(:continuation_reason, retry_continuation_reason(source, resume_checkpoint))
+    |> maybe_put_retry_metadata(:resume_mode, retry_resume_mode(source, resume_checkpoint))
+    |> maybe_put_retry_metadata(
+      :resume_fallback_reason,
+      retry_resume_fallback_reason(source, resume_checkpoint)
+    )
     |> maybe_put_retry_metadata(
       :auto_compaction_signal,
       retry_auto_compaction_signal(source, resume_checkpoint)
@@ -4032,6 +4063,16 @@ defmodule SymphonyElixir.Orchestrator do
   defp retry_continuation_reason(source, resume_checkpoint) when is_map(source) do
     normalize_optional_string(map_any(source, [:continuation_reason, "continuation_reason"])) ||
       checkpoint_continuation_reason(resume_checkpoint)
+  end
+
+  defp retry_resume_mode(source, resume_checkpoint) when is_map(source) do
+    normalize_optional_string(map_any(source, [:resume_mode, "resume_mode"])) ||
+      checkpoint_resume_mode(resume_checkpoint)
+  end
+
+  defp retry_resume_fallback_reason(source, resume_checkpoint) when is_map(source) do
+    normalize_optional_string(map_any(source, [:resume_fallback_reason, "resume_fallback_reason"])) ||
+      checkpoint_resume_fallback_reason(resume_checkpoint)
   end
 
   defp retry_auto_compaction_signal(source, resume_checkpoint) when is_map(source) do
