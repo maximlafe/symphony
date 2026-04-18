@@ -85,8 +85,81 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
     assert decision.budget_reason == :max_tokens_per_attempt_exceeded
     assert decision.budget_threshold == 10
     assert decision.budget_observed_total == 12
+    assert decision.cost_stage == "rework"
+    assert decision.budget_current_cost_profile_key == "escalated_implementation"
     assert decision.budget_next_cost_profile_key == "cheap_implementation"
+    assert decision.budget_downshift_rule == "rework_to_implementation_default"
     assert decision.budget_decision == "downshift"
+  end
+
+  test "per-attempt budget in planning stage does not downshift to implementation default" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command_template: "codex --config model_reasoning_effort={{effort}} --model {{model}} app-server",
+      codex_max_tokens_per_attempt: 10,
+      codex_cost_profiles: %{
+        cheap_implementation: %{model: "gpt-5.3-codex", effort: "medium"},
+        cheap_planning: %{model: "gpt-5.4", effort: "xhigh"},
+        handoff_profile: %{model: "gpt-5.3-codex", effort: "high"}
+      },
+      codex_cost_policy: %{
+        stage_defaults: %{
+          planning: "cheap_planning",
+          implementation: "cheap_implementation",
+          handoff: "handoff_profile"
+        }
+      }
+    )
+
+    assert {:handoff, decision} =
+             BudgetGuardrails.decide(%{
+               issue: %Issue{id: "issue-budget", identifier: "LET-472", state: "Spec Review"},
+               attempt: 1,
+               delay_type: nil,
+               attempt_tokens: 12,
+               issue_tokens_before_attempt: 0
+             })
+
+    assert decision.budget_reason == :max_tokens_per_attempt_exceeded
+    assert decision.cost_stage == "planning"
+    assert decision.budget_current_cost_profile_key == "cheap_planning"
+    assert decision.budget_decision == "handoff"
+    refute Map.has_key?(decision, :budget_next_cost_profile_key)
+    refute Map.has_key?(decision, :budget_downshift_rule)
+  end
+
+  test "per-attempt budget in handoff stage does not downshift to implementation default" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command_template: "codex --config model_reasoning_effort={{effort}} --model {{model}} app-server",
+      codex_max_tokens_per_attempt: 10,
+      codex_cost_profiles: %{
+        cheap_implementation: %{model: "gpt-5.3-codex", effort: "medium"},
+        cheap_planning: %{model: "gpt-5.4", effort: "xhigh"},
+        handoff_profile: %{model: "gpt-5.3-codex", effort: "high"}
+      },
+      codex_cost_policy: %{
+        stage_defaults: %{
+          planning: "cheap_planning",
+          implementation: "cheap_implementation",
+          handoff: "handoff_profile"
+        }
+      }
+    )
+
+    assert {:handoff, decision} =
+             BudgetGuardrails.decide(%{
+               issue: %Issue{id: "issue-budget", identifier: "LET-472", state: "Merging"},
+               attempt: 1,
+               delay_type: nil,
+               attempt_tokens: 12,
+               issue_tokens_before_attempt: 0
+             })
+
+    assert decision.budget_reason == :max_tokens_per_attempt_exceeded
+    assert decision.cost_stage == "handoff"
+    assert decision.budget_current_cost_profile_key == "handoff_profile"
+    assert decision.budget_decision == "handoff"
+    refute Map.has_key?(decision, :budget_next_cost_profile_key)
+    refute Map.has_key?(decision, :budget_downshift_rule)
   end
 
   test "per-attempt budget handoff fallback is not mislabeled as downshift" do
@@ -112,8 +185,11 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
              })
 
     assert decision.budget_reason == :max_tokens_per_attempt_exceeded
+    assert decision.cost_stage == "implementation"
+    assert decision.budget_current_cost_profile_key == "cheap_implementation"
     assert decision.budget_decision == "handoff"
     refute Map.has_key?(decision, :budget_next_cost_profile_key)
+    refute Map.has_key?(decision, :budget_downshift_rule)
   end
 
   test "normal continuation exit over per-attempt budget blocks without retrying" do

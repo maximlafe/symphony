@@ -24,7 +24,9 @@ defmodule SymphonyElixir.TelemetrySchema do
     :budget_observed_total,
     :budget_attempt_tokens,
     :budget_issue_total_tokens,
-    :budget_next_cost_profile_key
+    :budget_current_cost_profile_key,
+    :budget_next_cost_profile_key,
+    :budget_downshift_rule
   ]
   @retry_dedupe_fields [
     :retry_dedupe_result,
@@ -184,6 +186,12 @@ defmodule SymphonyElixir.TelemetrySchema do
   end
 
   defp budget_fields(source) do
+    budget_current_cost_profile_key =
+      fetch(source, :budget_current_cost_profile_key) || fetch(source, :current_cost_profile_key)
+
+    budget_next_cost_profile_key =
+      fetch(source, :budget_next_cost_profile_key) || fetch(source, :cost_profile_key)
+
     %{
       "budget_decision" => normalize_string(fetch(source, :budget_decision) || fetch(source, :decision)),
       "budget_reason" => normalize_string(fetch(source, :budget_reason) || fetch(source, :reason)),
@@ -191,7 +199,9 @@ defmodule SymphonyElixir.TelemetrySchema do
       "budget_observed_total" => fetch(source, :budget_observed_total) || fetch(source, :observed_total),
       "budget_attempt_tokens" => fetch(source, :budget_attempt_tokens) || fetch(source, :attempt_tokens),
       "budget_issue_total_tokens" => fetch(source, :budget_issue_total_tokens) || fetch(source, :issue_total_tokens),
-      "budget_next_cost_profile_key" => normalize_string(fetch(source, :budget_next_cost_profile_key) || fetch(source, :cost_profile_key))
+      "budget_current_cost_profile_key" => normalize_string(budget_current_cost_profile_key),
+      "budget_next_cost_profile_key" => normalize_string(budget_next_cost_profile_key),
+      "budget_downshift_rule" => normalize_string(fetch(source, :budget_downshift_rule))
     }
     |> reject_nil_values()
   end
