@@ -172,6 +172,8 @@ codex:
       repeated_auto_fix_failure: escalated_implementation
       security_data_risk: escalated_implementation
       unresolvable_ambiguity: escalated_implementation
+  max_total_tokens: 300000
+  max_tokens_per_attempt: 120000
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
@@ -181,7 +183,8 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 
 Notes:
 
-- If a value is missing, defaults are used.
+- If a value is missing, defaults are used when available.
+- `codex.max_total_tokens` and `codex.max_tokens_per_attempt` are mandatory and fail config validation when omitted.
 - Linear polling scope is mutually exclusive: configure exactly one of `tracker.project_slug` or
   `tracker.team_key`.
 - `tracker.assignee` is independent from polling scope. When set, Symphony dispatches only issues
@@ -283,6 +286,8 @@ codex:
       codex_home: ~/.codex-primary
     - id: backup
       codex_home: $CODEX_HOME_BACKUP
+  max_total_tokens: 300000
+  max_tokens_per_attempt: 120000
   minimum_remaining_percent: 5
   monitored_windows_mins: [300, 10080]
 ```
