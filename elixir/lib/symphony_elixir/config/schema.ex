@@ -227,6 +227,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:stall_timeout_ms, :integer, default: 300_000)
       field(:max_total_tokens, :integer)
       field(:max_tokens_per_attempt, :integer)
+      field(:max_continuation_attempts, :integer, default: 3)
       field(:auto_compaction_max_total_tokens, :integer)
       field(:auto_compaction_max_safe_steps, :integer)
       field(:minimum_remaining_percent, :integer, default: 5)
@@ -256,6 +257,7 @@ defmodule SymphonyElixir.Config.Schema do
           :stall_timeout_ms,
           :max_total_tokens,
           :max_tokens_per_attempt,
+          :max_continuation_attempts,
           :auto_compaction_max_total_tokens,
           :auto_compaction_max_safe_steps,
           :minimum_remaining_percent,
@@ -270,6 +272,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
       |> validate_number(:max_total_tokens, greater_than: 0)
       |> validate_number(:max_tokens_per_attempt, greater_than: 0)
+      |> validate_number(:max_continuation_attempts, greater_than: 0)
       |> validate_number(:auto_compaction_max_total_tokens, greater_than: 0)
       |> validate_number(:auto_compaction_max_safe_steps, greater_than: 0)
       |> validate_number(:minimum_remaining_percent, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)

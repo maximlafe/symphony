@@ -686,10 +686,78 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 2_000, 5_500)
   end
 
+  test "normal worker exit over continuation ceiling blocks with controlled handoff" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-continuation-ceiling-normal"
+    ref = make_ref()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        codex_max_continuation_attempts: 2
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      orchestrator_name = Module.concat(__MODULE__, :ContinuationCeilingNormalOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: ref,
+        identifier: "MT-558-limit",
+        retry_attempt: 2,
+        retry_delay_type: :continuation,
+        issue: %Issue{id: issue_id, identifier: "MT-558-limit", state: "In Progress"},
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, ref, :process, self(), :normal})
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 1_500
+      assert blocker_body =~ "selected_rule: `continuation_attempt_limit_exceeded`"
+      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
+      assert blocker_body =~ "reason: `continuation_attempt_limit_exceeded`"
+      assert blocker_body =~ "failed_attempt: `3`"
+      assert blocker_body =~ "failure_class: `continuation_attempt_limit_exceeded`"
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          not Map.has_key?(state.retry_attempts, issue_id) and not MapSet.member?(state.claimed, issue_id)
+        end)
+
+      refute Map.has_key?(state.retry_attempts, issue_id)
+      refute MapSet.member?(state.claimed, issue_id)
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+    end
+  end
+
   test "failure after continuation retry starts failure backoff from attempt 1" do
     issue_id = "issue-continuation-crash"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :ContinuationCrashOrchestrator)
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_max_continuation_attempts: 1)
+
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
@@ -5060,6 +5128,90 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(updated_state.running, issue_id)
     refute Process.alive?(worker_pid)
     cancel_retry_timer(updated_state.retry_attempts[issue_id])
+  end
+
+  test "auto-compaction over continuation ceiling blocks with controlled handoff" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-auto-compaction-continuation-ceiling"
+    issue = %Issue{id: issue_id, identifier: "LET-538", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+    ref = Process.monitor(worker_pid)
+
+    try do
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(worker_pid) do
+          Process.exit(worker_pid, :kill)
+        end
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        codex_auto_compaction_max_total_tokens: 100,
+        codex_max_continuation_attempts: 2
+      )
+
+      state = %Orchestrator.State{
+        poll_interval_ms: 30_000,
+        max_concurrent_agents: 1,
+        running: %{
+          issue_id => %{
+            pid: worker_pid,
+            ref: ref,
+            identifier: issue.identifier,
+            issue: issue,
+            trace_id: "trace-auto-compaction-continuation-ceiling",
+            session_id: "thread-auto-compaction-continuation-ceiling",
+            retry_attempt: 2,
+            retry_delay_type: :continuation,
+            run_phase: :editing,
+            current_command: nil,
+            external_step: nil,
+            codex_total_tokens: 150,
+            issue_token_total: 25,
+            codex_last_reported_input_tokens: 0,
+            codex_last_reported_output_tokens: 0,
+            codex_last_reported_total_tokens: 0,
+            auto_compaction_safe_steps: 0,
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        retry_attempts: %{},
+        codex_accounts: %{},
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+      }
+
+      update = %{
+        event: :tool_call_completed,
+        payload: %{"params" => %{"tool" => "github_pr_snapshot"}},
+        timestamp: DateTime.utc_now()
+      }
+
+      assert {:noreply, updated_state} =
+               Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 1_500
+      assert blocker_body =~ "selected_rule: `continuation_attempt_limit_exceeded`"
+      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
+      assert blocker_body =~ "reason: `continuation_attempt_limit_exceeded`"
+      assert blocker_body =~ "failed_attempt: `3`"
+      assert blocker_body =~ "failure_class: `continuation_attempt_limit_exceeded`"
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+
+      refute Map.has_key?(updated_state.retry_attempts, issue_id)
+      refute Map.has_key?(updated_state.running, issue_id)
+      refute Process.alive?(worker_pid)
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end
   end
 
   test "editing auto-compaction treats item completed command execution as safe boundary" do
