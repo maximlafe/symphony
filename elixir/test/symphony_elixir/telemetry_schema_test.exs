@@ -289,6 +289,20 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
            }
   end
 
+  test "runtime_payload includes lifecycle and replacement relation fields" do
+    assert TelemetrySchema.runtime_payload(%{
+             lifecycle_state: "replacing",
+             replacement_of_session_id: "thread-old",
+             replacement_session_id: "thread-new",
+             continuation_reason: "normal_exit"
+           }) == %{
+             "continuation_reason" => "normal_exit",
+             "lifecycle_state" => "replacing",
+             "replacement_of_session_id" => "thread-old",
+             "replacement_session_id" => "thread-new"
+           }
+  end
+
   test "logger_metadata, put helpers, and empty inputs stay canonical" do
     metadata =
       TelemetrySchema.logger_metadata(%{
