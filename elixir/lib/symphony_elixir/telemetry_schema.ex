@@ -56,12 +56,16 @@ defmodule SymphonyElixir.TelemetrySchema do
   ]
   @continuation_fields [
     :continuation_reason,
+    :continuation_attempt,
     :resume_mode,
     :resume_fallback_reason,
+    :loop_break_triggered,
+    :loop_break_reason,
     :auto_compaction_signal,
     :auto_compaction_threshold,
     :auto_compaction_observed_total
   ]
+  @loop_break_rules ["retry_dedupe_hit", "continuation_attempt_limit_exceeded"]
   @wait_fields [:wait_mode, :wait_reason, :wait_source, :wait_tool]
   @checkpoint_fields [
     :checkpoint_quality,
@@ -289,16 +293,101 @@ defmodule SymphonyElixir.TelemetrySchema do
   end
 
   defp continuation_fields(source) do
+    continuation_reason = continuation_reason(source)
+    continuation_attempt = continuation_attempt(source)
+    continuation_context? = continuation_context?(source, continuation_reason, continuation_attempt)
+    loop_break_reason = loop_break_reason(source, continuation_context?)
+    loop_break_triggered = loop_break_triggered(source, loop_break_reason, continuation_context?)
+
     %{
-      "continuation_reason" => normalize_string(fetch(source, :continuation_reason)),
+      "continuation_reason" => continuation_reason,
+      "continuation_attempt" => continuation_attempt,
       "resume_mode" => normalize_string(fetch(source, :resume_mode)),
       "resume_fallback_reason" => normalize_string(fetch(source, :resume_fallback_reason)),
+      "loop_break_triggered" => loop_break_triggered,
+      "loop_break_reason" => loop_break_reason,
       "auto_compaction_signal" => normalize_string(fetch(source, :auto_compaction_signal)),
       "auto_compaction_threshold" => fetch(source, :auto_compaction_threshold),
       "auto_compaction_observed_total" => fetch(source, :auto_compaction_observed_total)
     }
     |> reject_nil_values()
   end
+
+  defp continuation_reason(source) do
+    decision = fetch(source, :retry_failover_decision)
+    retry_metadata = decision_field(decision, :retry_metadata)
+
+    normalize_string(fetch(source, :continuation_reason)) ||
+      normalize_string(decision_field(retry_metadata, :continuation_reason))
+  end
+
+  defp continuation_attempt(source) do
+    decision = fetch(source, :retry_failover_decision)
+    retry_metadata = decision_field(decision, :retry_metadata)
+    signals = decision_field(decision, :signals)
+    continuation_limit_signal = decision_field(signals, :continuation_attempt_limit)
+
+    normalize_positive_integer(fetch(source, :continuation_attempt)) ||
+      continuation_attempt_from_retry_state(source) ||
+      normalize_positive_integer(decision_field(retry_metadata, :continuation_attempt)) ||
+      normalize_positive_integer(decision_field(continuation_limit_signal, :continuation_attempt))
+  end
+
+  defp continuation_attempt_from_retry_state(source) do
+    if continuation_delay?(source) do
+      normalize_positive_integer(fetch(source, :retry_attempt) || fetch(source, :attempt))
+    end
+  end
+
+  defp continuation_delay?(source) do
+    normalize_string(fetch(source, :retry_delay_type) || fetch(source, :delay_type)) == "continuation"
+  end
+
+  defp continuation_context?(source, continuation_reason, continuation_attempt) do
+    continuation_delay?(source) ||
+      is_binary(continuation_reason) ||
+      is_integer(continuation_attempt) ||
+      not is_nil(normalize_string(fetch(source, :resume_mode))) ||
+      not is_nil(normalize_string(fetch(source, :resume_fallback_reason))) ||
+      not is_nil(normalize_string(fetch(source, :auto_compaction_signal)))
+  end
+
+  defp loop_break_reason(source, continuation_context?) do
+    explicit_reason = normalize_string(fetch(source, :loop_break_reason))
+    selected_rule = retry_failover_selected_rule(source)
+
+    cond do
+      is_binary(explicit_reason) ->
+        explicit_reason
+
+      continuation_context? and loop_break_rule?(selected_rule) ->
+        selected_rule
+
+      true ->
+        nil
+    end
+  end
+
+  defp loop_break_triggered(source, loop_break_reason, continuation_context?) do
+    case fetch(source, :loop_break_triggered) do
+      value when is_boolean(value) ->
+        value
+
+      _ ->
+        if continuation_context? and is_binary(loop_break_reason), do: true
+    end
+  end
+
+  defp retry_failover_selected_rule(source) do
+    decision = fetch(source, :retry_failover_decision)
+
+    normalize_string(fetch(source, :retry_failover_selected_rule) || decision_field(decision, :selected_rule))
+  end
+
+  defp loop_break_rule?(selected_rule) when is_binary(selected_rule),
+    do: selected_rule in @loop_break_rules
+
+  defp loop_break_rule?(_selected_rule), do: false
 
   defp derive_resume_mode(checkpoint, resume_ready) do
     normalize_string(fetch(checkpoint, :resume_mode)) ||
@@ -451,6 +540,9 @@ defmodule SymphonyElixir.TelemetrySchema do
       normalized -> normalized
     end
   end
+
+  defp normalize_positive_integer(value) when is_integer(value) and value > 0, do: value
+  defp normalize_positive_integer(_value), do: nil
 
   defp wait_mode_for_phase("waiting ci"), do: "ci"
   defp wait_mode_for_phase("waiting external"), do: "external"

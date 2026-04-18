@@ -95,6 +95,8 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
              "retry_failover_selected_action" => "stop_with_classified_handoff",
              "retry_failover_selected_rule" => "retry_dedupe_hit",
              "retry_failover_suppressed_rules" => ["budget_exceeded_per_attempt_downshift"],
+             "loop_break_triggered" => true,
+             "loop_break_reason" => "retry_dedupe_hit",
              "resume_fallback_reason" => "resume_checkpoint_unavailable",
              "resume_mode" => "fallback_reread",
              "validation_guard_name" => "review-ready",
@@ -301,6 +303,100 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
              "replacement_of_session_id" => "thread-old",
              "replacement_session_id" => "thread-new"
            }
+  end
+
+  test "runtime_payload derives continuation attempt and loop-break fields for continuation retries" do
+    assert TelemetrySchema.runtime_payload(%{
+             retry_delay_type: :continuation,
+             retry_attempt: 3,
+             continuation_reason: "normal_exit",
+             retry_failover_decision: %{
+               selected_rule: "retry_dedupe_hit",
+               selected_action: "stop_with_classified_handoff",
+               reason: "retry_dedupe_hit"
+             }
+           }) == %{
+             "continuation_attempt" => 3,
+             "continuation_reason" => "normal_exit",
+             "loop_break_reason" => "retry_dedupe_hit",
+             "loop_break_triggered" => true,
+             "retry_failover_reason" => "retry_dedupe_hit",
+             "retry_failover_selected_action" => "stop_with_classified_handoff",
+             "retry_failover_selected_rule" => "retry_dedupe_hit"
+           }
+  end
+
+  test "runtime_payload derives terminal loop-break proof from continuation attempt limit decisions" do
+    payload =
+      TelemetrySchema.runtime_payload(%{
+        retry_failover_decision: %{
+          selected_rule: "continuation_attempt_limit_exceeded",
+          selected_action: "stop_with_classified_handoff",
+          reason: "continuation_attempt_limit_exceeded",
+          retry_metadata: %{
+            continuation_reason: "auto_compaction"
+          },
+          signals: %{
+            continuation_attempt_limit: %{
+              continuation_attempt: 4
+            }
+          }
+        }
+      })
+
+    assert payload["continuation_attempt"] == 4
+    assert payload["continuation_reason"] == "auto_compaction"
+    assert payload["loop_break_triggered"] == true
+    assert payload["loop_break_reason"] == "continuation_attempt_limit_exceeded"
+  end
+
+  test "runtime_payload does not emit loop-break fields for non-continuation active runs" do
+    payload =
+      TelemetrySchema.runtime_payload(%{
+        lifecycle_state: "attached",
+        replacement_session_id: "thread-1",
+        retry_failover_decision: %{
+          selected_rule: "retry_dedupe_hit",
+          selected_action: "stop_with_classified_handoff",
+          reason: "retry_dedupe_hit"
+        }
+      })
+
+    assert payload["lifecycle_state"] == "attached"
+    assert payload["replacement_session_id"] == "thread-1"
+    refute Map.has_key?(payload, "loop_break_triggered")
+    refute Map.has_key?(payload, "loop_break_reason")
+  end
+
+  test "runtime_payload preserves explicit continuation and loop-break overrides" do
+    payload =
+      TelemetrySchema.runtime_payload(%{
+        "continuation_attempt" => 2,
+        "continuation_reason" => "manual_retry",
+        "loop_break_triggered" => false,
+        "loop_break_reason" => "manual_override",
+        "retry_failover_selected_rule" => "retry_dedupe_hit"
+      })
+
+    assert payload["continuation_attempt"] == 2
+    assert payload["continuation_reason"] == "manual_retry"
+    assert payload["loop_break_triggered"] == false
+    assert payload["loop_break_reason"] == "manual_override"
+  end
+
+  test "runtime_payload keeps continuation context without loop-break on allow rules" do
+    payload =
+      TelemetrySchema.runtime_payload(%{
+        delay_type: "continuation",
+        attempt: 2,
+        continuation_reason: "normal_exit",
+        retry_failover_selected_rule: "default_allow_retry"
+      })
+
+    assert payload["continuation_attempt"] == 2
+    assert payload["continuation_reason"] == "normal_exit"
+    refute Map.has_key?(payload, "loop_break_triggered")
+    refute Map.has_key?(payload, "loop_break_reason")
   end
 
   test "logger_metadata, put helpers, and empty inputs stay canonical" do
