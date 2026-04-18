@@ -24,9 +24,13 @@ defmodule SymphonyElixir.TelemetrySchema do
     :budget_observed_total,
     :budget_attempt_tokens,
     :budget_issue_total_tokens,
+    :budget_signal_role,
     :budget_current_cost_profile_key,
     :budget_next_cost_profile_key,
-    :budget_downshift_rule
+    :budget_downshift_rule,
+    :progress_status,
+    :progress_fingerprint,
+    :progress_repeat_count
   ]
   @retry_dedupe_fields [
     :retry_dedupe_result,
@@ -216,9 +220,13 @@ defmodule SymphonyElixir.TelemetrySchema do
       "budget_observed_total" => fetch(source, :budget_observed_total) || fetch(source, :observed_total),
       "budget_attempt_tokens" => fetch(source, :budget_attempt_tokens) || fetch(source, :attempt_tokens),
       "budget_issue_total_tokens" => fetch(source, :budget_issue_total_tokens) || fetch(source, :issue_total_tokens),
+      "budget_signal_role" => normalize_string(fetch(source, :budget_signal_role)),
       "budget_current_cost_profile_key" => normalize_string(budget_current_cost_profile_key),
       "budget_next_cost_profile_key" => normalize_string(budget_next_cost_profile_key),
-      "budget_downshift_rule" => normalize_string(fetch(source, :budget_downshift_rule))
+      "budget_downshift_rule" => normalize_string(fetch(source, :budget_downshift_rule)),
+      "progress_status" => normalize_string(fetch(source, :progress_status)),
+      "progress_fingerprint" => normalize_string(fetch(source, :progress_fingerprint)),
+      "progress_repeat_count" => fetch(source, :progress_repeat_count)
     }
     |> reject_nil_values()
   end

@@ -255,6 +255,117 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
     refute Map.has_key?(decision, :budget_downshift_rule)
   end
 
+  test "per-attempt budget with changed workpad surface becomes allow signal" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_max_tokens_per_attempt: 10
+    )
+
+    assert {:allow, decision} =
+             BudgetGuardrails.decide(%{
+               issue: %Issue{id: "issue-budget", identifier: "LET-560", state: "In Progress"},
+               attempt: 2,
+               delay_type: :continuation,
+               attempt_tokens: 12,
+               issue_tokens_before_attempt: 0,
+               previous_resume_checkpoint:
+                 progress_checkpoint(
+                   workpad_digest: "workpad-old",
+                   workspace_diff_fingerprint: "workspace-stable",
+                   validation_bundle_fingerprint: "validation:test",
+                   changed_files: ["elixir/lib/symphony_elixir/orchestrator.ex"]
+                 ),
+               resume_checkpoint:
+                 progress_checkpoint(
+                   workpad_digest: "workpad-new",
+                   workspace_diff_fingerprint: "workspace-stable",
+                   validation_bundle_fingerprint: "validation:test",
+                   changed_files: ["elixir/lib/symphony_elixir/orchestrator.ex"]
+                 )
+             })
+
+    assert decision.budget_reason == :max_tokens_per_attempt_exceeded
+    assert decision.budget_decision == "allow"
+    assert decision.budget_signal_role == "signal"
+    assert decision.progress_status == "changed"
+    assert decision.progress_repeat_count == 1
+    assert is_binary(decision.progress_fingerprint)
+  end
+
+  test "per-attempt budget with changed validation surface becomes allow signal" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_max_tokens_per_attempt: 10
+    )
+
+    assert {:allow, decision} =
+             BudgetGuardrails.decide(%{
+               issue: %Issue{id: "issue-budget", identifier: "LET-560", state: "In Progress"},
+               attempt: 3,
+               delay_type: nil,
+               attempt_tokens: 12,
+               issue_tokens_before_attempt: 0,
+               previous_resume_checkpoint:
+                 progress_checkpoint(
+                   workpad_digest: "workpad-stable",
+                   workspace_diff_fingerprint: "workspace-stable",
+                   validation_bundle_fingerprint: "validation:test",
+                   changed_files: ["elixir/lib/symphony_elixir/retry_failover_decision.ex"]
+                 ),
+               resume_checkpoint:
+                 progress_checkpoint(
+                   workpad_digest: "workpad-stable",
+                   workspace_diff_fingerprint: "workspace-stable",
+                   validation_bundle_fingerprint: "validation:repo-validate",
+                   changed_files: ["elixir/lib/symphony_elixir/retry_failover_decision.ex"]
+                 )
+             })
+
+    assert decision.budget_reason == :max_tokens_per_attempt_exceeded
+    assert decision.budget_decision == "allow"
+    assert decision.progress_status == "changed"
+    assert decision.progress_repeat_count == 1
+    assert is_binary(decision.progress_fingerprint)
+  end
+
+  test "per-attempt budget with repeated explicit surface remains handoff even when cheaper profile exists" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command_template: "codex --config model_reasoning_effort={{effort}} --model {{model}} app-server",
+      codex_max_tokens_per_attempt: 10,
+      codex_cost_profiles: %{
+        cheap_implementation: %{model: "gpt-5.3-codex", effort: "medium"},
+        escalated_implementation: %{model: "gpt-5.3-codex", effort: "high"}
+      },
+      codex_cost_policy: %{
+        stage_defaults: %{implementation: "cheap_implementation"}
+      }
+    )
+
+    previous_checkpoint =
+      progress_checkpoint(
+        workpad_digest: "workpad-stable",
+        workspace_diff_fingerprint: "workspace-stable",
+        validation_bundle_fingerprint: "validation:test",
+        changed_files: ["elixir/lib/symphony_elixir/budget_guardrails.ex"]
+      )
+
+    assert {:handoff, decision} =
+             BudgetGuardrails.decide(%{
+               issue: %Issue{id: "issue-budget", identifier: "LET-560", state: "In Progress"},
+               attempt: 2,
+               delay_type: :continuation,
+               attempt_tokens: 12,
+               issue_tokens_before_attempt: 0,
+               current_cost_profile_key: "escalated_implementation",
+               previous_resume_checkpoint: previous_checkpoint,
+               resume_checkpoint: previous_checkpoint
+             })
+
+    assert decision.budget_reason == :max_tokens_per_attempt_exceeded
+    assert decision.budget_decision == "handoff"
+    assert decision.progress_status == "repeated"
+    assert decision.progress_repeat_count == 2
+    assert is_binary(decision.progress_fingerprint)
+  end
+
   test "normal continuation exit over per-attempt budget blocks without retrying" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     issue_id = "issue-budget-continuation"
@@ -474,6 +585,18 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
   end
 
   defp wait_for_orchestrator_state(pid, _predicate, 0), do: :sys.get_state(pid)
+
+  defp progress_checkpoint(opts) do
+    %{
+      "resume_ready" => Keyword.get(opts, :resume_ready, true),
+      "workpad_digest" => Keyword.get(opts, :workpad_digest),
+      "workspace_diff_fingerprint" => Keyword.get(opts, :workspace_diff_fingerprint),
+      "changed_files" => Keyword.get(opts, :changed_files, []),
+      "active_validation_snapshot" => %{
+        "validation_bundle_fingerprint" => Keyword.get(opts, :validation_bundle_fingerprint)
+      }
+    }
+  end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)

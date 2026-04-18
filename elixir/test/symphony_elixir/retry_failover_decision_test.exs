@@ -148,6 +148,94 @@ defmodule SymphonyElixir.RetryFailoverDecisionTest do
     assert decision.risk_level == "medium"
   end
 
+  test "per-attempt budget with changed explicit progress surface allows retry" do
+    decision =
+      RetryFailoverDecision.decide(%{
+        budget_exceeded: %{
+          scope: :per_attempt,
+          reason: :max_tokens_per_attempt_exceeded,
+          cheaper_profile?: false,
+          checkpoint_usable?: true,
+          progress_status: :changed,
+          progress_fingerprint: "progress:abc123",
+          progress_repeat_count: 1,
+          budget_signal_role: "signal",
+          checkpoint_type: "decision",
+          risk_level: "medium"
+        }
+      })
+
+    assert decision.selected_rule == :budget_exceeded_per_attempt_progressing
+    assert decision.selected_action == :allow_retry
+    assert decision.reason == "max_tokens_per_attempt_exceeded"
+    assert decision.checkpoint_type == "decision"
+    assert decision.risk_level == "medium"
+    assert decision.signals.budget_exceeded.progress_status == "changed"
+    assert decision.signals.budget_exceeded.progress_fingerprint == "progress:abc123"
+    assert decision.signals.budget_exceeded.progress_repeat_count == 1
+    assert decision.signals.budget_exceeded.budget_signal_role == "signal"
+  end
+
+  test "per-attempt budget with repeated explicit progress surface handoffs even when cheaper profile exists" do
+    decision =
+      RetryFailoverDecision.decide(%{
+        budget_exceeded: %{
+          scope: :per_attempt,
+          reason: :max_tokens_per_attempt_exceeded,
+          cheaper_profile?: true,
+          checkpoint_usable?: true,
+          progress_status: "repeated",
+          progress_fingerprint: "progress:stable",
+          progress_repeat_count: 2
+        }
+      })
+
+    assert decision.selected_rule == :budget_exceeded_per_attempt_handoff
+    assert decision.selected_action == :stop_with_classified_handoff
+    assert decision.reason == "max_tokens_per_attempt_exceeded"
+  end
+
+  test "string-keyed explicit progress fields normalize safely" do
+    decision =
+      RetryFailoverDecision.decide(%{
+        "budget_exceeded" => %{
+          "scope" => "per_attempt",
+          "reason" => "max_tokens_per_attempt_exceeded",
+          "checkpoint_usable?" => true,
+          "progress_status" => "changed",
+          "progress_changed?" => true,
+          "progress_fingerprint" => "   ",
+          "progress_repeat_count" => 1,
+          "budget_signal_role" => "signal"
+        }
+      })
+
+    assert decision.selected_rule == :budget_exceeded_per_attempt_progressing
+    assert decision.selected_action == :allow_retry
+    assert decision.signals.budget_exceeded.progress_status == "changed"
+    assert decision.signals.budget_exceeded.progress_repeat_count == 1
+    assert decision.signals.budget_exceeded.budget_signal_role == "signal"
+    assert is_nil(decision.signals.budget_exceeded.progress_fingerprint)
+  end
+
+  test "explicit progress with unknown status fails closed to handoff" do
+    decision =
+      RetryFailoverDecision.decide(%{
+        budget_exceeded: %{
+          scope: :per_attempt,
+          reason: :max_tokens_per_attempt_exceeded,
+          cheaper_profile?: false,
+          checkpoint_usable?: true,
+          progress_status: "unexpected_status",
+          progress_fingerprint: "progress:unknown",
+          progress_repeat_count: 1
+        }
+      })
+
+    assert decision.selected_rule == :budget_exceeded_per_attempt_handoff
+    assert decision.selected_action == :stop_with_classified_handoff
+  end
+
   test "string-keyed budget downshift metadata is normalized and serialized" do
     decision =
       RetryFailoverDecision.decide(%{
@@ -155,6 +243,10 @@ defmodule SymphonyElixir.RetryFailoverDecisionTest do
           "scope" => "per_attempt",
           "summary" => "downshift to cheaper profile",
           "cheaper_profile?" => true,
+          "checkpoint_usable?" => true,
+          "progress_status" => "changed",
+          "progress_fingerprint" => "progress:downshift",
+          "progress_repeat_count" => 1,
           "cost_profile_key" => "cheap_implementation",
           "retry_metadata" => %{"source" => "budget"},
           "log_fields" => %{"nested" => %{"kind" => "budget"}}
@@ -171,6 +263,9 @@ defmodule SymphonyElixir.RetryFailoverDecisionTest do
     assert decision.retry_metadata == %{"source" => "budget"}
     assert decision.signals.budget_exceeded.scope == "per_attempt"
     assert decision.signals.budget_exceeded[:cheaper_profile?] == true
+    assert decision.signals.budget_exceeded.progress_status == "changed"
+    assert decision.signals.budget_exceeded.progress_fingerprint == "progress:downshift"
+    assert decision.signals.budget_exceeded.progress_repeat_count == 1
     assert metadata.selected_rule == "budget_exceeded_per_attempt_downshift"
     assert metadata.selected_action == "allow_downshifted_retry"
     assert metadata.retry_metadata == %{"source" => "budget"}

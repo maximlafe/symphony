@@ -1485,7 +1485,13 @@ defmodule SymphonyElixir.Orchestrator do
         }
       )
     else
-      budget_context = budget_context_from_running(running_entry, continuation_attempt, :continuation)
+      budget_context =
+        budget_context_from_running(
+          running_entry,
+          continuation_attempt,
+          :continuation,
+          resume_checkpoint
+        )
 
       case BudgetGuardrails.decide(budget_context) do
         {:allow, budget_totals} ->
@@ -1581,7 +1587,14 @@ defmodule SymphonyElixir.Orchestrator do
     )
 
     resume_checkpoint = capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
-    budget_context = budget_context_from_running(running_entry, failure_attempt, Map.get(running_entry, :retry_delay_type))
+
+    budget_context =
+      budget_context_from_running(
+        running_entry,
+        failure_attempt,
+        Map.get(running_entry, :retry_delay_type),
+        resume_checkpoint
+      )
 
     case BudgetGuardrails.decide(budget_context) do
       {:allow, budget_totals} ->
@@ -3222,14 +3235,17 @@ defmodule SymphonyElixir.Orchestrator do
   defp running_budget_delay_type(%{retry_delay_type: delay_type}, _source), do: delay_type
   defp running_budget_delay_type(_running_entry, :token_update), do: nil
 
-  defp budget_context_from_running(running_entry, attempt, delay_type) when is_map(running_entry) do
+  defp budget_context_from_running(running_entry, attempt, delay_type, resume_checkpoint \\ nil)
+       when is_map(running_entry) do
     %{
       issue: Map.get(running_entry, :issue),
       attempt: attempt,
       delay_type: delay_type,
       attempt_tokens: Map.get(running_entry, :codex_total_tokens, 0),
       issue_tokens_before_attempt: issue_token_total_before_attempt(running_entry),
-      current_cost_profile_key: Map.get(running_entry, :budget_cost_profile_key)
+      current_cost_profile_key: Map.get(running_entry, :budget_cost_profile_key),
+      previous_resume_checkpoint: Map.get(running_entry, :resume_checkpoint),
+      resume_checkpoint: resume_checkpoint
     }
   end
 
@@ -3253,10 +3269,14 @@ defmodule SymphonyElixir.Orchestrator do
       "budget_threshold" => budget_value(budget, :budget_threshold),
       "budget_observed_total" => budget_value(budget, :budget_observed_total),
       "budget_decision" => budget_value(budget, :budget_decision),
+      "budget_signal_role" => budget_value(budget, :budget_signal_role),
       "budget_current_cost_profile_key" => budget_value(budget, :budget_current_cost_profile_key),
       "budget_next_cost_profile_key" => budget_value(budget, :budget_next_cost_profile_key),
       "budget_downshift_rule" => budget_value(budget, :budget_downshift_rule),
-      "cost_stage" => budget_value(budget, :cost_stage)
+      "cost_stage" => budget_value(budget, :cost_stage),
+      "progress_status" => budget_value(budget, :progress_status),
+      "progress_fingerprint" => budget_value(budget, :progress_fingerprint),
+      "progress_repeat_count" => budget_value(budget, :progress_repeat_count)
     })
   end
 
@@ -3405,45 +3425,81 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
-  defp retry_failover_budget_decision({:allow, _budget_totals}) do
-    RetryFailoverDecision.decide(%{})
+  defp retry_failover_budget_decision({:allow, budget_totals}) when is_map(budget_totals) do
+    case retry_failover_budget_signal(:allow, budget_totals) do
+      nil -> RetryFailoverDecision.decide(%{})
+      signal -> RetryFailoverDecision.decide(%{budget_exceeded: signal})
+    end
   end
 
   defp retry_failover_budget_decision({kind, budget_decision})
        when kind in [:downshift, :handoff] and is_map(budget_decision) do
-    RetryFailoverDecision.decide(%{
-      budget_exceeded: %{
-        scope: retry_failover_budget_scope(budget_decision),
-        reason: Map.get(budget_decision, :budget_reason),
-        summary: Map.get(budget_decision, :summary),
-        checkpoint_type: Map.get(budget_decision, :checkpoint_type),
-        risk_level: Map.get(budget_decision, :risk_level),
-        cheaper_profile?: kind == :downshift,
-        cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key),
-        retry_metadata: %{
-          budget_decision: budget_decision,
-          issue_token_total: Map.get(budget_decision, :budget_issue_total_tokens),
-          cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key),
-          current_cost_profile_key: Map.get(budget_decision, :budget_current_cost_profile_key),
-          downshift_rule: Map.get(budget_decision, :budget_downshift_rule),
-          cost_stage: Map.get(budget_decision, :cost_stage)
-        },
-        log_fields: %{
-          budget_threshold: Map.get(budget_decision, :budget_threshold),
-          budget_observed_total: Map.get(budget_decision, :budget_observed_total),
-          budget_attempt_tokens: Map.get(budget_decision, :budget_attempt_tokens),
-          budget_issue_total_tokens: Map.get(budget_decision, :budget_issue_total_tokens),
-          budget_current_cost_profile_key: Map.get(budget_decision, :budget_current_cost_profile_key),
-          budget_next_cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key),
-          budget_downshift_rule: Map.get(budget_decision, :budget_downshift_rule),
-          cost_stage: Map.get(budget_decision, :cost_stage)
-        }
-      }
-    })
+    case retry_failover_budget_signal(kind, budget_decision) do
+      nil -> RetryFailoverDecision.decide(%{})
+      signal -> RetryFailoverDecision.decide(%{budget_exceeded: signal})
+    end
   end
+
+  defp retry_failover_budget_signal(kind, budget_decision)
+       when kind in [:allow, :downshift, :handoff] and is_map(budget_decision) do
+    case retry_failover_budget_scope(budget_decision) do
+      scope when scope in [:cumulative, :per_attempt] ->
+        %{
+          scope: scope,
+          reason: Map.get(budget_decision, :budget_reason),
+          summary: Map.get(budget_decision, :summary),
+          checkpoint_type: Map.get(budget_decision, :checkpoint_type),
+          risk_level: Map.get(budget_decision, :risk_level),
+          cheaper_profile?: kind == :downshift,
+          cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key),
+          retry_metadata: %{
+            budget_decision: budget_decision,
+            issue_token_total: Map.get(budget_decision, :budget_issue_total_tokens),
+            cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key),
+            current_cost_profile_key: Map.get(budget_decision, :budget_current_cost_profile_key),
+            downshift_rule: Map.get(budget_decision, :budget_downshift_rule),
+            cost_stage: Map.get(budget_decision, :cost_stage),
+            budget_signal_role: Map.get(budget_decision, :budget_signal_role),
+            progress_status: Map.get(budget_decision, :progress_status),
+            progress_fingerprint: Map.get(budget_decision, :progress_fingerprint),
+            progress_repeat_count: Map.get(budget_decision, :progress_repeat_count)
+          },
+          log_fields: %{
+            budget_threshold: Map.get(budget_decision, :budget_threshold),
+            budget_observed_total: Map.get(budget_decision, :budget_observed_total),
+            budget_attempt_tokens: Map.get(budget_decision, :budget_attempt_tokens),
+            budget_issue_total_tokens: Map.get(budget_decision, :budget_issue_total_tokens),
+            budget_current_cost_profile_key: Map.get(budget_decision, :budget_current_cost_profile_key),
+            budget_next_cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key),
+            budget_downshift_rule: Map.get(budget_decision, :budget_downshift_rule),
+            cost_stage: Map.get(budget_decision, :cost_stage),
+            budget_signal_role: Map.get(budget_decision, :budget_signal_role),
+            progress_status: Map.get(budget_decision, :progress_status),
+            progress_fingerprint: Map.get(budget_decision, :progress_fingerprint),
+            progress_repeat_count: Map.get(budget_decision, :progress_repeat_count)
+          }
+        }
+        |> maybe_put_retry_failover_budget_field(budget_decision, :checkpoint_usable?)
+        |> maybe_put_retry_failover_budget_field(budget_decision, :progress_changed?)
+        |> maybe_put_retry_failover_budget_field(budget_decision, :progress_status)
+        |> maybe_put_retry_failover_budget_field(budget_decision, :progress_fingerprint)
+        |> maybe_put_retry_failover_budget_field(budget_decision, :progress_repeat_count)
+        |> maybe_put_retry_failover_budget_field(budget_decision, :budget_signal_role)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp retry_failover_budget_signal(_kind, _budget_decision), do: nil
 
   defp retry_failover_budget_scope(%{budget_reason: :max_total_tokens_exceeded}), do: :cumulative
   defp retry_failover_budget_scope(%{budget_reason: :max_tokens_per_attempt_exceeded}), do: :per_attempt
+  defp retry_failover_budget_scope(_budget_decision), do: nil
+
+  defp maybe_put_retry_failover_budget_field(signal, source, key) when is_map(signal) and is_map(source) do
+    if Map.has_key?(source, key), do: Map.put(signal, key, Map.get(source, key)), else: signal
+  end
 
   defp retry_failover_metadata(%RetryFailoverDecision{} = decision) do
     %{
