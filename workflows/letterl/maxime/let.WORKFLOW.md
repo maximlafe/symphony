@@ -528,6 +528,8 @@ codex:
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
     type: dangerFullAccess
+  max_total_tokens: 300000
+  max_tokens_per_attempt: 120000
   accounts:
     - id: "charlotte.coulter@hmlservice.com"
       codex_home: /root/.codex

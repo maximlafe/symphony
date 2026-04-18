@@ -2641,7 +2641,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              Schema.parse(%{
                tracker: %{api_key: "$#{empty_secret_env}"},
                workspace: %{root: "$#{missing_workspace_env}"},
-               codex: %{approval_policy: %{reject: %{sandbox_approval: true}}}
+               codex: %{
+                 approval_policy: %{reject: %{sandbox_approval: true}},
+                 max_total_tokens: 300_000,
+                 max_tokens_per_attempt: 120_000
+               }
              })
 
     assert settings.tracker.api_key == nil
@@ -2654,7 +2658,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert {:ok, settings} =
              Schema.parse(%{
                tracker: %{api_key: "$#{missing_secret_env}"},
-               workspace: %{root: ""}
+               workspace: %{root: ""},
+               codex: %{max_total_tokens: 300_000, max_tokens_per_attempt: 120_000}
              })
 
     assert settings.tracker.api_key == "fallback-linear-token"

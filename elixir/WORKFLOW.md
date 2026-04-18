@@ -70,6 +70,8 @@ codex:
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
     type: dangerFullAccess
+  max_total_tokens: 300000
+  max_tokens_per_attempt: 120000
   auto_compaction_max_total_tokens: 200000
   auto_compaction_max_safe_steps: null
   accounts:

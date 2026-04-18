@@ -264,7 +264,7 @@ defmodule SymphonyElixir.Config.Schema do
         empty_values: []
       )
       |> cast_embed(:accounts, with: &Account.changeset/2)
-      |> validate_required([:command])
+      |> validate_required([:command, :max_total_tokens, :max_tokens_per_attempt])
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
