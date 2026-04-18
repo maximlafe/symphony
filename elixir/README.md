@@ -254,6 +254,10 @@ Notes:
   the corresponding signal, `nil` disables it. When an enabled threshold is exceeded during
   `:editing`, Symphony compacts only at an eligible safe boundary and queues a normal continuation
   retry with `continuation_reason=auto_compaction`.
+- `codex.max_continuation_attempts` (default `3`) bounds continuation-only retries
+  (`delay_type: :continuation`). Once the ceiling is exceeded, Symphony stops queueing the next
+  continuation and emits a controlled handoff with machine-readable reason
+  `continuation_attempt_limit_exceeded`.
 - Running sessions stay on the account they started with. Only new starts and retries move to a new
   account after failover or recovery.
 

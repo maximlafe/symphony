@@ -28,6 +28,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_base_delay_ms 5_000
   @continuation_max_delay_ms 300_000
+  @max_continuation_attempts_default 3
   @failure_retry_base_ms 10_000
   @idle_codex_account_probe_interval_ms 60_000
   @idle_codex_account_full_reconcile_interval_ms 900_000
@@ -1412,72 +1413,91 @@ defmodule SymphonyElixir.Orchestrator do
        ) do
     continuation_attempt = next_continuation_attempt(running_entry)
     resume_checkpoint = capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
-    budget_context = budget_context_from_running(running_entry, continuation_attempt, :continuation)
+    continuation_reason = Map.get(running_entry, :continuation_reason)
 
-    case BudgetGuardrails.decide(budget_context) do
-      {:allow, budget_totals} ->
-        decision = retry_failover_budget_decision({:allow, budget_totals})
+    if continuation_attempt_limit_exceeded?(continuation_attempt) do
+      handle_continuation_attempt_limit_breach(
+        state,
+        continuation_attempt,
+        %{
+          issue_id: issue_id,
+          issue: Map.get(running_entry, :issue),
+          identifier: identifier,
+          session_id: session_id,
+          trace_id: trace_id,
+          continuation_reason: continuation_reason,
+          codex_account_id: Map.get(running_entry, :codex_account_id),
+          resume_checkpoint: resume_checkpoint
+        }
+      )
+    else
+      budget_context = budget_context_from_running(running_entry, continuation_attempt, :continuation)
 
-        log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
+      case BudgetGuardrails.decide(budget_context) do
+        {:allow, budget_totals} ->
+          decision = retry_failover_budget_decision({:allow, budget_totals})
 
-        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check (attempt #{continuation_attempt})")
+          log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
 
-        state
-        |> complete_issue(issue_id)
-        |> schedule_issue_retry(
-          issue_id,
-          continuation_attempt,
-          %{
-            identifier: identifier,
-            trace_id: trace_id,
-            delay_type: :continuation,
-            resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_totals),
-            issue_token_total: budget_totals.budget_issue_total_tokens
-          }
-          |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
-          |> Map.merge(retry_failover_metadata(decision))
-        )
+          Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check (attempt #{continuation_attempt})")
 
-      {:downshift, budget_decision} ->
-        decision = retry_failover_budget_decision({:downshift, budget_decision})
+          state
+          |> complete_issue(issue_id)
+          |> schedule_issue_retry(
+            issue_id,
+            continuation_attempt,
+            %{
+              identifier: identifier,
+              trace_id: trace_id,
+              delay_type: :continuation,
+              resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_totals),
+              issue_token_total: budget_totals.budget_issue_total_tokens
+            }
+            |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
+            |> Map.merge(retry_failover_metadata(decision))
+          )
 
-        log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, budget_decision)
-        log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
+        {:downshift, budget_decision} ->
+          decision = retry_failover_budget_decision({:downshift, budget_decision})
 
-        state
-        |> complete_issue(issue_id)
-        |> schedule_issue_retry(
-          issue_id,
-          continuation_attempt,
-          %{
-            identifier: identifier,
-            trace_id: trace_id,
-            delay_type: :continuation,
-            resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_decision),
-            issue_token_total: budget_decision.budget_issue_total_tokens,
-            cost_profile_key: budget_decision.budget_next_cost_profile_key,
-            budget_decision: budget_decision,
-            error: "budget downshift: #{budget_decision.reason}",
-            error_class: ErrorClassifier.to_string(:transient)
-          }
-          |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
-          |> Map.merge(retry_failover_metadata(decision))
-        )
+          log_budget_decision(issue_id, identifier, session_id, trace_id, :downshift, budget_decision)
+          log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
 
-      {:handoff, budget_decision} ->
-        decision = retry_failover_budget_decision({:handoff, budget_decision})
+          state
+          |> complete_issue(issue_id)
+          |> schedule_issue_retry(
+            issue_id,
+            continuation_attempt,
+            %{
+              identifier: identifier,
+              trace_id: trace_id,
+              delay_type: :continuation,
+              resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_decision),
+              issue_token_total: budget_decision.budget_issue_total_tokens,
+              cost_profile_key: budget_decision.budget_next_cost_profile_key,
+              budget_decision: budget_decision,
+              error: "budget downshift: #{budget_decision.reason}",
+              error_class: ErrorClassifier.to_string(:transient)
+            }
+            |> Map.merge(retry_execution_metadata(running_entry, resume_checkpoint))
+            |> Map.merge(retry_failover_metadata(decision))
+          )
 
-        log_budget_decision(issue_id, identifier, session_id, trace_id, :handoff, budget_decision)
-        log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
+        {:handoff, budget_decision} ->
+          decision = retry_failover_budget_decision({:handoff, budget_decision})
 
-        state
-        |> complete_issue(issue_id)
-        |> escalate_issue_for_budget_handoff(
-          Map.get(running_entry, :issue),
-          budget_decision,
-          trace_id,
-          decision
-        )
+          log_budget_decision(issue_id, identifier, session_id, trace_id, :handoff, budget_decision)
+          log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
+
+          state
+          |> complete_issue(issue_id)
+          |> escalate_issue_for_budget_handoff(
+            Map.get(running_entry, :issue),
+            budget_decision,
+            trace_id,
+            decision
+          )
+      end
     end
   end
 
@@ -3049,27 +3069,47 @@ defmodule SymphonyElixir.Orchestrator do
       |> Map.merge(TelemetrySchema.logger_metadata(decision))
       |> Map.to_list()
 
-    with_log_metadata(log_metadata, fn ->
-      Logger.info("Auto compaction triggered issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} attempt=#{continuation_attempt}")
-    end)
-
     state =
       state
       |> Map.put(:running, Map.put(state.running, issue_id, enriched_running_entry))
       |> terminate_running_issue(issue_id, false)
-      |> schedule_issue_retry(
-        issue_id,
-        continuation_attempt,
-        %{
-          identifier: identifier,
-          trace_id: trace_id,
-          delay_type: :continuation,
-          resume_checkpoint: checkpoint,
-          issue_token_total: issue_token_total
-        }
-        |> Map.merge(decision)
-        |> Map.merge(retry_execution_metadata(enriched_running_entry, checkpoint))
-      )
+
+    state =
+      if continuation_attempt_limit_exceeded?(continuation_attempt) do
+        handle_continuation_attempt_limit_breach(
+          state,
+          continuation_attempt,
+          %{
+            issue_id: issue_id,
+            issue: Map.get(running_entry, :issue),
+            identifier: identifier,
+            session_id: session_id,
+            trace_id: trace_id,
+            continuation_reason: "auto_compaction",
+            codex_account_id: Map.get(running_entry, :codex_account_id),
+            resume_checkpoint: checkpoint
+          }
+        )
+      else
+        with_log_metadata(log_metadata, fn ->
+          Logger.info("Auto compaction triggered issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} attempt=#{continuation_attempt}")
+        end)
+
+        schedule_issue_retry(
+          state,
+          issue_id,
+          continuation_attempt,
+          %{
+            identifier: identifier,
+            trace_id: trace_id,
+            delay_type: :continuation,
+            resume_checkpoint: checkpoint,
+            issue_token_total: issue_token_total
+          }
+          |> Map.merge(decision)
+          |> Map.merge(retry_execution_metadata(enriched_running_entry, checkpoint))
+        )
+      end
 
     {:auto_compaction_stop, state}
   end
@@ -3826,6 +3866,102 @@ defmodule SymphonyElixir.Orchestrator do
        do: attempt + 1
 
   defp next_failure_retry_attempt(_attempt, _retry_delay_type), do: 1
+
+  defp continuation_attempt_limit_exceeded?(attempt)
+       when is_integer(attempt) and attempt > 0,
+       do: attempt > max_continuation_attempts()
+
+  defp continuation_attempt_limit_exceeded?(_attempt), do: false
+
+  defp max_continuation_attempts do
+    case Config.settings!().codex.max_continuation_attempts do
+      value when is_integer(value) and value > 0 -> value
+      _ -> @max_continuation_attempts_default
+    end
+  end
+
+  defp handle_continuation_attempt_limit_breach(
+         %State{} = state,
+         continuation_attempt,
+         context
+       )
+       when is_integer(continuation_attempt) and continuation_attempt > 0 and is_map(context) do
+    issue_id = Map.get(context, :issue_id)
+    issue = Map.get(context, :issue)
+    identifier = Map.get(context, :identifier)
+    session_id = Map.get(context, :session_id)
+    trace_id = Map.get(context, :trace_id)
+    continuation_reason = Map.get(context, :continuation_reason)
+    codex_account_id = Map.get(context, :codex_account_id)
+    resume_checkpoint = Map.get(context, :resume_checkpoint)
+
+    if is_binary(issue_id) do
+      identifier = normalize_optional_string(identifier) || issue_id
+      max_attempts = max_continuation_attempts()
+      normalized_reason = normalize_optional_string(continuation_reason) || "normal_exit"
+
+      decision =
+        %RetryFailoverDecision{
+          selected_rule: :continuation_attempt_limit_exceeded,
+          selected_action: :stop_with_classified_handoff,
+          reason: "continuation_attempt_limit_exceeded",
+          signals: %{
+            continuation_attempt_limit: %{
+              active: true,
+              reason: "continuation_attempt_limit_exceeded",
+              continuation_reason: normalized_reason,
+              continuation_attempt: continuation_attempt,
+              max_continuation_attempts: max_attempts
+            }
+          },
+          checkpoint_type: "decision",
+          risk_level: "medium",
+          retry_metadata: %{
+            continuation_reason: normalized_reason,
+            continuation_attempt: continuation_attempt,
+            max_continuation_attempts: max_attempts
+          },
+          log_fields: %{
+            continuation_reason: normalized_reason,
+            continuation_attempt: continuation_attempt,
+            max_continuation_attempts: max_attempts
+          }
+        }
+
+      issue_for_handoff =
+        case issue do
+          %Issue{} = tracker_issue -> tracker_issue
+          _ -> %Issue{id: issue_id, identifier: identifier, state: "In Progress"}
+        end
+
+      with_log_metadata(issue_log_metadata(issue_id, identifier, session_id, trace_id), fn ->
+        Logger.warning(
+          "Continuation attempt ceiling reached issue_id=#{issue_id} issue_identifier=#{identifier} continuation_reason=#{normalized_reason} attempt=#{continuation_attempt} max_continuation_attempts=#{max_attempts}; escalating to #{manual_intervention_state()}"
+        )
+      end)
+
+      log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
+
+      escalate_issue_for_retry_failover_handoff(
+        state,
+        issue_for_handoff,
+        decision,
+        continuation_attempt,
+        %{
+          issue_id: issue_id,
+          identifier: identifier,
+          trace_id: trace_id,
+          codex_account_id: codex_account_id,
+          error_class: ErrorClassifier.to_string(:permanent),
+          failure_class: "continuation_attempt_limit_exceeded",
+          retry_action: :stop,
+          resume_checkpoint: resume_checkpoint
+        }
+      )
+    else
+      state
+    end
+  end
 
   defp pick_retry_identifier(issue_id, previous_retry, metadata) do
     metadata[:identifier] || Map.get(previous_retry, :identifier) || issue_id

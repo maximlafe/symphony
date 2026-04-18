@@ -7,15 +7,18 @@ defmodule SymphonyElixir.AutoCompactionTest do
     config = Config.settings!()
     assert config.codex.auto_compaction_max_total_tokens == nil
     assert config.codex.auto_compaction_max_safe_steps == nil
+    assert config.codex.max_continuation_attempts == 3
 
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_auto_compaction_max_total_tokens: 120_000,
-      codex_auto_compaction_max_safe_steps: 12
+      codex_auto_compaction_max_safe_steps: 12,
+      codex_max_continuation_attempts: 7
     )
 
     config = Config.settings!()
     assert config.codex.auto_compaction_max_total_tokens == 120_000
     assert config.codex.auto_compaction_max_safe_steps == 12
+    assert config.codex.max_continuation_attempts == 7
   end
 
   test "decide compacts editing runs when total token threshold is exceeded at safe boundary" do

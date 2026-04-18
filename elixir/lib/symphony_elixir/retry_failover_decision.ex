@@ -16,6 +16,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
           | :stale_workspace_head
           | :validation_env_mismatch
           | :retry_dedupe_hit
+          | :continuation_attempt_limit_exceeded
           | :budget_exceeded_cumulative
           | :budget_exceeded_per_attempt_handoff
           | :account_unhealthy_milestone_near
@@ -94,19 +95,20 @@ defmodule SymphonyElixir.RetryFailoverDecision do
 
   defp normalize_signals(input) do
     %{
-      budget_exceeded: normalize_budget_signal(Map.get(input, :budget_exceeded) || Map.get(input, "budget_exceeded")),
-      stale_workspace_head: normalize_signal(Map.get(input, :stale_workspace_head) || Map.get(input, "stale_workspace_head")),
-      retry_dedupe_hit: normalize_signal(Map.get(input, :retry_dedupe_hit) || Map.get(input, "retry_dedupe_hit")),
-      validation_env_mismatch: normalize_signal(Map.get(input, :validation_env_mismatch) || Map.get(input, "validation_env_mismatch")),
-      account_unhealthy: normalize_signal(Map.get(input, :account_unhealthy) || Map.get(input, "account_unhealthy")),
-      unsafe_preemption_required:
-        normalize_signal(
-          Map.get(input, :unsafe_preemption_required) ||
-            Map.get(input, "unsafe_preemption_required")
-        ),
-      checkpoint_available: normalize_boolean_signal(Map.get(input, :checkpoint_available) || Map.get(input, "checkpoint_available")),
-      milestone_near: normalize_boolean_signal(Map.get(input, :milestone_near) || Map.get(input, "milestone_near"))
+      budget_exceeded: normalize_budget_signal(signal_input(input, :budget_exceeded)),
+      stale_workspace_head: normalize_signal(signal_input(input, :stale_workspace_head)),
+      retry_dedupe_hit: normalize_signal(signal_input(input, :retry_dedupe_hit)),
+      continuation_attempt_limit: normalize_signal(signal_input(input, :continuation_attempt_limit)),
+      validation_env_mismatch: normalize_signal(signal_input(input, :validation_env_mismatch)),
+      account_unhealthy: normalize_signal(signal_input(input, :account_unhealthy)),
+      unsafe_preemption_required: normalize_signal(signal_input(input, :unsafe_preemption_required)),
+      checkpoint_available: normalize_boolean_signal(signal_input(input, :checkpoint_available)),
+      milestone_near: normalize_boolean_signal(signal_input(input, :milestone_near))
     }
+  end
+
+  defp signal_input(input, key) when is_map(input) and is_atom(key) do
+    Map.get(input, key) || Map.get(input, Atom.to_string(key))
   end
 
   defp normalize_signal(value) when value in [nil, false], do: %{active: false}
@@ -153,6 +155,10 @@ defmodule SymphonyElixir.RetryFailoverDecision do
     |> maybe_add_rule(:stale_workspace_head, signal_active?(signals.stale_workspace_head))
     |> maybe_add_rule(:validation_env_mismatch, signal_active?(signals.validation_env_mismatch))
     |> maybe_add_rule(:retry_dedupe_hit, signal_active?(signals.retry_dedupe_hit))
+    |> maybe_add_rule(
+      :continuation_attempt_limit_exceeded,
+      signal_active?(signals.continuation_attempt_limit)
+    )
     |> maybe_add_rule(:budget_exceeded_cumulative, cumulative_budget?(signals.budget_exceeded))
     |> maybe_add_rule(
       :budget_exceeded_per_attempt_handoff,
@@ -183,6 +189,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp action_for_rule(:stale_workspace_head), do: :stop_with_classified_handoff
   defp action_for_rule(:validation_env_mismatch), do: :stop_with_classified_handoff
   defp action_for_rule(:retry_dedupe_hit), do: :stop_with_classified_handoff
+  defp action_for_rule(:continuation_attempt_limit_exceeded), do: :stop_with_classified_handoff
   defp action_for_rule(:budget_exceeded_cumulative), do: :stop_with_classified_handoff
   defp action_for_rule(:budget_exceeded_per_attempt_handoff), do: :stop_with_classified_handoff
   defp action_for_rule(:account_unhealthy_milestone_near), do: :drain_to_milestone
@@ -202,6 +209,13 @@ defmodule SymphonyElixir.RetryFailoverDecision do
 
   defp reason_for_rule(:retry_dedupe_hit, signals),
     do: signal_reason(signals.retry_dedupe_hit, "retry_dedupe_hit")
+
+  defp reason_for_rule(:continuation_attempt_limit_exceeded, signals),
+    do:
+      signal_reason(
+        signals.continuation_attempt_limit,
+        "continuation_attempt_limit_exceeded"
+      )
 
   defp reason_for_rule(:budget_exceeded_cumulative, signals),
     do: signal_reason(signals.budget_exceeded, "budget_exceeded_cumulative")
@@ -231,6 +245,14 @@ defmodule SymphonyElixir.RetryFailoverDecision do
     |> signal_field(:checkpoint_type, "human-action")
   end
 
+  defp checkpoint_type_for_rule(:continuation_attempt_limit_exceeded, signals),
+    do:
+      signal_field(
+        signals.continuation_attempt_limit,
+        :checkpoint_type,
+        "decision"
+      )
+
   defp checkpoint_type_for_rule(:budget_exceeded_cumulative, signals),
     do: signal_field(signals.budget_exceeded, :checkpoint_type, "decision")
 
@@ -256,6 +278,9 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp risk_level_for_rule(:retry_dedupe_hit, signals),
     do: signal_field(signals.retry_dedupe_hit, :risk_level, "medium")
 
+  defp risk_level_for_rule(:continuation_attempt_limit_exceeded, signals),
+    do: signal_field(signals.continuation_attempt_limit, :risk_level, "medium")
+
   defp risk_level_for_rule(:budget_exceeded_cumulative, signals),
     do: signal_field(signals.budget_exceeded, :risk_level, "medium")
 
@@ -279,6 +304,9 @@ defmodule SymphonyElixir.RetryFailoverDecision do
 
   defp retry_metadata_for_rule(:budget_exceeded_per_attempt_downshift, signals),
     do: signal_retry_metadata(signals.budget_exceeded)
+
+  defp retry_metadata_for_rule(:continuation_attempt_limit_exceeded, signals),
+    do: signal_retry_metadata(signals.continuation_attempt_limit)
 
   defp retry_metadata_for_rule(rule, signals)
        when rule in [:account_unhealthy_checkpoint_available, :account_unhealthy_no_checkpoint] do
@@ -306,6 +334,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
       budget_exceeded: budget_signal_payload(signals.budget_exceeded),
       stale_workspace_head: signal_payload(signals.stale_workspace_head),
       retry_dedupe_hit: signal_payload(signals.retry_dedupe_hit),
+      continuation_attempt_limit: signal_payload(signals.continuation_attempt_limit),
       validation_env_mismatch: signal_payload(signals.validation_env_mismatch),
       account_unhealthy: signal_payload(signals.account_unhealthy),
       unsafe_preemption_required: signal_payload(signals.unsafe_preemption_required),
@@ -361,6 +390,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp signal_for_rule(signals, :stale_workspace_head), do: signals.stale_workspace_head
   defp signal_for_rule(signals, :validation_env_mismatch), do: signals.validation_env_mismatch
   defp signal_for_rule(signals, :retry_dedupe_hit), do: signals.retry_dedupe_hit
+  defp signal_for_rule(signals, :continuation_attempt_limit_exceeded), do: signals.continuation_attempt_limit
   defp signal_for_rule(signals, :budget_exceeded_cumulative), do: signals.budget_exceeded
   defp signal_for_rule(signals, :budget_exceeded_per_attempt_handoff), do: signals.budget_exceeded
   defp signal_for_rule(signals, :budget_exceeded_per_attempt_downshift), do: signals.budget_exceeded

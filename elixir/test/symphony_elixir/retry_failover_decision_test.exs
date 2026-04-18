@@ -34,6 +34,27 @@ defmodule SymphonyElixir.RetryFailoverDecisionTest do
     assert decision.suppressed_rules == [:account_unhealthy_checkpoint_available]
   end
 
+  test "continuation attempt limit triggers classified decision handoff" do
+    decision =
+      RetryFailoverDecision.decide(%{
+        continuation_attempt_limit: %{
+          reason: "continuation_attempt_limit_exceeded",
+          checkpoint_type: "decision",
+          risk_level: "medium",
+          retry_metadata: %{max_continuation_attempts: 3, continuation_attempt: 4},
+          log_fields: %{continuation_reason: "auto_compaction"}
+        }
+      })
+
+    assert decision.selected_rule == :continuation_attempt_limit_exceeded
+    assert decision.selected_action == :stop_with_classified_handoff
+    assert decision.reason == "continuation_attempt_limit_exceeded"
+    assert decision.checkpoint_type == "decision"
+    assert decision.risk_level == "medium"
+    assert decision.retry_metadata == %{max_continuation_attempts: 3, continuation_attempt: 4}
+    assert decision.log_fields.continuation_reason == "auto_compaction"
+  end
+
   test "validation environment mismatch blocks retry" do
     decision =
       RetryFailoverDecision.decide(%{
