@@ -751,6 +751,229 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "identical continuation surface after one queued retry blocks repeated continuation" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-continuation-dedupe-block"
+    issue_identifier = "MT-CONTINUATION-DEDUPE-BLOCK"
+    trace_id = "trace-continuation-dedupe-block"
+    runtime_head_sha = "runtime-head-continuation-dedupe"
+    workspace_diff_fingerprint = "workspace-diff-continuation-stable"
+    validation_bundle_fingerprint = "validation-bundle-continuation-stable"
+    feedback_digest = "feedback-continuation-stable"
+    continuation_reason = "normal_exit"
+    first_ref = make_ref()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", tracker_api_token: nil)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      orchestrator_name = Module.concat(__MODULE__, :ContinuationDedupeBlockOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue = %Issue{id: issue_id, identifier: issue_identifier, state: "In Progress"}
+      initial_state = :sys.get_state(pid)
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            continuation_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              workspace_diff_fingerprint: workspace_diff_fingerprint,
+              validation_bundle_fingerprint: validation_bundle_fingerprint,
+              feedback_digest: feedback_digest,
+              continuation_reason: continuation_reason
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, first_ref, :process, self(), :normal})
+
+      first_state =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(
+            %{
+              attempt: 1,
+              delay_type: :continuation,
+              runtime_head_sha: ^runtime_head_sha,
+              workspace_diff_fingerprint: ^workspace_diff_fingerprint,
+              validation_bundle_fingerprint: ^validation_bundle_fingerprint,
+              feedback_digest: ^feedback_digest,
+              continuation_reason: ^continuation_reason
+            },
+            state.retry_attempts[issue_id]
+          ) and is_binary(state.retry_dedupe_keys[issue_id])
+        end)
+
+      cancel_retry_timer(first_state.retry_attempts[issue_id])
+      second_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn current_state ->
+        current_state
+        |> Map.put(:running, %{
+          issue_id =>
+            continuation_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              workspace_diff_fingerprint: workspace_diff_fingerprint,
+              validation_bundle_fingerprint: validation_bundle_fingerprint,
+              feedback_digest: feedback_digest,
+              continuation_reason: continuation_reason,
+              retry_attempt: 1,
+              retry_delay_type: :continuation
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, second_ref, :process, self(), :normal})
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 1_500
+      assert blocker_body =~ "selected_rule: `retry_dedupe_hit`"
+      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
+      assert blocker_body =~ "failure_class: `retry_dedupe_hit`"
+      assert blocker_body =~ "retry_action: `stop`"
+      assert blocker_body =~ "continuation_reason=normal_exit"
+      assert blocker_body =~ runtime_head_sha
+      assert blocker_body =~ workspace_diff_fingerprint
+      assert blocker_body =~ validation_bundle_fingerprint
+      assert blocker_body =~ feedback_digest
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+
+      final_state =
+        wait_for_orchestrator_state(pid, fn state ->
+          state.running == %{} and
+            not Map.has_key?(state.retry_attempts, issue_id) and
+            not MapSet.member?(state.claimed, issue_id)
+        end)
+
+      refute Map.has_key?(final_state.retry_dedupe_keys, issue_id)
+      refute Map.has_key?(final_state.retry_attempts, issue_id)
+      refute MapSet.member?(final_state.claimed, issue_id)
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+    end
+  end
+
+  test "changed continuation surface does not dedupe and keeps continuation allowed" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-continuation-dedupe-progress"
+    issue_identifier = "MT-CONTINUATION-DEDUPE-PROGRESS"
+    trace_id = "trace-continuation-dedupe-progress"
+    runtime_head_sha = "runtime-head-continuation-progress"
+    validation_bundle_fingerprint = "validation-bundle-continuation-progress"
+    feedback_digest = "feedback-continuation-progress"
+    continuation_reason = "normal_exit"
+    first_workspace_diff_fingerprint = "workspace-diff-continuation-first"
+    second_workspace_diff_fingerprint = "workspace-diff-continuation-second"
+    first_ref = make_ref()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", tracker_api_token: nil)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      orchestrator_name = Module.concat(__MODULE__, :ContinuationDedupeProgressOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      issue = %Issue{id: issue_id, identifier: issue_identifier, state: "In Progress"}
+      initial_state = :sys.get_state(pid)
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{
+          issue_id =>
+            continuation_dedupe_running_entry(issue, first_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              workspace_diff_fingerprint: first_workspace_diff_fingerprint,
+              validation_bundle_fingerprint: validation_bundle_fingerprint,
+              feedback_digest: feedback_digest,
+              continuation_reason: continuation_reason
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, first_ref, :process, self(), :normal})
+
+      first_state =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(
+            %{
+              attempt: 1,
+              delay_type: :continuation,
+              workspace_diff_fingerprint: ^first_workspace_diff_fingerprint
+            },
+            state.retry_attempts[issue_id]
+          ) and is_binary(state.retry_dedupe_keys[issue_id])
+        end)
+
+      cancel_retry_timer(first_state.retry_attempts[issue_id])
+      first_retry_key = first_state.retry_dedupe_keys[issue_id]
+      second_ref = make_ref()
+
+      replace_orchestrator_state!(pid, fn current_state ->
+        current_state
+        |> Map.put(:running, %{
+          issue_id =>
+            continuation_dedupe_running_entry(issue, second_ref,
+              trace_id: trace_id,
+              runtime_head_sha: runtime_head_sha,
+              workspace_diff_fingerprint: second_workspace_diff_fingerprint,
+              validation_bundle_fingerprint: validation_bundle_fingerprint,
+              feedback_digest: feedback_digest,
+              continuation_reason: continuation_reason,
+              retry_attempt: 1,
+              retry_delay_type: :continuation
+            )
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, second_ref, :process, self(), :normal})
+
+      second_state =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(
+            %{
+              attempt: 2,
+              delay_type: :continuation,
+              workspace_diff_fingerprint: ^second_workspace_diff_fingerprint
+            },
+            state.retry_attempts[issue_id]
+          ) and is_binary(state.retry_dedupe_keys[issue_id]) and state.retry_dedupe_keys[issue_id] != first_retry_key
+        end)
+
+      cancel_retry_timer(second_state.retry_attempts[issue_id])
+      refute_received {:memory_tracker_comment, ^issue_id, _comment}
+      refute_received {:memory_tracker_state_update, ^issue_id, "Blocked"}
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+    end
+  end
+
   test "failure after continuation retry starts failure backoff from attempt 1" do
     issue_id = "issue-continuation-crash"
     ref = make_ref()
@@ -6848,6 +7071,38 @@ defmodule SymphonyElixir.CoreTest do
       current_command: Keyword.fetch!(opts, :current_command),
       external_step: Keyword.get(opts, :external_step),
       latest_pr_snapshot: latest_pr_snapshot,
+      started_at: DateTime.utc_now()
+    }
+  end
+
+  defp continuation_dedupe_running_entry(issue, ref, opts) do
+    continuation_reason = Keyword.get(opts, :continuation_reason, "normal_exit")
+    validation_bundle_fingerprint = Keyword.fetch!(opts, :validation_bundle_fingerprint)
+    feedback_digest = Keyword.fetch!(opts, :feedback_digest)
+
+    %{
+      pid: self(),
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      trace_id: Keyword.get(opts, :trace_id),
+      retry_attempt: Keyword.get(opts, :retry_attempt),
+      retry_delay_type: Keyword.get(opts, :retry_delay_type),
+      runtime_head_sha: Keyword.fetch!(opts, :runtime_head_sha),
+      workspace_diff_fingerprint: Keyword.fetch!(opts, :workspace_diff_fingerprint),
+      validation_bundle_fingerprint: validation_bundle_fingerprint,
+      feedback_digest: feedback_digest,
+      continuation_reason: continuation_reason,
+      active_validation_snapshot: %{
+        "validation_bundle_fingerprint" => validation_bundle_fingerprint
+      },
+      latest_pr_snapshot: %{
+        "url" => "https://github.com/acme/symphony/pull/539",
+        "state" => "OPEN",
+        "has_pending_checks" => false,
+        "has_actionable_feedback" => true,
+        "feedback_digest" => feedback_digest
+      },
       started_at: DateTime.utc_now()
     }
   end
