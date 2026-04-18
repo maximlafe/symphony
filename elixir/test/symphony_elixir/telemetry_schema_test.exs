@@ -45,6 +45,8 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
           checkpoint_type: "human-action",
           risk_level: :medium
         },
+        resume_mode: :fallback_reread,
+        resume_fallback_reason: "resume_checkpoint_unavailable",
         run_phase: "waiting ci",
         wait_reason: :checks_pending,
         current_command: "github_wait_for_checks --poll",
@@ -93,6 +95,8 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
              "retry_failover_selected_action" => "stop_with_classified_handoff",
              "retry_failover_selected_rule" => "retry_dedupe_hit",
              "retry_failover_suppressed_rules" => ["budget_exceeded_per_attempt_downshift"],
+             "resume_fallback_reason" => "resume_checkpoint_unavailable",
+             "resume_mode" => "fallback_reread",
              "validation_guard_name" => "review-ready",
              "validation_guard_reason" => "all required checks green",
              "validation_guard_result" => "passed",
@@ -143,6 +147,7 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
              "checkpoint_origin" => "resume_checkpoint",
              "checkpoint_quality" => "ready",
              "checkpoint_fallback_reasons" => [],
+             "resume_mode" => "resume_checkpoint",
              "resume_ready" => true
            }
 
@@ -153,16 +158,20 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
              "checkpoint_origin" => "resume_checkpoint",
              "checkpoint_quality" => "pending_review",
              "checkpoint_fallback_reasons" => [],
+             "resume_fallback_reason" => "checkpoint_not_ready",
+             "resume_mode" => "fallback_reread",
              "resume_ready" => false
            }
 
     assert TelemetrySchema.checkpoint_payload(
-             %{"fallback_reasons" => ["missing branch"], "resume_ready" => false},
+             %{"fallback_reasons" => ["missing `branch` in resume checkpoint"], "resume_ready" => false},
              "resume_checkpoint"
            ) == %{
              "checkpoint_origin" => "resume_checkpoint",
              "checkpoint_quality" => "fallback",
-             "checkpoint_fallback_reasons" => ["missing branch"],
+             "checkpoint_fallback_reasons" => ["missing `branch` in resume checkpoint"],
+             "resume_fallback_reason" => "checkpoint_missing_required_field",
+             "resume_mode" => "fallback_reread",
              "resume_ready" => false
            }
 
@@ -170,8 +179,74 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
              "checkpoint_origin" => "resume_checkpoint",
              "checkpoint_quality" => "incomplete",
              "checkpoint_fallback_reasons" => [],
+             "resume_fallback_reason" => "checkpoint_not_ready",
+             "resume_mode" => "fallback_reread",
              "resume_ready" => false
            }
+  end
+
+  test "checkpoint_payload infers fallback reason codes for all known textual causes" do
+    cases = [
+      {"resume checkpoint is unavailable", "resume_checkpoint_unavailable"},
+      {"workspace is unavailable for retry checkpoint capture", "workspace_unavailable"},
+      {"resume checkpoint capture failed: boom", "checkpoint_capture_failed"},
+      {"resume checkpoint directory creation failed: :eperm", "checkpoint_persist_failed"},
+      {"resume checkpoint write failed: :eperm", "checkpoint_persist_failed"},
+      {"resume checkpoint `head` mismatch: expected `abc`, current `def`", "checkpoint_mismatch"},
+      {"missing `branch` in resume checkpoint", "checkpoint_missing_required_field"},
+      {"unmapped fallback text", "checkpoint_not_ready"}
+    ]
+
+    for {reason, expected_code} <- cases do
+      payload =
+        TelemetrySchema.checkpoint_payload(
+          %{"resume_ready" => false, "fallback_reasons" => [reason]},
+          "resume_checkpoint"
+        )
+
+      assert payload["resume_mode"] == "fallback_reread"
+      assert payload["resume_fallback_reason"] == expected_code
+    end
+  end
+
+  test "checkpoint_payload prefers explicit machine-readable fallback reason and ignores fallback reason when resume is ready" do
+    explicit_payload =
+      TelemetrySchema.checkpoint_payload(
+        %{
+          "resume_ready" => false,
+          "resume_fallback_reason" => "custom_machine_code",
+          "fallback_reasons" => ["missing branch"]
+        },
+        "resume_checkpoint"
+      )
+
+    assert explicit_payload["resume_fallback_reason"] == "custom_machine_code"
+    assert explicit_payload["resume_mode"] == "fallback_reread"
+
+    blank_override_payload =
+      TelemetrySchema.checkpoint_payload(
+        %{
+          "resume_ready" => false,
+          "resume_fallback_reason" => "   ",
+          "fallback_reasons" => ["resume checkpoint capture failed: boom"]
+        },
+        "resume_checkpoint"
+      )
+
+    assert blank_override_payload["resume_fallback_reason"] == "checkpoint_capture_failed"
+
+    ready_payload =
+      TelemetrySchema.checkpoint_payload(
+        %{
+          "resume_ready" => true,
+          "resume_mode" => "resume_checkpoint",
+          "resume_fallback_reason" => "should_be_ignored"
+        },
+        "resume_checkpoint"
+      )
+
+    assert ready_payload["resume_mode"] == "resume_checkpoint"
+    refute Map.has_key?(ready_payload, "resume_fallback_reason")
   end
 
   test "validation_guard_payload supports canonical and legacy keys" do
@@ -237,6 +312,7 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
                "checkpoint_origin" => "resume_checkpoint",
                "checkpoint_quality" => "ready",
                "checkpoint_fallback_reasons" => [],
+               "resume_mode" => "resume_checkpoint",
                "resume_ready" => true
              }
 
@@ -276,6 +352,8 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
            }) == %{
              "checkpoint_quality" => "fallback",
              "checkpoint_fallback_reasons" => ["missing digest"],
+             "resume_fallback_reason" => "checkpoint_missing_required_field",
+             "resume_mode" => "fallback_reread",
              "resume_ready" => false
            }
 
@@ -286,6 +364,8 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
              "issue_id" => "LET-494",
              "checkpoint_quality" => "fallback",
              "checkpoint_fallback_reasons" => ["missing head"],
+             "resume_fallback_reason" => "checkpoint_missing_required_field",
+             "resume_mode" => "fallback_reread",
              "resume_ready" => false
            }
   end

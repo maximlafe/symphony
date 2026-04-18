@@ -51,6 +51,8 @@ defmodule SymphonyElixir.TelemetrySchema do
   ]
   @continuation_fields [
     :continuation_reason,
+    :resume_mode,
+    :resume_fallback_reason,
     :auto_compaction_signal,
     :auto_compaction_threshold,
     :auto_compaction_observed_total
@@ -124,6 +126,8 @@ defmodule SymphonyElixir.TelemetrySchema do
     resume_ready = fetch(checkpoint, :resume_ready)
     pending_checks = fetch(checkpoint, :pending_checks)
     open_feedback = fetch(checkpoint, :open_feedback)
+    resume_mode = derive_resume_mode(checkpoint, resume_ready)
+    resume_fallback_reason = derive_resume_fallback_reason(checkpoint, resume_mode, fallback_reasons)
 
     quality =
       cond do
@@ -137,6 +141,8 @@ defmodule SymphonyElixir.TelemetrySchema do
       "checkpoint_quality" => quality,
       "checkpoint_origin" => normalize_string(fetch(checkpoint, :checkpoint_origin) || origin),
       "checkpoint_fallback_reasons" => fallback_reasons,
+      "resume_mode" => resume_mode,
+      "resume_fallback_reason" => resume_fallback_reason,
       "resume_ready" => resume_ready == true
     }
     |> reject_nil_values()
@@ -274,11 +280,73 @@ defmodule SymphonyElixir.TelemetrySchema do
   defp continuation_fields(source) do
     %{
       "continuation_reason" => normalize_string(fetch(source, :continuation_reason)),
+      "resume_mode" => normalize_string(fetch(source, :resume_mode)),
+      "resume_fallback_reason" => normalize_string(fetch(source, :resume_fallback_reason)),
       "auto_compaction_signal" => normalize_string(fetch(source, :auto_compaction_signal)),
       "auto_compaction_threshold" => fetch(source, :auto_compaction_threshold),
       "auto_compaction_observed_total" => fetch(source, :auto_compaction_observed_total)
     }
     |> reject_nil_values()
+  end
+
+  defp derive_resume_mode(checkpoint, resume_ready) do
+    normalize_string(fetch(checkpoint, :resume_mode)) ||
+      if(resume_ready == true, do: "resume_checkpoint", else: "fallback_reread")
+  end
+
+  defp derive_resume_fallback_reason(_checkpoint, "resume_checkpoint", _fallback_reasons), do: nil
+
+  defp derive_resume_fallback_reason(checkpoint, _resume_mode, fallback_reasons) do
+    normalize_fallback_reason(fetch(checkpoint, :resume_fallback_reason)) ||
+      fallback_reasons
+      |> List.first()
+      |> normalize_fallback_reason() ||
+      "checkpoint_not_ready"
+  end
+
+  defp normalize_fallback_reason(reason) when is_binary(reason) do
+    trimmed = String.trim(reason)
+
+    cond do
+      trimmed == "" ->
+        nil
+
+      String.match?(trimmed, ~r/^[a-z0-9_]+$/) ->
+        trimmed
+
+      true ->
+        infer_fallback_reason_code(trimmed)
+    end
+  end
+
+  defp normalize_fallback_reason(_reason), do: nil
+
+  defp infer_fallback_reason_code(reason) when is_binary(reason) do
+    normalized = String.downcase(String.trim(reason))
+
+    cond do
+      String.starts_with?(normalized, "resume checkpoint is unavailable") ->
+        "resume_checkpoint_unavailable"
+
+      String.starts_with?(normalized, "workspace is unavailable for retry checkpoint capture") ->
+        "workspace_unavailable"
+
+      String.starts_with?(normalized, "resume checkpoint capture failed") ->
+        "checkpoint_capture_failed"
+
+      String.starts_with?(normalized, "resume checkpoint directory creation failed") or
+          String.starts_with?(normalized, "resume checkpoint write failed") ->
+        "checkpoint_persist_failed"
+
+      String.contains?(normalized, " mismatch:") ->
+        "checkpoint_mismatch"
+
+      String.starts_with?(normalized, "missing ") ->
+        "checkpoint_missing_required_field"
+
+      true ->
+        "checkpoint_not_ready"
+    end
   end
 
   defp wait_fields(source) do
