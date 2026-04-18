@@ -93,8 +93,6 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: session_id_from_entries(running, retry),
       thread_id: thread_id_from_entries(running, retry),
       turn_id: turn_id_from_entries(running, retry),
-      replacement_of_session_id: replacement_of_session_id_from_entries(running, retry),
-      replacement_session_id: replacement_session_id_from_entries(running, retry),
       status: issue_status(running, retry),
       lifecycle_state: lifecycle.lifecycle_state,
       replacement_of_session_id: lifecycle.replacement_of_session_id,
@@ -133,16 +131,6 @@ defmodule SymphonyElixirWeb.Presenter do
   defp turn_id_from_entries(running, retry),
     do: (running && Map.get(running, :turn_id)) || (retry && Map.get(retry, :turn_id))
 
-  defp replacement_of_session_id_from_entries(running, retry),
-    do:
-      (running && Map.get(running, :replacement_of_session_id)) ||
-        (retry && Map.get(retry, :replacement_of_session_id))
-
-  defp replacement_session_id_from_entries(running, retry),
-    do:
-      (running && Map.get(running, :replacement_session_id)) ||
-        (retry && Map.get(retry, :replacement_session_id))
-
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0
   defp retry_attempt(retry), do: retry.attempt || 0
@@ -164,8 +152,6 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: entry.session_id,
       thread_id: Map.get(entry, :thread_id),
       turn_id: Map.get(entry, :turn_id),
-      replacement_of_session_id: Map.get(entry, :replacement_of_session_id),
-      replacement_session_id: Map.get(entry, :replacement_session_id),
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,
       last_message: summarize_message(entry.last_codex_message),
@@ -210,8 +196,6 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: Map.get(entry, :session_id),
       thread_id: Map.get(entry, :thread_id),
       turn_id: Map.get(entry, :turn_id),
-      replacement_of_session_id: Map.get(entry, :replacement_of_session_id),
-      replacement_session_id: Map.get(entry, :replacement_session_id),
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
@@ -234,8 +218,6 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: running.session_id,
       thread_id: Map.get(running, :thread_id),
       turn_id: Map.get(running, :turn_id),
-      replacement_of_session_id: Map.get(running, :replacement_of_session_id),
-      replacement_session_id: Map.get(running, :replacement_session_id),
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
       started_at: iso8601(running.started_at),
@@ -279,8 +261,6 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: Map.get(retry, :session_id),
       thread_id: Map.get(retry, :thread_id),
       turn_id: Map.get(retry, :turn_id),
-      replacement_of_session_id: Map.get(retry, :replacement_of_session_id),
-      replacement_session_id: Map.get(retry, :replacement_session_id),
       attempt: retry.attempt,
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error,
