@@ -3,10 +3,27 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
 
   alias SymphonyElixir.BudgetGuardrails
 
-  test "config parses disabled and enabled token budget thresholds" do
+  test "config requires and parses token budget thresholds" do
     config = Config.settings!()
-    assert config.codex.max_total_tokens == nil
-    assert config.codex.max_tokens_per_attempt == nil
+    assert config.codex.max_total_tokens == 300_000
+    assert config.codex.max_tokens_per_attempt == 120_000
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_max_total_tokens: nil
+    )
+
+    assert_raise ArgumentError, ~r/codex.max_total_tokens can't be blank/, fn ->
+      Config.settings!()
+    end
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_max_total_tokens: 120_000,
+      codex_max_tokens_per_attempt: nil
+    )
+
+    assert_raise ArgumentError, ~r/codex.max_tokens_per_attempt can't be blank/, fn ->
+      Config.settings!()
+    end
 
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_max_total_tokens: 120_000,
