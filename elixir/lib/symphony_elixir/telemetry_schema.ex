@@ -49,6 +49,11 @@ defmodule SymphonyElixir.TelemetrySchema do
     :failover_from_account_id,
     :failover_to_account_id
   ]
+  @lifecycle_fields [
+    :lifecycle_state,
+    :replacement_of_session_id,
+    :replacement_session_id
+  ]
   @continuation_fields [
     :continuation_reason,
     :resume_mode,
@@ -76,6 +81,7 @@ defmodule SymphonyElixir.TelemetrySchema do
                   @retry_dedupe_fields ++
                   @retry_failover_fields ++
                   @failover_fields ++
+                  @lifecycle_fields ++
                   @continuation_fields ++
                   @wait_fields ++
                   @checkpoint_fields ++
@@ -102,6 +108,7 @@ defmodule SymphonyElixir.TelemetrySchema do
     %{}
     |> Map.merge(head_fields(source))
     |> Map.merge(wait_fields(source))
+    |> Map.merge(lifecycle_fields(source))
     |> Map.merge(continuation_fields(source))
     |> Map.merge(validation_guard_fields(source))
     |> Map.merge(budget_fields(source))
@@ -275,6 +282,10 @@ defmodule SymphonyElixir.TelemetrySchema do
       "failover_to_account_id" => normalize_string(fetch(source, :failover_to_account_id))
     }
     |> reject_nil_values()
+  end
+
+  defp lifecycle_fields(source) do
+    take_fields(source, @lifecycle_fields)
   end
 
   defp continuation_fields(source) do
