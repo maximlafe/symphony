@@ -1411,6 +1411,7 @@ defmodule SymphonyElixir.Orchestrator do
          trace_id,
          :normal
        ) do
+    issue = Map.get(running_entry, :issue)
     continuation_attempt = next_continuation_attempt(running_entry)
     resume_checkpoint = capture_resume_checkpoint(Map.get(running_entry, :issue), running_entry)
     continuation_reason = Map.get(running_entry, :continuation_reason)
@@ -1443,8 +1444,9 @@ defmodule SymphonyElixir.Orchestrator do
 
           state
           |> complete_issue(issue_id)
-          |> schedule_issue_retry(
+          |> schedule_continuation_retry_or_dedupe_hit(
             issue_id,
+            issue,
             continuation_attempt,
             %{
               identifier: identifier,
@@ -1465,8 +1467,9 @@ defmodule SymphonyElixir.Orchestrator do
 
           state
           |> complete_issue(issue_id)
-          |> schedule_issue_retry(
+          |> schedule_continuation_retry_or_dedupe_hit(
             issue_id,
+            issue,
             continuation_attempt,
             %{
               identifier: identifier,
@@ -1615,8 +1618,9 @@ defmodule SymphonyElixir.Orchestrator do
         state
         |> complete_issue(issue_id)
         |> maybe_store_finalizer_checkpoint(issue_id, checkpoint)
-        |> schedule_issue_retry(
+        |> schedule_continuation_retry_or_dedupe_hit(
           issue_id,
+          issue,
           continuation_attempt,
           %{
             identifier: identifier,
@@ -3095,9 +3099,10 @@ defmodule SymphonyElixir.Orchestrator do
           Logger.info("Auto compaction triggered issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} attempt=#{continuation_attempt}")
         end)
 
-        schedule_issue_retry(
+        schedule_continuation_retry_or_dedupe_hit(
           state,
           issue_id,
+          Map.get(running_entry, :issue),
           continuation_attempt,
           %{
             identifier: identifier,
@@ -3506,6 +3511,43 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp schedule_continuation_retry_or_dedupe_hit(
+         %State{} = state,
+         issue_id,
+         %Issue{} = issue,
+         attempt,
+         metadata
+       )
+       when is_binary(issue_id) and is_integer(attempt) and attempt > 0 and is_map(metadata) do
+    continuation_metadata = Map.put(metadata, :delay_type, :continuation)
+    base_signals = Map.get(continuation_metadata, :retry_failover_signals, %{})
+
+    case retry_dedupe_key(continuation_metadata) do
+      nil ->
+        schedule_issue_retry(state, issue_id, attempt, continuation_metadata)
+
+      key ->
+        if Map.get(state.retry_dedupe_keys, issue_id) == key do
+          handle_retry_dedupe_hit(state, issue, attempt, continuation_metadata, base_signals)
+        else
+          state
+          |> schedule_issue_retry(issue_id, attempt, continuation_metadata)
+          |> remember_retry_dedupe_key(issue_id, key)
+        end
+    end
+  end
+
+  defp schedule_continuation_retry_or_dedupe_hit(
+         %State{} = state,
+         issue_id,
+         _issue,
+         attempt,
+         metadata
+       )
+       when is_binary(issue_id) and is_integer(attempt) and attempt > 0 and is_map(metadata) do
+    schedule_issue_retry(state, issue_id, attempt, Map.put(metadata, :delay_type, :continuation))
+  end
+
   defp handle_retry_dedupe_hit(state, issue, attempt, metadata, base_signals) do
     issue_id = issue.id
     dedupe_reason = retry_dedupe_reason(metadata)
@@ -3522,7 +3564,9 @@ defmodule SymphonyElixir.Orchestrator do
             runtime_head_sha: metadata[:runtime_head_sha] || "unknown",
             feedback_digest: metadata[:feedback_digest] || "unknown",
             validation_bundle_fingerprint: metadata[:validation_bundle_fingerprint] || "unknown",
-            workspace_diff_fingerprint: metadata[:workspace_diff_fingerprint] || "unknown"
+            workspace_diff_fingerprint: metadata[:workspace_diff_fingerprint] || "unknown",
+            workpad_digest: checkpoint_workpad_digest(metadata[:resume_checkpoint]) || "unknown",
+            continuation_reason: metadata[:continuation_reason] || "unknown"
           }
         })
       )
@@ -4253,6 +4297,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp checkpoint_head(%{"head" => head}) when is_binary(head) and head != "", do: head
   defp checkpoint_head(_resume_checkpoint), do: nil
 
+  defp checkpoint_workpad_digest(%{"workpad_digest" => workpad_digest})
+       when is_binary(workpad_digest) and workpad_digest != "",
+       do: workpad_digest
+
+  defp checkpoint_workpad_digest(_resume_checkpoint), do: nil
+
   defp checkpoint_feedback_digest(%{"feedback_digest" => feedback_digest})
        when is_binary(feedback_digest) and feedback_digest != "",
        do: feedback_digest
@@ -4312,25 +4362,94 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_error_signature(_value), do: nil
 
   defp retry_dedupe_key(metadata) when is_map(metadata) do
-    if metadata[:delay_type] == :continuation do
-      nil
-    else
-      validation_retry_dedupe_key(metadata) || generic_retry_dedupe_key(metadata)
-    end
+    if metadata[:delay_type] == :continuation,
+      do: continuation_retry_dedupe_key(metadata),
+      else: validation_retry_dedupe_key(metadata) || generic_retry_dedupe_key(metadata)
   end
 
   defp retry_dedupe_reason(metadata) when is_map(metadata) do
-    error_signature = metadata[:error_signature] || normalize_error_signature(metadata[:error]) || "unknown"
-    failure_class = normalize_optional_string(metadata[:failure_class]) || "unknown"
-    validation_bundle_fingerprint = normalize_optional_string(metadata[:validation_bundle_fingerprint])
-    workspace_diff_fingerprint = normalize_optional_string(metadata[:workspace_diff_fingerprint])
-    runtime_head_sha = metadata[:runtime_head_sha] || "unknown"
-    feedback_digest = metadata[:feedback_digest] || "unknown"
+    if metadata[:delay_type] == :continuation do
+      continuation_reason =
+        normalize_optional_string(metadata[:continuation_reason]) ||
+          checkpoint_continuation_reason(metadata[:resume_checkpoint]) ||
+          "normal_exit"
 
-    if validation_bundle_fingerprint && workspace_diff_fingerprint do
-      "retry_dedupe_hit: identical validation retry surface repeated after one queued retry (error_signature=#{error_signature} failure_class=#{failure_class} validation_bundle_fingerprint=#{validation_bundle_fingerprint} workspace_diff_fingerprint=#{workspace_diff_fingerprint} feedback_digest=#{feedback_digest})"
+      runtime_head_sha =
+        normalize_optional_string(metadata[:runtime_head_sha]) ||
+          checkpoint_head(metadata[:resume_checkpoint]) ||
+          "unknown"
+
+      workspace_diff_fingerprint =
+        normalize_optional_string(metadata[:workspace_diff_fingerprint]) ||
+          checkpoint_workspace_diff_fingerprint(metadata[:resume_checkpoint]) ||
+          "none"
+
+      workpad_digest = checkpoint_workpad_digest(metadata[:resume_checkpoint]) || "none"
+
+      validation_bundle_fingerprint =
+        normalize_optional_string(metadata[:validation_bundle_fingerprint]) ||
+          checkpoint_active_validation_bundle_fingerprint(metadata[:resume_checkpoint]) ||
+          "none"
+
+      feedback_digest =
+        normalize_optional_string(metadata[:feedback_digest]) ||
+          checkpoint_feedback_digest(metadata[:resume_checkpoint]) ||
+          "none"
+
+      "retry_dedupe_hit: identical continuation retry surface repeated after one queued retry (continuation_reason=#{continuation_reason} runtime_head_sha=#{runtime_head_sha} workspace_diff_fingerprint=#{workspace_diff_fingerprint} workpad_digest=#{workpad_digest} validation_bundle_fingerprint=#{validation_bundle_fingerprint} feedback_digest=#{feedback_digest})"
     else
-      "retry_dedupe_hit: identical failure surface repeated after one queued retry (error_signature=#{error_signature} runtime_head_sha=#{runtime_head_sha} feedback_digest=#{feedback_digest})"
+      error_signature = metadata[:error_signature] || normalize_error_signature(metadata[:error]) || "unknown"
+      failure_class = normalize_optional_string(metadata[:failure_class]) || "unknown"
+      validation_bundle_fingerprint = normalize_optional_string(metadata[:validation_bundle_fingerprint])
+      workspace_diff_fingerprint = normalize_optional_string(metadata[:workspace_diff_fingerprint])
+      runtime_head_sha = metadata[:runtime_head_sha] || "unknown"
+      feedback_digest = metadata[:feedback_digest] || "unknown"
+
+      if validation_bundle_fingerprint && workspace_diff_fingerprint do
+        "retry_dedupe_hit: identical validation retry surface repeated after one queued retry (error_signature=#{error_signature} failure_class=#{failure_class} validation_bundle_fingerprint=#{validation_bundle_fingerprint} workspace_diff_fingerprint=#{workspace_diff_fingerprint} feedback_digest=#{feedback_digest})"
+      else
+        "retry_dedupe_hit: identical failure surface repeated after one queued retry (error_signature=#{error_signature} runtime_head_sha=#{runtime_head_sha} feedback_digest=#{feedback_digest})"
+      end
+    end
+  end
+
+  defp continuation_retry_dedupe_key(metadata) when is_map(metadata) do
+    continuation_reason =
+      normalize_optional_string(metadata[:continuation_reason]) ||
+        checkpoint_continuation_reason(metadata[:resume_checkpoint]) ||
+        "normal_exit"
+
+    runtime_head_sha =
+      normalize_optional_string(metadata[:runtime_head_sha]) ||
+        checkpoint_head(metadata[:resume_checkpoint])
+
+    workspace_diff_fingerprint =
+      normalize_optional_string(metadata[:workspace_diff_fingerprint]) ||
+        checkpoint_workspace_diff_fingerprint(metadata[:resume_checkpoint])
+
+    workpad_digest = checkpoint_workpad_digest(metadata[:resume_checkpoint])
+
+    validation_bundle_fingerprint =
+      normalize_optional_string(metadata[:validation_bundle_fingerprint]) ||
+        checkpoint_active_validation_bundle_fingerprint(metadata[:resume_checkpoint]) ||
+        "none"
+
+    feedback_digest =
+      normalize_optional_string(metadata[:feedback_digest]) ||
+        checkpoint_feedback_digest(metadata[:resume_checkpoint]) ||
+        "none"
+
+    if is_binary(runtime_head_sha) and (is_binary(workspace_diff_fingerprint) or is_binary(workpad_digest)) do
+      [
+        "continuation",
+        continuation_reason,
+        runtime_head_sha,
+        workspace_diff_fingerprint || "none",
+        workpad_digest || "none",
+        validation_bundle_fingerprint,
+        feedback_digest
+      ]
+      |> Enum.join("::")
     end
   end
 
