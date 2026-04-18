@@ -24,7 +24,9 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
         budget_observed_total: 125,
         budget_attempt_tokens: 125,
         budget_issue_total_tokens: 300,
+        budget_current_cost_profile_key: "escalated_implementation",
         budget_next_cost_profile_key: "cheap_planning",
+        budget_downshift_rule: "rework_to_implementation_default",
         retry_dedupe_result: "queued",
         retry_dedupe_reason: "new_surface",
         error_signature: "timeout",
@@ -53,7 +55,9 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
 
     assert payload == %{
              "budget_attempt_tokens" => 125,
+             "budget_current_cost_profile_key" => "escalated_implementation",
              "budget_decision" => "downshift",
+             "budget_downshift_rule" => "rework_to_implementation_default",
              "budget_issue_total_tokens" => 300,
              "budget_next_cost_profile_key" => "cheap_planning",
              "budget_observed_total" => 125,

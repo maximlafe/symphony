@@ -44,20 +44,28 @@ defmodule SymphonyElixir.BudgetGuardrails do
   def decide(_context), do: {:allow, %{budget_attempt_tokens: 0, budget_issue_total_tokens: 0}}
 
   defp per_attempt_decision(context, settings, attempt_tokens, issue_total) do
-    base =
-      decision(context, %{
+    %{stage: cost_stage, current_profile_key: current_profile_key} = cost_profile_context(context)
+
+    attrs =
+      %{
         budget_reason: :max_tokens_per_attempt_exceeded,
         budget_threshold: settings.codex.max_tokens_per_attempt,
         budget_observed_total: attempt_tokens,
         budget_issue_total_tokens: issue_total
-      })
+      }
+      |> Map.put(:cost_stage, Atom.to_string(cost_stage))
+      |> maybe_put(:budget_current_cost_profile_key, current_profile_key)
 
-    case cheaper_profile(context, settings) do
-      {:ok, profile_key} ->
+    base =
+      decision(context, attrs)
+
+    case cheaper_profile(settings, cost_stage, current_profile_key) do
+      {:ok, profile_key, downshift_rule} ->
         {:downshift,
          base
          |> Map.put(:budget_decision, "downshift")
-         |> Map.put(:budget_next_cost_profile_key, profile_key)}
+         |> Map.put(:budget_next_cost_profile_key, profile_key)
+         |> Map.put(:budget_downshift_rule, downshift_rule)}
 
       :error ->
         {:handoff, Map.put(base, :budget_decision, "handoff")}
@@ -86,27 +94,83 @@ defmodule SymphonyElixir.BudgetGuardrails do
     "budget #{reason}: observed #{observed} exceeded threshold #{threshold}"
   end
 
-  defp cheaper_profile(context, settings) do
-    current = current_profile_key(context)
+  defp cheaper_profile(settings, cost_stage, current_profile_key)
+       when cost_stage in [:implementation, :rework] and is_binary(current_profile_key) do
     implementation_default = stage_default(settings.codex.cost_policy, :implementation)
 
     with profile_key when is_binary(profile_key) <- implementation_default,
-         true <- profile_key != current,
-         {:ok, current_rank} <- profile_rank(settings.codex.cost_profiles, current),
+         true <- profile_key != current_profile_key,
+         {:ok, current_rank} <- profile_rank(settings.codex.cost_profiles, current_profile_key),
          {:ok, candidate_rank} <- profile_rank(settings.codex.cost_profiles, profile_key),
          true <- candidate_rank < current_rank do
-      {:ok, profile_key}
+      {:ok, profile_key, budget_downshift_rule(cost_stage)}
     else
       _ -> :error
     end
   end
 
-  defp current_profile_key(%{current_cost_profile_key: profile_key}) when is_binary(profile_key),
-    do: profile_key
+  defp cheaper_profile(_settings, _cost_stage, _current_profile_key), do: :error
 
-  defp current_profile_key(%{issue: %Issue{} = issue}), do: Config.codex_cost_decision(issue).profile_key
-  defp current_profile_key(%{issue: issue}) when is_map(issue), do: Config.codex_cost_decision(issue).profile_key
-  defp current_profile_key(_context), do: nil
+  defp cost_profile_context(context) when is_map(context) do
+    context_stage = context_cost_stage(context)
+    context_profile_key = context_profile_key(context)
+
+    case inferred_cost_decision(context) do
+      %{stage: inferred_stage, profile_key: inferred_profile_key} ->
+        %{
+          stage: context_stage || normalize_cost_stage(inferred_stage),
+          current_profile_key: context_profile_key || normalize_profile_key(inferred_profile_key)
+        }
+
+      _ ->
+        %{
+          stage: context_stage,
+          current_profile_key: context_profile_key
+        }
+    end
+  end
+
+  defp context_cost_stage(context), do: context |> map_get(:cost_stage) |> normalize_cost_stage()
+
+  defp context_profile_key(context),
+    do: context |> map_get(:current_cost_profile_key) |> normalize_profile_key()
+
+  defp inferred_cost_decision(%{issue: %Issue{} = issue}), do: Config.codex_cost_decision(issue)
+  defp inferred_cost_decision(%{issue: issue}) when is_map(issue), do: Config.codex_cost_decision(issue)
+
+  defp inferred_cost_decision(context) when is_map(context) do
+    case map_get(context, :issue) do
+      issue when is_map(issue) -> Config.codex_cost_decision(issue)
+      _ -> %{}
+    end
+  end
+
+  defp budget_downshift_rule(:implementation), do: "implementation_to_implementation_default"
+  defp budget_downshift_rule(:rework), do: "rework_to_implementation_default"
+
+  defp normalize_cost_stage(stage) when stage in [:planning, :implementation, :rework, :handoff],
+    do: stage
+
+  defp normalize_cost_stage(stage) when is_binary(stage) do
+    case stage |> String.trim() |> String.downcase() do
+      "planning" -> :planning
+      "implementation" -> :implementation
+      "rework" -> :rework
+      "handoff" -> :handoff
+      _ -> nil
+    end
+  end
+
+  defp normalize_cost_stage(_stage), do: nil
+
+  defp normalize_profile_key(profile_key) when is_binary(profile_key) do
+    case String.trim(profile_key) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_profile_key(_profile_key), do: nil
 
   defp stage_default(cost_policy, stage) when is_map(cost_policy) do
     cost_policy
@@ -152,6 +216,9 @@ defmodule SymphonyElixir.BudgetGuardrails do
 
   defp normalize_effort(effort) when is_binary(effort), do: effort |> String.trim() |> String.downcase()
   defp normalize_effort(_effort), do: nil
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp nested_map(map, key) do
     case map_get(map, key) do

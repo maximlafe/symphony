@@ -3103,7 +3103,10 @@ defmodule SymphonyElixir.Orchestrator do
       "budget_threshold" => budget_value(budget, :budget_threshold),
       "budget_observed_total" => budget_value(budget, :budget_observed_total),
       "budget_decision" => budget_value(budget, :budget_decision),
-      "budget_next_cost_profile_key" => budget_value(budget, :budget_next_cost_profile_key)
+      "budget_current_cost_profile_key" => budget_value(budget, :budget_current_cost_profile_key),
+      "budget_next_cost_profile_key" => budget_value(budget, :budget_next_cost_profile_key),
+      "budget_downshift_rule" => budget_value(budget, :budget_downshift_rule),
+      "cost_stage" => budget_value(budget, :cost_stage)
     })
   end
 
@@ -3258,14 +3261,20 @@ defmodule SymphonyElixir.Orchestrator do
         retry_metadata: %{
           budget_decision: budget_decision,
           issue_token_total: Map.get(budget_decision, :budget_issue_total_tokens),
-          cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key)
+          cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key),
+          current_cost_profile_key: Map.get(budget_decision, :budget_current_cost_profile_key),
+          downshift_rule: Map.get(budget_decision, :budget_downshift_rule),
+          cost_stage: Map.get(budget_decision, :cost_stage)
         },
         log_fields: %{
           budget_threshold: Map.get(budget_decision, :budget_threshold),
           budget_observed_total: Map.get(budget_decision, :budget_observed_total),
           budget_attempt_tokens: Map.get(budget_decision, :budget_attempt_tokens),
           budget_issue_total_tokens: Map.get(budget_decision, :budget_issue_total_tokens),
-          budget_next_cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key)
+          budget_current_cost_profile_key: Map.get(budget_decision, :budget_current_cost_profile_key),
+          budget_next_cost_profile_key: Map.get(budget_decision, :budget_next_cost_profile_key),
+          budget_downshift_rule: Map.get(budget_decision, :budget_downshift_rule),
+          cost_stage: Map.get(budget_decision, :cost_stage)
         }
       }
     })
