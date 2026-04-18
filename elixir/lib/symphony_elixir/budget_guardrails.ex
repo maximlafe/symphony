@@ -94,11 +94,20 @@ defmodule SymphonyElixir.BudgetGuardrails do
     "budget #{reason}: observed #{observed} exceeded threshold #{threshold}"
   end
 
-  defp cheaper_profile(settings, cost_stage, current_profile_key)
-       when cost_stage in [:implementation, :rework] and is_binary(current_profile_key) do
-    implementation_default = stage_default(settings.codex.cost_policy, :implementation)
+  defp cheaper_profile(settings, :implementation, current_profile_key) when is_binary(current_profile_key) do
+    cheaper_stage_default_profile(settings, :implementation, current_profile_key, :implementation)
+  end
 
-    with profile_key when is_binary(profile_key) <- implementation_default,
+  defp cheaper_profile(settings, :rework, current_profile_key) when is_binary(current_profile_key) do
+    cheaper_stage_default_profile(settings, :rework, current_profile_key, :rework)
+  end
+
+  defp cheaper_profile(_settings, _cost_stage, _current_profile_key), do: :error
+
+  defp cheaper_stage_default_profile(settings, default_stage, current_profile_key, cost_stage) do
+    stage_default_key = stage_default(settings.codex.cost_policy, default_stage)
+
+    with profile_key when is_binary(profile_key) <- stage_default_key,
          true <- profile_key != current_profile_key,
          {:ok, current_rank} <- profile_rank(settings.codex.cost_profiles, current_profile_key),
          {:ok, candidate_rank} <- profile_rank(settings.codex.cost_profiles, profile_key),
@@ -108,8 +117,6 @@ defmodule SymphonyElixir.BudgetGuardrails do
       _ -> :error
     end
   end
-
-  defp cheaper_profile(_settings, _cost_stage, _current_profile_key), do: :error
 
   defp cost_profile_context(context) when is_map(context) do
     context_stage = context_cost_stage(context)
@@ -146,7 +153,7 @@ defmodule SymphonyElixir.BudgetGuardrails do
   end
 
   defp budget_downshift_rule(:implementation), do: "implementation_to_implementation_default"
-  defp budget_downshift_rule(:rework), do: "rework_to_implementation_default"
+  defp budget_downshift_rule(:rework), do: "rework_to_rework_default"
 
   defp normalize_cost_stage(stage) when stage in [:planning, :implementation, :rework, :handoff],
     do: stage
