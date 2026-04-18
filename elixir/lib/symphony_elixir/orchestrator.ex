@@ -1001,7 +1001,8 @@ defmodule SymphonyElixir.Orchestrator do
          attempt \\ nil,
          trace_id \\ nil,
          retry_delay_type \\ nil,
-         resume_checkpoint \\ nil
+         resume_checkpoint \\ nil,
+         retry_metadata \\ %{}
        ) do
     case revalidate_issue_for_dispatch(
            issue,
@@ -1015,7 +1016,8 @@ defmodule SymphonyElixir.Orchestrator do
           attempt,
           trace_id,
           retry_delay_type,
-          resume_checkpoint
+          resume_checkpoint,
+          retry_metadata
         )
 
       {:skip, :missing} ->
@@ -1035,7 +1037,15 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, trace_id, retry_delay_type, resume_checkpoint) do
+  defp do_dispatch_issue(
+         %State{} = state,
+         issue,
+         attempt,
+         trace_id,
+         retry_delay_type,
+         resume_checkpoint,
+         retry_metadata
+       ) do
     resolved_resume_checkpoint = resolve_resume_checkpoint(issue, resume_checkpoint)
     trace_id = dispatch_trace_id(issue, trace_id)
     execution_head = capture_execution_head(issue, retry_delay_type, resolved_resume_checkpoint)
@@ -1049,7 +1059,8 @@ defmodule SymphonyElixir.Orchestrator do
           trace_id,
           retry_delay_type,
           resolved_resume_checkpoint,
-          execution_head
+          execution_head,
+          retry_metadata
         )
 
       stale_reason ->
@@ -1072,7 +1083,8 @@ defmodule SymphonyElixir.Orchestrator do
          trace_id,
          retry_delay_type,
          resolved_resume_checkpoint,
-         execution_head
+         execution_head,
+         retry_metadata
        ) do
     case maybe_dispatch_controller_finalizer(
            state,
@@ -1081,7 +1093,8 @@ defmodule SymphonyElixir.Orchestrator do
            trace_id,
            retry_delay_type,
            resolved_resume_checkpoint,
-           execution_head
+           execution_head,
+           retry_metadata
          ) do
       {:dispatched, state} ->
         state
@@ -1094,7 +1107,8 @@ defmodule SymphonyElixir.Orchestrator do
           trace_id,
           retry_delay_type,
           resolved_resume_checkpoint,
-          execution_head
+          execution_head,
+          retry_metadata
         )
     end
   end
@@ -1106,7 +1120,8 @@ defmodule SymphonyElixir.Orchestrator do
          trace_id,
          retry_delay_type,
          resolved_resume_checkpoint,
-         execution_head
+         execution_head,
+         retry_metadata
        ) do
     case active_codex_account(state) do
       nil ->
@@ -1121,7 +1136,7 @@ defmodule SymphonyElixir.Orchestrator do
           trace_id,
           retry_delay_type,
           resolved_resume_checkpoint,
-          execution_head
+          Map.put(execution_head, :retry_metadata, retry_metadata)
         )
     end
   end
@@ -1218,6 +1233,16 @@ defmodule SymphonyElixir.Orchestrator do
       pick_retry_workspace_diff_fingerprint(previous_retry, metadata)
 
     retry_failover_decision = pick_retry_failover_decision(previous_retry, metadata)
+    session_id = pick_retry_session_id(previous_retry, metadata)
+    thread_id = pick_retry_optional_string(previous_retry, metadata, :thread_id)
+    turn_id = pick_retry_optional_string(previous_retry, metadata, :turn_id)
+
+    replacement_of_session_id =
+      pick_retry_optional_string(previous_retry, metadata, :replacement_of_session_id) ||
+        session_id
+
+    replacement_session_id =
+      pick_retry_optional_string(previous_retry, metadata, :replacement_session_id)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1228,7 +1253,7 @@ defmodule SymphonyElixir.Orchestrator do
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
     error_class_suffix = if is_binary(error_class), do: " error_class=#{error_class}", else: ""
 
-    with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
+    with_log_metadata(issue_log_metadata(issue_id, identifier, session_id, trace_id), fn ->
       Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{attempt})#{error_class_suffix}#{error_suffix}")
     end)
 
@@ -1242,6 +1267,11 @@ defmodule SymphonyElixir.Orchestrator do
             due_at_ms: due_at_ms,
             identifier: identifier,
             trace_id: trace_id,
+            session_id: session_id,
+            thread_id: thread_id,
+            turn_id: turn_id,
+            replacement_of_session_id: replacement_of_session_id,
+            replacement_session_id: replacement_session_id,
             error: error,
             error_class: error_class,
             delay_type: metadata[:delay_type],
@@ -1285,6 +1315,11 @@ defmodule SymphonyElixir.Orchestrator do
         metadata = %{
           identifier: Map.get(retry_entry, :identifier),
           trace_id: Map.get(retry_entry, :trace_id),
+          session_id: Map.get(retry_entry, :session_id),
+          thread_id: Map.get(retry_entry, :thread_id),
+          turn_id: Map.get(retry_entry, :turn_id),
+          replacement_of_session_id: Map.get(retry_entry, :replacement_of_session_id),
+          replacement_session_id: Map.get(retry_entry, :replacement_session_id),
           error: Map.get(retry_entry, :error),
           error_class: Map.get(retry_entry, :error_class),
           delay_type: Map.get(retry_entry, :delay_type),
@@ -1337,9 +1372,12 @@ defmodule SymphonyElixir.Orchestrator do
         |> handle_retry_issue_lookup(state, issue_id, attempt, metadata)
 
       {:error, reason} ->
-        with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
-          Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{identifier}: #{inspect(reason)}")
-        end)
+        with_log_metadata(
+          issue_log_metadata(issue_id, identifier, retry_metadata_session_id(metadata), trace_id),
+          fn ->
+            Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{identifier}: #{inspect(reason)}")
+          end
+        )
 
         {:noreply,
          schedule_issue_retry(
@@ -1361,7 +1399,12 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
         with_log_metadata(
-          issue_log_metadata(issue_id, issue.identifier, nil, metadata[:trace_id]),
+          issue_log_metadata(
+            issue_id,
+            issue.identifier,
+            retry_metadata_session_id(metadata),
+            metadata[:trace_id]
+          ),
           fn ->
             Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; releasing claim")
           end
@@ -1377,7 +1420,12 @@ defmodule SymphonyElixir.Orchestrator do
 
       true ->
         with_log_metadata(
-          issue_log_metadata(issue_id, issue.identifier, nil, metadata[:trace_id]),
+          issue_log_metadata(
+            issue_id,
+            issue.identifier,
+            retry_metadata_session_id(metadata),
+            metadata[:trace_id]
+          ),
           fn ->
             Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
           end
@@ -1389,7 +1437,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, metadata) do
     with_log_metadata(
-      issue_log_metadata(issue_id, metadata[:identifier] || issue_id, nil, metadata[:trace_id]),
+      issue_log_metadata(
+        issue_id,
+        metadata[:identifier] || issue_id,
+        retry_metadata_session_id(metadata),
+        metadata[:trace_id]
+      ),
       fn ->
         Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
       end
@@ -1542,6 +1595,11 @@ defmodule SymphonyElixir.Orchestrator do
             issue_id: issue_id,
             identifier: identifier,
             trace_id: trace_id,
+            session_id: session_id,
+            thread_id: Map.get(running_entry, :thread_id),
+            turn_id: Map.get(running_entry, :turn_id),
+            replacement_of_session_id: Map.get(running_entry, :replacement_of_session_id),
+            replacement_session_id: Map.get(running_entry, :replacement_session_id),
             codex_account_id: Map.get(running_entry, :codex_account_id),
             failure_class: failure_class_label,
             resume_checkpoint: put_budget_checkpoint(resume_checkpoint, budget_totals),
@@ -1732,7 +1790,8 @@ defmodule SymphonyElixir.Orchestrator do
          trace_id,
          retry_delay_type,
          resume_checkpoint,
-         execution_head
+         execution_head,
+         retry_metadata
        ) do
     eligible_fun = Map.get(state, :controller_finalizer_eligible_fun)
 
@@ -1744,7 +1803,8 @@ defmodule SymphonyElixir.Orchestrator do
              trace_id,
              retry_delay_type,
              resume_checkpoint,
-             execution_head
+             execution_head,
+             retry_metadata
            ) do
         {:ok, updated_state} -> {:dispatched, updated_state}
         {:error, _reason} -> :not_applicable
@@ -1761,7 +1821,8 @@ defmodule SymphonyElixir.Orchestrator do
          trace_id,
          retry_delay_type,
          resume_checkpoint,
-         execution_head
+         execution_head,
+         retry_metadata
        ) do
     recipient = self()
     finalizer_fun = Map.get(state, :controller_finalizer_fun, &ControllerFinalizer.run/3)
@@ -1786,6 +1847,10 @@ defmodule SymphonyElixir.Orchestrator do
                 issue: issue,
                 trace_id: trace_id,
                 session_id: nil,
+                thread_id: nil,
+                turn_id: nil,
+                replacement_of_session_id: retry_metadata_replacement_of_session_id(retry_metadata),
+                replacement_session_id: nil,
                 codex_account_id: nil,
                 worker_kind: :controller_finalizer,
                 resume_checkpoint: resume_checkpoint,
@@ -1851,6 +1916,7 @@ defmodule SymphonyElixir.Orchestrator do
          resume_checkpoint,
          execution_head
        ) do
+    retry_metadata = Map.get(execution_head, :retry_metadata, %{})
     recipient = self()
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
@@ -1885,6 +1951,10 @@ defmodule SymphonyElixir.Orchestrator do
                 issue: issue,
                 trace_id: trace_id,
                 session_id: nil,
+                thread_id: nil,
+                turn_id: nil,
+                replacement_of_session_id: retry_metadata_replacement_of_session_id(retry_metadata),
+                replacement_session_id: nil,
                 codex_account_id: codex_account.id,
                 runtime_head_sha: Map.get(execution_head, :runtime_head_sha),
                 expected_head_sha: Map.get(execution_head, :expected_head_sha),
@@ -2735,7 +2805,12 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       not active_codex_account_available?(state) ->
         with_log_metadata(
-          issue_log_metadata(issue.id, issue.identifier, nil, metadata[:trace_id]),
+          issue_log_metadata(
+            issue.id,
+            issue.identifier,
+            retry_metadata_session_id(metadata),
+            metadata[:trace_id]
+          ),
           fn ->
             Logger.debug("No healthy codex account for retrying #{issue_context(issue)}; keeping retry queued")
           end
@@ -2763,12 +2838,18 @@ defmodule SymphonyElixir.Orchestrator do
            attempt,
            metadata[:trace_id],
            metadata[:delay_type],
-           metadata[:resume_checkpoint]
+           metadata[:resume_checkpoint],
+           metadata
          )}
 
       true ->
         with_log_metadata(
-          issue_log_metadata(issue.id, issue.identifier, nil, metadata[:trace_id]),
+          issue_log_metadata(
+            issue.id,
+            issue.identifier,
+            retry_metadata_session_id(metadata),
+            metadata[:trace_id]
+          ),
           fn ->
             Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
           end
@@ -2860,6 +2941,11 @@ defmodule SymphonyElixir.Orchestrator do
           %{
             identifier: identifier,
             trace_id: trace_id,
+            session_id: context[:session_id],
+            thread_id: context[:thread_id],
+            turn_id: context[:turn_id],
+            replacement_of_session_id: context[:replacement_of_session_id],
+            replacement_session_id: context[:replacement_session_id],
             error: "agent exited: #{failure.summary}",
             error_class: error_class_label,
             resume_checkpoint: context[:resume_checkpoint],
@@ -2880,6 +2966,11 @@ defmodule SymphonyElixir.Orchestrator do
           %{
             identifier: identifier,
             trace_id: trace_id,
+            session_id: context[:session_id],
+            thread_id: context[:thread_id],
+            turn_id: context[:turn_id],
+            replacement_of_session_id: context[:replacement_of_session_id],
+            replacement_session_id: context[:replacement_session_id],
             error: "agent exited: #{failure.summary}",
             error_class: error_class_label,
             resume_checkpoint: context[:resume_checkpoint]
@@ -3555,7 +3646,13 @@ defmodule SymphonyElixir.Orchestrator do
     decision =
       RetryFailoverDecision.decide(Map.put(base_signals, :retry_dedupe_hit, retry_dedupe_signal(metadata, dedupe_reason)))
 
-    log_retry_failover_decision(issue_id, issue.identifier, nil, metadata[:trace_id], decision)
+    log_retry_failover_decision(
+      issue_id,
+      issue.identifier,
+      retry_metadata_session_id(metadata),
+      metadata[:trace_id],
+      decision
+    )
 
     escalate_issue_for_retry_failover_handoff(
       state,
@@ -3608,6 +3705,19 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp retry_metadata_session_id(metadata) when is_map(metadata) do
+    session_id =
+      normalize_optional_string(metadata[:session_id]) ||
+        normalize_optional_string(metadata[:replacement_of_session_id])
+
+    if is_binary(session_id) and session_id != "", do: session_id
+  end
+
+  defp retry_metadata_replacement_of_session_id(metadata) when is_map(metadata) do
+    normalize_optional_string(metadata[:replacement_of_session_id]) ||
+      retry_metadata_session_id(metadata)
+  end
+
   defp schedule_retry_with_retry_failover_decision(
          state,
          %Issue{id: issue_id} = issue,
@@ -3615,7 +3725,13 @@ defmodule SymphonyElixir.Orchestrator do
          metadata,
          %RetryFailoverDecision{} = decision
        ) do
-    log_retry_failover_decision(issue_id, issue.identifier, nil, metadata[:trace_id], decision)
+    log_retry_failover_decision(
+      issue_id,
+      issue.identifier,
+      retry_metadata_session_id(metadata),
+      metadata[:trace_id],
+      decision
+    )
 
     schedule_issue_retry(
       state,
@@ -4032,6 +4148,11 @@ defmodule SymphonyElixir.Orchestrator do
     metadata[:trace_id] || Map.get(previous_retry, :trace_id)
   end
 
+  defp pick_retry_session_id(previous_retry, metadata) do
+    pick_retry_optional_string(previous_retry, metadata, :session_id) ||
+      pick_retry_optional_string(previous_retry, metadata, :replacement_of_session_id)
+  end
+
   defp pick_retry_error(previous_retry, metadata) do
     metadata[:error] || Map.get(previous_retry, :error)
   end
@@ -4201,6 +4322,14 @@ defmodule SymphonyElixir.Orchestrator do
       :routing_parity_reason,
       retry_routing_field(source, checkpoint_routing_payload, :routing_parity_reason)
     )
+    |> maybe_put_retry_metadata(:session_id, retry_session_id(source))
+    |> maybe_put_retry_metadata(:thread_id, retry_thread_id(source))
+    |> maybe_put_retry_metadata(:turn_id, retry_turn_id(source))
+    |> maybe_put_retry_metadata(
+      :replacement_of_session_id,
+      retry_replacement_of_session_id(source)
+    )
+    |> maybe_put_retry_metadata(:replacement_session_id, retry_replacement_session_id(source))
     |> maybe_put_retry_metadata(:continuation_reason, retry_continuation_reason(source, resume_checkpoint))
     |> maybe_put_retry_metadata(:resume_mode, retry_resume_mode(source, resume_checkpoint))
     |> maybe_put_retry_metadata(
@@ -4255,6 +4384,39 @@ defmodule SymphonyElixir.Orchestrator do
       value when is_binary(value) and value != "" -> value
       _ -> checkpoint_head(resume_checkpoint)
     end
+  end
+
+  defp retry_session_id(source) when is_map(source) do
+    source
+    |> map_any([:session_id, "session_id"])
+    |> normalize_optional_string()
+  end
+
+  defp retry_thread_id(source) when is_map(source) do
+    source
+    |> map_any([:thread_id, "thread_id"])
+    |> normalize_optional_string()
+  end
+
+  defp retry_turn_id(source) when is_map(source) do
+    case map_any(source, [:turn_id, "turn_id"]) do
+      turn_id when is_binary(turn_id) -> normalize_optional_string(turn_id)
+      turn_id when is_integer(turn_id) -> Integer.to_string(turn_id)
+      _ -> nil
+    end
+  end
+
+  defp retry_replacement_of_session_id(source) when is_map(source) do
+    source
+    |> map_any([:replacement_of_session_id, "replacement_of_session_id"])
+    |> normalize_optional_string()
+    |> Kernel.||(retry_session_id(source))
+  end
+
+  defp retry_replacement_session_id(source) when is_map(source) do
+    source
+    |> map_any([:replacement_session_id, "replacement_session_id"])
+    |> normalize_optional_string()
   end
 
   defp retry_continuation_reason(source, resume_checkpoint) when is_map(source) do
@@ -4939,6 +5101,10 @@ defmodule SymphonyElixir.Orchestrator do
           codex_account_id: Map.get(metadata, :codex_account_id),
           trace_id: Map.get(metadata, :trace_id),
           session_id: metadata.session_id,
+          thread_id: Map.get(metadata, :thread_id),
+          turn_id: Map.get(metadata, :turn_id),
+          replacement_of_session_id: Map.get(metadata, :replacement_of_session_id),
+          replacement_session_id: Map.get(metadata, :replacement_session_id),
           codex_app_server_pid: metadata.codex_app_server_pid,
           codex_input_tokens: metadata.codex_input_tokens,
           codex_output_tokens: metadata.codex_output_tokens,
@@ -4968,6 +5134,11 @@ defmodule SymphonyElixir.Orchestrator do
           due_in_ms: max(0, due_at_ms - now_ms),
           identifier: Map.get(retry, :identifier),
           trace_id: Map.get(retry, :trace_id),
+          session_id: Map.get(retry, :session_id),
+          thread_id: Map.get(retry, :thread_id),
+          turn_id: Map.get(retry, :turn_id),
+          replacement_of_session_id: Map.get(retry, :replacement_of_session_id),
+          replacement_session_id: Map.get(retry, :replacement_session_id),
           error: Map.get(retry, :error),
           error_class: Map.get(retry, :error_class)
         }
@@ -5058,6 +5229,19 @@ defmodule SymphonyElixir.Orchestrator do
         last_codex_message: summarize_codex_update(update),
         trace_id: trace_id_for_update(Map.get(running_entry, :trace_id), update),
         session_id: session_id_for_update(running_entry.session_id, update),
+        thread_id: thread_id_for_update(Map.get(running_entry, :thread_id), update),
+        turn_id: turn_id_for_update(Map.get(running_entry, :turn_id), update),
+        replacement_of_session_id:
+          replacement_of_session_id_for_update(
+            Map.get(running_entry, :replacement_of_session_id),
+            running_entry.session_id,
+            update
+          ),
+        replacement_session_id:
+          replacement_session_id_for_update(
+            Map.get(running_entry, :replacement_session_id),
+            update
+          ),
         codex_account_id: codex_account_id,
         last_codex_event: event,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
@@ -5670,6 +5854,61 @@ defmodule SymphonyElixir.Orchestrator do
     do: session_id
 
   defp session_id_for_update(existing, _update), do: existing
+
+  defp thread_id_for_update(_existing, %{thread_id: thread_id}) when is_binary(thread_id),
+    do: thread_id
+
+  defp thread_id_for_update(existing, _update), do: existing
+
+  defp turn_id_for_update(_existing, %{turn_id: turn_id}) when is_binary(turn_id),
+    do: turn_id
+
+  defp turn_id_for_update(_existing, %{turn_id: turn_id}) when is_integer(turn_id),
+    do: Integer.to_string(turn_id)
+
+  defp turn_id_for_update(existing, _update), do: existing
+
+  defp replacement_of_session_id_for_update(existing_replacement_of_session_id, _existing_session_id, %{
+         event: :session_started,
+         session_id: session_id
+       })
+       when is_binary(existing_replacement_of_session_id) and is_binary(session_id) do
+    existing_replacement_of_session_id
+  end
+
+  defp replacement_of_session_id_for_update(_existing_replacement_of_session_id, existing_session_id, %{
+         event: :session_started,
+         session_id: session_id
+       })
+       when is_binary(existing_session_id) and is_binary(session_id) and
+              existing_session_id != session_id do
+    existing_session_id
+  end
+
+  defp replacement_of_session_id_for_update(existing_replacement_of_session_id, _existing_session_id, update)
+       when is_map(update) do
+    update_replacement =
+      Map.get(update, :replacement_of_session_id) ||
+        Map.get(update, "replacement_of_session_id")
+
+    normalize_optional_string(update_replacement) || existing_replacement_of_session_id
+  end
+
+  defp replacement_session_id_for_update(_existing_replacement_session_id, %{
+         event: :session_started,
+         session_id: session_id
+       })
+       when is_binary(session_id) do
+    session_id
+  end
+
+  defp replacement_session_id_for_update(existing_replacement_session_id, update) when is_map(update) do
+    update_replacement =
+      Map.get(update, :replacement_session_id) ||
+        Map.get(update, "replacement_session_id")
+
+    normalize_optional_string(update_replacement) || existing_replacement_session_id
+  end
 
   defp trace_id_for_update(_existing, %{trace_id: trace_id}) when is_binary(trace_id),
     do: trace_id

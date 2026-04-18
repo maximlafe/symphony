@@ -1400,6 +1400,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       identifier: issue.identifier,
       issue: issue,
       session_id: nil,
+      replacement_of_session_id: "thread-legacy-turn-0",
+      replacement_session_id: nil,
       turn_count: 0,
       last_codex_message: nil,
       last_codex_timestamp: nil,
@@ -1427,6 +1429,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        %{
          event: :session_started,
          session_id: "thread-usage-turn-usage",
+         thread_id: "thread-usage",
+         turn_id: "turn-usage",
          timestamp: now
        }}
     )
@@ -1455,6 +1459,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.codex_input_tokens == 12
     assert snapshot_entry.codex_output_tokens == 4
     assert snapshot_entry.codex_total_tokens == 16
+    assert snapshot_entry.thread_id == "thread-usage"
+    assert snapshot_entry.turn_id == "turn-usage"
+    assert snapshot_entry.session_id == "thread-usage-turn-usage"
+    assert snapshot_entry.replacement_of_session_id == "thread-legacy-turn-0"
+    assert snapshot_entry.replacement_session_id == "thread-usage-turn-usage"
     assert snapshot_entry.turn_count == 1
     assert is_integer(snapshot_entry.runtime_seconds)
 
@@ -3650,7 +3659,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot.active_codex_account_id == "secondary"
     assert snapshot.rate_limits == healthy_rate_limits
     assert snapshot.running == []
-    assert [%{issue_id: ^issue_id, attempt: 1, error_class: "transient"}] = snapshot.retrying
+
+    assert [
+             %{
+               issue_id: ^issue_id,
+               attempt: 1,
+               error_class: "transient",
+               session_id: "thread-account-turn-1",
+               replacement_of_session_id: "thread-account-turn-1",
+               replacement_session_id: nil
+             }
+           ] = snapshot.retrying
   end
 
   test "manual codex account selection falls back when the selected running account degrades" do
