@@ -25,6 +25,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     }
   }
+  @unsupported_linear_comments_resolved_filter_pattern ~r/\bcomments\s*\((?=[^)]*\bfilter\s*:\s*\{[^)]*\bresolved\b)[^)]*\)/s
 
   @sync_workpad_tool "sync_workpad"
   @sync_workpad_description "Create or update a workpad comment on a Linear issue. Reads the body from a local file to keep the conversation context small."
@@ -399,6 +400,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
 
     with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
+         :ok <- guard_unsupported_linear_comments_filter(query),
          :ok <- maybe_guard_review_ready_issue_update(query, variables, linear_client, opts),
          {:ok, response} <- linear_client.(query, variables, []) do
       graphql_response(response)
@@ -1403,6 +1405,14 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp review_ready_issue_update_query?(query) when is_binary(query) do
     Regex.match?(~r/\bissueUpdate\s*\(/, query)
+  end
+
+  defp guard_unsupported_linear_comments_filter(query) when is_binary(query) do
+    if Regex.match?(@unsupported_linear_comments_resolved_filter_pattern, query) do
+      {:error, :unsupported_linear_comments_filter_resolved}
+    else
+      :ok
+    end
   end
 
   defp maybe_put_runner_opt(opts, key, runner) when is_function(runner, 2) do
@@ -2767,6 +2777,14 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{
       "error" => %{
         "message" => "`linear_graphql.variables` must be a JSON object when provided."
+      }
+    }
+  end
+
+  defp tool_error_payload(:unsupported_linear_comments_filter_resolved) do
+    %{
+      "error" => %{
+        "message" => "`linear_graphql` does not support `comments(filter: {resolved})` on Linear issues. Query comments without the `resolved` filter, for example `comments(first: 20)`."
       }
     }
   end

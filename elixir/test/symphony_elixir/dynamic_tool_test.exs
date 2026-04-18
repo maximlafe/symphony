@@ -299,6 +299,77 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            }
   end
 
+  test "linear_graphql rejects unsupported comments(filter: {resolved}) before hitting Linear" do
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => """
+          query IssueContext($id: String!) {
+            issue(id: $id) {
+              comments(filter: {resolved}) {
+                nodes {
+                  id
+                }
+              }
+            }
+          }
+          """,
+          "variables" => %{"id" => "LET-544"}
+        },
+        linear_client: fn _query, _variables, _opts ->
+          flunk("linear client should not be called for unsupported comments(filter: {resolved}) queries")
+        end
+      )
+
+    assert response["success"] == false
+
+    assert [
+             %{
+               "text" => text
+             }
+           ] = response["contentItems"]
+
+    assert Jason.decode!(text) == %{
+             "error" => %{
+               "message" => "`linear_graphql` does not support `comments(filter: {resolved})` on Linear issues. Query comments without the `resolved` filter, for example `comments(first: 20)`."
+             }
+           }
+  end
+
+  test "linear_graphql still allows valid comments queries" do
+    test_pid = self()
+
+    query =
+      String.trim("""
+      query IssueContext($id: String!) {
+        issue(id: $id) {
+          comments(first: 20) {
+            nodes {
+              id
+            }
+          }
+        }
+      }
+      """)
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => query,
+          "variables" => %{"id" => "LET-544"}
+        },
+        linear_client: fn received_query, variables, opts ->
+          send(test_pid, {:linear_client_called, received_query, variables, opts})
+          {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}}
+        end
+      )
+
+    assert_received {:linear_client_called, ^query, %{"id" => "LET-544"}, []}
+    assert response["success"] == true
+  end
+
   test "linear_graphql formats transport and auth failures" do
     missing_token =
       DynamicTool.execute(
