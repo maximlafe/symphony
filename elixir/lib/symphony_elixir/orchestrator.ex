@@ -1204,26 +1204,12 @@ defmodule SymphonyElixir.Orchestrator do
     routing_parity_reason =
       pick_retry_optional_string(previous_retry, metadata, :routing_parity_reason)
 
-    continuation_reason =
-      pick_retry_optional_string(previous_retry, metadata, :continuation_reason)
-
-    resume_mode =
-      pick_retry_optional_string(previous_retry, metadata, :resume_mode)
-
-    resume_fallback_reason =
-      pick_retry_optional_string(previous_retry, metadata, :resume_fallback_reason)
-
-    auto_compaction_signal =
-      pick_retry_optional_string(previous_retry, metadata, :auto_compaction_signal)
-
-    auto_compaction_threshold =
-      pick_retry_non_negative_integer(previous_retry, metadata, :auto_compaction_threshold)
-
-    auto_compaction_observed_total =
-      pick_retry_non_negative_integer(previous_retry, metadata, :auto_compaction_observed_total)
-
     budget_decision = pick_retry_budget_decision(previous_retry, metadata)
-    feedback_digest = pick_retry_feedback_digest(previous_retry, metadata)
+
+    feedback_digest =
+      checkpoint_feedback_digest(resume_checkpoint) ||
+        pick_retry_feedback_digest(previous_retry, metadata)
+
     failure_class = pick_retry_failure_class(previous_retry, metadata)
 
     validation_bundle_fingerprint =
@@ -1243,6 +1229,13 @@ defmodule SymphonyElixir.Orchestrator do
 
     replacement_session_id =
       pick_retry_optional_string(previous_retry, metadata, :replacement_session_id)
+
+    continuation_reason = checkpoint_continuation_reason(resume_checkpoint)
+    resume_mode = checkpoint_resume_mode(resume_checkpoint)
+    resume_fallback_reason = checkpoint_resume_fallback_reason(resume_checkpoint)
+    auto_compaction_signal = checkpoint_auto_compaction_signal(resume_checkpoint)
+    auto_compaction_threshold = checkpoint_auto_compaction_threshold(resume_checkpoint)
+    auto_compaction_observed_total = checkpoint_auto_compaction_observed_total(resume_checkpoint)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -4230,7 +4223,34 @@ defmodule SymphonyElixir.Orchestrator do
   defp pick_retry_resume_checkpoint(previous_retry, metadata) do
     checkpoint = metadata[:resume_checkpoint] || Map.get(previous_retry, :resume_checkpoint)
 
-    if is_map(checkpoint), do: ResumeCheckpoint.for_prompt(checkpoint)
+    runtime_source =
+      metadata
+      |> Map.take([
+        :continuation_reason,
+        :resume_mode,
+        :resume_fallback_reason,
+        :auto_compaction_signal,
+        :auto_compaction_threshold,
+        :auto_compaction_observed_total,
+        :auto_compaction_safe_steps,
+        :feedback_digest
+      ])
+      |> Map.merge(
+        previous_retry
+        |> Map.take([
+          :continuation_reason,
+          :resume_mode,
+          :resume_fallback_reason,
+          :auto_compaction_signal,
+          :auto_compaction_threshold,
+          :auto_compaction_observed_total,
+          :auto_compaction_safe_steps,
+          :feedback_digest
+        ]),
+        fn _key, left, _right -> left end
+      )
+
+    if is_map(checkpoint), do: ResumeCheckpoint.with_runtime_context(checkpoint, runtime_source)
   end
 
   defp pick_retry_runtime_head_sha(previous_retry, metadata) do
@@ -4264,13 +4284,6 @@ defmodule SymphonyElixir.Orchestrator do
       value when is_binary(value) and value != "" -> value
       _ -> nil
     end
-  end
-
-  defp pick_retry_non_negative_integer(previous_retry, metadata, key)
-       when is_map(previous_retry) and is_map(metadata) and is_atom(key) do
-    metadata[key]
-    |> Kernel.||(Map.get(previous_retry, key))
-    |> non_negative_integer_or_nil()
   end
 
   defp non_negative_integer_or_nil(value) when is_integer(value) and value >= 0, do: value
@@ -4331,7 +4344,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retry_execution_metadata(source, resume_checkpoint)
        when is_map(source) and (is_map(resume_checkpoint) or is_nil(resume_checkpoint)) do
-    checkpoint_routing_payload = TelemetrySchema.runtime_payload(resume_checkpoint || %{})
+    resume_checkpoint = ResumeCheckpoint.with_runtime_context(resume_checkpoint || %{}, source)
+    checkpoint_routing_payload = TelemetrySchema.runtime_payload(resume_checkpoint)
 
     %{}
     |> maybe_put_retry_metadata(
@@ -4386,23 +4400,17 @@ defmodule SymphonyElixir.Orchestrator do
       retry_replacement_of_session_id(source)
     )
     |> maybe_put_retry_metadata(:replacement_session_id, retry_replacement_session_id(source))
-    |> maybe_put_retry_metadata(:continuation_reason, retry_continuation_reason(source, resume_checkpoint))
-    |> maybe_put_retry_metadata(:resume_mode, retry_resume_mode(source, resume_checkpoint))
-    |> maybe_put_retry_metadata(
-      :resume_fallback_reason,
-      retry_resume_fallback_reason(source, resume_checkpoint)
-    )
-    |> maybe_put_retry_metadata(
-      :auto_compaction_signal,
-      retry_auto_compaction_signal(source, resume_checkpoint)
-    )
+    |> maybe_put_retry_metadata(:continuation_reason, checkpoint_continuation_reason(resume_checkpoint))
+    |> maybe_put_retry_metadata(:resume_mode, checkpoint_resume_mode(resume_checkpoint))
+    |> maybe_put_retry_metadata(:resume_fallback_reason, checkpoint_resume_fallback_reason(resume_checkpoint))
+    |> maybe_put_retry_metadata(:auto_compaction_signal, checkpoint_auto_compaction_signal(resume_checkpoint))
     |> maybe_put_retry_non_negative_integer(
       :auto_compaction_threshold,
-      retry_auto_compaction_threshold(source, resume_checkpoint)
+      checkpoint_auto_compaction_threshold(resume_checkpoint)
     )
     |> maybe_put_retry_non_negative_integer(
       :auto_compaction_observed_total,
-      retry_auto_compaction_observed_total(source, resume_checkpoint)
+      checkpoint_auto_compaction_observed_total(resume_checkpoint)
     )
     |> maybe_put_retry_metadata(:runtime_head_sha, retry_runtime_head_sha(source, resume_checkpoint))
     |> maybe_put_retry_metadata(:expected_head_sha, Map.get(source, :expected_head_sha))
@@ -4473,48 +4481,6 @@ defmodule SymphonyElixir.Orchestrator do
     source
     |> map_any([:replacement_session_id, "replacement_session_id"])
     |> normalize_optional_string()
-  end
-
-  defp retry_continuation_reason(source, resume_checkpoint) when is_map(source) do
-    normalize_optional_string(map_any(source, [:continuation_reason, "continuation_reason"])) ||
-      checkpoint_continuation_reason(resume_checkpoint)
-  end
-
-  defp retry_resume_mode(source, resume_checkpoint) when is_map(source) do
-    normalize_optional_string(map_any(source, [:resume_mode, "resume_mode"])) ||
-      checkpoint_resume_mode(resume_checkpoint)
-  end
-
-  defp retry_resume_fallback_reason(source, resume_checkpoint) when is_map(source) do
-    normalize_optional_string(map_any(source, [:resume_fallback_reason, "resume_fallback_reason"])) ||
-      checkpoint_resume_fallback_reason(resume_checkpoint)
-  end
-
-  defp retry_auto_compaction_signal(source, resume_checkpoint) when is_map(source) do
-    source_signal =
-      source
-      |> map_any([:auto_compaction_signal, "auto_compaction_signal"])
-      |> normalize_optional_string()
-
-    source_signal || checkpoint_auto_compaction_signal(resume_checkpoint)
-  end
-
-  defp retry_auto_compaction_threshold(source, resume_checkpoint) when is_map(source) do
-    source_threshold =
-      source
-      |> map_any([:auto_compaction_threshold, "auto_compaction_threshold"])
-      |> non_negative_integer_or_nil()
-
-    source_threshold || checkpoint_auto_compaction_threshold(resume_checkpoint)
-  end
-
-  defp retry_auto_compaction_observed_total(source, resume_checkpoint) when is_map(source) do
-    source_observed_total =
-      source
-      |> map_any([:auto_compaction_observed_total, "auto_compaction_observed_total"])
-      |> non_negative_integer_or_nil()
-
-    source_observed_total || checkpoint_auto_compaction_observed_total(resume_checkpoint)
   end
 
   defp maybe_put_retry_metadata(metadata, _key, value)

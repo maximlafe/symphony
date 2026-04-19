@@ -1105,6 +1105,14 @@ defmodule SymphonyElixir.CoreTest do
     assert error =~ "failed to spawn agent:"
     assert resume_checkpoint["resume_mode"] == "fallback_reread"
     assert resume_checkpoint["resume_fallback_reason"] == "resume_checkpoint_unavailable"
+
+    assert resume_checkpoint["resume_source_order"] == [
+             "resume_checkpoint",
+             "workpad",
+             "compact_pr_snapshot",
+             "focused_tracker_read"
+           ]
+
     assert_due_in_range(due_at_ms, 7_000, 10_500)
   end
 
@@ -1303,6 +1311,14 @@ defmodule SymphonyElixir.CoreTest do
     assert reloaded_checkpoint["resume_ready"] == true
     assert reloaded_checkpoint["resume_mode"] == "resume_checkpoint"
     assert reloaded_checkpoint["resume_fallback_reason"] == nil
+
+    assert reloaded_checkpoint["resume_source_order"] == [
+             "resume_checkpoint",
+             "workpad",
+             "compact_pr_snapshot",
+             "focused_tracker_read"
+           ]
+
     assert reloaded_checkpoint["workpad_ref"] == "comment-789"
     assert reloaded_checkpoint["open_pr"]["number"] == 78
 
@@ -5342,6 +5358,14 @@ defmodule SymphonyElixir.CoreTest do
            } = updated_state.retry_attempts[issue_id]
 
     assert checkpoint["resume_ready"] == true
+
+    assert checkpoint["resume_source_order"] == [
+             "resume_checkpoint",
+             "workpad",
+             "compact_pr_snapshot",
+             "focused_tracker_read"
+           ]
+
     assert checkpoint["auto_compaction"]["continuation_reason"] == "auto_compaction"
     assert checkpoint["auto_compaction"]["auto_compaction_signal"] == "total_tokens"
     assert checkpoint["auto_compaction"]["auto_compaction_threshold"] == 100
@@ -5509,6 +5533,14 @@ defmodule SymphonyElixir.CoreTest do
            } = updated_state.retry_attempts[issue_id]
 
     assert checkpoint["resume_ready"] == false
+
+    assert checkpoint["resume_source_order"] == [
+             "resume_checkpoint",
+             "workpad",
+             "compact_pr_snapshot",
+             "focused_tracker_read"
+           ]
+
     assert checkpoint["auto_compaction"]["continuation_reason"] == "auto_compaction"
     assert checkpoint["auto_compaction"]["auto_compaction_signal"] == "total_tokens"
     assert checkpoint["auto_compaction"]["auto_compaction_threshold"] == 100
@@ -6084,7 +6116,9 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "prompt builder includes explicit resume mode and fallback reason fields" do
-    workflow_prompt = "{{ resume_checkpoint.resume_mode }}|{{ resume_checkpoint.resume_fallback_reason }}"
+    workflow_prompt =
+      "{{ resume_checkpoint.resume_mode }}|{{ resume_checkpoint.resume_fallback_reason }}|{{ resume_checkpoint.resume_source_order }}"
+
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
 
     issue = %Issue{
@@ -6101,7 +6135,8 @@ defmodule SymphonyElixir.CoreTest do
         resume_checkpoint: %{"fallback_reasons" => ["resume checkpoint is unavailable"]}
       )
 
-    assert prompt == "fallback_reread|resume_checkpoint_unavailable"
+    assert prompt ==
+             "fallback_reread|resume_checkpoint_unavailable|resume_checkpointworkpadcompact_pr_snapshotfocused_tracker_read"
   end
 
   test "agent runner keeps workspace after successful codex run" do
