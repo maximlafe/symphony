@@ -96,32 +96,22 @@ defmodule SymphonyElixir.BudgetGuardrails do
     end
   end
 
-  defp stage_bootstrap_retry?(
-         context,
-         settings,
-         :implementation,
-         current_profile_key,
-         %{mode: :implicit}
-       )
-       when is_map(context) and is_binary(current_profile_key) do
-    current_profile_key == stage_default(settings.codex.cost_policy, :implementation) and
-      map_get(context, :attempt) == 1
-  end
-
-  defp stage_bootstrap_retry?(
-         context,
-         settings,
-         :planning,
-         current_profile_key,
-         %{mode: :implicit}
-       )
-       when is_map(context) and is_binary(current_profile_key) do
-    current_profile_key == stage_default(settings.codex.cost_policy, :planning) and
-      map_get(context, :attempt) == 1
+  defp stage_bootstrap_retry?(context, settings, cost_stage, current_profile_key, progress)
+       when cost_stage in [:implementation, :planning] and is_map(context) and
+              is_binary(current_profile_key) do
+    current_profile_key == stage_default(settings.codex.cost_policy, cost_stage) and
+      map_get(context, :attempt) == 1 and bootstrap_progress_allows_retry?(progress)
   end
 
   defp stage_bootstrap_retry?(_context, _settings, _cost_stage, _current_profile_key, _progress),
     do: false
+
+  defp bootstrap_progress_allows_retry?(%{mode: :implicit}), do: true
+
+  defp bootstrap_progress_allows_retry?(%{mode: :explicit, checkpoint_usable?: false}),
+    do: true
+
+  defp bootstrap_progress_allows_retry?(_progress), do: false
 
   defp explicit_progress_guard?(%{mode: :explicit}), do: true
   defp explicit_progress_guard?(_progress), do: false
