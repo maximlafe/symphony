@@ -103,6 +103,7 @@ Continuation context:
 - Use the compact resume checkpoint as the default retry input before any broad reread:
   - available: `{{ resume_checkpoint.available }}`
   - ready: `{{ resume_checkpoint.resume_ready }}`
+  - source_order: `{{ resume_checkpoint.resume_source_order }}`
   - branch: `{{ resume_checkpoint.branch }}`
   - head: `{{ resume_checkpoint.head }}`
   - changed_files: `{{ resume_checkpoint.changed_files }}`
@@ -114,7 +115,8 @@ Continuation context:
   - workpad_digest: `{{ resume_checkpoint.workpad_digest }}`
   - fallback_reasons: `{{ resume_checkpoint.fallback_reasons }}`
 - If `resume_checkpoint.resume_ready` is true, continue from that checkpoint and avoid full issue-comment history reread.
-- If `resume_checkpoint.resume_ready` is false, explicitly record the checkpoint mismatch/insufficiency and then fallback to a focused full reread.
+- If `resume_checkpoint.resume_ready` is false, explicitly record `resume_checkpoint.fallback_reasons` and only then fallback in this order: workpad -> compact PR snapshot -> focused tracker read.
+- Broad issue-comment/history reread is allowed only after the checkpoint mismatch, missing field, or stale compact context is explicitly recorded and the ordered compact fallback still leaves the context insufficient.
 - If available context is already low (`low-context`), finish at most one atomic action, sync the workpad, and prepare a classified checkpoint instead of starting a broad new investigation.
 - Do not spend the remaining context budget restating prior work or retrying the same failing path without a materially new signal.
 - Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets or are making a classified `decision`/`human-action` handoff because further autonomous progress is no longer justified.

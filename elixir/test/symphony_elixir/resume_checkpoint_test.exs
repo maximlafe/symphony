@@ -54,6 +54,14 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert checkpoint["pending_checks"] == false
     assert checkpoint["open_feedback"] == false
     assert checkpoint["feedback_digest"] == "feedback-digest-77"
+
+    assert checkpoint["resume_source_order"] == [
+             "resume_checkpoint",
+             "workpad",
+             "compact_pr_snapshot",
+             "focused_tracker_read"
+           ]
+
     assert checkpoint["checkpoint_quality"] == "ready"
     assert checkpoint["checkpoint_origin"] == "resume_checkpoint"
     assert checkpoint["checkpoint_fallback_reasons"] == []
@@ -65,8 +73,153 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
 
     assert loaded["available"] == true
     assert loaded["resume_ready"] == false
+
+    assert loaded["resume_source_order"] == [
+             "resume_checkpoint",
+             "workpad",
+             "compact_pr_snapshot",
+             "focused_tracker_read"
+           ]
+
     assert loaded["checkpoint_quality"] == "fallback"
     assert Enum.any?(loaded["fallback_reasons"], &String.contains?(&1, "workpad_digest"))
+  end
+
+  test "capture normalizes continuation and auto-compaction runtime context into the checkpoint" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-resume-checkpoint-runtime-context-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    issue = %Issue{id: "issue-resume-runtime", identifier: "LET-474-RUNTIME", state: "In Progress"}
+    workspace = Path.join(workspace_root, issue.identifier)
+
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nRuntime state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-runtime-context")
+    File.write!(Path.join(workspace, "tracked.txt"), "tracked\n")
+    init_git_repo!(workspace)
+
+    checkpoint =
+      ResumeCheckpoint.capture(
+        issue,
+        %{
+          continuation_reason: "auto_compaction",
+          auto_compaction_signal: "total_tokens",
+          auto_compaction_threshold: 100,
+          auto_compaction_observed_total: 175
+        },
+        workspace_root: workspace_root
+      )
+
+    assert checkpoint["continuation_reason"] == "auto_compaction"
+
+    assert checkpoint["auto_compaction"] == %{
+             "continuation_reason" => "auto_compaction",
+             "auto_compaction_signal" => "total_tokens",
+             "auto_compaction_threshold" => 100,
+             "auto_compaction_observed_total" => 175
+           }
+  end
+
+  test "with_runtime_context merges nested runtime auto-compaction payload and preserves checkpoint-owned fields" do
+    checkpoint = %{
+      "available" => true,
+      "branch" => "feature/resume",
+      "head" => "abc123",
+      "workpad_ref" => "comment-runtime",
+      "workpad_digest" => "digest-123",
+      "feedback_digest" => "checkpoint-feedback",
+      "resume_source_order" => ["stale-order"],
+      "auto_compaction" => %{
+        "auto_compaction_safe_steps" => "7"
+      }
+    }
+
+    runtime_checkpoint =
+      ResumeCheckpoint.with_runtime_context(checkpoint, %{
+        feedback_digest: "runtime-feedback",
+        auto_compaction_signal: "total_tokens",
+        auto_compaction_threshold: "100",
+        auto_compaction_observed_total: "175",
+        auto_compaction: %{
+          "continuation_reason" => "auto_compaction"
+        }
+      })
+
+    assert runtime_checkpoint["resume_ready"] == true
+
+    assert runtime_checkpoint["resume_source_order"] == [
+             "resume_checkpoint",
+             "workpad",
+             "compact_pr_snapshot",
+             "focused_tracker_read"
+           ]
+
+    assert runtime_checkpoint["continuation_reason"] == "auto_compaction"
+    assert runtime_checkpoint["feedback_digest"] == "checkpoint-feedback"
+
+    assert runtime_checkpoint["auto_compaction"] == %{
+             "continuation_reason" => "auto_compaction",
+             "auto_compaction_signal" => "total_tokens",
+             "auto_compaction_threshold" => 100,
+             "auto_compaction_observed_total" => 175,
+             "auto_compaction_safe_steps" => 7
+           }
+  end
+
+  test "for_prompt normalizes continuation reason from checkpoint auto-compaction and ignores invalid runtime source" do
+    checkpoint = %{
+      "available" => true,
+      "branch" => "feature/resume",
+      "head" => "abc123",
+      "workpad_ref" => "comment-runtime",
+      "workpad_digest" => "digest-123",
+      "pending_checks" => "invalid",
+      "open_feedback" => "invalid",
+      "auto_compaction" => %{
+        "continuation_reason" => " auto_compaction ",
+        "auto_compaction_signal" => "total_tokens",
+        "auto_compaction_threshold" => "-1"
+      }
+    }
+
+    prompt_checkpoint = ResumeCheckpoint.with_runtime_context(checkpoint, nil)
+
+    assert prompt_checkpoint["resume_ready"] == true
+    assert prompt_checkpoint["continuation_reason"] == "auto_compaction"
+    assert prompt_checkpoint["pending_checks"] == nil
+    assert prompt_checkpoint["open_feedback"] == nil
+
+    assert prompt_checkpoint["auto_compaction"] == %{
+             "continuation_reason" => "auto_compaction",
+             "auto_compaction_signal" => "total_tokens"
+           }
+  end
+
+  test "for_prompt falls back to canonical source order when checkpoint carries an invalid order shape" do
+    prompt_checkpoint =
+      ResumeCheckpoint.for_prompt(%{
+        "available" => true,
+        "branch" => "feature/resume",
+        "head" => "abc123",
+        "workpad_ref" => "comment-runtime",
+        "workpad_digest" => "digest-123",
+        "resume_source_order" => "invalid"
+      })
+
+    assert prompt_checkpoint["resume_ready"] == true
+
+    assert prompt_checkpoint["resume_source_order"] == [
+             "resume_checkpoint",
+             "workpad",
+             "compact_pr_snapshot",
+             "focused_tracker_read"
+           ]
   end
 
   test "capture preserves feedback_digest from resume checkpoint when fresh PR snapshot is missing" do

@@ -8,6 +8,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
   @manifest_rel_path ".symphony/resume/checkpoint.json"
   @workpad_path "workpad.md"
   @workpad_ref_path ".workpad-id"
+  @resume_source_order ["resume_checkpoint", "workpad", "compact_pr_snapshot", "focused_tracker_read"]
   @routing_checkpoint_fields ~w(
     cost_profile_key
     cost_profile_reason
@@ -72,6 +73,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
         |> Map.put("workpad_ref", read_trimmed(Path.join(workspace, @workpad_ref_path)))
         |> Map.put("workpad_digest", sha256_file(Path.join(workspace, @workpad_path)))
         |> merge_pr_context(running_entry)
+        |> merge_runtime_context(running_entry)
         |> Map.merge(routing_metadata_from_running_entry(running_entry))
         |> Map.merge(TelemetrySchema.validation_guard_payload(running_entry))
         |> evaluate_readiness()
@@ -118,6 +120,16 @@ defmodule SymphonyElixir.ResumeCheckpoint do
 
   def for_prompt(_checkpoint), do: evaluate_readiness(base_checkpoint(nil))
 
+  @spec with_runtime_context(map() | nil, map() | nil) :: map()
+  def with_runtime_context(checkpoint, source) when is_map(checkpoint) and is_map(source) do
+    checkpoint
+    |> normalize_checkpoint()
+    |> merge_runtime_context(source)
+    |> evaluate_readiness()
+  end
+
+  def with_runtime_context(checkpoint, _source), do: for_prompt(checkpoint)
+
   defp persist_checkpoint(%{"manifest_path" => path} = checkpoint) when is_binary(path) and path != "" do
     checkpoint
     |> ensure_checkpoint_dir(path)
@@ -152,13 +164,16 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     |> then(fn map -> Map.merge(base, map) end)
     |> Map.update("changed_files", [], &normalize_changed_files/1)
     |> Map.update("fallback_reasons", [], &normalize_reasons/1)
+    |> Map.update("resume_source_order", base["resume_source_order"], &normalize_source_order/1)
     |> Map.update("last_validation_status", base["last_validation_status"], &normalize_validation_status/1)
     |> Map.put("active_validation_snapshot", normalize_active_validation_snapshot(Map.get(checkpoint, "active_validation_snapshot")))
     |> Map.put("open_pr", normalize_open_pr(Map.get(checkpoint, "open_pr")))
     |> Map.put("feedback_digest", normalize_optional_string(Map.get(checkpoint, "feedback_digest")))
     |> Map.put("workspace_diff_fingerprint", normalize_optional_string(Map.get(checkpoint, "workspace_diff_fingerprint")))
+    |> Map.put("continuation_reason", continuation_reason_from_checkpoint(checkpoint))
     |> normalize_boolean("pending_checks")
     |> normalize_boolean("open_feedback")
+    |> normalize_auto_compaction_payload()
   end
 
   defp normalize_checkpoint(_checkpoint), do: base_checkpoint(nil)
@@ -186,6 +201,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     |> Map.put("available", Map.get(checkpoint, "available") == true)
     |> Map.put("fallback_reasons", reasons)
     |> Map.put("resume_ready", reasons == [])
+    |> Map.put("resume_source_order", @resume_source_order)
     |> then(&Map.merge(&1, TelemetrySchema.checkpoint_payload(&1, "resume_checkpoint")))
   end
 
@@ -251,6 +267,13 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       |> Enum.uniq()
 
     Map.put(checkpoint, "fallback_reasons", reasons)
+  end
+
+  defp merge_runtime_context(%{} = checkpoint, source) when is_map(source) do
+    checkpoint
+    |> maybe_put_runtime_string("continuation_reason", continuation_reason_from_source(source))
+    |> maybe_put_runtime_string("feedback_digest", feedback_digest_from_source(source))
+    |> maybe_put_runtime_auto_compaction(runtime_auto_compaction_payload(source))
   end
 
   defp merge_pr_context(%{} = checkpoint, running_entry) when is_map(running_entry) do
@@ -405,6 +428,22 @@ defmodule SymphonyElixir.ResumeCheckpoint do
 
   defp normalize_changed_files(_files), do: []
 
+  defp normalize_source_order(source_order) when is_list(source_order) do
+    normalized =
+      source_order
+      |> Enum.map(&to_string/1)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+
+    if normalized == [] do
+      @resume_source_order
+    else
+      normalized
+    end
+  end
+
+  defp normalize_source_order(_source_order), do: @resume_source_order
+
   defp normalize_reasons(reasons) when is_list(reasons) do
     reasons
     |> Enum.map(&to_string/1)
@@ -487,6 +526,92 @@ defmodule SymphonyElixir.ResumeCheckpoint do
   end
 
   defp normalize_optional_string(_value), do: nil
+
+  defp maybe_put_runtime_string(%{} = checkpoint, key, value) when is_binary(value) and value != "" do
+    case normalize_optional_string(Map.get(checkpoint, key)) do
+      nil -> Map.put(checkpoint, key, value)
+      _ -> checkpoint
+    end
+  end
+
+  defp maybe_put_runtime_string(checkpoint, _key, _value), do: checkpoint
+
+  defp normalize_auto_compaction_payload(%{} = checkpoint) do
+    Map.put(checkpoint, "auto_compaction", normalize_runtime_auto_compaction(Map.get(checkpoint, "auto_compaction")))
+  end
+
+  defp maybe_put_runtime_auto_compaction(%{} = checkpoint, %{} = payload) do
+    case normalize_runtime_auto_compaction(Map.get(checkpoint, "auto_compaction")) do
+      nil -> Map.put(checkpoint, "auto_compaction", payload)
+      existing -> Map.put(checkpoint, "auto_compaction", Map.merge(payload, existing))
+    end
+  end
+
+  defp maybe_put_runtime_auto_compaction(checkpoint, _payload), do: checkpoint
+
+  defp runtime_auto_compaction_payload(source) when is_map(source) do
+    payload =
+      compact_map(%{
+        "continuation_reason" => continuation_reason_from_source(source),
+        "auto_compaction_signal" => normalize_optional_string(map_get_any(source, "auto_compaction_signal")),
+        "auto_compaction_threshold" => normalize_non_negative_integer(map_get_any(source, "auto_compaction_threshold")),
+        "auto_compaction_observed_total" => normalize_non_negative_integer(map_get_any(source, "auto_compaction_observed_total")),
+        "auto_compaction_safe_steps" => normalize_non_negative_integer(map_get_any(source, "auto_compaction_safe_steps"))
+      })
+
+    if map_size(payload) > 0, do: payload
+  end
+
+  defp normalize_runtime_auto_compaction(%{} = payload) do
+    normalized =
+      compact_map(%{
+        "continuation_reason" => normalize_optional_string(map_get_any(payload, "continuation_reason")),
+        "auto_compaction_signal" => normalize_optional_string(map_get_any(payload, "auto_compaction_signal")),
+        "auto_compaction_threshold" => normalize_non_negative_integer(map_get_any(payload, "auto_compaction_threshold")),
+        "auto_compaction_observed_total" => normalize_non_negative_integer(map_get_any(payload, "auto_compaction_observed_total")),
+        "auto_compaction_safe_steps" => normalize_non_negative_integer(map_get_any(payload, "auto_compaction_safe_steps"))
+      })
+
+    if map_size(normalized) > 0, do: normalized
+  end
+
+  defp normalize_runtime_auto_compaction(_payload), do: nil
+
+  defp continuation_reason_from_checkpoint(%{} = checkpoint) do
+    normalize_optional_string(map_get_any(checkpoint, "continuation_reason")) ||
+      checkpoint
+      |> Map.get("auto_compaction")
+      |> normalize_runtime_auto_compaction()
+      |> case do
+        %{} = payload -> normalize_optional_string(Map.get(payload, "continuation_reason"))
+        _ -> nil
+      end
+  end
+
+  defp continuation_reason_from_source(source) when is_map(source) do
+    normalize_optional_string(map_get_any(source, "continuation_reason")) ||
+      source
+      |> Map.get(:auto_compaction, Map.get(source, "auto_compaction"))
+      |> case do
+        %{} = payload -> normalize_optional_string(map_get_any(payload, "continuation_reason"))
+        _ -> nil
+      end
+  end
+
+  defp feedback_digest_from_source(source) when is_map(source) do
+    normalize_optional_string(map_get_any(source, "feedback_digest"))
+  end
+
+  defp normalize_non_negative_integer(value) when is_integer(value) and value >= 0, do: value
+
+  defp normalize_non_negative_integer(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {integer, ""} when integer >= 0 -> integer
+      _ -> nil
+    end
+  end
+
+  defp normalize_non_negative_integer(_value), do: nil
 
   defp compact_map(map) when is_map(map) do
     map
@@ -653,6 +778,10 @@ defmodule SymphonyElixir.ResumeCheckpoint do
 
   defp issue_identifier(_issue), do: nil
 
+  defp map_get_any(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key, Map.get(map, String.to_atom(key)))
+  end
+
   defp map_get(map, key) when is_map(map) and is_binary(key) do
     case Map.fetch(map, key) do
       {:ok, value} ->
@@ -669,6 +798,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       "available" => false,
       "resume_ready" => false,
       "fallback_reasons" => [],
+      "resume_source_order" => @resume_source_order,
       "manifest_path" => nil,
       "issue" => %{
         "id" => issue_id(issue),
@@ -689,6 +819,8 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       "pending_checks" => nil,
       "open_feedback" => nil,
       "feedback_digest" => nil,
+      "continuation_reason" => nil,
+      "auto_compaction" => nil,
       "workpad_ref" => nil,
       "workpad_digest" => nil
     }
