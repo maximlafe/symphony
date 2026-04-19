@@ -148,6 +148,26 @@ defmodule SymphonyElixir.RetryFailoverDecisionTest do
     assert decision.risk_level == "medium"
   end
 
+  test "per-attempt bootstrap signal allows retry and stays distinguishable" do
+    decision =
+      RetryFailoverDecision.decide(%{
+        budget_exceeded: %{
+          scope: :per_attempt,
+          reason: :max_tokens_per_attempt_exceeded,
+          cheaper_profile?: false,
+          budget_signal_role: "bootstrap",
+          checkpoint_type: "decision",
+          risk_level: "medium"
+        }
+      })
+
+    assert decision.selected_rule == :budget_exceeded_per_attempt_bootstrap
+    assert decision.selected_action == :allow_retry
+    assert decision.checkpoint_type == "decision"
+    assert decision.risk_level == "medium"
+    assert decision.signals.budget_exceeded.budget_signal_role == "bootstrap"
+  end
+
   test "per-attempt budget with changed explicit progress surface allows retry" do
     decision =
       RetryFailoverDecision.decide(%{
