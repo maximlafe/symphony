@@ -23,6 +23,9 @@ defmodule SymphonyElixir.BudgetGuardrails do
     issue_total = issue_tokens_before_attempt + attempt_tokens
 
     cond do
+      settings.codex.enforce_token_budgets == false ->
+        {:allow, %{budget_attempt_tokens: attempt_tokens, budget_issue_total_tokens: issue_total}}
+
       exceeded?(issue_total, settings.codex.max_total_tokens) ->
         {:handoff,
          decision(context, %{

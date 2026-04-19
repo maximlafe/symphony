@@ -5,6 +5,7 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
 
   test "config requires and parses token budget thresholds" do
     config = Config.settings!()
+    assert config.codex.enforce_token_budgets == true
     assert config.codex.max_total_tokens == 300_000
     assert config.codex.max_tokens_per_attempt == 120_000
 
@@ -33,6 +34,27 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
     config = Config.settings!()
     assert config.codex.max_total_tokens == 120_000
     assert config.codex.max_tokens_per_attempt == 45_000
+  end
+
+  test "budget guardrails can be disabled by workflow flag" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_enforce_token_budgets: false,
+      codex_max_total_tokens: 100,
+      codex_max_tokens_per_attempt: 10
+    )
+
+    config = Config.settings!()
+    assert config.codex.enforce_token_budgets == false
+
+    assert {:allow, totals} =
+             BudgetGuardrails.decide(%{
+               issue: %Issue{id: "issue-budget", identifier: "LET-559", state: "In Progress"},
+               attempt: 3,
+               attempt_tokens: 5_000,
+               issue_tokens_before_attempt: 50_000
+             })
+
+    assert totals == %{budget_attempt_tokens: 5_000, budget_issue_total_tokens: 55_000}
   end
 
   test "per-issue budget wins over per-attempt budget and requires decision handoff" do

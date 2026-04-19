@@ -5,6 +5,7 @@ defmodule SymphonyElixir.AutoCompactionTest do
 
   test "config parses disabled and enabled auto-compaction thresholds" do
     config = Config.settings!()
+    assert config.codex.enforce_token_budgets == true
     assert config.codex.auto_compaction_max_total_tokens == nil
     assert config.codex.auto_compaction_max_safe_steps == nil
     assert config.codex.max_continuation_attempts == 3
@@ -19,6 +20,22 @@ defmodule SymphonyElixir.AutoCompactionTest do
     assert config.codex.auto_compaction_max_total_tokens == 120_000
     assert config.codex.auto_compaction_max_safe_steps == 12
     assert config.codex.max_continuation_attempts == 7
+  end
+
+  test "auto-compaction skips when token budgets are disabled" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_enforce_token_budgets: false,
+      codex_auto_compaction_max_total_tokens: 100,
+      codex_auto_compaction_max_safe_steps: 5
+    )
+
+    assert :skip =
+             AutoCompaction.decide(%{
+               run_phase_before: :editing,
+               safe_boundary: true,
+               attempt_tokens: 999,
+               safe_steps: 999
+             })
   end
 
   test "decide compacts editing runs when total token threshold is exceeded at safe boundary" do
