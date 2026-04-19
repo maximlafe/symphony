@@ -80,13 +80,36 @@ defmodule SymphonyElixir.BudgetGuardrails do
         end
 
       :error ->
-        if explicit_progress_allows_retry?(progress) do
-          {:allow, Map.put(base, :budget_decision, "allow")}
-        else
-          {:handoff, Map.put(base, :budget_decision, "handoff")}
+        cond do
+          explicit_progress_allows_retry?(progress) ->
+            {:allow, Map.put(base, :budget_decision, "allow")}
+
+          implementation_bootstrap_retry?(context, settings, cost_stage, current_profile_key, progress) ->
+            {:allow,
+             base
+             |> Map.put(:budget_decision, "allow")
+             |> Map.put(:budget_signal_role, "bootstrap")}
+
+          true ->
+            {:handoff, Map.put(base, :budget_decision, "handoff")}
         end
     end
   end
+
+  defp implementation_bootstrap_retry?(
+         context,
+         settings,
+         :implementation,
+         current_profile_key,
+         %{mode: :implicit}
+       )
+       when is_map(context) and is_binary(current_profile_key) do
+    current_profile_key == stage_default(settings.codex.cost_policy, :implementation) and
+      map_get(context, :attempt) == 1
+  end
+
+  defp implementation_bootstrap_retry?(_context, _settings, _cost_stage, _current_profile_key, _progress),
+    do: false
 
   defp explicit_progress_guard?(%{mode: :explicit}), do: true
   defp explicit_progress_guard?(_progress), do: false

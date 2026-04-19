@@ -18,6 +18,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
           | :retry_dedupe_hit
           | :continuation_attempt_limit_exceeded
           | :budget_exceeded_cumulative
+          | :budget_exceeded_per_attempt_bootstrap
           | :budget_exceeded_per_attempt_progressing
           | :budget_exceeded_per_attempt_handoff
           | :account_unhealthy_milestone_near
@@ -187,6 +188,10 @@ defmodule SymphonyElixir.RetryFailoverDecision do
     )
     |> maybe_add_rule(:budget_exceeded_cumulative, cumulative_budget?(signals.budget_exceeded))
     |> maybe_add_rule(
+      :budget_exceeded_per_attempt_bootstrap,
+      per_attempt_budget_bootstrap?(signals.budget_exceeded)
+    )
+    |> maybe_add_rule(
       :budget_exceeded_per_attempt_handoff,
       per_attempt_budget_handoff?(signals.budget_exceeded)
     )
@@ -221,6 +226,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp action_for_rule(:retry_dedupe_hit), do: :stop_with_classified_handoff
   defp action_for_rule(:continuation_attempt_limit_exceeded), do: :stop_with_classified_handoff
   defp action_for_rule(:budget_exceeded_cumulative), do: :stop_with_classified_handoff
+  defp action_for_rule(:budget_exceeded_per_attempt_bootstrap), do: :allow_retry
   defp action_for_rule(:budget_exceeded_per_attempt_progressing), do: :allow_retry
   defp action_for_rule(:budget_exceeded_per_attempt_handoff), do: :stop_with_classified_handoff
   defp action_for_rule(:account_unhealthy_milestone_near), do: :drain_to_milestone
@@ -250,6 +256,9 @@ defmodule SymphonyElixir.RetryFailoverDecision do
 
   defp reason_for_rule(:budget_exceeded_cumulative, signals),
     do: signal_reason(signals.budget_exceeded, "budget_exceeded_cumulative")
+
+  defp reason_for_rule(:budget_exceeded_per_attempt_bootstrap, signals),
+    do: signal_reason(signals.budget_exceeded, "budget_exceeded_per_attempt_bootstrap")
 
   defp reason_for_rule(:budget_exceeded_per_attempt_progressing, signals),
     do: signal_reason(signals.budget_exceeded, "budget_exceeded_per_attempt_progressing")
@@ -290,6 +299,9 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp checkpoint_type_for_rule(:budget_exceeded_cumulative, signals),
     do: signal_field(signals.budget_exceeded, :checkpoint_type, "decision")
 
+  defp checkpoint_type_for_rule(:budget_exceeded_per_attempt_bootstrap, signals),
+    do: signal_field(signals.budget_exceeded, :checkpoint_type, "decision")
+
   defp checkpoint_type_for_rule(:budget_exceeded_per_attempt_progressing, signals),
     do: signal_field(signals.budget_exceeded, :checkpoint_type, "decision")
 
@@ -321,6 +333,9 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp risk_level_for_rule(:budget_exceeded_cumulative, signals),
     do: signal_field(signals.budget_exceeded, :risk_level, "medium")
 
+  defp risk_level_for_rule(:budget_exceeded_per_attempt_bootstrap, signals),
+    do: signal_field(signals.budget_exceeded, :risk_level, "medium")
+
   defp risk_level_for_rule(:budget_exceeded_per_attempt_progressing, signals),
     do: signal_field(signals.budget_exceeded, :risk_level, "medium")
 
@@ -337,6 +352,9 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp risk_level_for_rule(_rule, _signals), do: nil
 
   defp retry_metadata_for_rule(:budget_exceeded_cumulative, signals),
+    do: signal_retry_metadata(signals.budget_exceeded)
+
+  defp retry_metadata_for_rule(:budget_exceeded_per_attempt_bootstrap, signals),
     do: signal_retry_metadata(signals.budget_exceeded)
 
   defp retry_metadata_for_rule(:budget_exceeded_per_attempt_progressing, signals),
@@ -418,6 +436,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp per_attempt_budget_handoff?(%{active: true, scope: :per_attempt} = signal) do
     cond do
       not per_attempt_budget_progress_allows_retry?(signal) -> true
+      per_attempt_budget_bootstrap?(signal) -> false
       signal[:cheaper_profile?] == true -> false
       explicit_progress_signal?(signal) -> false
       true -> true
@@ -425,6 +444,13 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   end
 
   defp per_attempt_budget_handoff?(_signal), do: false
+
+  defp per_attempt_budget_bootstrap?(%{active: true, scope: :per_attempt} = signal) do
+    signal[:cheaper_profile?] != true and signal[:budget_signal_role] == "bootstrap" and
+      not explicit_progress_signal?(signal)
+  end
+
+  defp per_attempt_budget_bootstrap?(_signal), do: false
 
   defp per_attempt_budget_progressing?(%{active: true, scope: :per_attempt} = signal) do
     explicit_progress_signal?(signal) and signal[:cheaper_profile?] != true and
@@ -474,6 +500,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp signal_for_rule(signals, :retry_dedupe_hit), do: signals.retry_dedupe_hit
   defp signal_for_rule(signals, :continuation_attempt_limit_exceeded), do: signals.continuation_attempt_limit
   defp signal_for_rule(signals, :budget_exceeded_cumulative), do: signals.budget_exceeded
+  defp signal_for_rule(signals, :budget_exceeded_per_attempt_bootstrap), do: signals.budget_exceeded
   defp signal_for_rule(signals, :budget_exceeded_per_attempt_progressing), do: signals.budget_exceeded
   defp signal_for_rule(signals, :budget_exceeded_per_attempt_handoff), do: signals.budget_exceeded
   defp signal_for_rule(signals, :budget_exceeded_per_attempt_downshift), do: signals.budget_exceeded
