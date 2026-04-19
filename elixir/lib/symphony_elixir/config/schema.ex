@@ -225,6 +225,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
+      field(:enforce_token_budgets, :boolean, default: true)
       field(:max_total_tokens, :integer)
       field(:max_tokens_per_attempt, :integer)
       field(:max_continuation_attempts, :integer, default: 3)
@@ -255,6 +256,7 @@ defmodule SymphonyElixir.Config.Schema do
           :turn_timeout_ms,
           :read_timeout_ms,
           :stall_timeout_ms,
+          :enforce_token_budgets,
           :max_total_tokens,
           :max_tokens_per_attempt,
           :max_continuation_attempts,

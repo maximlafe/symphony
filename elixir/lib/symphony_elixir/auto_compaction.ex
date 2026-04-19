@@ -21,6 +21,9 @@ defmodule SymphonyElixir.AutoCompaction do
     safe_steps_exceeded? = threshold_exceeded?(safe_steps, safe_steps_threshold)
 
     cond do
+      settings.codex.enforce_token_budgets == false ->
+        :skip
+
       is_nil(token_threshold) and is_nil(safe_steps_threshold) ->
         :skip
 
