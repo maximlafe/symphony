@@ -192,6 +192,50 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
     refute Map.has_key?(decision, :budget_downshift_rule)
   end
 
+  test "first over-budget planning attempt with explicit unavailable checkpoint still gets bootstrap retry chance" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command_template: "codex --config model_reasoning_effort={{effort}} --model {{model}} app-server",
+      codex_max_tokens_per_attempt: 10,
+      codex_cost_profiles: %{
+        cheap_planning: %{model: "gpt-5.4", effort: "xhigh"}
+      },
+      codex_cost_policy: %{
+        stage_defaults: %{planning: "cheap_planning"}
+      }
+    )
+
+    unavailable_checkpoint =
+      progress_checkpoint(
+        resume_ready: false,
+        workpad_digest: "workpad-bootstrap",
+        workspace_diff_fingerprint: "workspace-bootstrap",
+        validation_bundle_fingerprint: "validation:bootstrap",
+        changed_files: ["workpad.md"]
+      )
+
+    assert {:allow, decision} =
+             BudgetGuardrails.decide(%{
+               issue: %Issue{id: "issue-budget", identifier: "LET-567", state: "Spec Review"},
+               attempt: 1,
+               delay_type: nil,
+               attempt_tokens: 12,
+               issue_tokens_before_attempt: 0,
+               current_cost_profile_key: "cheap_planning",
+               previous_resume_checkpoint: unavailable_checkpoint,
+               resume_checkpoint: unavailable_checkpoint
+             })
+
+    assert decision.budget_reason == :max_tokens_per_attempt_exceeded
+    assert decision.cost_stage == "planning"
+    assert decision.budget_current_cost_profile_key == "cheap_planning"
+    assert decision.budget_decision == "allow"
+    assert decision.budget_signal_role == "bootstrap"
+    assert decision.progress_status == "unavailable"
+    assert decision.progress_repeat_count == 0
+    refute Map.has_key?(decision, :budget_next_cost_profile_key)
+    refute Map.has_key?(decision, :budget_downshift_rule)
+  end
+
   test "per-attempt budget in handoff stage does not downshift to implementation default" do
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_command_template: "codex --config model_reasoning_effort={{effort}} --model {{model}} app-server",
@@ -314,6 +358,49 @@ defmodule SymphonyElixir.BudgetGuardrailsTest do
     assert decision.cost_stage == "planning"
     assert decision.budget_current_cost_profile_key == "cheap_planning"
     assert decision.budget_decision == "handoff"
+    refute Map.has_key?(decision, :budget_next_cost_profile_key)
+    refute Map.has_key?(decision, :budget_downshift_rule)
+  end
+
+  test "bootstrap retry chance is consumed after first over-budget planning attempt with explicit unavailable checkpoint" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command_template: "codex --config model_reasoning_effort={{effort}} --model {{model}} app-server",
+      codex_max_tokens_per_attempt: 10,
+      codex_cost_profiles: %{
+        cheap_planning: %{model: "gpt-5.4", effort: "xhigh"}
+      },
+      codex_cost_policy: %{
+        stage_defaults: %{planning: "cheap_planning"}
+      }
+    )
+
+    unavailable_checkpoint =
+      progress_checkpoint(
+        resume_ready: false,
+        workpad_digest: "workpad-bootstrap",
+        workspace_diff_fingerprint: "workspace-bootstrap",
+        validation_bundle_fingerprint: "validation:bootstrap",
+        changed_files: ["workpad.md"]
+      )
+
+    assert {:handoff, decision} =
+             BudgetGuardrails.decide(%{
+               issue: %Issue{id: "issue-budget", identifier: "LET-567", state: "Spec Review"},
+               attempt: 2,
+               delay_type: :continuation,
+               attempt_tokens: 12,
+               issue_tokens_before_attempt: 0,
+               current_cost_profile_key: "cheap_planning",
+               previous_resume_checkpoint: unavailable_checkpoint,
+               resume_checkpoint: unavailable_checkpoint
+             })
+
+    assert decision.budget_reason == :max_tokens_per_attempt_exceeded
+    assert decision.cost_stage == "planning"
+    assert decision.budget_current_cost_profile_key == "cheap_planning"
+    assert decision.budget_decision == "handoff"
+    assert decision.progress_status == "unavailable"
+    assert decision.progress_repeat_count == 0
     refute Map.has_key?(decision, :budget_next_cost_profile_key)
     refute Map.has_key?(decision, :budget_downshift_rule)
   end
