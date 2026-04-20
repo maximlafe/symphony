@@ -342,7 +342,7 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
           selected_action: "stop_with_classified_handoff",
           reason: "continuation_attempt_limit_exceeded",
           retry_metadata: %{
-            continuation_reason: "auto_compaction"
+            continuation_reason: "continuation"
           },
           signals: %{
             continuation_attempt_limit: %{
@@ -353,7 +353,7 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
       })
 
     assert payload["continuation_attempt"] == 4
-    assert payload["continuation_reason"] == "auto_compaction"
+    assert payload["continuation_reason"] == "continuation"
     assert payload["loop_break_triggered"] == true
     assert payload["loop_break_reason"] == "continuation_attempt_limit_exceeded"
   end

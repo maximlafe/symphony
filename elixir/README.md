@@ -252,11 +252,6 @@ Notes:
 - Health requires all configured `codex.monitored_windows_mins` to be present in the upstream Codex
   rate-limit payload and to have at least `codex.minimum_remaining_percent` remaining. Defaults:
   `5` percent minimum across `[300, 10080]` minute windows.
-- Optional edit-session auto-compaction thresholds can be configured under `codex`:
-  `auto_compaction_max_total_tokens` and `auto_compaction_max_safe_steps`. Positive values enable
-  the corresponding signal, `nil` disables it. When an enabled threshold is exceeded during
-  `:editing`, Symphony compacts only at an eligible safe boundary and queues a normal continuation
-  retry with `continuation_reason=auto_compaction`.
 - `codex.max_continuation_attempts` (default `3`) bounds continuation-only retries
   (`delay_type: :continuation`). Once the ceiling is exceeded, Symphony stops queueing the next
   continuation and emits a controlled handoff with machine-readable reason

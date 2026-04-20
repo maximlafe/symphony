@@ -42,7 +42,7 @@ defmodule SymphonyElixir.RetryFailoverDecisionTest do
           checkpoint_type: "decision",
           risk_level: "medium",
           retry_metadata: %{max_continuation_attempts: 3, continuation_attempt: 4},
-          log_fields: %{continuation_reason: "auto_compaction"}
+          log_fields: %{continuation_reason: "continuation"}
         }
       })
 
@@ -52,7 +52,7 @@ defmodule SymphonyElixir.RetryFailoverDecisionTest do
     assert decision.checkpoint_type == "decision"
     assert decision.risk_level == "medium"
     assert decision.retry_metadata == %{max_continuation_attempts: 3, continuation_attempt: 4}
-    assert decision.log_fields.continuation_reason == "auto_compaction"
+    assert decision.log_fields.continuation_reason == "continuation"
   end
 
   test "validation environment mismatch blocks retry" do
