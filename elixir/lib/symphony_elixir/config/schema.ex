@@ -229,8 +229,6 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_total_tokens, :integer)
       field(:max_tokens_per_attempt, :integer)
       field(:max_continuation_attempts, :integer, default: 3)
-      field(:auto_compaction_max_total_tokens, :integer)
-      field(:auto_compaction_max_safe_steps, :integer)
       field(:minimum_remaining_percent, :integer, default: 5)
       field(:monitored_windows_mins, {:array, :integer}, default: [300, 10_080])
 
@@ -260,8 +258,6 @@ defmodule SymphonyElixir.Config.Schema do
           :max_total_tokens,
           :max_tokens_per_attempt,
           :max_continuation_attempts,
-          :auto_compaction_max_total_tokens,
-          :auto_compaction_max_safe_steps,
           :minimum_remaining_percent,
           :monitored_windows_mins
         ],
@@ -275,8 +271,6 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:max_total_tokens, greater_than: 0)
       |> validate_number(:max_tokens_per_attempt, greater_than: 0)
       |> validate_number(:max_continuation_attempts, greater_than: 0)
-      |> validate_number(:auto_compaction_max_total_tokens, greater_than: 0)
-      |> validate_number(:auto_compaction_max_safe_steps, greater_than: 0)
       |> validate_number(:minimum_remaining_percent, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
       |> update_change(:monitored_windows_mins, &SymphonyElixir.Config.Schema.normalize_monitored_windows/1)
       |> SymphonyElixir.Config.Schema.validate_monitored_windows(:monitored_windows_mins)

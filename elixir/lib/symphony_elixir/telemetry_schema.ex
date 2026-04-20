@@ -64,10 +64,7 @@ defmodule SymphonyElixir.TelemetrySchema do
     :resume_mode,
     :resume_fallback_reason,
     :loop_break_triggered,
-    :loop_break_reason,
-    :auto_compaction_signal,
-    :auto_compaction_threshold,
-    :auto_compaction_observed_total
+    :loop_break_reason
   ]
   @loop_break_rules ["retry_dedupe_hit", "continuation_attempt_limit_exceeded"]
   @wait_fields [:wait_mode, :wait_reason, :wait_source, :wait_tool]
@@ -313,10 +310,7 @@ defmodule SymphonyElixir.TelemetrySchema do
       "resume_mode" => normalize_string(fetch(source, :resume_mode)),
       "resume_fallback_reason" => normalize_string(fetch(source, :resume_fallback_reason)),
       "loop_break_triggered" => loop_break_triggered,
-      "loop_break_reason" => loop_break_reason,
-      "auto_compaction_signal" => normalize_string(fetch(source, :auto_compaction_signal)),
-      "auto_compaction_threshold" => fetch(source, :auto_compaction_threshold),
-      "auto_compaction_observed_total" => fetch(source, :auto_compaction_observed_total)
+      "loop_break_reason" => loop_break_reason
     }
     |> reject_nil_values()
   end
@@ -356,8 +350,7 @@ defmodule SymphonyElixir.TelemetrySchema do
       is_binary(continuation_reason) ||
       is_integer(continuation_attempt) ||
       not is_nil(normalize_string(fetch(source, :resume_mode))) ||
-      not is_nil(normalize_string(fetch(source, :resume_fallback_reason))) ||
-      not is_nil(normalize_string(fetch(source, :auto_compaction_signal)))
+      not is_nil(normalize_string(fetch(source, :resume_fallback_reason)))
   end
 
   defp loop_break_reason(source, continuation_context?) do
