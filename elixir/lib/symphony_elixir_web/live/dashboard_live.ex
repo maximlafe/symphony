@@ -20,6 +20,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:codex_accounts_expanded, true)
       |> assign(:account_selection_notice, nil)
       |> assign(:account_selection_error, nil)
+      |> assign(:refresh_notice, nil)
+      |> assign(:refresh_error, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -65,13 +67,40 @@ defmodule SymphonyElixirWeb.DashboardLive do
            :account_selection_notice,
            "Active account switched to #{active_account_label(payload)}."
          )
-         |> assign(:account_selection_error, nil)}
+         |> assign(:account_selection_error, nil)
+         |> assign(:refresh_notice, nil)
+         |> assign(:refresh_error, nil)}
 
       {:error, reason} ->
         {:noreply,
          socket
          |> assign(:account_selection_notice, nil)
-         |> assign(:account_selection_error, active_account_selection_error(reason))}
+         |> assign(:account_selection_error, active_account_selection_error(reason))
+         |> assign(:refresh_notice, nil)
+         |> assign(:refresh_error, nil)}
+    end
+  end
+
+  @impl true
+  def handle_event("request_refresh", _params, socket) do
+    case Orchestrator.request_refresh(orchestrator()) do
+      :unavailable ->
+        {:noreply,
+         socket
+         |> assign(:refresh_notice, nil)
+         |> assign(:refresh_error, "Refresh is unavailable because the orchestrator is offline.")}
+
+      %{coalesced: true} ->
+        {:noreply,
+         socket
+         |> assign(:refresh_notice, "Refresh already queued. Waiting for the current poll cycle to finish.")
+         |> assign(:refresh_error, nil)}
+
+      %{} ->
+        {:noreply,
+         socket
+         |> assign(:refresh_notice, "Refresh queued. The dashboard will update after the next reconcile finishes.")
+         |> assign(:refresh_error, nil)}
     end
   end
 
@@ -407,6 +436,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <div class="section-header-actions">
               <p class="section-meta"><%= codex_accounts_summary(@payload) %></p>
               <button
+                id="codex-accounts-refresh"
+                type="button"
+                class="secondary"
+                phx-click="request_refresh"
+              >
+                Refresh now
+              </button>
+              <button
                 id="codex-accounts-toggle"
                 type="button"
                 class="secondary"
@@ -425,8 +462,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <p :if={@account_selection_error} class="section-feedback section-feedback-error">
             <%= @account_selection_error %>
           </p>
+          <p :if={@refresh_notice} class="section-feedback">
+            <%= @refresh_notice %>
+          </p>
+          <p :if={@refresh_error} class="section-feedback section-feedback-error">
+            <%= @refresh_error %>
+          </p>
 
-          <%= if @payload.codex_accounts in [nil, []] do %>
+          <%= if display_codex_accounts(@payload) == [] do %>
             <p class="empty-state">No Codex account metadata available.</p>
           <% else %>
             <div :if={!@codex_accounts_expanded} id="codex-accounts-body">
@@ -451,7 +494,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={account <- @payload.codex_accounts}>
+                  <tr :for={account <- display_codex_accounts(@payload)}>
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= account.id || "n/a" %></span>
@@ -788,6 +831,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp active_account(payload) when is_map(payload) do
     Enum.find(payload.codex_accounts || [], &(&1.id == payload.active_codex_account_id))
   end
+
+  defp display_codex_accounts(payload) when is_map(payload) do
+    payload
+    |> Map.get(:codex_accounts, [])
+    |> Enum.with_index()
+    |> Enum.sort_by(fn {account, index} -> {display_codex_account_rank(account), index} end)
+    |> Enum.map(fn {account, _index} -> account end)
+  end
+
+  defp display_codex_accounts(_payload), do: []
+
+  defp display_codex_account_rank(%{healthy: true}), do: 0
+  defp display_codex_account_rank(%{"healthy" => true}), do: 0
+  defp display_codex_account_rank(_account), do: 1
 
   defp codex_accounts_summary(payload) when is_map(payload) do
     accounts = payload.codex_accounts || []

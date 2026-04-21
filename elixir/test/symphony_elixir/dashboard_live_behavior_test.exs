@@ -34,6 +34,18 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
           {:reply, {:error, :invalid_account}, state}
       end
     end
+
+    def handle_call(:request_refresh, _from, state) do
+      refresh =
+        Keyword.get(state, :refresh, %{
+          queued: true,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: ["poll", "reconcile"]
+        })
+
+      {:reply, refresh, state}
+    end
   end
 
   setup do
@@ -184,6 +196,22 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert unhealthy_row =~ "· 1 Apr UTC"
   end
 
+  test "render sorts healthy accounts above unhealthy accounts" do
+    payload =
+      multi_account_snapshot()
+      |> put_in([:codex_accounts, Access.at(0), :healthy], false)
+      |> put_in([:codex_accounts, Access.at(0), :health_reason], "token expired")
+      |> payload_from_snapshot()
+
+    html = render_dashboard(%{payload: payload}, codex_accounts_expanded: true)
+
+    healthy_offset = section_offset(html, account_row_html(html, "standby.healthy@example.com"))
+    unhealthy_offset =
+      section_offset(html, account_row_html(html, "very.long.primary.email.address+alerts@example.com"))
+
+    assert healthy_offset < unhealthy_offset
+  end
+
   test "handle_event toggles the accounts section and switches the active healthy account" do
     snapshot = multi_account_snapshot()
     orchestrator_name = unique_orchestrator_name(:EventOrchestrator)
@@ -218,6 +246,39 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
 
     updated_snapshot = GenServer.call(orchestrator_name, :snapshot)
     assert updated_snapshot.active_codex_account_id == "secondary"
+  end
+
+  test "handle_event queues a refresh and shows a dashboard notice" do
+    snapshot = multi_account_snapshot()
+    orchestrator_name = unique_orchestrator_name(:RefreshEventOrchestrator)
+
+    start_supervised!(
+      {StaticOrchestrator,
+       name: orchestrator_name,
+       snapshot: snapshot,
+       refresh: %{
+         queued: true,
+         coalesced: false,
+         requested_at: DateTime.utc_now(),
+         operations: ["poll", "reconcile"]
+       }}
+    )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    payload = Presenter.state_payload(orchestrator_name, 50)
+    socket = dashboard_socket(payload)
+
+    {:noreply, refreshed_socket} = DashboardLive.handle_event("request_refresh", %{}, socket)
+
+    assert refreshed_socket.assigns.refresh_notice ==
+             "Refresh queued. The dashboard will update after the next reconcile finishes."
+
+    assert refreshed_socket.assigns.refresh_error == nil
+
+    refreshed_html = render_dashboard(refreshed_socket.assigns)
+    assert refreshed_html =~ "Refresh now"
+    assert refreshed_html =~ "Refresh queued. The dashboard will update after the next reconcile finishes."
   end
 
   test "http server renders the prioritized dashboard and exposes the updated account payload" do
@@ -349,6 +410,8 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
       |> ensure_assign(:codex_accounts_expanded, fn -> true end)
       |> ensure_assign(:account_selection_notice, fn -> nil end)
       |> ensure_assign(:account_selection_error, fn -> nil end)
+      |> ensure_assign(:refresh_notice, fn -> nil end)
+      |> ensure_assign(:refresh_error, fn -> nil end)
       |> Map.merge(Map.new(overrides))
 
     assigns
@@ -368,7 +431,9 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
         server_port: 4000,
         codex_accounts_expanded: true,
         account_selection_notice: nil,
-        account_selection_error: nil
+        account_selection_error: nil,
+        refresh_notice: nil,
+        refresh_error: nil
       }
     }
   end
