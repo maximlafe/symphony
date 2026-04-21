@@ -76,6 +76,7 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert html =~ "very.long.primary.email.address+alerts@example.com"
     assert html =~ "ID primary"
     assert html =~ "enterprise"
+    refute html =~ "<th>Email</th>"
     assert html =~ "5h: 18/100 left"
     assert html =~ "· at 22:00 UTC"
     assert html =~ "data-local-reset-at=\"2026-03-25T22:00:00Z\""
@@ -183,8 +184,8 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
 
     html = render_dashboard(%{payload: payload}, codex_accounts_expanded: true)
 
-    healthy_row = account_row_html(html, "very.long.primary.email.address+alerts@example.com")
-    unhealthy_row = account_row_html(html, "standby.healthy@example.com")
+    healthy_row = account_row_html(html, "primary")
+    unhealthy_row = account_row_html(html, "secondary")
 
     assert healthy_row =~ ~s(class="limit-chip mono")
     refute healthy_row =~ "limit-chip-danger"
@@ -205,11 +206,27 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
 
     html = render_dashboard(%{payload: payload}, codex_accounts_expanded: true)
 
-    healthy_offset = section_offset(html, account_row_html(html, "standby.healthy@example.com"))
-    unhealthy_offset =
-      section_offset(html, account_row_html(html, "very.long.primary.email.address+alerts@example.com"))
+    healthy_offset = section_offset(html, account_row_html(html, "secondary"))
+    unhealthy_offset = section_offset(html, account_row_html(html, "primary"))
 
     assert healthy_offset < unhealthy_offset
+  end
+
+  test "render humanizes raw probe failures for auth errors" do
+    payload =
+      multi_account_snapshot()
+      |> put_in([:codex_accounts, Access.at(0), :healthy], false)
+      |> put_in(
+        [:codex_accounts, Access.at(0), :health_reason],
+        "probe failed: {:response_error, %{\"code\" => -32603, \"message\" => \"failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 401 Unauthorized; content-type=text/plain; body={\\n \\\"error\\\": {\\n \\\"message\\\": \\\"Provided authentication token is expired. Please try signing in again.\\\",\\n \\\"type\\\": null,\\n \\\"code\\\": \\\"token_expired\\\",\\n \\\"param\\\": null\\n },\\n \\\"status\\\": 401\\n}\"}}"
+      )
+      |> payload_from_snapshot()
+
+    html = render_dashboard(%{payload: payload}, codex_accounts_expanded: true)
+
+    assert html =~ "Session expired. Sign in again."
+    refute html =~ "failed to fetch codex rate limits"
+    refute html =~ "token_expired"
   end
 
   test "handle_event toggles the accounts section and switches the active healthy account" do
@@ -438,12 +455,13 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     }
   end
 
-  defp account_row_html(html, email) do
-    regex = ~r/<tr\b[^>]*>(?:(?!<\/tr>).)*#{Regex.escape(email)}(?:(?!<\/tr>).)*<\/tr>/s
+  defp account_row_html(html, account_id) do
+    regex =
+      ~r/<tr\b[^>]*>(?:(?!<\/tr>).)*<span class="issue-id">#{Regex.escape(account_id)}<\/span>(?:(?!<\/tr>).)*<\/tr>/s
 
     case Regex.run(regex, html) do
       [row] -> row
-      _ -> raise "account row not found for #{email}"
+      _ -> raise "account row not found for #{account_id}"
     end
   end
 

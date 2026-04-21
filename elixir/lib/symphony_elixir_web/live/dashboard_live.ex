@@ -486,7 +486,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>Status</th>
                     <th>Auth</th>
                     <th>Plan</th>
-                    <th>Email</th>
                     <th>Limits</th>
                     <th>Selection</th>
                     <th>Checked</th>
@@ -508,7 +507,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td><%= account.auth_mode || "n/a" %></td>
                     <td><%= account.plan_type || "n/a" %></td>
-                    <td class="mono cell-break"><%= account.email || "n/a" %></td>
                     <td>
                       <div class="limit-stack">
                         <span
@@ -555,7 +553,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </div>
                     </td>
                     <td class="mono"><%= account.checked_at || "n/a" %></td>
-                    <td><%= account.health_reason || "n/a" %></td>
+                    <td><%= humanize_codex_account_reason(account.health_reason) || "n/a" %></td>
                   </tr>
                 </tbody>
               </table>
@@ -874,6 +872,49 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp account_rate_limit_items(_rate_limits, _snapshot_generated_at), do: [limit_chip("n/a")]
+
+  defp humanize_codex_account_reason(nil), do: nil
+
+  defp humanize_codex_account_reason(reason) when is_binary(reason) do
+    normalized = String.trim(reason)
+    lower = String.downcase(normalized)
+
+    cond do
+      lower == "" ->
+        nil
+
+      String.contains?(lower, "token_expired") ->
+        "Session expired. Sign in again."
+
+      String.contains?(lower, "refresh_token_reused") ->
+        "Session was invalidated. Sign in again."
+
+      String.contains?(lower, "failed to fetch codex rate limits") and
+          String.contains?(lower, "401 unauthorized") ->
+        "Authentication failed while reading Codex rate limits. Sign in again."
+
+      String.starts_with?(lower, "probe failed:") ->
+        "Probe failed. #{probe_failure_hint(lower)}"
+
+      true ->
+        normalized
+    end
+  end
+
+  defp humanize_codex_account_reason(_reason), do: nil
+
+  defp probe_failure_hint(lower_reason) when is_binary(lower_reason) do
+    cond do
+      String.contains?(lower_reason, "timeout") ->
+        "The probe timed out."
+
+      String.contains?(lower_reason, "startup failed") ->
+        "The account probe could not start."
+
+      true ->
+        "See logs for the raw probe error."
+    end
+  end
 
   defp rate_limit_bucket_item(default_label, bucket, snapshot_generated_at) when is_map(bucket) do
     label = rate_limit_window_label(bucket) || default_label
