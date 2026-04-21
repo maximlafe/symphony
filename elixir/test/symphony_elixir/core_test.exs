@@ -5142,6 +5142,8 @@ defmodule SymphonyElixir.CoreTest do
   test "manual refresh coalesces repeated requests and ignores superseded ticks" do
     now_ms = System.monotonic_time(:millisecond)
     stale_tick_token = make_ref()
+    stale_probe_at_ms = now_ms - 60_000
+    stale_full_probe_at_ms = now_ms - 300_000
 
     state = %Orchestrator.State{
       poll_interval_ms: 30_000,
@@ -5150,6 +5152,8 @@ defmodule SymphonyElixir.CoreTest do
       poll_check_in_progress: false,
       tick_timer_ref: nil,
       tick_token: stale_tick_token,
+      last_codex_account_probe_at_ms: stale_probe_at_ms,
+      last_full_codex_account_probe_at_ms: stale_full_probe_at_ms,
       codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
       codex_rate_limits: nil
     }
@@ -5161,11 +5165,15 @@ defmodule SymphonyElixir.CoreTest do
     assert is_reference(refreshed_state.tick_token)
     refute refreshed_state.tick_token == stale_tick_token
     assert refreshed_state.next_poll_due_at_ms <= System.monotonic_time(:millisecond)
+    assert refreshed_state.last_codex_account_probe_at_ms == nil
+    assert refreshed_state.last_full_codex_account_probe_at_ms == nil
 
     assert {:reply, %{queued: true, coalesced: true}, coalesced_state} =
              Orchestrator.handle_call(:request_refresh, {self(), make_ref()}, refreshed_state)
 
     assert coalesced_state.tick_token == refreshed_state.tick_token
+    assert coalesced_state.last_codex_account_probe_at_ms == nil
+    assert coalesced_state.last_full_codex_account_probe_at_ms == nil
     assert {:noreply, ^coalesced_state} = Orchestrator.handle_info({:tick, stale_tick_token}, coalesced_state)
   end
 

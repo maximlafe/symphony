@@ -34,6 +34,18 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
           {:reply, {:error, :invalid_account}, state}
       end
     end
+
+    def handle_call(:request_refresh, _from, state) do
+      refresh =
+        Keyword.get(state, :refresh, %{
+          queued: true,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: ["poll", "reconcile"]
+        })
+
+      {:reply, refresh, state}
+    end
   end
 
   setup do
@@ -64,6 +76,7 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert html =~ "very.long.primary.email.address+alerts@example.com"
     assert html =~ "ID primary"
     assert html =~ "enterprise"
+    refute html =~ "<th>Email</th>"
     assert html =~ "5h: 18/100 left"
     assert html =~ "· at 22:00 UTC"
     assert html =~ "data-local-reset-at=\"2026-03-25T22:00:00Z\""
@@ -171,8 +184,8 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
 
     html = render_dashboard(%{payload: payload}, codex_accounts_expanded: true)
 
-    healthy_row = account_row_html(html, "very.long.primary.email.address+alerts@example.com")
-    unhealthy_row = account_row_html(html, "standby.healthy@example.com")
+    healthy_row = account_row_html(html, "primary")
+    unhealthy_row = account_row_html(html, "secondary")
 
     assert healthy_row =~ ~s(class="limit-chip mono")
     refute healthy_row =~ "limit-chip-danger"
@@ -182,6 +195,38 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert unhealthy_row =~ "7d: 4% used"
     assert unhealthy_row =~ "· at 23:30 UTC"
     assert unhealthy_row =~ "· 1 Apr UTC"
+  end
+
+  test "render sorts healthy accounts above unhealthy accounts" do
+    payload =
+      multi_account_snapshot()
+      |> put_in([:codex_accounts, Access.at(0), :healthy], false)
+      |> put_in([:codex_accounts, Access.at(0), :health_reason], "token expired")
+      |> payload_from_snapshot()
+
+    html = render_dashboard(%{payload: payload}, codex_accounts_expanded: true)
+
+    healthy_offset = section_offset(html, account_row_html(html, "secondary"))
+    unhealthy_offset = section_offset(html, account_row_html(html, "primary"))
+
+    assert healthy_offset < unhealthy_offset
+  end
+
+  test "render humanizes raw probe failures for auth errors" do
+    payload =
+      multi_account_snapshot()
+      |> put_in([:codex_accounts, Access.at(0), :healthy], false)
+      |> put_in(
+        [:codex_accounts, Access.at(0), :health_reason],
+        "probe failed: {:response_error, %{\"code\" => -32603, \"message\" => \"failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 401 Unauthorized; content-type=text/plain; body={\\n \\\"error\\\": {\\n \\\"message\\\": \\\"Provided authentication token is expired. Please try signing in again.\\\",\\n \\\"type\\\": null,\\n \\\"code\\\": \\\"token_expired\\\",\\n \\\"param\\\": null\\n },\\n \\\"status\\\": 401\\n}\"}}"
+      )
+      |> payload_from_snapshot()
+
+    html = render_dashboard(%{payload: payload}, codex_accounts_expanded: true)
+
+    assert html =~ "Session expired. Sign in again."
+    refute html =~ "failed to fetch codex rate limits"
+    refute html =~ "token_expired"
   end
 
   test "handle_event toggles the accounts section and switches the active healthy account" do
@@ -218,6 +263,39 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
 
     updated_snapshot = GenServer.call(orchestrator_name, :snapshot)
     assert updated_snapshot.active_codex_account_id == "secondary"
+  end
+
+  test "handle_event queues a refresh and shows a dashboard notice" do
+    snapshot = multi_account_snapshot()
+    orchestrator_name = unique_orchestrator_name(:RefreshEventOrchestrator)
+
+    start_supervised!(
+      {StaticOrchestrator,
+       name: orchestrator_name,
+       snapshot: snapshot,
+       refresh: %{
+         queued: true,
+         coalesced: false,
+         requested_at: DateTime.utc_now(),
+         operations: ["poll", "reconcile"]
+       }}
+    )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    payload = Presenter.state_payload(orchestrator_name, 50)
+    socket = dashboard_socket(payload)
+
+    {:noreply, refreshed_socket} = DashboardLive.handle_event("request_refresh", %{}, socket)
+
+    assert refreshed_socket.assigns.refresh_notice ==
+             "Refresh queued. The dashboard will update after the next reconcile finishes."
+
+    assert refreshed_socket.assigns.refresh_error == nil
+
+    refreshed_html = render_dashboard(refreshed_socket.assigns)
+    assert refreshed_html =~ "Refresh now"
+    assert refreshed_html =~ "Refresh queued. The dashboard will update after the next reconcile finishes."
   end
 
   test "http server renders the prioritized dashboard and exposes the updated account payload" do
@@ -349,6 +427,8 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
       |> ensure_assign(:codex_accounts_expanded, fn -> true end)
       |> ensure_assign(:account_selection_notice, fn -> nil end)
       |> ensure_assign(:account_selection_error, fn -> nil end)
+      |> ensure_assign(:refresh_notice, fn -> nil end)
+      |> ensure_assign(:refresh_error, fn -> nil end)
       |> Map.merge(Map.new(overrides))
 
     assigns
@@ -368,17 +448,20 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
         server_port: 4000,
         codex_accounts_expanded: true,
         account_selection_notice: nil,
-        account_selection_error: nil
+        account_selection_error: nil,
+        refresh_notice: nil,
+        refresh_error: nil
       }
     }
   end
 
-  defp account_row_html(html, email) do
-    regex = ~r/<tr\b[^>]*>(?:(?!<\/tr>).)*#{Regex.escape(email)}(?:(?!<\/tr>).)*<\/tr>/s
+  defp account_row_html(html, account_id) do
+    regex =
+      ~r/<tr\b[^>]*>(?:(?!<\/tr>).)*<span class="issue-id">#{Regex.escape(account_id)}<\/span>(?:(?!<\/tr>).)*<\/tr>/s
 
     case Regex.run(regex, html) do
       [row] -> row
-      _ -> raise "account row not found for #{email}"
+      _ -> raise "account row not found for #{account_id}"
     end
   end
 

@@ -20,6 +20,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:codex_accounts_expanded, true)
       |> assign(:account_selection_notice, nil)
       |> assign(:account_selection_error, nil)
+      |> assign(:refresh_notice, nil)
+      |> assign(:refresh_error, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -65,13 +67,40 @@ defmodule SymphonyElixirWeb.DashboardLive do
            :account_selection_notice,
            "Active account switched to #{active_account_label(payload)}."
          )
-         |> assign(:account_selection_error, nil)}
+         |> assign(:account_selection_error, nil)
+         |> assign(:refresh_notice, nil)
+         |> assign(:refresh_error, nil)}
 
       {:error, reason} ->
         {:noreply,
          socket
          |> assign(:account_selection_notice, nil)
-         |> assign(:account_selection_error, active_account_selection_error(reason))}
+         |> assign(:account_selection_error, active_account_selection_error(reason))
+         |> assign(:refresh_notice, nil)
+         |> assign(:refresh_error, nil)}
+    end
+  end
+
+  @impl true
+  def handle_event("request_refresh", _params, socket) do
+    case Orchestrator.request_refresh(orchestrator()) do
+      :unavailable ->
+        {:noreply,
+         socket
+         |> assign(:refresh_notice, nil)
+         |> assign(:refresh_error, "Refresh is unavailable because the orchestrator is offline.")}
+
+      %{coalesced: true} ->
+        {:noreply,
+         socket
+         |> assign(:refresh_notice, "Refresh already queued. Waiting for the current poll cycle to finish.")
+         |> assign(:refresh_error, nil)}
+
+      %{} ->
+        {:noreply,
+         socket
+         |> assign(:refresh_notice, "Refresh queued. The dashboard will update after the next reconcile finishes.")
+         |> assign(:refresh_error, nil)}
     end
   end
 
@@ -407,6 +436,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <div class="section-header-actions">
               <p class="section-meta"><%= codex_accounts_summary(@payload) %></p>
               <button
+                id="codex-accounts-refresh"
+                type="button"
+                class="secondary"
+                phx-click="request_refresh"
+              >
+                Refresh now
+              </button>
+              <button
                 id="codex-accounts-toggle"
                 type="button"
                 class="secondary"
@@ -425,8 +462,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <p :if={@account_selection_error} class="section-feedback section-feedback-error">
             <%= @account_selection_error %>
           </p>
+          <p :if={@refresh_notice} class="section-feedback">
+            <%= @refresh_notice %>
+          </p>
+          <p :if={@refresh_error} class="section-feedback section-feedback-error">
+            <%= @refresh_error %>
+          </p>
 
-          <%= if @payload.codex_accounts in [nil, []] do %>
+          <%= if display_codex_accounts(@payload) == [] do %>
             <p class="empty-state">No Codex account metadata available.</p>
           <% else %>
             <div :if={!@codex_accounts_expanded} id="codex-accounts-body">
@@ -443,7 +486,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>Status</th>
                     <th>Auth</th>
                     <th>Plan</th>
-                    <th>Email</th>
                     <th>Limits</th>
                     <th>Selection</th>
                     <th>Checked</th>
@@ -451,7 +493,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={account <- @payload.codex_accounts}>
+                  <tr :for={account <- display_codex_accounts(@payload)}>
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= account.id || "n/a" %></span>
@@ -465,7 +507,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td><%= account.auth_mode || "n/a" %></td>
                     <td><%= account.plan_type || "n/a" %></td>
-                    <td class="mono cell-break"><%= account.email || "n/a" %></td>
                     <td>
                       <div class="limit-stack">
                         <span
@@ -512,7 +553,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </div>
                     </td>
                     <td class="mono"><%= account.checked_at || "n/a" %></td>
-                    <td><%= account.health_reason || "n/a" %></td>
+                    <td><%= humanize_codex_account_reason(account.health_reason) || "n/a" %></td>
                   </tr>
                 </tbody>
               </table>
@@ -789,6 +830,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
     Enum.find(payload.codex_accounts || [], &(&1.id == payload.active_codex_account_id))
   end
 
+  defp display_codex_accounts(payload) when is_map(payload) do
+    payload
+    |> Map.get(:codex_accounts, [])
+    |> Enum.with_index()
+    |> Enum.sort_by(fn {account, index} -> {display_codex_account_rank(account), index} end)
+    |> Enum.map(fn {account, _index} -> account end)
+  end
+
+  defp display_codex_accounts(_payload), do: []
+
+  defp display_codex_account_rank(%{healthy: true}), do: 0
+  defp display_codex_account_rank(%{"healthy" => true}), do: 0
+  defp display_codex_account_rank(_account), do: 1
+
   defp codex_accounts_summary(payload) when is_map(payload) do
     accounts = payload.codex_accounts || []
     healthy_count = Enum.count(accounts, &(&1.healthy == true))
@@ -817,6 +872,49 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp account_rate_limit_items(_rate_limits, _snapshot_generated_at), do: [limit_chip("n/a")]
+
+  defp humanize_codex_account_reason(nil), do: nil
+
+  defp humanize_codex_account_reason(reason) when is_binary(reason) do
+    normalized = String.trim(reason)
+    lower = String.downcase(normalized)
+
+    cond do
+      lower == "" ->
+        nil
+
+      String.contains?(lower, "token_expired") ->
+        "Session expired. Sign in again."
+
+      String.contains?(lower, "refresh_token_reused") ->
+        "Session was invalidated. Sign in again."
+
+      String.contains?(lower, "failed to fetch codex rate limits") and
+          String.contains?(lower, "401 unauthorized") ->
+        "Authentication failed while reading Codex rate limits. Sign in again."
+
+      String.starts_with?(lower, "probe failed:") ->
+        "Probe failed. #{probe_failure_hint(lower)}"
+
+      true ->
+        normalized
+    end
+  end
+
+  defp humanize_codex_account_reason(_reason), do: nil
+
+  defp probe_failure_hint(lower_reason) when is_binary(lower_reason) do
+    cond do
+      String.contains?(lower_reason, "timeout") ->
+        "The probe timed out."
+
+      String.contains?(lower_reason, "startup failed") ->
+        "The account probe could not start."
+
+      true ->
+        "See logs for the raw probe error."
+    end
+  end
 
   defp rate_limit_bucket_item(default_label, bucket, snapshot_generated_at) when is_map(bucket) do
     label = rate_limit_window_label(bucket) || default_label

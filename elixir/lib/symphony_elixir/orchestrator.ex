@@ -4905,7 +4905,14 @@ defmodule SymphonyElixir.Orchestrator do
     now_ms = System.monotonic_time(:millisecond)
     already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
     coalesced = state.poll_check_in_progress == true or already_due?
-    state = if coalesced, do: state, else: schedule_tick(state, 0)
+
+    state =
+      state
+      |> Map.put(:last_codex_account_probe_at_ms, nil)
+      |> Map.put(:last_full_codex_account_probe_at_ms, nil)
+      |> then(fn state ->
+        if coalesced, do: state, else: schedule_tick(state, 0)
+      end)
 
     {:reply,
      %{
