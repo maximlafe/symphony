@@ -2886,9 +2886,6 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_enforce_running_budget(%State{} = state, _issue_id, _running_entry, _source),
     do: {:keep_running, state}
 
-  defp maybe_enforce_running_budget(state, _issue_id, _running_entry, _source),
-    do: {:keep_running, state}
-
   defp running_entry_attempt_tokens(running_entry) when is_map(running_entry) do
     case Map.get(running_entry, :codex_total_tokens) do
       value when is_integer(value) and value >= 0 -> value
@@ -2912,9 +2909,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp retry_issue_token_total(_retry_metadata, resume_checkpoint),
-    do: checkpoint_issue_token_total(resume_checkpoint)
-
   defp retry_cost_profile_key(retry_metadata, resume_checkpoint)
        when is_map(retry_metadata) do
     normalize_optional_string(map_any(retry_metadata, [:cost_profile_key, "cost_profile_key"])) ||
@@ -2930,8 +2924,6 @@ defmodule SymphonyElixir.Orchestrator do
     |> normalize_issue_token_total()
   end
 
-  defp checkpoint_issue_token_total(_checkpoint), do: 0
-
   defp normalize_issue_token_total(value) when is_integer(value) and value >= 0, do: value
 
   defp normalize_issue_token_total(value) when is_binary(value) do
@@ -2946,8 +2938,6 @@ defmodule SymphonyElixir.Orchestrator do
   defp checkpoint_cost_profile_key(%{} = checkpoint) do
     normalize_optional_string(map_any(checkpoint, [:cost_profile_key, "cost_profile_key"]))
   end
-
-  defp checkpoint_cost_profile_key(_checkpoint), do: nil
 
   defp checkpoint_continuation_reason(%{} = checkpoint) do
     normalize_optional_string(map_any(checkpoint, [:continuation_reason, "continuation_reason"]))
