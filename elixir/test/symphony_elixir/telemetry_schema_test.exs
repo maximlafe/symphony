@@ -7,7 +7,7 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
     payload =
       TelemetrySchema.runtime_payload(%{
         cost_profile_key: "cheap_implementation",
-        cost_profile_reason: :budget_downshift,
+        cost_profile_reason: :signal_escalation,
         cost_stage: "implementation",
         cost_signals: [:retry],
         command_source: "cost_profile",
@@ -18,19 +18,6 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
         observed_signal_source: :payload,
         routing_parity_status: "mismatch",
         routing_parity_reason: "model expected=gpt-5.3-codex observed=gpt-5.4; effort expected=medium observed=high",
-        budget_decision: "downshift",
-        budget_reason: :max_tokens_per_attempt_exceeded,
-        budget_threshold: 100,
-        budget_observed_total: 125,
-        budget_attempt_tokens: 125,
-        budget_issue_total_tokens: 300,
-        budget_signal_role: "signal",
-        budget_current_cost_profile_key: "escalated_implementation",
-        budget_next_cost_profile_key: "cheap_planning",
-        budget_downshift_rule: "rework_to_rework_default",
-        progress_status: "changed",
-        progress_fingerprint: "progress:abc123",
-        progress_repeat_count: 1,
         retry_dedupe_result: "queued",
         retry_dedupe_reason: "new_surface",
         error_signature: "timeout",
@@ -45,7 +32,7 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
           selected_rule: "retry_dedupe_hit",
           selected_action: :stop_with_classified_handoff,
           reason: "identical retry surface",
-          suppressed_rules: [:budget_exceeded_per_attempt_downshift],
+          suppressed_rules: [:account_unhealthy_checkpoint_available],
           checkpoint_type: "human-action",
           risk_level: :medium
         },
@@ -60,21 +47,11 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
       })
 
     assert payload == %{
-             "budget_attempt_tokens" => 125,
-             "budget_current_cost_profile_key" => "escalated_implementation",
-             "budget_decision" => "downshift",
-             "budget_downshift_rule" => "rework_to_rework_default",
-             "budget_issue_total_tokens" => 300,
-             "budget_next_cost_profile_key" => "cheap_planning",
-             "budget_observed_total" => 125,
-             "budget_reason" => "max_tokens_per_attempt_exceeded",
-             "budget_signal_role" => "signal",
-             "budget_threshold" => 100,
              "codex_effort" => "medium",
              "codex_model" => "gpt-5.3-codex",
              "command_source" => "cost_profile",
              "cost_profile_key" => "cheap_implementation",
-             "cost_profile_reason" => "budget_downshift",
+             "cost_profile_reason" => "signal_escalation",
              "cost_signals" => ["retry"],
              "cost_stage" => "implementation",
              "error_signature" => "timeout",
@@ -99,10 +76,7 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
              "retry_failover_risk_level" => "medium",
              "retry_failover_selected_action" => "stop_with_classified_handoff",
              "retry_failover_selected_rule" => "retry_dedupe_hit",
-             "retry_failover_suppressed_rules" => ["budget_exceeded_per_attempt_downshift"],
-             "progress_fingerprint" => "progress:abc123",
-             "progress_repeat_count" => 1,
-             "progress_status" => "changed",
+             "retry_failover_suppressed_rules" => ["account_unhealthy_checkpoint_available"],
              "loop_break_triggered" => true,
              "loop_break_reason" => "retry_dedupe_hit",
              "resume_fallback_reason" => "resume_checkpoint_unavailable",
@@ -135,21 +109,17 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
     refute Map.has_key?(payload, "retry_dedupe_key")
   end
 
-  test "runtime_payload normalizes legacy budget aliases for checkpoint readers" do
-    assert TelemetrySchema.runtime_payload(%{
-             "issue_total_tokens" => "42",
-             "attempt_tokens" => 12,
-             "cost_profile_key" => "cheap_implementation",
-             "reason" => :max_tokens_per_attempt_exceeded,
-             "decision" => :downshift
-           }) == %{
-             "budget_attempt_tokens" => 12,
-             "budget_decision" => "downshift",
-             "budget_issue_total_tokens" => "42",
-             "budget_next_cost_profile_key" => "cheap_implementation",
-             "budget_reason" => "max_tokens_per_attempt_exceeded",
-             "cost_profile_key" => "cheap_implementation"
-           }
+  test "runtime_payload drops legacy budget aliases for checkpoint readers" do
+    payload =
+      TelemetrySchema.runtime_payload(%{
+        "issue_total_tokens" => "42",
+        "attempt_tokens" => 12,
+        "cost_profile_key" => "cheap_implementation",
+        "reason" => :legacy_threshold_exceeded,
+        "decision" => :downshift
+      })
+
+    assert payload == %{"cost_profile_key" => "cheap_implementation"}
   end
 
   test "checkpoint_payload computes canonical quality states" do
@@ -410,14 +380,14 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
   test "logger_metadata, put helpers, and empty inputs stay canonical" do
     metadata =
       TelemetrySchema.logger_metadata(%{
-        budget_decision: "handoff",
-        budget_reason: "max_total_tokens_exceeded",
+        cost_profile_key: "cheap_implementation",
+        cost_profile_reason: "stage_default:implementation",
         runtime_head_sha: "runtime-sha",
         expected_head_sha: "expected-sha"
       })
 
-    assert metadata.budget_decision == "handoff"
-    assert metadata.budget_reason == "max_total_tokens_exceeded"
+    assert metadata.cost_profile_key == "cheap_implementation"
+    assert metadata.cost_profile_reason == "stage_default:implementation"
     assert metadata.runtime_head_sha == "runtime-sha"
     assert metadata.expected_head_sha == "expected-sha"
     assert metadata.head_relation == "mismatch"

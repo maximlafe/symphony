@@ -225,9 +225,6 @@ defmodule SymphonyElixir.Config.Schema do
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
-      field(:enforce_token_budgets, :boolean, default: true)
-      field(:max_total_tokens, :integer)
-      field(:max_tokens_per_attempt, :integer)
       field(:max_continuation_attempts, :integer, default: 3)
       field(:minimum_remaining_percent, :integer, default: 5)
       field(:monitored_windows_mins, {:array, :integer}, default: [300, 10_080])
@@ -254,9 +251,6 @@ defmodule SymphonyElixir.Config.Schema do
           :turn_timeout_ms,
           :read_timeout_ms,
           :stall_timeout_ms,
-          :enforce_token_budgets,
-          :max_total_tokens,
-          :max_tokens_per_attempt,
           :max_continuation_attempts,
           :minimum_remaining_percent,
           :monitored_windows_mins
@@ -264,12 +258,10 @@ defmodule SymphonyElixir.Config.Schema do
         empty_values: []
       )
       |> cast_embed(:accounts, with: &Account.changeset/2)
-      |> validate_required([:command, :max_total_tokens, :max_tokens_per_attempt])
+      |> validate_required([:command])
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
-      |> validate_number(:max_total_tokens, greater_than: 0)
-      |> validate_number(:max_tokens_per_attempt, greater_than: 0)
       |> validate_number(:max_continuation_attempts, greater_than: 0)
       |> validate_number(:minimum_remaining_percent, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
       |> update_change(:monitored_windows_mins, &SymphonyElixir.Config.Schema.normalize_monitored_windows/1)

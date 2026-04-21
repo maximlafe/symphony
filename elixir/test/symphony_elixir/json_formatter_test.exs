@@ -91,19 +91,17 @@ defmodule SymphonyElixir.JsonFormatterTest do
     assert payload["command_source"] == "cost_profile"
   end
 
-  test "agent logs include canonical budget and execution-head decision metadata" do
+  test "agent logs include canonical decision and execution-head metadata" do
     event = %{
       level: :warning,
-      msg: {:string, "Budget handoff"},
+      msg: {:string, "Retry handoff"},
       meta: %{
         time: 1_710_000_000_323_456,
         mfa: {SymphonyElixir.Orchestrator, :handle_info, 2},
-        budget_decision: "handoff",
-        budget_reason: "max_total_tokens_exceeded",
-        budget_threshold: 100,
-        budget_observed_total: 125,
-        budget_attempt_tokens: 50,
-        budget_issue_total_tokens: 125,
+        retry_failover_selected_rule: "retry_dedupe_hit",
+        retry_failover_selected_action: "stop_with_classified_handoff",
+        retry_failover_reason: "identical retry surface",
+        retry_failover_suppressed_rules: ["account_unhealthy_checkpoint_available"],
         runtime_head_sha: "runtime-sha",
         expected_head_sha: "expected-sha",
         head_relation: "mismatch"
@@ -112,12 +110,10 @@ defmodule SymphonyElixir.JsonFormatterTest do
 
     payload = event |> JsonFormatter.format(%{}) |> decode_json_line()
 
-    assert payload["budget_decision"] == "handoff"
-    assert payload["budget_reason"] == "max_total_tokens_exceeded"
-    assert payload["budget_threshold"] == "100"
-    assert payload["budget_observed_total"] == "125"
-    assert payload["budget_attempt_tokens"] == "50"
-    assert payload["budget_issue_total_tokens"] == "125"
+    assert payload["retry_failover_selected_rule"] == "retry_dedupe_hit"
+    assert payload["retry_failover_selected_action"] == "stop_with_classified_handoff"
+    assert payload["retry_failover_reason"] == "identical retry surface"
+    assert payload["retry_failover_suppressed_rules"] == ["account_unhealthy_checkpoint_available"]
     assert payload["runtime_head_sha"] == "runtime-sha"
     assert payload["expected_head_sha"] == "expected-sha"
     assert payload["head_relation"] == "mismatch"
