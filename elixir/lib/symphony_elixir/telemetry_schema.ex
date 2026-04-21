@@ -17,21 +17,6 @@ defmodule SymphonyElixir.TelemetrySchema do
     :routing_parity_status,
     :routing_parity_reason
   ]
-  @budget_fields [
-    :budget_decision,
-    :budget_reason,
-    :budget_threshold,
-    :budget_observed_total,
-    :budget_attempt_tokens,
-    :budget_issue_total_tokens,
-    :budget_signal_role,
-    :budget_current_cost_profile_key,
-    :budget_next_cost_profile_key,
-    :budget_downshift_rule,
-    :progress_status,
-    :progress_fingerprint,
-    :progress_repeat_count
-  ]
   @retry_dedupe_fields [
     :retry_dedupe_result,
     :retry_dedupe_reason,
@@ -82,7 +67,6 @@ defmodule SymphonyElixir.TelemetrySchema do
   @execution_head_fields [:runtime_head_sha, :expected_head_sha, :head_relation]
   @all_fields Enum.uniq(
                 @cost_fields ++
-                  @budget_fields ++
                   @retry_dedupe_fields ++
                   @retry_failover_fields ++
                   @failover_fields ++
@@ -116,7 +100,6 @@ defmodule SymphonyElixir.TelemetrySchema do
     |> Map.merge(lifecycle_fields(source))
     |> Map.merge(continuation_fields(source))
     |> Map.merge(validation_guard_fields(source))
-    |> Map.merge(budget_fields(source))
     |> Map.merge(retry_dedupe_fields(source))
     |> Map.merge(retry_failover_fields(source))
     |> Map.merge(failover_fields(source))
@@ -201,31 +184,6 @@ defmodule SymphonyElixir.TelemetrySchema do
 
   defp cost_fields(source) do
     take_fields(source, @cost_fields)
-  end
-
-  defp budget_fields(source) do
-    budget_current_cost_profile_key =
-      fetch(source, :budget_current_cost_profile_key) || fetch(source, :current_cost_profile_key)
-
-    budget_next_cost_profile_key =
-      fetch(source, :budget_next_cost_profile_key) || fetch(source, :cost_profile_key)
-
-    %{
-      "budget_decision" => normalize_string(fetch(source, :budget_decision) || fetch(source, :decision)),
-      "budget_reason" => normalize_string(fetch(source, :budget_reason) || fetch(source, :reason)),
-      "budget_threshold" => fetch(source, :budget_threshold) || fetch(source, :threshold),
-      "budget_observed_total" => fetch(source, :budget_observed_total) || fetch(source, :observed_total),
-      "budget_attempt_tokens" => fetch(source, :budget_attempt_tokens) || fetch(source, :attempt_tokens),
-      "budget_issue_total_tokens" => fetch(source, :budget_issue_total_tokens) || fetch(source, :issue_total_tokens),
-      "budget_signal_role" => normalize_string(fetch(source, :budget_signal_role)),
-      "budget_current_cost_profile_key" => normalize_string(budget_current_cost_profile_key),
-      "budget_next_cost_profile_key" => normalize_string(budget_next_cost_profile_key),
-      "budget_downshift_rule" => normalize_string(fetch(source, :budget_downshift_rule)),
-      "progress_status" => normalize_string(fetch(source, :progress_status)),
-      "progress_fingerprint" => normalize_string(fetch(source, :progress_fingerprint)),
-      "progress_repeat_count" => fetch(source, :progress_repeat_count)
-    }
-    |> reject_nil_values()
   end
 
   defp retry_dedupe_fields(source) do

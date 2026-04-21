@@ -70,9 +70,6 @@ codex:
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
     type: dangerFullAccess
-  enforce_token_budgets: false
-  max_total_tokens: 300000
-  max_tokens_per_attempt: 120000
   max_continuation_attempts: 3
   accounts:
     - id: primary

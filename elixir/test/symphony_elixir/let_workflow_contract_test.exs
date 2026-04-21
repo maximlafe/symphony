@@ -45,9 +45,6 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert get_in(config, ["codex", "cost_policy", "signal_escalations", "rework"]) == "escalated_implementation"
-    assert get_in(config, ["codex", "enforce_token_budgets"]) == false
-    assert get_in(config, ["codex", "max_total_tokens"]) == 300_000
-    assert get_in(config, ["codex", "max_tokens_per_attempt"]) == 120_000
     assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
     assert prompt =~ "`mode:research` и `reasoning:implementation-xhigh` не эскалируют"
     refute prompt =~ "`Todo` -> сразу переводи в `Spec Prep`."
@@ -60,9 +57,6 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4"
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "xhigh"
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
-    assert get_in(config, ["codex", "enforce_token_budgets"]) == false
-    assert get_in(config, ["codex", "max_total_tokens"]) == 300_000
-    assert get_in(config, ["codex", "max_tokens_per_attempt"]) == 120_000
     assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert prompt =~ "`codex.cost_policy`"
