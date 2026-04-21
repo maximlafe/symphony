@@ -1,22 +1,44 @@
-#### Context
+#### Mode
 
-<!-- Why is this change needed? Length <= 240 chars -->
+- [ ] `Mode=execute`
+- <!-- Allowed value for this contract: exactly Mode=execute -->
 
-#### TL;DR
+#### LET Ticket
 
-*<!-- A short description of what we are changing. Use simple language. Assume reader is not familiar with this code. Length <= 120 chars -->*
+- [ ] `LET-*` linked
+- <!-- Primary issue identifier, e.g. LET-123 -->
 
-#### Summary
+#### R7 Blast Radius
 
-- <!-- Details of the changes in bullet points -->
-- <!-- Keep them high level -->
-- <!-- Each item <= 120 chars -->
+- [ ] Blast radius classified (`low` | `medium` | `high`)
+- <!-- Affected surfaces and why this class is correct -->
 
-#### Alternatives
+#### R1 Verification Level
 
-- <!-- What alternatives have been considered? Why not? -->
+- [ ] Verification level declared
+- <!-- Example: local + CI, or runtime/prod evidence -->
 
-#### Test Plan
+#### Validation Evidence
 
-- [ ] `make -C elixir all`
-- [ ] <!-- Additional targeted checks (list below) -->
+- [ ] Evidence attached and/or linked
+- <!-- Commands, artifacts, screenshots, logs, check URLs -->
+
+#### R13 Risks
+
+- [ ] Material risks listed
+- <!-- Include residual risk after mitigation -->
+
+#### Rollback Plan
+
+- [ ] Rollback plan defined
+- <!-- Exact rollback action and trigger -->
+
+#### R15 Simplicity
+
+- [ ] R15 check passed
+- <!-- Why this is the minimal sufficient change -->
+
+#### Verifier (R9)
+
+- [ ] Separate verifier phase completed
+- <!-- Who/what verified, and what was checked -->

@@ -1,4 +1,4 @@
-name: pr-description-lint
+name: ci
 
 on:
   pull_request:
@@ -8,11 +8,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: pr-description-lint-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate-pr-description:
+  pr-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -26,9 +26,9 @@ jobs:
       - name: Bootstrap Elixir toolchain
         uses: ./.github/actions/setup-elixir
         with:
-          cache-scope: pr-description-lint
+          cache-scope: ci-pr-contract
 
-      - name: Validate PR description format
+      - name: Validate PR body contract
         shell: bash
         env:
           PR_BODY_JSON: ${{ toJson(github.event.pull_request.body) }}
@@ -36,12 +36,12 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/ci-artifacts"
           set -o pipefail
           printf '%s' "$PR_BODY_JSON" | jq -r '.' > /tmp/pr_body.md
-          mix pr_body.check --file /tmp/pr_body.md 2>&1 | tee "$GITHUB_WORKSPACE/ci-artifacts/pr-description-lint.log"
+          mix pr_body.check --file /tmp/pr_body.md 2>&1 | tee "$GITHUB_WORKSPACE/ci-artifacts/pr-contract.log"
 
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: pr-description-lint-diagnostics
+          name: ci-pr-contract-diagnostics
           if-no-files-found: ignore
-          path: ci-artifacts/pr-description-lint.log
+          path: ci-artifacts/pr-contract.log
