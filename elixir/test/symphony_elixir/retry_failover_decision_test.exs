@@ -163,6 +163,50 @@ defmodule SymphonyElixir.RetryFailoverDecisionTest do
     assert decision.reason == "stale_workspace_head"
   end
 
+  test "boolean shorthand activates signal and invalid checkpoint metadata fails closed" do
+    shorthand = RetryFailoverDecision.decide(%{unsafe_preemption_required: true})
+
+    assert shorthand.selected_rule == :unsafe_preemption_required
+    assert shorthand.reason == "unsafe_preemption_required"
+
+    decision =
+      RetryFailoverDecision.decide(%{
+        stale_workspace_head: %{
+          reason: "stale_workspace_head",
+          checkpoint_type: 123,
+          risk_level: 456
+        }
+      })
+
+    assert decision.selected_rule == :stale_workspace_head
+    assert decision.checkpoint_type == "human-action"
+    assert decision.risk_level == "high"
+  end
+
+  test "string-keyed metadata normalizes summary, retry metadata, and nested log fields" do
+    decision =
+      RetryFailoverDecision.decide(%{
+        "continuation_attempt_limit" => %{
+          "active" => true,
+          "summary" => "continuation attempt limit reached",
+          "checkpoint_type" => "decision",
+          "risk_level" => "medium",
+          "retry_metadata" => %{"nested" => %{"value" => :kept}},
+          "log_fields" => %{"payload" => %{"kind" => "continuation"}},
+          "custom_field" => "custom",
+          7 => "non-string-key"
+        }
+      })
+
+    metadata = RetryFailoverDecision.metadata(decision)
+
+    assert decision.selected_rule == :continuation_attempt_limit_exceeded
+    assert decision.reason == "continuation attempt limit reached"
+    assert decision.retry_metadata == %{"nested" => %{"value" => :kept}}
+    assert metadata.retry_metadata == %{"nested" => %{"value" => :kept}}
+    assert metadata.log_fields["payload"] == %{"kind" => "continuation"}
+  end
+
   test "non-map and invalid signal values fail closed to allow_retry" do
     assert RetryFailoverDecision.decide(:invalid_input).selected_rule == :default_allow_retry
 
