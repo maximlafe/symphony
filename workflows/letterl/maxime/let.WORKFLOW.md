@@ -631,12 +631,29 @@ Instructions:
 - Do not reread skill bodies in straightforward runs unless the workflow does not cover the needed behavior.
 - Move state only when the matching quality bar is satisfied.
 
+## Hegemonikon policy integration
+
+- Canonical policy source: `/Users/lafe/.codex/skills/policy/hegemonikon.md`.
+- Reference source: `https://gist.github.com/uthunderbird/2946f1940c4c94aaf47bd3d90cc06b1e`.
+- Keep `/Users/lafe/.codex/skills/policy/hegemonikon.md` as the single local canon; do not duplicate policy text in this workflow.
+- Mode chain contract: `research-mode -> plan-mode -> execute-mode`.
+- Mode obligations by route:
+  - `mode:research` -> `research-mode` obligations (`R0`, `R3`, `R4`, `R5`, `R11`, `R13`).
+  - `mode:plan` -> `plan-mode` obligations (`R0`, `R5`, `R10`, `R14`, `R15`).
+  - execute-ready implementation path -> `execute-mode` obligations (`R0`, `R1`, `R2`, `R5`, `R6`, `R7`, `R8`, `R9`, `R12`, `R13`).
+- Execute readiness rule from `Todo`:
+  - minimum execute-ready contract: explicit problem/scope/acceptance criteria, valid final `## Symphony` routing block, and no unresolved blocker that requires `decision`/`human-action` checkpoint first;
+  - if `mode:*` label exists, route through `Spec Prep`;
+  - if no `mode:*` labels exist, continue directly to `In Progress` only when the issue already carries an execution-ready contract;
+  - if no `mode:*` labels exist and readiness is unclear, fail closed into `Spec Prep` and treat it as the legacy `plan-mode` path.
+
 ## Status map
 
 - `Backlog` -> вне этого workflow; не изменяй.
 - `Todo` -> intake state. Сначала проверь `mode:*` labels:
   - `mode:research` или `mode:plan` -> переводи в `Spec Prep`;
-  - без `mode:*` -> сразу переводи в `In Progress`.
+  - без `mode:*` и при execute-ready контракте -> сразу переводи в `In Progress`;
+  - без `mode:*` и при неясной готовности к исполнению -> переводи в `Spec Prep` как legacy `plan-mode` путь.
 - `Spec Prep` -> analysis-only stage для `mode:research`, `mode:plan` и legacy spec-prep тикетов; продуктовый код не меняй.
 - `Spec Review` -> человеческий гейт для результатов `research`/`planning`; не кодируй.
 - `In Progress` -> активная реализация.
@@ -653,6 +670,7 @@ Instructions:
   - `mode:plan` -> сначала planning-only task-spec/workpad pass, потом `Spec Review`.
 - Если на issue одновременно стоят `mode:research` и `mode:plan`, `mode:research` выигрывает. Зафиксируй конфликт в `Заметки` и в финальном Linear-comment этой стадии, но продолжай без ожидания человека.
 - Если тикет уже попал в `Spec Prep` без `mode:*`, считай это legacy spec-prep path и веди его как `plan-mode`.
+- Без `mode:*` labels прямой переход в `In Progress` допустим только для execute-ready контракта; если readiness не подтверждается, используй `Spec Prep` как legacy `plan-mode` путь.
 - `mode:*` labels влияют только на routing из `Todo`. После входа в `In Progress` текущий state становится authoritative, и labels больше не меняют flow.
 
 ## TDD delivery label
@@ -681,7 +699,8 @@ Instructions:
    - `Backlog` -> stop and wait for a human move to `Todo`.
    - `Todo` -> inspect `mode:*` labels:
      - with `mode:research` or `mode:plan`, move to `Spec Prep`, post the `Spec Prep` start comment, bootstrap the workpad, then start analysis-only work;
-     - with no `mode:*`, move to `In Progress`, post the `In Progress` start comment, bootstrap or recover the workpad, then start execution.
+     - with no `mode:*`, move to `In Progress` only when the issue is execute-ready, post the `In Progress` start comment, bootstrap or recover the workpad, then start execution;
+     - with no `mode:*` and unclear readiness, move to `Spec Prep` and treat it as the legacy `plan-mode` path.
    - `Spec Prep` -> continue research/planning without touching product code.
    - `Spec Review` -> wait and poll; do not code or change the repo.
    - `In Progress` -> continue execution with minimal recovery when possible.

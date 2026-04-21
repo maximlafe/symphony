@@ -27,7 +27,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "`mode:plan`"
     assert prompt =~ "`delivery:tdd`"
     assert prompt =~ "нормализовать `delivery:tdd`"
-    assert prompt =~ "без `mode:*` -> сразу переводи в `In Progress`"
+    assert prompt =~ "без `mode:*` и при execute-ready контракте -> сразу переводи в `In Progress`"
+    assert prompt =~ "без `mode:*` и при неясной готовности к исполнению -> переводи в `Spec Prep` как legacy `plan-mode` путь"
     assert prompt =~ "Если на issue одновременно стоят `mode:research` и `mode:plan`, `mode:research` выигрывает."
     assert prompt =~ ".agents/skills/research-mode/SKILL.md"
     assert prompt =~ ".agents/skills/plan-mode/SKILL.md"
@@ -47,7 +48,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["codex", "cost_policy", "signal_escalations", "rework"]) == "escalated_implementation"
     assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
     assert prompt =~ "`mode:research` и `reasoning:implementation-xhigh` не эскалируют"
-    refute prompt =~ "`Todo` -> сразу переводи в `Spec Prep`."
+    assert prompt =~ "fail closed into `Spec Prep` and treat it as the legacy `plan-mode` path."
   end
 
   test "default workflow documents the same stage-aware cost profile contract" do
