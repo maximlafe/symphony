@@ -8,9 +8,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class SymphonyValidationContractTest(unittest.TestCase):
-    def test_root_makefile_routes_repo_validation_to_dedicated_target(self) -> None:
+    def test_root_makefile_routes_runtime_smoke_and_repo_validation_to_dedicated_targets(self) -> None:
         makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 
+        self.assertIn("symphony-runtime-smoke:", makefile)
+        self.assertIn('cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) runtime-smoke SCENARIO="$(SCENARIO)"', makefile)
         self.assertIn("symphony-validate:", makefile)
         self.assertIn("cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) validate", makefile)
         self.assertNotIn("cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) all", makefile)
@@ -28,6 +30,24 @@ class SymphonyValidationContractTest(unittest.TestCase):
         self.assertIn("$(VALIDATION_MIX) build", makefile)
         self.assertIn("$(VALIDATION_MIX) lint", makefile)
         self.assertIn("$(VALIDATION_TEST_MIX) test --cover", makefile)
+
+    def test_runtime_proof_workflow_uses_reusable_elixir_command(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/runtime-proof.yml").read_text(encoding="utf-8")
+
+        self.assertIn("name: runtime-proof", workflow)
+        self.assertIn("uses: ./.github/workflows/_elixir-command.yml", workflow)
+        self.assertIn("artifact-name: runtime-proof", workflow)
+        self.assertIn("cache-scope: runtime-proof", workflow)
+        self.assertIn("command: make symphony-runtime-smoke SCENARIO=all", workflow)
+
+    def test_infra_pass_workflow_uses_reusable_elixir_command(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/infra-pass.yml").read_text(encoding="utf-8")
+
+        self.assertIn("name: infra-pass", workflow)
+        self.assertIn("uses: ./.github/workflows/_elixir-command.yml", workflow)
+        self.assertIn("artifact-name: infra-pass", workflow)
+        self.assertIn("cache-scope: infra-pass", workflow)
+        self.assertIn("command: make symphony-validate", workflow)
 
 
 if __name__ == "__main__":

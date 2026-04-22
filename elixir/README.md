@@ -61,6 +61,7 @@ root exposes the worker contract:
 - `make symphony-preflight`
 - `make symphony-bootstrap`
 - `make symphony-dashboard-checks`
+- `make symphony-runtime-smoke`
 - `make symphony-handoff-check`
 - `make symphony-validate`
 - `make symphony-live-e2e`
@@ -375,6 +376,15 @@ run:
 ```bash
 make symphony-dashboard-checks
 ```
+
+For reusable local runtime smoke scenarios that cover hooks, retry/reconcile, resume checkpoint
+reload, and workflow contract changes, run:
+
+```bash
+make symphony-runtime-smoke SCENARIO=all
+```
+
+Scenario details live in [docs/runtime_smoke.md](./docs/runtime_smoke.md).
 
 ## FAQ
 

@@ -1,0 +1,40 @@
+name: infra-pass
+
+on:
+  pull_request:
+    paths:
+      - .github/actions/setup-elixir/**
+      - .github/workflows/**
+      - Makefile
+      - README.md
+      - elixir/**
+      - workflows/**
+      - scripts/**
+  push:
+    branches:
+      - main
+    paths:
+      - .github/actions/setup-elixir/**
+      - .github/workflows/**
+      - Makefile
+      - README.md
+      - elixir/**
+      - workflows/**
+      - scripts/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: infra-pass-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  infra-pass:
+    uses: ./.github/workflows/_elixir-command.yml
+    with:
+      artifact-name: infra-pass
+      cache-scope: infra-pass
+      command: make symphony-validate
+      timeout-minutes: 45
+    secrets: inherit
