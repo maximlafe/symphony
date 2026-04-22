@@ -275,6 +275,11 @@ Use deterministic change classes and the strictest affected class. `mixed` is no
 | Runtime / infra / workflow-contract / handoff | parser/unit smoke for the changed contract + focused reproducer | cheap proof on the same `HEAD` + targeted runtime smoke + `make symphony-validate` | before any push |
 | Docs/prose-only without executable workflow/config contract | docs review or repo-owned format/spell check when present | local full gate is not required when shipped code/config did not change | not required |
 
+`runtime smoke` is the first runtime proof for runtime/infra/workflow-contract/handoff changes, not
+the last one. If the same change also touches an external contract, add the smallest matching live
+proof from [`docs/live_proof_runbook.md`](./docs/live_proof_runbook.md) after the local runtime
+proof is green.
+
 Invalidation and rerun rules:
 
 - Final proof is valid only when `head_sha` and `tree_sha` match current `HEAD` and shipped paths are clean.
@@ -428,7 +433,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 - [ ] cheap gate: `<same-HEAD targeted proof>`
 - [ ] red proof: `<command>` (required when `delivery:tdd`; never mark this item as `n/a` when required)
 - [ ] targeted tests: `<command>`
-- [ ] runtime smoke: `<command>` (runtime/infra/workflow-contract/handoff changes; never mark this item as `n/a` when required)
+- [ ] runtime smoke: `<command>` (runtime/infra/workflow-contract/handoff changes; never mark this item as `n/a` when required; if the change also touches an external contract, add separate live proof per `docs/live_proof_runbook.md`)
 - [ ] stateful proof: `<command>` (DB/schema/stateful changes)
 - [ ] ui runtime proof: `<command>` (hosted UI/frontend changes)
 - [ ] visual artifact: `<artifact title>` (hosted UI/frontend changes)
