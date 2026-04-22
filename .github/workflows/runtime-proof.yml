@@ -35,6 +35,7 @@ jobs:
     with:
       artifact-name: runtime-proof
       cache-scope: runtime-proof
+      working-directory: .
       command: make symphony-runtime-smoke SCENARIO=all
       timeout-minutes: 20
     secrets: inherit

@@ -35,6 +35,7 @@ jobs:
     with:
       artifact-name: infra-pass
       cache-scope: infra-pass
+      working-directory: .
       command: make symphony-validate
       timeout-minutes: 45
     secrets: inherit

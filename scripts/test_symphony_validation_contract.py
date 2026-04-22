@@ -38,6 +38,7 @@ class SymphonyValidationContractTest(unittest.TestCase):
         self.assertIn("uses: ./.github/workflows/_elixir-command.yml", workflow)
         self.assertIn("artifact-name: runtime-proof", workflow)
         self.assertIn("cache-scope: runtime-proof", workflow)
+        self.assertIn("working-directory: .", workflow)
         self.assertIn("command: make symphony-runtime-smoke SCENARIO=all", workflow)
 
     def test_infra_pass_workflow_uses_reusable_elixir_command(self) -> None:
@@ -47,7 +48,15 @@ class SymphonyValidationContractTest(unittest.TestCase):
         self.assertIn("uses: ./.github/workflows/_elixir-command.yml", workflow)
         self.assertIn("artifact-name: infra-pass", workflow)
         self.assertIn("cache-scope: infra-pass", workflow)
+        self.assertIn("working-directory: .", workflow)
         self.assertIn("command: make symphony-validate", workflow)
+
+    def test_reusable_elixir_command_supports_custom_working_directory(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/_elixir-command.yml").read_text(encoding="utf-8")
+
+        self.assertIn("working-directory:", workflow)
+        self.assertIn("default: elixir", workflow)
+        self.assertIn("working-directory: ${{ inputs.working-directory }}", workflow)
 
 
 if __name__ == "__main__":
