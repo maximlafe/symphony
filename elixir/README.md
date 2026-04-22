@@ -369,6 +369,9 @@ runs a real agent turn, verifies the workspace side effect, requires Codex to co
 the Linear issue, then marks the project completed so the run remains visible in Linear.
 `make e2e` fails fast with a clear error if `LINEAR_API_KEY` is unset.
 
+For the surface-by-surface local-first proof matrix, see
+[`docs/live_proof_runbook.md`](./docs/live_proof_runbook.md).
+
 For a deterministic dashboard-focused validation slice that does not depend on a real Codex turn,
 run:
 
