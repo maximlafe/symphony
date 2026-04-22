@@ -1,0 +1,41 @@
+name: runtime-proof
+
+on:
+  pull_request:
+    paths:
+      - .github/actions/setup-elixir/**
+      - .github/workflows/**
+      - Makefile
+      - README.md
+      - elixir/**
+      - workflows/**
+      - scripts/**
+  push:
+    branches:
+      - main
+    paths:
+      - .github/actions/setup-elixir/**
+      - .github/workflows/**
+      - Makefile
+      - README.md
+      - elixir/**
+      - workflows/**
+      - scripts/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-proof-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  runtime-proof:
+    uses: ./.github/workflows/_elixir-command.yml
+    with:
+      artifact-name: runtime-proof
+      cache-scope: runtime-proof
+      working-directory: .
+      command: make symphony-runtime-smoke SCENARIO=all
+      timeout-minutes: 20
+    secrets: inherit

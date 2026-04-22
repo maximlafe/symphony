@@ -1,4 +1,4 @@
-.PHONY: help all setup deps build fmt fmt-check lint test dashboard coverage ci dialyzer e2e contracts validate validation-env-check
+.PHONY: help all setup deps build fmt fmt-check lint test dashboard coverage ci dialyzer e2e contracts runtime-smoke validate validation-env-check
 
 MIX ?= mix
 VALIDATION_MIX_ENV ?= dev
@@ -7,7 +7,7 @@ VALIDATION_MIX = MIX_ENV=$(VALIDATION_MIX_ENV) $(MIX)
 VALIDATION_TEST_MIX = MIX_ENV=$(VALIDATION_TEST_MIX_ENV) $(MIX)
 
 help:
-	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, dashboard, coverage, dialyzer, e2e, ci, validate"
+	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, dashboard, coverage, dialyzer, e2e, runtime-smoke, ci, validate"
 
 setup:
 	$(MIX) setup
@@ -74,6 +74,19 @@ e2e:
 		exit 1; \
 	fi
 	SYMPHONY_RUN_LIVE_E2E=1 $(MIX) test test/symphony_elixir/live_e2e_test.exs
+
+runtime-smoke:
+	@scenario="$${SCENARIO:-all}"; \
+	case "$$scenario" in \
+		hooks_stall_guard|retry_reconcile|resume_checkpoint|workflow_contract) \
+			$(MIX) test test/symphony_elixir/runtime_smoke_test.exs --only "$$scenario" ;; \
+		all) \
+			$(MIX) test test/symphony_elixir/runtime_smoke_test.exs --only runtime_smoke ;; \
+		*) \
+			echo "Unknown SCENARIO=$$scenario"; \
+			echo "Valid scenarios: hooks_stall_guard, retry_reconcile, resume_checkpoint, workflow_contract, all"; \
+			exit 1 ;; \
+	esac
 
 ci:
 	$(MAKE) contracts

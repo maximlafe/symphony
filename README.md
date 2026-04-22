@@ -24,6 +24,7 @@ Fresh worker clones use the contract that lives in this repo:
 - `make symphony-preflight` checks `codex`, `mise`, `gh auth status`, `LINEAR_API_KEY`, and non-interactive git access for the repo remote.
 - `make symphony-bootstrap` configures GitHub git auth with `gh auth setup-git`, installs the pinned toolchain via `mise`, and runs `mix setup` in `elixir/`.
 - `make symphony-dashboard-checks` runs the deterministic dashboard-focused test slice used for UI/runtime proof without invoking the real live e2e smoke.
+- `make symphony-runtime-smoke` runs the reusable local smoke scenarios for hooks, retry/reconcile, resume checkpoints, and workflow contract changes.
 - `make symphony-handoff-check` runs the repo-owned review-ready contract against the current workpad, issue attachments, and PR state.
 - `make symphony-nginx-proxy-contract` validates the committed `stream.cash` nginx include without requiring a local `nginx` binary.
 - `make symphony-nginx-proxy-smoke` replays the `/proxy/symphony/` plus websocket upgrade flow through a disposable local nginx runtime when `nginx` is installed or `NGINX_BIN` is set.
@@ -38,6 +39,8 @@ That means a clean Symphony workspace no longer depends on hidden setup from oth
 The repo now ships a production-oriented CI/CD path:
 
 - `.github/workflows/actionlint.yml` validates workflow syntax and semantics.
+- `.github/workflows/runtime-proof.yml` runs `make symphony-runtime-smoke SCENARIO=all` as the cheap runtime regression gate for PRs.
+- `.github/workflows/infra-pass.yml` runs `make symphony-validate` as the full repo validation gate for PRs.
 - `.github/workflows/release-image.yml` builds the production image, smoke-tests startup, and
   publishes a digest-pinned image contract on `main`.
 - `.github/workflows/deploy-production.yml` downloads that contract and performs an environment-gated
@@ -48,6 +51,19 @@ The repo now ships a production-oriented CI/CD path:
   prerequisites.
 - In the repo's own LetterL workflow, `Spec Prep` can normalize an orthogonal `delivery:tdd` label
   so execution and handoff enforce true `red -> green` proof only on tickets that justify it.
+
+## Per-Ticket Validation Loop
+
+Before starting a runtime or workflow fix, run `make symphony-runtime-smoke SCENARIO=all` locally so
+you start from a known-good baseline. During the fix, rerun only the scenario(s) that match the
+surface you touched; the mapping and scenario details live in
+[`elixir/docs/runtime_smoke.md`](./elixir/docs/runtime_smoke.md).
+
+Before finishing the ticket, run `make symphony-validate` and wait for both PR checks to be green:
+`runtime-proof / run` and `infra-pass / run`. If `runtime-proof` fails, open the
+`runtime-proof-diagnostics` artifact in GitHub Actions and reproduce locally with
+`make symphony-runtime-smoke SCENARIO=all` or the matching named scenario. If `infra-pass` fails,
+open `infra-pass-diagnostics` and rerun `make symphony-validate` locally before pushing again.
 
 ## How it works
 
