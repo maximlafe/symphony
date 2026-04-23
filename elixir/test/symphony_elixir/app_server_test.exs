@@ -345,7 +345,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       test_pid = self()
 
-      assert_stage_command = fn state, expected_model, expected_effort, labels ->
+      assert_stage_command = fn state, expected_model, expected_effort, labels, run_opts ->
         File.rm(trace_file)
 
         issue = %Issue{
@@ -359,7 +359,14 @@ defmodule SymphonyElixir.AppServerTest do
         }
 
         assert {:ok, _result} =
-                 AppServer.run(workspace, "Run stage-aware command", issue, on_message: fn message -> send(test_pid, {:codex_message, state, message}) end)
+                 AppServer.run(
+                   workspace,
+                   "Run stage-aware command",
+                   issue,
+                   Keyword.merge(run_opts,
+                     on_message: fn message -> send(test_pid, {:codex_message, state, message}) end
+                   )
+                 )
 
         trace = File.read!(trace_file)
         assert trace =~ "KIND:profile"
@@ -376,12 +383,13 @@ defmodule SymphonyElixir.AppServerTest do
         assert message.command_source == "cost_profile"
       end
 
-      assert_stage_command.("Spec Prep", "gpt-5.4", "xhigh", ["backend"])
-      assert_stage_command.("In Progress", "gpt-5.3-codex", "medium", ["backend"])
-      assert_stage_command.("In Progress", "gpt-5.3-codex", "medium", ["backend", "mode:research"])
-      assert_stage_command.("In Progress", "gpt-5.3-codex", "medium", ["backend", "reasoning:implementation-xhigh"])
-      assert_stage_command.("Rework", "gpt-5.3-codex", "high", ["backend"])
-      assert_stage_command.("Merging", "gpt-5.3-codex", "medium", ["backend"])
+      assert_stage_command.("Spec Prep", "gpt-5.4", "xhigh", ["backend"], [])
+      assert_stage_command.("In Progress", "gpt-5.3-codex", "medium", ["backend"], [])
+      assert_stage_command.("In Progress", "gpt-5.3-codex", "medium", ["backend", "mode:research"], [])
+      assert_stage_command.("In Progress", "gpt-5.3-codex", "medium", ["backend", "reasoning:implementation-xhigh"], [])
+      assert_stage_command.("Rework", "gpt-5.3-codex", "high", ["backend"], [])
+      assert_stage_command.("Merging", "gpt-5.3-codex", "medium", ["backend"], [])
+      assert_stage_command.("Todo", "gpt-5.3-codex", "medium", ["backend"], cost_stage: "implementation")
     after
       File.rm_rf(test_root)
     end

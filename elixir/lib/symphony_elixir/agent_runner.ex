@@ -77,6 +77,7 @@ defmodule SymphonyElixir.AgentRunner do
       codex_launch_options(codex_account)
       |> Keyword.put(:issue, issue)
       |> maybe_put_cost_profile_key_opt(Keyword.get(opts, :cost_profile_key))
+      |> maybe_put_cost_stage_opt(Keyword.get(opts, :cost_stage))
       |> maybe_put_trace_id_opt(trace_id)
 
     with {:ok, session} <- AppServer.start_session(workspace, session_opts) do
@@ -335,4 +336,9 @@ defmodule SymphonyElixir.AgentRunner do
     do: Keyword.put(opts, :cost_profile_key, profile_key)
 
   defp maybe_put_cost_profile_key_opt(opts, _profile_key), do: opts
+
+  defp maybe_put_cost_stage_opt(opts, cost_stage) when is_binary(cost_stage) and cost_stage != "",
+    do: Keyword.put(opts, :cost_stage, cost_stage)
+
+  defp maybe_put_cost_stage_opt(opts, _cost_stage), do: opts
 end
