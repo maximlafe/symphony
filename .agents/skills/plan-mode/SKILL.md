@@ -41,6 +41,10 @@ Minimum enforcement:
 - If the planned change simultaneously alters semantics, storage, runtime policy, diagnostics, or proof contracts, either justify why this is still one smallest coherent change or split the rest into follow-up tickets.
 - Decide whether execution should be opt-in TDD. Use `delivery:tdd` only when a cheap deterministic failing test or reproducer should be part of the fix contract; avoid it for docs, deploy, CI, visual-only UI work, and flaky integration/runtime-heavy tasks.
 - For execution/review-oriented tasks, include a machine-readable `Acceptance Matrix` section with atomic proof items (`id`, `scenario`, `expected_outcome`, `proof_type`, `proof_target`, `proof_semantic`) and define expected `Proof Mapping` behavior for handoff.
+- When `Acceptance Matrix` is present, keep `proof_type` atomic and valid: only `test`, `artifact`, or `runtime_smoke` are allowed; composite values like `test/artifact` are forbidden.
+- Define exactly one proof mapping reference per matrix item, and never reuse one `validation:*` / `artifact:*` / `runtime:*` reference across multiple matrix items.
+- For `verification:data-extraction` planning, require at least one checked uploaded machine-readable proof artifact (`.json`, `.jsonl`, `.csv`, `.tsv`, or `.md`) with a concrete claim.
+- If the planned surface can classify as `runtime_contract` (workflow/handoff/runtime policy changes), require a checked `runtime smoke` item in the final proof contract (not `n/a`).
 
 ## Allowed
 
@@ -78,7 +82,7 @@ Include, when relevant:
 Preserve all material user facts, capture the observed behavior and expected behavior inside the task-spec where they belong, and always keep the final `## Symphony` block intact.
 
 For tasks about coverage, routing, classification, merge behavior, or quality changes, `План валидации` must name the regression dataset or case set, the baseline, the target delta or threshold, and the false-positive ceiling.
-When `Acceptance Matrix` is present, require that every matrix item is mappable to concrete proof (`test` / `artifact` / `runtime`) and that `surface exists` and `run executed` semantics are not collapsed.
+When `Acceptance Matrix` is present, require that every matrix item is mappable to concrete proof (`test` / `artifact` / `runtime_smoke`), keep `proof_type` atomic, require 1:1 unique `Proof Mapping` references, and ensure `surface exists` and `run executed` semantics are not collapsed.
 
 ## Workpad expectations
 
@@ -92,6 +96,7 @@ When `Acceptance Matrix` is present, require that every matrix item is mappable 
 - If named runs, chats, IDs, or case pairs are referenced, map them to authoritative runtime artifacts or mark the mapping as inconclusive.
 - Do not claim a systemic fix unless the proof plan includes positive and negative proof cases.
 - For tasks with new proof contracts, explicitly describe the required `Proof Mapping` section expected in execution handoff workpads.
+- For proof-contract tasks, state that `Proof Mapping` must map each matrix item to exactly one checked validation/artifact/runtime entry with no reused references.
 
 ## Linear expectations
 
