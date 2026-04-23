@@ -1247,6 +1247,466 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server dedupes repeated validation exec_background launches while the same surface is running" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-validation-running-dedupe-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-576-RUNNING")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-validation-running-dedupe.trace")
+      first_background_tool_file = Path.join(test_root, "exec-background-tool-1.json")
+      second_background_tool_file = Path.join(test_root, "exec-background-tool-2.json")
+      parent = self()
+
+      File.mkdir_p!(workspace)
+      init_git_repo!(workspace)
+
+      File.write!(
+        first_background_tool_file,
+        Jason.encode!(%{
+          "id" => 100,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_background",
+            "arguments" => %{"command" => "make symphony-validate"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        second_background_tool_file,
+        Jason.encode!(%{
+          "id" => 101,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_background",
+            "arguments" => %{"command" => "make symphony-validate"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-576-running"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-576-running"}}}'
+            cat "#{first_background_tool_file}"
+            ;;
+          5)
+            cat "#{second_background_tool_file}"
+            ;;
+          6)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never"
+      )
+
+      issue = %Issue{
+        id: "issue-validation-running-dedupe",
+        identifier: "MT-576-RUNNING",
+        title: "Dedupe repeated validation launch while running",
+        description: "Ensure repeated exec_background launch reuses running validation surface",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-576-RUNNING",
+        labels: ["backend"]
+      }
+
+      tool_executor = fn
+        "exec_background", %{"command" => "make symphony-validate"} ->
+          send(parent, :exec_background_called)
+          %{"success" => true, "status" => "running", "result_ref" => "exec-576-running"}
+
+        _tool_name, _arguments ->
+          %{"success" => false, "error" => "unexpected tool call"}
+      end
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "dedupe repeated running validation launch", issue, tool_executor: tool_executor)
+
+      assert_receive :exec_background_called
+      refute_receive :exec_background_called, 100
+
+      tool_results =
+        trace_json_lines(trace_file)
+        |> Enum.filter(&(&1["id"] in [100, 101]))
+        |> Enum.map(fn payload -> {payload["id"], payload["result"]} end)
+        |> Map.new()
+
+      assert tool_results[100]["result_ref"] == "exec-576-running"
+      assert tool_results[101]["result_ref"] == "exec-576-running"
+      assert get_in(tool_results[101], ["dedupe", "reason"]) == "duplicate_validation_running"
+      assert tool_results[101]["status"] == "running"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server skips repeated validation exec_background launch after green on the same surface" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-validation-green-dedupe-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-576-GREEN")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-validation-green-dedupe.trace")
+      background_tool_file = Path.join(test_root, "exec-background-tool.json")
+      wait_tool_file = Path.join(test_root, "exec-wait-tool.json")
+      second_background_tool_file = Path.join(test_root, "exec-background-tool-2.json")
+      parent = self()
+
+      File.mkdir_p!(workspace)
+      init_git_repo!(workspace)
+
+      File.write!(
+        background_tool_file,
+        Jason.encode!(%{
+          "id" => 100,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_background",
+            "arguments" => %{"command" => "make symphony-validate"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        wait_tool_file,
+        Jason.encode!(%{
+          "id" => 101,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_wait",
+            "arguments" => %{"result_ref" => "exec-576-green"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        second_background_tool_file,
+        Jason.encode!(%{
+          "id" => 102,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_background",
+            "arguments" => %{"command" => "make symphony-validate"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-576-green"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-576-green"}}}'
+            cat "#{background_tool_file}"
+            ;;
+          5)
+            cat "#{wait_tool_file}"
+            ;;
+          6)
+            cat "#{second_background_tool_file}"
+            ;;
+          7)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never"
+      )
+
+      issue = %Issue{
+        id: "issue-validation-green-dedupe",
+        identifier: "MT-576-GREEN",
+        title: "Skip repeated validation launch after green",
+        description: "Ensure identical validation surface is skipped after green",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-576-GREEN",
+        labels: ["backend"]
+      }
+
+      tool_executor = fn
+        "exec_background", %{"command" => "make symphony-validate"} ->
+          send(parent, :exec_background_called)
+          %{"success" => true, "status" => "running", "result_ref" => "exec-576-green"}
+
+        "exec_wait", %{"result_ref" => "exec-576-green"} ->
+          %{
+            "success" => true,
+            "status" => "completed",
+            "result_ref" => "exec-576-green",
+            "tail" => "validation complete",
+            "failure_summary" => nil
+          }
+
+        _tool_name, _arguments ->
+          %{"success" => false, "error" => "unexpected tool call"}
+      end
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "skip repeated green validation launch", issue, tool_executor: tool_executor)
+
+      assert_receive :exec_background_called
+      refute_receive :exec_background_called, 100
+
+      tool_results =
+        trace_json_lines(trace_file)
+        |> Enum.filter(&(&1["id"] in [100, 102]))
+        |> Enum.map(fn payload -> {payload["id"], payload["result"]} end)
+        |> Map.new()
+
+      assert tool_results[100]["result_ref"] == "exec-576-green"
+      assert tool_results[102]["status"] == "completed"
+      assert get_in(tool_results[102], ["dedupe", "reason"]) == "duplicate_validation_green"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server allows validation rerun when workspace diff changes after green and never dedupes distinct bundles" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-validation-invalidation-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-576-INVALIDATE")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-validation-invalidation.trace")
+      first_background_tool_file = Path.join(test_root, "exec-background-tool-1.json")
+      wait_tool_file = Path.join(test_root, "exec-wait-tool.json")
+      second_background_tool_file = Path.join(test_root, "exec-background-tool-2.json")
+      third_background_tool_file = Path.join(test_root, "exec-background-tool-3.json")
+      parent = self()
+
+      File.mkdir_p!(workspace)
+      init_git_repo!(workspace)
+
+      File.write!(
+        first_background_tool_file,
+        Jason.encode!(%{
+          "id" => 100,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_background",
+            "arguments" => %{"command" => "make symphony-validate"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        wait_tool_file,
+        Jason.encode!(%{
+          "id" => 101,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_wait",
+            "arguments" => %{"result_ref" => "exec-576-invalidate-1"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        second_background_tool_file,
+        Jason.encode!(%{
+          "id" => 102,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_background",
+            "arguments" => %{"command" => "make symphony-validate"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(
+        third_background_tool_file,
+        Jason.encode!(%{
+          "id" => 103,
+          "method" => "item/tool/call",
+          "params" => %{
+            "tool" => "exec_background",
+            "arguments" => %{"command" => "mix dialyzer --format short"}
+          }
+        }) <> "\n"
+      )
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-576-invalidate"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-576-invalidate"}}}'
+            cat "#{first_background_tool_file}"
+            ;;
+          5)
+            cat "#{wait_tool_file}"
+            ;;
+          6)
+            cat "#{second_background_tool_file}"
+            ;;
+          7)
+            cat "#{third_background_tool_file}"
+            ;;
+          8)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never"
+      )
+
+      issue = %Issue{
+        id: "issue-validation-invalidation",
+        identifier: "MT-576-INVALIDATE",
+        title: "Allow rerun after invalidation and keep distinct bundles separate",
+        description: "Ensure workspace diff invalidation and distinct bundles bypass dedupe",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-576-INVALIDATE",
+        labels: ["backend"]
+      }
+
+      tool_executor = fn
+        "exec_background", %{"command" => "make symphony-validate"} ->
+          count = Process.get(:validation_background_count, 0) + 1
+          Process.put(:validation_background_count, count)
+          send(parent, {:exec_background_validate_called, count})
+
+          %{
+            "success" => true,
+            "status" => "running",
+            "result_ref" => "exec-576-invalidate-#{count}"
+          }
+
+        "exec_wait", %{"result_ref" => "exec-576-invalidate-1"} ->
+          File.write!(Path.join(workspace, "tracked.txt"), "changed after green\n")
+
+          %{
+            "success" => true,
+            "status" => "completed",
+            "result_ref" => "exec-576-invalidate-1",
+            "tail" => "validation complete",
+            "failure_summary" => nil
+          }
+
+        "exec_background", %{"command" => "mix dialyzer --format short"} ->
+          send(parent, :exec_background_dialyzer_called)
+          %{"success" => true, "status" => "running", "result_ref" => "exec-576-dialyzer"}
+
+        _tool_name, _arguments ->
+          %{"success" => false, "error" => "unexpected tool call"}
+      end
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "allow invalidated and distinct validation launches", issue, tool_executor: tool_executor)
+
+      assert_receive {:exec_background_validate_called, 1}
+      assert_receive {:exec_background_validate_called, 2}
+      assert_receive :exec_background_dialyzer_called
+
+      tool_results =
+        trace_json_lines(trace_file)
+        |> Enum.filter(&(&1["id"] in [102, 103]))
+        |> Enum.map(fn payload -> {payload["id"], payload["result"]} end)
+        |> Map.new()
+
+      assert tool_results[102]["result_ref"] == "exec-576-invalidate-2"
+      assert is_nil(tool_results[102]["dedupe"])
+      assert tool_results[103]["result_ref"] == "exec-576-dialyzer"
+      assert is_nil(tool_results[103]["dedupe"])
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server auto-approves MCP tool approval prompts when approval policy is never" do
     test_root =
       Path.join(
@@ -2172,6 +2632,28 @@ defmodule SymphonyElixir.AppServerTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp init_git_repo!(workspace) do
+    File.write!(Path.join(workspace, "tracked.txt"), "initial\n")
+    File.write!(Path.join(workspace, "workpad.md"), "## Codex Workpad\n\nValidation guard state")
+    File.write!(Path.join(workspace, ".workpad-id"), "comment-validation-guard")
+
+    File.write!(Path.join(workspace, "Makefile"), """
+    .PHONY: symphony-preflight symphony-validate symphony-handoff-check
+    symphony-preflight:
+    \t@echo ok
+    symphony-validate:
+    \t@echo ok
+    symphony-handoff-check:
+    \t@echo ok
+    """)
+
+    {_, 0} = System.cmd("git", ["-C", workspace, "init", "-b", "main"])
+    {_, 0} = System.cmd("git", ["-C", workspace, "config", "user.name", "App Server Test"])
+    {_, 0} = System.cmd("git", ["-C", workspace, "config", "user.email", "app-server@example.com"])
+    {_, 0} = System.cmd("git", ["-C", workspace, "add", "."])
+    {_, 0} = System.cmd("git", ["-C", workspace, "commit", "-m", "initial"])
   end
 
   defp build_command_approval_payload(method, command_key, command, available_decisions) do

@@ -16,6 +16,19 @@ defmodule SymphonyElixir.Codex.AppServer do
   @status_check_refusal_tools "wait for exec_wait progress before repeating git/gh status checks"
   @status_check_quiet_wait_min_interval_ms 20_000
   @wait_guard_process_key :symphony_app_server_wait_guard
+  @validation_bundle_patterns [
+    {~r/^mix test(\s|$)/, "validation:test"},
+    {~r/^make test(\s|$)/, "validation:test"},
+    {~r/^make symphony-validate(\s|$)/, "validation:repo-validate"},
+    {~r/^make symphony-preflight(\s|$)/, "validation:preflight"},
+    {~r/^make symphony-handoff-check(\s|$)/, "validation:handoff-check"},
+    {~r/^mix specs\.check(\s|$)/, "validation:specs-check"},
+    {~r/^mix dialyzer(\s|$)/, "validation:dialyzer"},
+    {~r/^make symphony-runtime-smoke(\s|$)/, "validation:runtime-smoke"},
+    {~r/^make symphony-dashboard-checks(\s|$)/, "validation:dashboard-checks"},
+    {~r/^make symphony-nginx-proxy-contract(\s|$)/, "validation:nginx-proxy-contract"},
+    {~r/^make symphony-nginx-proxy-smoke(\s|$)/, "validation:nginx-proxy-smoke"}
+  ]
 
   @type session :: %{
           port: port(),
@@ -66,7 +79,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       metadata =
         port
-        |> session_metadata(opts, cost_decision)
+        |> session_metadata(Keyword.put(opts, :workspace, expanded_workspace), cost_decision)
         |> maybe_put_account_id(account_id)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace),
@@ -302,12 +315,14 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp session_metadata(port, opts, cost_decision) when is_list(opts) do
     issue = Keyword.get(opts, :issue, %{})
     trace_id = Keyword.get(opts, :trace_id)
+    workspace = Keyword.get(opts, :workspace)
 
     port_metadata(port)
     |> Map.merge(cost_metadata(cost_decision))
     |> maybe_put_metadata(:trace_id, trace_id)
     |> maybe_put_metadata(:issue_id, Map.get(issue, :id))
     |> maybe_put_metadata(:issue_identifier, Map.get(issue, :identifier))
+    |> maybe_put_metadata(:workspace, workspace)
   end
 
   defp log_codex_cost_decision(issue, cost_decision) when is_map(cost_decision) do
@@ -814,8 +829,16 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     emit_message(on_message, :tool_call_started, %{payload: payload, raw: payload_string}, metadata)
 
-    result = tool_executor.(tool_name, arguments)
-    update_wait_guard_from_tool_result(tool_name, arguments, result)
+    {result, dedupe} =
+      case maybe_handle_validation_exec_background_dedupe(tool_name, arguments, metadata) do
+        {:deduped, deduped_result, dedupe_details} ->
+          {deduped_result, dedupe_details}
+
+        :continue ->
+          {tool_executor.(tool_name, arguments), nil}
+      end
+
+    update_wait_guard_from_tool_result(tool_name, arguments, result, metadata)
 
     send_message(port, %{
       "id" => id,
@@ -829,7 +852,12 @@ defmodule SymphonyElixir.Codex.AppServer do
         _ -> :tool_call_failed
       end
 
-    emit_message(on_message, event, %{payload: payload, raw: payload_string, result: result}, metadata)
+    emit_message(
+      on_message,
+      event,
+      %{payload: payload, raw: payload_string, result: result, dedupe: dedupe},
+      metadata
+    )
 
     :approved
   end
@@ -1576,7 +1604,12 @@ defmodule SymphonyElixir.Codex.AppServer do
       quiet_wait_active: false,
       active_result_ref: nil,
       last_status_check_command: nil,
-      last_status_check_at_ms: nil
+      last_status_check_at_ms: nil,
+      validation_result_refs: %{},
+      running_validation_surfaces: %{},
+      green_validation_surfaces: %{},
+      last_feedback_digest: nil,
+      last_failed_validation: nil
     }
   end
 
@@ -1634,8 +1667,171 @@ defmodule SymphonyElixir.Codex.AppServer do
     |> String.downcase()
   end
 
-  defp update_wait_guard_from_tool_result("exec_wait", arguments, result)
-       when is_map(arguments) and is_map(result) do
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_optional_string(_value), do: nil
+
+  defp maybe_handle_validation_exec_background_dedupe("exec_background", arguments, metadata)
+       when is_map(arguments) and is_map(metadata) do
+    with command when is_binary(command) <- exec_background_command(arguments),
+         surface when is_map(surface) <- validation_surface(metadata, command) do
+      surface_key = validation_surface_key(surface)
+      guard = wait_guard_state()
+
+      cond do
+        running_entry = Map.get(guard.running_validation_surfaces, surface_key) ->
+          dedupe_payload =
+            %{
+              "hit" => true,
+              "reason" => "duplicate_validation_running",
+              "surface_key" => surface_key
+            }
+            |> maybe_put_map("result_ref", Map.get(running_entry, :result_ref))
+
+          deduped_result =
+            %{
+              "success" => true,
+              "status" => "running",
+              "dedupe" => dedupe_payload
+            }
+            |> maybe_put_map("result_ref", Map.get(running_entry, :result_ref))
+
+          {:deduped, deduped_result, dedupe_payload}
+
+        duplicate_green_surface?(guard, surface, surface_key) ->
+          dedupe_payload = %{
+            "hit" => true,
+            "reason" => "duplicate_validation_green",
+            "surface_key" => surface_key
+          }
+
+          deduped_result = %{
+            "success" => true,
+            "status" => "completed",
+            "tail" => "validation rerun skipped: identical green validation surface without new signal",
+            "failure_summary" => nil,
+            "dedupe" => dedupe_payload
+          }
+
+          {:deduped, deduped_result, dedupe_payload}
+
+        true ->
+          :continue
+      end
+    else
+      _ -> :continue
+    end
+  end
+
+  defp maybe_handle_validation_exec_background_dedupe(_tool_name, _arguments, _metadata), do: :continue
+
+  defp duplicate_green_surface?(guard, surface, surface_key) when is_map(guard) and is_map(surface) do
+    bundle = Map.get(surface, :validation_bundle_fingerprint)
+
+    case Map.get(guard.green_validation_surfaces, bundle) do
+      %{surface_key: ^surface_key} = green_entry ->
+        not green_surface_invalidated_by_other_bundle_failure?(guard, bundle, green_entry)
+
+      _ ->
+        false
+    end
+  end
+
+  defp duplicate_green_surface?(_guard, _surface, _surface_key), do: false
+
+  defp green_surface_invalidated_by_other_bundle_failure?(guard, bundle, green_entry)
+       when is_map(guard) and is_binary(bundle) and is_map(green_entry) do
+    case Map.get(guard, :last_failed_validation) do
+      %{bundle: failed_bundle, at_ms: failed_at_ms}
+      when is_binary(failed_bundle) and is_integer(failed_at_ms) and failed_bundle != bundle ->
+        completed_at_ms = Map.get(green_entry, :completed_at_ms, 0)
+        failed_at_ms > completed_at_ms
+
+      _ ->
+        false
+    end
+  end
+
+  defp green_surface_invalidated_by_other_bundle_failure?(_guard, _bundle, _green_entry), do: false
+
+  defp validation_surface(metadata, command) when is_map(metadata) and is_binary(command) do
+    with workspace when is_binary(workspace) <- fetch_first(metadata, [:workspace, "workspace"]),
+         normalized_command when is_binary(normalized_command) <- normalize_optional_string(command),
+         validation_bundle_fingerprint when is_binary(validation_bundle_fingerprint) <-
+           validation_bundle_fingerprint_from_command(normalized_command) do
+      git_surface = validation_git_surface(workspace)
+      feedback_digest = normalize_optional_string(Map.get(wait_guard_state(), :last_feedback_digest))
+
+      %{
+        normalized_command: normalized_command,
+        validation_bundle_fingerprint: validation_bundle_fingerprint,
+        head_sha: git_surface.head_sha,
+        tree_sha: git_surface.tree_sha,
+        workspace_diff_fingerprint: git_surface.workspace_diff_fingerprint,
+        feedback_digest: feedback_digest
+      }
+    end
+  end
+
+  defp validation_surface(_metadata, _command), do: nil
+
+  defp validation_surface_key(surface) when is_map(surface) do
+    [
+      Map.get(surface, :validation_bundle_fingerprint) || "unknown",
+      Map.get(surface, :normalized_command) || "unknown",
+      Map.get(surface, :head_sha) || "unknown",
+      Map.get(surface, :tree_sha) || "unknown",
+      Map.get(surface, :workspace_diff_fingerprint) || "unknown",
+      Map.get(surface, :feedback_digest) || "none"
+    ]
+    |> Enum.join("::")
+  end
+
+  defp validation_git_surface(workspace) when is_binary(workspace) do
+    %{
+      head_sha: git_trimmed(workspace, ["rev-parse", "HEAD"]) || "unknown",
+      tree_sha: git_trimmed(workspace, ["rev-parse", "HEAD^{tree}"]) || "unknown",
+      workspace_diff_fingerprint: git_workspace_diff_fingerprint(workspace) || "unknown"
+    }
+  end
+
+  defp exec_background_command(arguments) when is_map(arguments) do
+    fetch_first(arguments, ["command", :command]) |> normalize_optional_string()
+  end
+
+  defp validation_bundle_fingerprint_from_command(command) when is_binary(command) do
+    command
+    |> normalize_status_check_command()
+    |> command_segments()
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.find_value(&validation_bundle_fingerprint_for_segment/1)
+  end
+
+  defp validation_bundle_fingerprint_for_segment(segment) when is_binary(segment) do
+    Enum.find_value(@validation_bundle_patterns, fn {pattern, fingerprint} ->
+      Regex.match?(pattern, segment) && fingerprint
+    end)
+  end
+
+  defp validation_bundle_fingerprint_for_segment(_segment), do: nil
+
+  defp update_wait_guard_from_tool_result(tool_name, arguments, result, metadata)
+       when is_map(arguments) and is_map(result) and is_map(metadata) do
+    update_wait_guard_from_exec_wait_result(tool_name, arguments, result)
+    update_wait_guard_from_validation_result(tool_name, arguments, result, metadata)
+    update_wait_guard_feedback_digest(tool_name, result)
+    :ok
+  end
+
+  defp update_wait_guard_from_tool_result(_tool_name, _arguments, _result, _metadata), do: :ok
+
+  defp update_wait_guard_from_exec_wait_result("exec_wait", arguments, result) do
     wait_payload = decode_tool_payload(result)
     status = Map.get(wait_payload, "status")
     quiet_wait_active = Map.get(wait_payload, "quiet_wait") == true or Map.get(wait_payload, "wait_mode") == "quiet"
@@ -1658,7 +1854,267 @@ defmodule SymphonyElixir.Codex.AppServer do
     :ok
   end
 
-  defp update_wait_guard_from_tool_result(_tool_name, _arguments, _result), do: :ok
+  defp update_wait_guard_from_exec_wait_result(_tool_name, _arguments, _result), do: :ok
+
+  defp update_wait_guard_from_validation_result("exec_background", arguments, result, metadata)
+       when is_map(arguments) and is_map(result) and is_map(metadata) do
+    payload = decode_tool_payload(result)
+    status = normalize_optional_string(Map.get(payload, "status"))
+
+    with "running" <- status,
+         true <- Map.get(payload, "success") != false,
+         result_ref when is_binary(result_ref) <- normalize_optional_string(Map.get(payload, "result_ref")),
+         command when is_binary(command) <- exec_background_command(arguments),
+         surface when is_map(surface) <- validation_surface(metadata, command) do
+      surface_key = validation_surface_key(surface)
+      now_ms = System.monotonic_time(:millisecond)
+
+      running_entry = %{
+        surface: surface,
+        surface_key: surface_key,
+        result_ref: result_ref,
+        started_at_ms: now_ms
+      }
+
+      updated_guard =
+        wait_guard_state()
+        |> put_validation_result_ref(result_ref, running_entry)
+        |> put_running_validation_surface(surface_key, running_entry)
+
+      Process.put(@wait_guard_process_key, updated_guard)
+    end
+
+    :ok
+  end
+
+  defp update_wait_guard_from_validation_result("exec_wait", arguments, result, _metadata)
+       when is_map(arguments) and is_map(result) do
+    payload = decode_tool_payload(result)
+    result_ref = normalize_optional_string(Map.get(payload, "result_ref") || Map.get(arguments, "result_ref"))
+
+    with result_ref when is_binary(result_ref) <- result_ref,
+         guard = wait_guard_state(),
+         %{surface: surface, surface_key: surface_key} = running_entry <- Map.get(guard.validation_result_refs, result_ref) do
+      maybe_finalize_validation_wait_result(guard, running_entry, surface, surface_key, result_ref, payload)
+    end
+
+    :ok
+  end
+
+  defp update_wait_guard_from_validation_result(_tool_name, _arguments, _result, _metadata), do: :ok
+
+  defp maybe_finalize_validation_wait_result(
+         guard,
+         running_entry,
+         _surface,
+         _surface_key,
+         _result_ref,
+         payload
+       )
+       when is_map(guard) and is_map(running_entry) and is_map(payload) do
+    status = normalize_optional_string(Map.get(payload, "status"))
+
+    if status == "running" do
+      :ok
+    else
+      finalize_validation_wait_result(guard, running_entry, status, payload)
+    end
+  end
+
+  defp maybe_finalize_validation_wait_result(_guard, _running_entry, _surface, _surface_key, _result_ref, _payload), do: :ok
+
+  defp finalize_validation_wait_result(guard, running_entry, status, payload)
+       when is_map(guard) and is_map(running_entry) and is_map(payload) do
+    result_ref = Map.get(running_entry, :result_ref)
+    surface = Map.get(running_entry, :surface, %{})
+    surface_key = Map.get(running_entry, :surface_key) || "unknown"
+    bundle = Map.get(surface, :validation_bundle_fingerprint)
+    now_ms = System.monotonic_time(:millisecond)
+
+    base_guard =
+      guard
+      |> remove_validation_result_ref(result_ref)
+      |> remove_running_validation_surface(surface_key)
+
+    updated_guard =
+      apply_validation_wait_outcome(
+        base_guard,
+        running_entry,
+        bundle,
+        surface_key,
+        status,
+        payload,
+        now_ms
+      )
+
+    Process.put(@wait_guard_process_key, updated_guard)
+  end
+
+  defp apply_validation_wait_outcome(base_guard, _running_entry, bundle, surface_key, _status, payload, now_ms)
+       when is_map(base_guard) and is_binary(bundle) and is_binary(surface_key) and is_map(payload) do
+    if validation_wait_completed_successfully?(payload) do
+      put_green_validation_surface(base_guard, bundle, %{
+        surface_key: surface_key,
+        completed_at_ms: now_ms
+      })
+    else
+      record_failed_validation_surface(base_guard, bundle, surface_key, nil, now_ms, payload)
+    end
+  end
+
+  defp apply_validation_wait_outcome(base_guard, _running_entry, _bundle, surface_key, status, payload, now_ms)
+       when is_map(base_guard) and is_binary(surface_key) and is_map(payload) do
+    record_failed_validation_surface(base_guard, "unknown", surface_key, status, now_ms, payload)
+  end
+
+  defp record_failed_validation_surface(base_guard, bundle, surface_key, status, now_ms, payload)
+       when is_map(base_guard) and is_binary(bundle) and is_binary(surface_key) and is_map(payload) do
+    put_last_failed_validation(base_guard, %{
+      bundle: bundle,
+      surface_key: surface_key,
+      at_ms: now_ms,
+      status: status || normalize_optional_string(Map.get(payload, "status")) || "unknown",
+      result_ref: normalize_optional_string(Map.get(payload, "result_ref")) || "unknown"
+    })
+  end
+
+  defp update_wait_guard_feedback_digest("github_pr_snapshot", result) when is_map(result) do
+    payload = decode_tool_payload(result)
+    feedback_digest = normalize_optional_string(fetch_first(payload, ["feedback_digest", :feedback_digest]))
+
+    if is_binary(feedback_digest) do
+      updated = wait_guard_state() |> Map.put(:last_feedback_digest, feedback_digest)
+      Process.put(@wait_guard_process_key, updated)
+    end
+
+    :ok
+  end
+
+  defp update_wait_guard_feedback_digest(_tool_name, _result), do: :ok
+
+  defp validation_wait_completed_successfully?(payload) when is_map(payload) do
+    success_flag = Map.get(payload, "success")
+    status = normalize_optional_string(Map.get(payload, "status"))
+    failure_summary = normalize_optional_string(Map.get(payload, "failure_summary"))
+    error_payload = Map.get(payload, "error")
+
+    status in ["completed", "succeeded", "success"] and
+      success_flag != false and
+      is_nil(failure_summary) and
+      not is_map(error_payload)
+  end
+
+  defp put_validation_result_ref(guard, result_ref, entry) when is_map(guard) do
+    refs = Map.get(guard, :validation_result_refs, %{})
+    Map.put(guard, :validation_result_refs, Map.put(refs, result_ref, entry))
+  end
+
+  defp put_running_validation_surface(guard, surface_key, entry) when is_map(guard) do
+    running = Map.get(guard, :running_validation_surfaces, %{})
+    Map.put(guard, :running_validation_surfaces, Map.put(running, surface_key, entry))
+  end
+
+  defp remove_validation_result_ref(guard, result_ref) when is_map(guard) do
+    refs = Map.get(guard, :validation_result_refs, %{})
+    Map.put(guard, :validation_result_refs, Map.delete(refs, result_ref))
+  end
+
+  defp remove_running_validation_surface(guard, surface_key) when is_map(guard) do
+    running = Map.get(guard, :running_validation_surfaces, %{})
+    Map.put(guard, :running_validation_surfaces, Map.delete(running, surface_key))
+  end
+
+  defp put_green_validation_surface(guard, bundle, surface) when is_map(guard) and is_binary(bundle) do
+    green = Map.get(guard, :green_validation_surfaces, %{})
+    Map.put(guard, :green_validation_surfaces, Map.put(green, bundle, surface))
+  end
+
+  defp put_last_failed_validation(guard, last_failed_validation) when is_map(guard) and is_map(last_failed_validation) do
+    Map.put(guard, :last_failed_validation, last_failed_validation)
+  end
+
+  defp maybe_put_map(map, _key, value) when value in [nil, ""], do: map
+  defp maybe_put_map(map, key, value), do: Map.put(map, key, value)
+
+  defp git_trimmed(workspace, args) when is_binary(workspace) and is_list(args) do
+    case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
+      {output, 0} -> String.trim(output)
+      _ -> nil
+    end
+  end
+
+  defp git_workspace_diff_fingerprint(workspace) when is_binary(workspace) do
+    with status_lines when is_list(status_lines) <- git_status_lines(workspace) do
+      head = git_trimmed(workspace, ["rev-parse", "HEAD"]) || "unknown"
+
+      entries =
+        status_lines
+        |> Enum.map(&parse_status_entry/1)
+        |> Enum.reject(fn {_kind, _status, path} ->
+          path == "" or internal_workspace_artifact?(path)
+        end)
+
+      entry_digests =
+        entries
+        |> Enum.sort_by(fn {_kind, status, path} -> {path, status} end)
+        |> Enum.map(fn {kind, status, path} ->
+          digest = sha256_file(Path.join(workspace, path)) || "missing"
+          "#{kind}:#{status}:#{path}:#{digest}"
+        end)
+
+      ["head=#{head}" | entry_digests]
+      |> Enum.join("\n---\n")
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+    end
+  end
+
+  defp git_status_lines(workspace) when is_binary(workspace) do
+    case System.cmd("git", ["-C", workspace, "status", "--porcelain=v1", "--untracked-files=all"], stderr_to_stdout: true) do
+      {output, 0} -> String.split(output, "\n", trim: true)
+      _ -> nil
+    end
+  end
+
+  defp parse_status_entry(line) when is_binary(line) do
+    status = String.slice(line, 0, 2)
+    path = parse_status_path(line)
+    kind = if status == "??", do: :untracked, else: :tracked
+    {kind, status, path}
+  end
+
+  defp parse_status_entry(_line), do: {:tracked, "", ""}
+
+  defp internal_workspace_artifact?(path) when is_binary(path) do
+    path in [".symphony/verification/handoff-manifest.json", "workpad.md", ".workpad-id"] or
+      String.starts_with?(path, ".symphony/resume/")
+  end
+
+  defp internal_workspace_artifact?(_path), do: false
+
+  defp parse_status_path(line) when is_binary(line) do
+    trimmed =
+      line
+      |> String.slice(3..-1//1)
+      |> to_string()
+      |> String.trim()
+
+    if String.contains?(trimmed, " -> ") do
+      trimmed
+      |> String.split(" -> ")
+      |> List.last()
+      |> String.trim()
+    else
+      trimmed
+    end
+  end
+
+  defp sha256_file(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, body} -> :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
+      _ -> nil
+    end
+  end
 
   defp decode_tool_payload(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text) do
     case Jason.decode(text) do
