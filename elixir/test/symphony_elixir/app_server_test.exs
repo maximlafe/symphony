@@ -1354,7 +1354,13 @@ defmodule SymphonyElixir.AppServerTest do
       end
 
       assert {:ok, _result} =
-               AppServer.run(workspace, "dedupe repeated running validation launch", issue, tool_executor: tool_executor)
+               AppServer.run(
+                 workspace,
+                 "dedupe repeated running validation launch",
+                 issue,
+                 tool_executor: tool_executor,
+                 tool_probe: &fake_tool_probe/1
+               )
 
       assert_receive :exec_background_called
       refute_receive :exec_background_called, 100
@@ -1506,7 +1512,13 @@ defmodule SymphonyElixir.AppServerTest do
       end
 
       assert {:ok, _result} =
-               AppServer.run(workspace, "skip repeated green validation launch", issue, tool_executor: tool_executor)
+               AppServer.run(
+                 workspace,
+                 "skip repeated green validation launch",
+                 issue,
+                 tool_executor: tool_executor,
+                 tool_probe: &fake_tool_probe/1
+               )
 
       assert_receive :exec_background_called
       refute_receive :exec_background_called, 100
@@ -1686,7 +1698,13 @@ defmodule SymphonyElixir.AppServerTest do
       end
 
       assert {:ok, _result} =
-               AppServer.run(workspace, "allow invalidated and distinct validation launches", issue, tool_executor: tool_executor)
+               AppServer.run(
+                 workspace,
+                 "allow invalidated and distinct validation launches",
+                 issue,
+                 tool_executor: tool_executor,
+                 tool_probe: &fake_tool_probe/1
+               )
 
       assert_receive {:exec_background_validate_called, 1}
       assert_receive {:exec_background_validate_called, 2}
@@ -2654,6 +2672,10 @@ defmodule SymphonyElixir.AppServerTest do
     {_, 0} = System.cmd("git", ["-C", workspace, "config", "user.email", "app-server@example.com"])
     {_, 0} = System.cmd("git", ["-C", workspace, "add", "."])
     {_, 0} = System.cmd("git", ["-C", workspace, "commit", "-m", "initial"])
+  end
+
+  defp fake_tool_probe(tool) when is_binary(tool) do
+    "/tmp/fake-tools/#{tool}"
   end
 
   defp build_command_approval_payload(method, command_key, command, available_decisions) do
