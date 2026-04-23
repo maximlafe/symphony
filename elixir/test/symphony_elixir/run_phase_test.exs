@@ -310,6 +310,31 @@ defmodule SymphonyElixir.RunPhaseTest do
              now,
              1_000
            ).run_phase == "editing"
+
+    guarded_snapshot =
+      RunPhase.snapshot_fields(
+        %{
+          started_at: DateTime.add(now, -3, :second),
+          pre_run_hook_active: true,
+          pre_run_hook_started_at: DateTime.add(now, -3, :second),
+          pre_run_hook_timeout_ms: 5_000
+        },
+        now,
+        1_000
+      )
+
+    assert guarded_snapshot.activity_state in ["alive", "slow"]
+
+    assert RunPhase.snapshot_fields(
+             %{
+               started_at: DateTime.add(now, -6, :second),
+               pre_run_hook_active: true,
+               pre_run_hook_started_at: DateTime.add(now, -6, :second),
+               pre_run_hook_timeout_ms: 5_000
+             },
+             now,
+             1_000
+           ).activity_state == "stalled"
   end
 
   test "phase comments include details and notices survive until phase change" do

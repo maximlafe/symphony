@@ -5797,6 +5797,22 @@ defmodule SymphonyElixir.CoreTest do
                  trace_id: trace_id
                )
 
+      assert_receive {:worker_phase_update, "issue-live-updates",
+                      %{
+                        phase: :pre_run_hook_enter,
+                        timestamp: %DateTime{},
+                        trace_id: ^trace_id
+                      }},
+                     500
+
+      assert_receive {:worker_phase_update, "issue-live-updates",
+                      %{
+                        phase: :pre_run_hook_exit,
+                        timestamp: %DateTime{},
+                        trace_id: ^trace_id
+                      }},
+                     500
+
       assert_receive {:codex_worker_update, "issue-live-updates",
                       %{
                         event: :session_started,
