@@ -317,14 +317,18 @@ defmodule SymphonyElixir.Orchestrator do
     result =
       case pop_retry_attempt_state(state, issue_id, retry_token) do
         {:ok, attempt, metadata, state} -> handle_retry_issue(state, issue_id, attempt, metadata)
-        :missing -> {:noreply, state}
+        :missing -> {:noreply, reconcile_missing_retry_outcome(state, issue_id)}
       end
 
     notify_dashboard()
     result
   end
 
-  def handle_info({:retry_issue, _issue_id}, state), do: {:noreply, state}
+  def handle_info({:retry_issue, issue_id}, state) do
+    state = reconcile_missing_retry_outcome(state, issue_id)
+    notify_dashboard()
+    {:noreply, state}
+  end
 
   def handle_info(
         {ref, {:workspace_cleanup_completed, source, cleanup_result}},
@@ -3485,6 +3489,22 @@ defmodule SymphonyElixir.Orchestrator do
       | claimed: MapSet.delete(state.claimed, issue_id),
         retry_dedupe_keys: Map.delete(state.retry_dedupe_keys, issue_id)
     }
+  end
+
+  defp reconcile_missing_retry_outcome(%State{} = state, issue_id) when is_binary(issue_id) do
+    if orphaned_issue_claim?(state, issue_id) do
+      release_issue_claim(state, issue_id)
+    else
+      state
+    end
+  end
+
+  defp reconcile_missing_retry_outcome(%State{} = state, _issue_id), do: state
+
+  defp orphaned_issue_claim?(%State{} = state, issue_id) when is_binary(issue_id) do
+    MapSet.member?(state.claimed, issue_id) and
+      not Map.has_key?(state.running, issue_id) and
+      not Map.has_key?(state.retry_attempts, issue_id)
   end
 
   defp manual_intervention_state do

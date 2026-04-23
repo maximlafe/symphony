@@ -4447,6 +4447,81 @@ defmodule SymphonyElixir.CoreTest do
            } = state.retry_attempts[issue_id]
   end
 
+  test "stale retry outcome without retry entry releases orphaned claim" do
+    issue_id = "issue-stale-retry-orphan"
+    retry_token = make_ref()
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{},
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{},
+      active_codex_account_id: nil,
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: nil,
+      codex_dispatch_reason: nil
+    }
+
+    assert {:noreply, updated_state} = Orchestrator.handle_info({:retry_issue, issue_id, retry_token}, state)
+    refute MapSet.member?(updated_state.claimed, issue_id)
+  end
+
+  test "tokenless retry outcome releases orphaned claim when no active retry context remains" do
+    issue_id = "issue-tokenless-retry-orphan"
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{},
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{},
+      active_codex_account_id: nil,
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: nil,
+      codex_dispatch_reason: nil
+    }
+
+    assert {:noreply, updated_state} = Orchestrator.handle_info({:retry_issue, issue_id}, state)
+    refute MapSet.member?(updated_state.claimed, issue_id)
+  end
+
+  test "stale retry outcome does not release claim for an actively running issue" do
+    issue_id = "issue-stale-retry-running"
+    retry_token = make_ref()
+
+    state = %Orchestrator.State{
+      poll_interval_ms: 30_000,
+      max_concurrent_agents: 1,
+      running: %{
+        issue_id => %{
+          pid: self(),
+          ref: make_ref(),
+          identifier: "MT-561-RUN",
+          issue: %Issue{id: issue_id, identifier: "MT-561-RUN", title: "Running retry", state: "In Progress"},
+          trace_id: "trace-running-retry",
+          codex_account_id: "primary",
+          started_at: DateTime.utc_now()
+        }
+      },
+      completed: MapSet.new(),
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_accounts: %{},
+      active_codex_account_id: nil,
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: nil,
+      codex_dispatch_reason: nil
+    }
+
+    assert {:noreply, updated_state} = Orchestrator.handle_info({:retry_issue, issue_id, retry_token}, state)
+    assert MapSet.member?(updated_state.claimed, issue_id)
+  end
+
   test "retry dispatch preserves trace_id from retry metadata" do
     test_root =
       Path.join(
