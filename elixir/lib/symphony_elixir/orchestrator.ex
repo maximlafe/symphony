@@ -3016,8 +3016,6 @@ defmodule SymphonyElixir.Orchestrator do
     normalize_optional_string(map_any(checkpoint, [:cost_stage, "cost_stage"]))
   end
 
-  defp checkpoint_cost_stage(_checkpoint), do: nil
-
   defp checkpoint_continuation_reason(%{} = checkpoint) do
     normalize_optional_string(map_any(checkpoint, [:continuation_reason, "continuation_reason"]))
   end
