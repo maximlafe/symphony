@@ -4726,6 +4726,118 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "rework stale workspace head reconciles before dispatch" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-rework-stale-head-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    issue_id = "issue-rework-stale-head"
+    issue_identifier = "MT-REWORK-STALE-HEAD"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root
+      )
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        title: "Reconcile stale rework workspace head",
+        description: "Rework stale head should reconcile before dispatch",
+        state: "Rework",
+        url: "https://example.org/issues/#{issue_identifier}",
+        labels: []
+      }
+
+      {runtime_head_sha, expected_head_sha} =
+        create_rework_reconcilable_workspace!(workspace_root, issue_identifier, "main")
+
+      assert runtime_head_sha != expected_head_sha
+      workspace = Path.join(workspace_root, issue_identifier)
+
+      execution_head = %{
+        workspace: workspace,
+        runtime_head_sha: runtime_head_sha,
+        expected_head_sha: expected_head_sha,
+        execution_branch: "main"
+      }
+
+      assert {:ok, reconciled_head} =
+               Orchestrator.reconcile_rework_stale_workspace_for_test(
+                 issue,
+                 execution_head,
+                 :behind,
+                 "trace-rework-stale-head"
+               )
+
+      assert reconciled_head.runtime_head_sha == expected_head_sha
+      assert reconciled_head.expected_head_sha == expected_head_sha
+      assert git_output!(workspace, ["rev-parse", "HEAD"]) == expected_head_sha
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "rework stale workspace reconciliation failure escalates with reconcile reason" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-rework-stale-failure-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    issue_id = "issue-rework-stale-failure"
+    issue_identifier = "MT-REWORK-STALE-FAILURE"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root
+      )
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        title: "Fail closed when rework reconciliation fails",
+        description: "Missing origin fetch should classify as reconcile failure",
+        state: "Rework",
+        url: "https://example.org/issues/#{issue_identifier}",
+        labels: []
+      }
+
+      {runtime_head_sha, expected_head_sha} =
+        create_stale_workspace!(workspace_root, issue_identifier, "merge/stale-01")
+
+      execution_head = %{
+        workspace: Path.join(workspace_root, issue_identifier),
+        runtime_head_sha: runtime_head_sha,
+        expected_head_sha: expected_head_sha,
+        execution_branch: "merge/stale-01"
+      }
+
+      assert {:error, {:reconcile_failure, :behind, reconcile_reason}, failed_head} =
+               Orchestrator.reconcile_rework_stale_workspace_for_test(
+                 issue,
+                 execution_head,
+                 :behind,
+                 "trace-rework-stale-failure"
+               )
+
+      assert reconcile_reason =~ "fetch_origin_base_branch"
+      assert reconcile_reason =~ "base_branch=main"
+      assert failed_head.runtime_head_sha == runtime_head_sha
+      assert failed_head.expected_head_sha == expected_head_sha
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "matching workspace head does not block dispatch" do
     test_root =
       Path.join(
@@ -5275,6 +5387,48 @@ defmodule SymphonyElixir.CoreTest do
     workspace = init_workspace_repo!(workspace_root, issue_identifier)
     File.write!(Path.join(workspace, ".symphony-working-branch"), execution_branch <> "\n")
     git_output!(workspace, ["rev-parse", "HEAD"])
+  end
+
+  defp create_rework_reconcilable_workspace!(workspace_root, issue_identifier, base_branch) do
+    sandbox_root = Path.join(workspace_root, "#{issue_identifier}-reconcile")
+    origin_repo = Path.join(sandbox_root, "origin.git")
+    seed_repo = Path.join(sandbox_root, "seed")
+    workspace = Path.join(workspace_root, issue_identifier)
+
+    File.mkdir_p!(sandbox_root)
+    File.mkdir_p!(seed_repo)
+
+    assert {_, 0} = System.cmd("git", ["init", "--bare", origin_repo], stderr_to_stdout: true)
+
+    git_ok!(seed_repo, ["init", "-b", base_branch])
+    git_ok!(seed_repo, ["config", "user.name", "Symphony Tests"])
+    git_ok!(seed_repo, ["config", "user.email", "symphony-tests@example.com"])
+
+    File.write!(Path.join(seed_repo, "tracked.txt"), "runtime head\n")
+    git_ok!(seed_repo, ["add", "tracked.txt"])
+    git_ok!(seed_repo, ["commit", "-m", "runtime head"])
+    git_ok!(seed_repo, ["remote", "add", "origin", origin_repo])
+    git_ok!(seed_repo, ["push", "-u", "origin", base_branch])
+
+    assert {_, 0} = System.cmd("git", ["clone", origin_repo, workspace], stderr_to_stdout: true)
+    git_ok!(workspace, ["config", "user.name", "Symphony Tests"])
+    git_ok!(workspace, ["config", "user.email", "symphony-tests@example.com"])
+    git_ok!(workspace, ["checkout", "-B", base_branch, "origin/#{base_branch}"])
+
+    runtime_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
+
+    File.write!(Path.join(seed_repo, "tracked.txt"), "expected head\n")
+    git_ok!(seed_repo, ["add", "tracked.txt"])
+    git_ok!(seed_repo, ["commit", "-m", "expected head"])
+    git_ok!(seed_repo, ["push", "origin", base_branch])
+
+    git_ok!(workspace, ["fetch", "origin", base_branch])
+    expected_head_sha = git_output!(workspace, ["rev-parse", "origin/#{base_branch}"])
+
+    File.write!(Path.join(workspace, ".symphony-base-branch"), base_branch <> "\n")
+    File.write!(Path.join(workspace, ".symphony-working-branch"), base_branch <> "\n")
+
+    {runtime_head_sha, expected_head_sha}
   end
 
   defp init_workspace_repo!(workspace_root, issue_identifier) do

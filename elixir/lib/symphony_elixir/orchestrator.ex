@@ -631,6 +631,14 @@ defmodule SymphonyElixir.Orchestrator do
     sort_issues_for_dispatch(issues)
   end
 
+  @doc false
+  @spec reconcile_rework_stale_workspace_for_test(Issue.t(), map(), atom(), String.t() | nil) ::
+          {:ok, map()} | {:error, term(), map()} | :not_applicable
+  def reconcile_rework_stale_workspace_for_test(%Issue{} = issue, execution_head, stale_reason, trace_id \\ nil)
+      when is_map(execution_head) and is_atom(stale_reason) do
+    maybe_reconcile_rework_stale_workspace(issue, trace_id, execution_head, stale_reason)
+  end
+
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
 
   defp reconcile_running_issue_states([issue | rest], state, active_states, terminal_states) do
@@ -1045,15 +1053,41 @@ defmodule SymphonyElixir.Orchestrator do
         )
 
       stale_reason ->
-        block_stale_workspace_head(
-          state,
-          issue,
-          attempt,
-          trace_id,
-          resolved_resume_checkpoint,
-          execution_head,
-          stale_reason
-        )
+        case maybe_reconcile_rework_stale_workspace(issue, trace_id, execution_head, stale_reason) do
+          {:ok, reconciled_execution_head} ->
+            dispatch_ready_issue(
+              state,
+              issue,
+              attempt,
+              trace_id,
+              retry_delay_type,
+              resolved_resume_checkpoint,
+              reconciled_execution_head,
+              retry_metadata
+            )
+
+          {:error, stale_block_reason, stale_execution_head} ->
+            block_stale_workspace_head(
+              state,
+              issue,
+              attempt,
+              trace_id,
+              resolved_resume_checkpoint,
+              stale_execution_head,
+              stale_block_reason
+            )
+
+          :not_applicable ->
+            block_stale_workspace_head(
+              state,
+              issue,
+              attempt,
+              trace_id,
+              resolved_resume_checkpoint,
+              execution_head,
+              stale_reason
+            )
+        end
     end
   end
 
@@ -4255,6 +4289,9 @@ defmodule SymphonyElixir.Orchestrator do
       end
 
     case stale_reason do
+      {:reconcile_failure, pre_reconcile_reason, reconcile_failure_reason} ->
+        "#{stale_workspace_head_reason(execution_head, pre_reconcile_reason)}; reconcile_failure=#{reconcile_failure_reason}"
+
       :behind ->
         "stale_workspace_head: reason=behind runtime #{Map.get(execution_head, :runtime_head_sha)} is behind expected #{Map.get(execution_head, :expected_head_sha)}#{branch_suffix}"
 
@@ -4284,6 +4321,91 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp resolve_execution_branch(_workspace), do: nil
 
+  defp resolve_base_branch(workspace) when is_binary(workspace) do
+    case read_trimmed(Path.join(workspace, ".symphony-base-branch")) do
+      branch when is_binary(branch) and branch != "" -> branch
+      _ -> "main"
+    end
+  end
+
+  defp resolve_base_branch(_workspace), do: "main"
+
+  defp maybe_reconcile_rework_stale_workspace(
+         %Issue{state: issue_state} = issue,
+         trace_id,
+         execution_head,
+         stale_reason
+       )
+       when is_binary(issue_state) and is_map(execution_head) do
+    if normalize_issue_state(issue_state) == "rework" do
+      reconcile_rework_stale_workspace(issue, trace_id, execution_head, stale_reason)
+    else
+      :not_applicable
+    end
+  end
+
+  defp maybe_reconcile_rework_stale_workspace(_issue, _trace_id, _execution_head, _stale_reason),
+    do: :not_applicable
+
+  defp reconcile_rework_stale_workspace(issue, trace_id, execution_head, stale_reason) do
+    workspace = Map.get(execution_head, :workspace)
+    base_branch = resolve_base_branch(workspace)
+
+    with_log_metadata(issue_log_metadata(issue.id, issue.identifier, nil, trace_id), fn ->
+      Logger.info("Reconciling stale rework workspace before dispatch for #{issue_context(issue)} stale_reason=#{stale_reason} base_branch=#{base_branch}")
+    end)
+
+    with {:ok, _output} <- git_command(workspace, ["fetch", "origin", base_branch], :fetch_origin_base_branch),
+         :ok <- switch_to_base_branch(workspace, base_branch),
+         {:ok, _output} <- git_command(workspace, ["merge", "--ff-only", "origin/#{base_branch}"], :ff_only_merge_origin_base_branch),
+         :ok <- write_working_branch_marker(workspace, base_branch) do
+      reconciled_execution_head = capture_execution_head(issue, nil, nil)
+
+      case stale_execution_head_reason(reconciled_execution_head) do
+        nil ->
+          {:ok, reconciled_execution_head}
+
+        post_reconcile_reason ->
+          {:error, {:reconcile_failure, stale_reason, "post_reconcile_stale_reason=#{post_reconcile_reason} base_branch=#{base_branch}"}, reconciled_execution_head}
+      end
+    else
+      {:error, reconcile_failure} ->
+        {:error, {:reconcile_failure, stale_reason, "#{reconcile_failure} base_branch=#{base_branch}"}, execution_head}
+    end
+  end
+
+  defp switch_to_base_branch(workspace, base_branch)
+       when is_binary(workspace) and is_binary(base_branch) do
+    base_ref = "refs/heads/#{base_branch}"
+
+    switch_args =
+      if git_status_success?(workspace, ["show-ref", "--verify", "--quiet", base_ref]) do
+        ["switch", base_branch]
+      else
+        ["switch", "-c", base_branch, "--track", "origin/#{base_branch}"]
+      end
+
+    case git_command(workspace, switch_args, :switch_base_branch) do
+      {:ok, _output} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp switch_to_base_branch(_workspace, _base_branch), do: {:error, "switch_base_branch: invalid_workspace_or_branch"}
+
+  defp write_working_branch_marker(workspace, base_branch)
+       when is_binary(workspace) and is_binary(base_branch) do
+    marker_path = Path.join(workspace, ".symphony-working-branch")
+
+    case File.write(marker_path, base_branch <> "\n") do
+      :ok -> :ok
+      {:error, reason} -> {:error, "write_working_branch_marker_failed=#{inspect(reason)}"}
+    end
+  end
+
+  defp write_working_branch_marker(_workspace, _base_branch),
+    do: {:error, "write_working_branch_marker_failed=invalid_workspace_or_branch"}
+
   defp resolve_expected_head_sha(workspace, execution_branch)
        when is_binary(workspace) and is_binary(execution_branch) and execution_branch != "" do
     [
@@ -4305,6 +4427,22 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp git_trimmed(_workspace, _args), do: nil
+
+  defp git_command(workspace, args, step_label)
+       when is_binary(workspace) and is_list(args) and is_atom(step_label) do
+    case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
+      {output, 0} ->
+        {:ok, String.trim(output)}
+
+      {output, status} ->
+        trimmed = String.trim(output)
+        detail = if trimmed == "", do: "no_output", else: trimmed
+        {:error, "#{step_label}: exit_status=#{status} output=#{detail}"}
+    end
+  end
+
+  defp git_command(_workspace, _args, step_label) when is_atom(step_label),
+    do: {:error, "#{step_label}: invalid_workspace_or_args"}
 
   defp git_status_success?(workspace, args) when is_binary(workspace) and is_list(args) do
     match?({_output, 0}, System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true))
