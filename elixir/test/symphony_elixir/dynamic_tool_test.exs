@@ -1931,6 +1931,24 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert blocked_inline_literal["success"] == false
     assert decode_tool_text(blocked_inline_literal)["error"]["message"] =~ "review-ready issue transitions require"
 
+    blocked_ambiguous_transition_intent =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($issue: String!, $payload: IssueUpdateInput!) { issueUpdate(id: $issue, input: $payload) { success } }",
+          "variables" => %{"issue" => "LET-416", "payload" => %{"stateId" => "in-review-state-id"}}
+        },
+        workspace: workspace,
+        linear_client: fn _query, _variables, _opts ->
+          flunk("unexpected ambiguous transition mutation without fail-closed guard")
+        end
+      )
+
+    assert blocked_ambiguous_transition_intent["success"] == false
+
+    assert decode_tool_text(blocked_ambiguous_transition_intent)["error"]["message"] =~
+             "review-ready issue transitions require"
+
     assert DynamicTool.execute(
              "symphony_handoff_check",
              %{
@@ -2071,6 +2089,32 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert allowed_inline_literal["success"] == true
 
     assert_received {:issue_update_literal, "mutation { issueUpdate(id: \"LET-416\", input: { stateId: \"in-review-state-id\" }) { success } }", %{}}
+
+    allowed_non_state_update =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $title: String!) { issueUpdate(id: $id, input: { title: $title }) { success } }",
+          "variables" => %{"id" => "LET-416", "title" => "keep metadata path"}
+        },
+        workspace: workspace,
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              flunk("unexpected state lookup for non-state issueUpdate")
+
+            query =~ "issueUpdate" ->
+              send(self(), {:issue_update_non_state, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected non-state GraphQL query: #{query}")
+          end
+        end
+      )
+
+    assert allowed_non_state_update["success"] == true
+    assert_received {:issue_update_non_state, %{"id" => "LET-416", "title" => "keep metadata path"}}
   end
 
   test "linear_graphql review-ready guard works without an injected git_runner" do
