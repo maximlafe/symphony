@@ -73,7 +73,8 @@ defmodule SymphonyElixir.Codex.AppServer do
              expanded_workspace,
              Keyword.get(opts, :command_env, []),
              Keyword.get(opts, :issue),
-             Keyword.get(opts, :cost_profile_key)
+             Keyword.get(opts, :cost_profile_key),
+             Keyword.get(opts, :cost_stage)
            ) do
       account_id = Keyword.get(opts, :account_id)
 
@@ -112,7 +113,8 @@ defmodule SymphonyElixir.Codex.AppServer do
            expanded_cwd,
            Keyword.get(opts, :command_env, []),
            Keyword.get(opts, :issue),
-           Keyword.get(opts, :cost_profile_key)
+           Keyword.get(opts, :cost_profile_key),
+           Keyword.get(opts, :cost_stage)
          ) do
       {:ok, port, cost_decision} ->
         case send_initialize(port) do
@@ -233,14 +235,14 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, command_env, issue, cost_profile_key) do
+  defp start_port(workspace, command_env, issue, cost_profile_key, cost_stage) do
     executable = System.find_executable("bash")
 
     if is_nil(executable) do
       {:error, :bash_not_found}
     else
       with {:ok, normalized_command_env} <- normalize_command_env(command_env) do
-        cost_decision = Config.codex_cost_decision(cost_decision_context(issue, cost_profile_key))
+        cost_decision = Config.codex_cost_decision(cost_decision_context(issue, cost_profile_key, cost_stage))
         command = Map.fetch!(cost_decision, :command)
         log_codex_cost_decision(issue, cost_decision)
 
@@ -263,13 +265,25 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp cost_decision_context(issue, profile_key) when is_binary(profile_key) and profile_key != "" do
+  defp cost_decision_context(issue, profile_key, stage_override) when is_binary(profile_key) and profile_key != "" do
     issue
     |> cost_context_map()
     |> Map.put(:cost_profile_key, profile_key)
+    |> maybe_put_stage_override(stage_override)
   end
 
-  defp cost_decision_context(issue, _profile_key), do: issue
+  defp cost_decision_context(issue, _profile_key, stage_override) do
+    issue
+    |> cost_context_map()
+    |> maybe_put_stage_override(stage_override)
+  end
+
+  defp maybe_put_stage_override(context, stage_override)
+       when is_map(context) and is_binary(stage_override) and stage_override != "" do
+    Map.put(context, :phase, stage_override)
+  end
+
+  defp maybe_put_stage_override(context, _stage_override), do: context
 
   defp cost_context_map(%_{} = struct), do: Map.from_struct(struct)
   defp cost_context_map(%{} = map), do: map

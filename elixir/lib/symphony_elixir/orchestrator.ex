@@ -1839,7 +1839,8 @@ defmodule SymphonyElixir.Orchestrator do
              codex_account: codex_account,
              trace_id: trace_id,
              resume_checkpoint: resume_checkpoint,
-             cost_profile_key: retry_cost_profile_key(retry_metadata, resume_checkpoint)
+             cost_profile_key: retry_cost_profile_key(retry_metadata, resume_checkpoint),
+             cost_stage: retry_cost_stage(retry_metadata, resume_checkpoint)
            )
          end) do
       {:ok, pid} ->
@@ -1873,6 +1874,7 @@ defmodule SymphonyElixir.Orchestrator do
             resume_fallback_reason: checkpoint_resume_fallback_reason(resume_checkpoint),
             issue_token_total: retry_issue_token_total(retry_metadata, resume_checkpoint),
             retry_cost_profile_key: retry_cost_profile_key(retry_metadata, resume_checkpoint),
+            retry_cost_stage: retry_cost_stage(retry_metadata, resume_checkpoint),
             last_codex_message: nil,
             last_codex_timestamp: nil,
             last_codex_event: nil,
@@ -2980,6 +2982,15 @@ defmodule SymphonyElixir.Orchestrator do
   defp retry_cost_profile_key(_retry_metadata, resume_checkpoint),
     do: checkpoint_cost_profile_key(resume_checkpoint)
 
+  defp retry_cost_stage(retry_metadata, resume_checkpoint)
+       when is_map(retry_metadata) do
+    normalize_optional_string(map_any(retry_metadata, [:cost_stage, "cost_stage"])) ||
+      checkpoint_cost_stage(resume_checkpoint)
+  end
+
+  defp retry_cost_stage(_retry_metadata, resume_checkpoint),
+    do: checkpoint_cost_stage(resume_checkpoint)
+
   defp checkpoint_issue_token_total(%{} = checkpoint) do
     checkpoint
     |> map_any([:issue_token_total, "issue_token_total"])
@@ -2999,6 +3010,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp checkpoint_cost_profile_key(%{} = checkpoint) do
     normalize_optional_string(map_any(checkpoint, [:cost_profile_key, "cost_profile_key"]))
+  end
+
+  defp checkpoint_cost_stage(%{} = checkpoint) do
+    normalize_optional_string(map_any(checkpoint, [:cost_stage, "cost_stage"]))
   end
 
   defp checkpoint_continuation_reason(%{} = checkpoint) do
