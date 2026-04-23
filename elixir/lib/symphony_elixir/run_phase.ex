@@ -69,6 +69,9 @@ defmodule SymphonyElixir.RunPhase do
     |> Map.put_new(:last_reported_phase, nil)
     |> Map.put_new(:reported_milestones, MapSet.new())
     |> Map.put_new(:pending_milestones, MapSet.new())
+    |> Map.put_new(:pre_run_hook_active, false)
+    |> Map.put_new(:pre_run_hook_started_at, nil)
+    |> Map.put_new(:pre_run_hook_timeout_ms, nil)
   end
 
   @spec apply_update(map(), map()) :: map()
@@ -90,8 +93,24 @@ defmodule SymphonyElixir.RunPhase do
     |> Map.put(:operational_notice, operational_notice)
   end
 
-  @spec snapshot_fields(map(), DateTime.t(), integer()) :: map()
-  def snapshot_fields(running_entry, now, stall_timeout_ms) when is_map(running_entry) do
+  @spec activity_fields(map(), DateTime.t(), integer(), integer() | nil) :: map()
+  def activity_fields(running_entry, now, stall_timeout_ms, hook_timeout_ms)
+      when is_map(running_entry) do
+    last_activity_at = Map.get(running_entry, :last_codex_timestamp) || Map.get(running_entry, :started_at)
+    effective_stall_timeout_ms = effective_stall_timeout_ms(running_entry, now, stall_timeout_ms, hook_timeout_ms)
+    elapsed_ms = elapsed_since(last_activity_at, now)
+
+    %{
+      last_activity_at: last_activity_at,
+      elapsed_ms: elapsed_ms,
+      stall_timeout_ms: effective_stall_timeout_ms,
+      activity_state: activity_state(elapsed_ms, effective_stall_timeout_ms)
+    }
+  end
+
+  @spec snapshot_fields(map(), DateTime.t(), integer(), integer() | nil) :: map()
+  def snapshot_fields(running_entry, now, stall_timeout_ms, hook_timeout_ms \\ nil)
+      when is_map(running_entry) do
     phase =
       normalize_phase(Map.get(running_entry, :run_phase)) ||
         phase_for_command(Map.get(running_entry, :current_command)) ||
@@ -99,13 +118,13 @@ defmodule SymphonyElixir.RunPhase do
         :editing
 
     phase_started_at = Map.get(running_entry, :phase_started_at) || Map.get(running_entry, :started_at)
-    last_activity_at = Map.get(running_entry, :last_codex_timestamp) || Map.get(running_entry, :started_at)
+    activity = activity_fields(running_entry, now, stall_timeout_ms, hook_timeout_ms)
 
     %{
       run_phase: phase_label(phase),
       phase_started_at: phase_started_at,
-      last_activity_at: last_activity_at,
-      activity_state: activity_state(last_activity_at, now, stall_timeout_ms),
+      last_activity_at: activity.last_activity_at,
+      activity_state: activity.activity_state,
       current_command: Map.get(running_entry, :current_command),
       external_step: Map.get(running_entry, :external_step),
       current_step: current_step(running_entry),
@@ -275,12 +294,11 @@ defmodule SymphonyElixir.RunPhase do
     end
   end
 
-  defp activity_state(_last_activity_at, _now, stall_timeout_ms)
+  defp activity_state(_elapsed_ms, stall_timeout_ms)
        when not is_integer(stall_timeout_ms) or stall_timeout_ms <= 0,
        do: "alive"
 
-  defp activity_state(%DateTime{} = last_activity_at, %DateTime{} = now, stall_timeout_ms) do
-    elapsed_ms = max(0, DateTime.diff(now, last_activity_at, :millisecond))
+  defp activity_state(elapsed_ms, stall_timeout_ms) when is_integer(elapsed_ms) do
     slow_threshold_ms = max(div(stall_timeout_ms, 2), 1)
 
     cond do
@@ -290,7 +308,51 @@ defmodule SymphonyElixir.RunPhase do
     end
   end
 
-  defp activity_state(_last_activity_at, _now, _stall_timeout_ms), do: "alive"
+  defp activity_state(_elapsed_ms, _stall_timeout_ms), do: "alive"
+
+  defp effective_stall_timeout_ms(running_entry, now, stall_timeout_ms, hook_timeout_ms) do
+    base_timeout_ms = normalize_timeout_ms(stall_timeout_ms)
+    hook_timeout_ms = resolve_pre_run_hook_timeout_ms(running_entry, hook_timeout_ms)
+
+    if pre_run_hook_guard_active?(running_entry, now, hook_timeout_ms) do
+      max(base_timeout_ms, hook_timeout_ms)
+    else
+      base_timeout_ms
+    end
+  end
+
+  defp pre_run_hook_guard_active?(running_entry, now, hook_timeout_ms)
+       when is_map(running_entry) and is_integer(hook_timeout_ms) and hook_timeout_ms > 0 do
+    pre_run_hook_active? = Map.get(running_entry, :pre_run_hook_active) == true
+    pre_run_hook_started_at = Map.get(running_entry, :pre_run_hook_started_at) || Map.get(running_entry, :started_at)
+    codex_started? = match?(%DateTime{}, Map.get(running_entry, :last_codex_timestamp))
+    elapsed_ms = elapsed_since(pre_run_hook_started_at, now)
+
+    pre_run_hook_active? and not codex_started? and
+      match?(%DateTime{}, pre_run_hook_started_at) and
+      is_integer(elapsed_ms) and elapsed_ms <= hook_timeout_ms
+  end
+
+  defp pre_run_hook_guard_active?(_running_entry, _now, _hook_timeout_ms), do: false
+
+  defp resolve_pre_run_hook_timeout_ms(running_entry, hook_timeout_ms) when is_map(running_entry) do
+    running_entry
+    |> Map.get(:pre_run_hook_timeout_ms)
+    |> normalize_timeout_ms()
+    |> case do
+      0 -> normalize_timeout_ms(hook_timeout_ms)
+      value -> value
+    end
+  end
+
+  defp elapsed_since(%DateTime{} = timestamp, %DateTime{} = now) do
+    max(0, DateTime.diff(now, timestamp, :millisecond))
+  end
+
+  defp elapsed_since(_timestamp, _now), do: nil
+
+  defp normalize_timeout_ms(value) when is_integer(value) and value > 0, do: value
+  defp normalize_timeout_ms(_value), do: 0
 
   defp phase_for_command(nil), do: nil
 
