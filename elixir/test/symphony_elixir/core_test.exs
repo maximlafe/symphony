@@ -5413,6 +5413,7 @@ defmodule SymphonyElixir.CoreTest do
     assert {_, 0} = System.cmd("git", ["clone", origin_repo, workspace], stderr_to_stdout: true)
     git_ok!(workspace, ["config", "user.name", "Symphony Tests"])
     git_ok!(workspace, ["config", "user.email", "symphony-tests@example.com"])
+    git_ok!(workspace, ["checkout", "-B", base_branch, "origin/#{base_branch}"])
 
     runtime_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
 
