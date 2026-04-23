@@ -263,6 +263,23 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
 
+  def handle_info(
+        {:worker_phase_update, issue_id, %{phase: _, timestamp: _} = update},
+        %{running: running} = state
+      ) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        updated_running_entry = integrate_worker_phase_update(running_entry, update)
+        notify_dashboard()
+        finalize_running_update_result({:keep_running, state}, issue_id, updated_running_entry)
+    end
+  end
+
+  def handle_info({:worker_phase_update, _issue_id, _update}, state), do: {:noreply, state}
+
   def handle_info({:controller_finalizer_result, issue_id, result}, %{running: running} = state) do
     case Map.get(running, issue_id) do
       %{worker_kind: :controller_finalizer} ->
@@ -744,6 +761,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp reconcile_stalled_running_issues(%State{} = state) do
     timeout_ms = Config.settings!().codex.stall_timeout_ms
+    hook_timeout_ms = Config.settings!().hooks.timeout_ms
 
     cond do
       timeout_ms <= 0 ->
@@ -756,18 +774,26 @@ defmodule SymphonyElixir.Orchestrator do
         now = DateTime.utc_now()
 
         Enum.reduce(state.running, state, fn {issue_id, running_entry}, state_acc ->
-          restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
+          restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms, hook_timeout_ms)
         end)
     end
   end
 
-  defp restart_stalled_issue(state, _issue_id, %{worker_kind: :controller_finalizer}, _now, _timeout_ms),
-    do: state
+  defp restart_stalled_issue(
+         state,
+         _issue_id,
+         %{worker_kind: :controller_finalizer},
+         _now,
+         _timeout_ms,
+         _hook_timeout_ms
+       ),
+       do: state
 
-  defp restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
-    elapsed_ms = stall_elapsed_ms(running_entry, now)
+  defp restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms, hook_timeout_ms) do
+    activity = RunPhase.activity_fields(running_entry, now, timeout_ms, hook_timeout_ms)
+    elapsed_ms = activity.elapsed_ms
 
-    if is_integer(elapsed_ms) and elapsed_ms > timeout_ms do
+    if activity.activity_state == "stalled" and is_integer(elapsed_ms) do
       identifier = Map.get(running_entry, :identifier, issue_id)
       session_id = running_entry_session_id(running_entry)
       trace_id = running_entry_trace_id(running_entry)
@@ -797,24 +823,6 @@ defmodule SymphonyElixir.Orchestrator do
       state
     end
   end
-
-  defp stall_elapsed_ms(running_entry, now) do
-    running_entry
-    |> last_activity_timestamp()
-    |> case do
-      %DateTime{} = timestamp ->
-        max(0, DateTime.diff(now, timestamp, :millisecond))
-
-      _ ->
-        nil
-    end
-  end
-
-  defp last_activity_timestamp(running_entry) when is_map(running_entry) do
-    Map.get(running_entry, :last_codex_timestamp) || Map.get(running_entry, :started_at)
-  end
-
-  defp last_activity_timestamp(_running_entry), do: nil
 
   defp terminate_task(pid) when is_pid(pid) do
     case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
@@ -1808,49 +1816,51 @@ defmodule SymphonyElixir.Orchestrator do
         end)
 
         started_at = DateTime.utc_now()
+        pre_run_hook_guard = pre_run_hook_guard_fields(started_at)
+
+        running_entry =
+          %{
+            pid: pid,
+            ref: ref,
+            identifier: issue.identifier,
+            issue: issue,
+            trace_id: trace_id,
+            session_id: nil,
+            thread_id: nil,
+            turn_id: nil,
+            replacement_of_session_id: retry_metadata_replacement_of_session_id(retry_metadata),
+            replacement_session_id: nil,
+            codex_account_id: codex_account.id,
+            runtime_head_sha: Map.get(execution_head, :runtime_head_sha),
+            expected_head_sha: Map.get(execution_head, :expected_head_sha),
+            execution_branch: Map.get(execution_head, :execution_branch),
+            continuation_reason: checkpoint_continuation_reason(resume_checkpoint),
+            resume_mode: checkpoint_resume_mode(resume_checkpoint),
+            resume_fallback_reason: checkpoint_resume_fallback_reason(resume_checkpoint),
+            issue_token_total: retry_issue_token_total(retry_metadata, resume_checkpoint),
+            retry_cost_profile_key: retry_cost_profile_key(retry_metadata, resume_checkpoint),
+            last_codex_message: nil,
+            last_codex_timestamp: nil,
+            last_codex_event: nil,
+            codex_app_server_pid: nil,
+            codex_input_tokens: 0,
+            codex_output_tokens: 0,
+            codex_total_tokens: 0,
+            codex_last_reported_input_tokens: 0,
+            codex_last_reported_output_tokens: 0,
+            codex_last_reported_total_tokens: 0,
+            turn_count: 0,
+            retry_attempt: normalize_retry_attempt(attempt),
+            retry_delay_type: retry_delay_type,
+            started_at: started_at
+          }
+          |> Map.merge(pre_run_hook_guard)
 
         running =
           Map.put(
             state.running,
             issue.id,
-            RunPhase.initialize(
-              %{
-                pid: pid,
-                ref: ref,
-                identifier: issue.identifier,
-                issue: issue,
-                trace_id: trace_id,
-                session_id: nil,
-                thread_id: nil,
-                turn_id: nil,
-                replacement_of_session_id: retry_metadata_replacement_of_session_id(retry_metadata),
-                replacement_session_id: nil,
-                codex_account_id: codex_account.id,
-                runtime_head_sha: Map.get(execution_head, :runtime_head_sha),
-                expected_head_sha: Map.get(execution_head, :expected_head_sha),
-                execution_branch: Map.get(execution_head, :execution_branch),
-                continuation_reason: checkpoint_continuation_reason(resume_checkpoint),
-                resume_mode: checkpoint_resume_mode(resume_checkpoint),
-                resume_fallback_reason: checkpoint_resume_fallback_reason(resume_checkpoint),
-                issue_token_total: retry_issue_token_total(retry_metadata, resume_checkpoint),
-                retry_cost_profile_key: retry_cost_profile_key(retry_metadata, resume_checkpoint),
-                last_codex_message: nil,
-                last_codex_timestamp: nil,
-                last_codex_event: nil,
-                codex_app_server_pid: nil,
-                codex_input_tokens: 0,
-                codex_output_tokens: 0,
-                codex_total_tokens: 0,
-                codex_last_reported_input_tokens: 0,
-                codex_last_reported_output_tokens: 0,
-                codex_last_reported_total_tokens: 0,
-                turn_count: 0,
-                retry_attempt: normalize_retry_attempt(attempt),
-                retry_delay_type: retry_delay_type,
-                started_at: started_at
-              },
-              started_at
-            )
+            RunPhase.initialize(running_entry, started_at)
           )
 
         %{
@@ -1883,6 +1893,24 @@ defmodule SymphonyElixir.Orchestrator do
         )
     end
   end
+
+  defp pre_run_hook_guard_fields(%DateTime{} = started_at) do
+    hooks = Config.settings!().hooks
+    hook_window? = hook_command_present?(hooks.after_create) or hook_command_present?(hooks.before_run)
+    hook_timeout_ms = normalize_positive_timeout_ms(hooks.timeout_ms)
+
+    %{
+      pre_run_hook_active: hook_window?,
+      pre_run_hook_started_at: if(hook_window?, do: started_at, else: nil),
+      pre_run_hook_timeout_ms: hook_timeout_ms
+    }
+  end
+
+  defp hook_command_present?(command) when is_binary(command), do: String.trim(command) != ""
+  defp hook_command_present?(_command), do: false
+
+  defp normalize_positive_timeout_ms(value) when is_integer(value) and value > 0, do: value
+  defp normalize_positive_timeout_ms(_value), do: nil
 
   defp maybe_failover_running_issue(
          %State{} = state,
@@ -4445,12 +4473,13 @@ defmodule SymphonyElixir.Orchestrator do
     state = refresh_runtime_config(state)
     now = DateTime.utc_now()
     now_ms = System.monotonic_time(:millisecond)
+    stall_timeout_ms = Config.settings!().codex.stall_timeout_ms
+    hook_timeout_ms = Config.settings!().hooks.timeout_ms
 
     running =
       state.running
       |> Enum.map(fn {issue_id, metadata} ->
-        runtime_fields =
-          RunPhase.snapshot_fields(metadata, now, Config.settings!().codex.stall_timeout_ms)
+        runtime_fields = RunPhase.snapshot_fields(metadata, now, stall_timeout_ms, hook_timeout_ms)
 
         %{
           issue_id: issue_id,
@@ -4618,6 +4647,64 @@ defmodule SymphonyElixir.Orchestrator do
 
     {updated_running_entry, token_delta}
   end
+
+  defp integrate_worker_phase_update(running_entry, %{phase: phase} = update) do
+    running_entry = RunPhase.initialize(running_entry)
+    timestamp = Map.get(update, :timestamp) || DateTime.utc_now()
+    pre_run_hook_timeout_ms = normalize_positive_timeout_ms(Map.get(update, :pre_run_hook_timeout_ms))
+
+    case normalize_worker_phase(phase) do
+      :pre_run_hook_enter ->
+        running_entry
+        |> Map.put(:pre_run_hook_active, true)
+        |> Map.put(
+          :pre_run_hook_started_at,
+          Map.get(running_entry, :pre_run_hook_started_at) || timestamp
+        )
+        |> maybe_put_pre_run_hook_timeout(pre_run_hook_timeout_ms)
+        |> Map.put(:run_phase, :waiting_external)
+        |> Map.put(:phase_started_at, timestamp)
+        |> Map.put(:current_command, nil)
+        |> Map.put(:external_step, "pre_run_hook")
+
+      :pre_run_hook_exit ->
+        running_entry
+        |> Map.put(:pre_run_hook_active, false)
+        |> Map.put(:pre_run_hook_started_at, nil)
+        |> maybe_put_pre_run_hook_timeout(pre_run_hook_timeout_ms)
+        |> clear_pre_run_hook_step(timestamp)
+
+      :unknown ->
+        running_entry
+    end
+  end
+
+  defp clear_pre_run_hook_step(running_entry, timestamp) when is_map(running_entry) do
+    if Map.get(running_entry, :external_step) == "pre_run_hook" do
+      running_entry
+      |> Map.put(:run_phase, :editing)
+      |> Map.put(:phase_started_at, timestamp)
+      |> Map.put(:current_command, nil)
+      |> Map.put(:external_step, nil)
+    else
+      running_entry
+    end
+  end
+
+  defp maybe_put_pre_run_hook_timeout(running_entry, timeout_ms)
+       when is_map(running_entry) and is_integer(timeout_ms) and timeout_ms > 0 do
+    Map.put(running_entry, :pre_run_hook_timeout_ms, timeout_ms)
+  end
+
+  defp maybe_put_pre_run_hook_timeout(running_entry, _timeout_ms), do: running_entry
+
+  defp normalize_worker_phase(value) when value in [:pre_run_hook_enter, "pre_run_hook_enter"],
+    do: :pre_run_hook_enter
+
+  defp normalize_worker_phase(value) when value in [:pre_run_hook_exit, "pre_run_hook_exit"],
+    do: :pre_run_hook_exit
+
+  defp normalize_worker_phase(_value), do: :unknown
 
   defp apply_routing_update(running_entry, update) when is_map(running_entry) and is_map(update) do
     running_entry

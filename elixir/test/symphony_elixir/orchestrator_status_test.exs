@@ -2863,6 +2863,73 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert remaining_ms <= 10_500
   end
 
+  test "orchestrator keeps active pre-run hook window out of stalled retry path" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      codex_stall_timeout_ms: 1_000,
+      hook_timeout_ms: 10_000
+    )
+
+    issue_id = "issue-pre-run-hook-guard"
+    orchestrator_name = Module.concat(__MODULE__, :PreRunHookGuardOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        send(worker_pid, :done)
+      end
+
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    started_at = DateTime.add(DateTime.utc_now(), -5, :second)
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: make_ref(),
+      identifier: "MT-PRE-HOOK",
+      issue: %Issue{id: issue_id, identifier: "MT-PRE-HOOK", state: "In Progress"},
+      trace_id: "trace-pre-hook",
+      session_id: "thread-pre-hook",
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at,
+      pre_run_hook_active: true,
+      pre_run_hook_started_at: started_at,
+      pre_run_hook_timeout_ms: 10_000
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, :tick)
+
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        Map.has_key?(state.running, issue_id) and
+          not Map.has_key?(state.retry_attempts, issue_id) and
+          state.poll_check_in_progress == false
+      end)
+
+    assert Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert Process.alive?(worker_pid)
+  end
+
   test "status dashboard renders offline marker to terminal" do
     rendered =
       ExUnit.CaptureIO.capture_io(fn ->

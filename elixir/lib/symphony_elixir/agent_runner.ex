@@ -22,14 +22,34 @@ defmodule SymphonyElixir.AgentRunner do
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
     trace_id = trace_id(issue, opts)
     issue_with_trace = attach_trace_id(issue, trace_id)
+    pre_run_hook_window? = pre_run_hook_window_enabled?()
 
     with_issue_logger_metadata(issue_with_trace, trace_id, fn ->
       Logger.info("Starting agent run for #{issue_context(issue)}")
 
+      maybe_send_pre_run_hook_phase_update(
+        codex_update_recipient,
+        issue_with_trace,
+        :pre_run_hook_enter,
+        trace_id,
+        pre_run_hook_window?
+      )
+
       case Workspace.create_for_issue(issue_with_trace) do
         {:ok, workspace} ->
           try do
-            with :ok <- Workspace.run_before_run_hook(workspace, issue_with_trace, trace_id: trace_id),
+            before_run_result =
+              Workspace.run_before_run_hook(workspace, issue_with_trace, trace_id: trace_id)
+
+            maybe_send_pre_run_hook_phase_update(
+              codex_update_recipient,
+              issue_with_trace,
+              :pre_run_hook_exit,
+              trace_id,
+              pre_run_hook_window?
+            )
+
+            with :ok <- before_run_result,
                  :ok <- run_codex_turns(workspace, issue_with_trace, codex_update_recipient, opts) do
               :ok
             else
@@ -37,10 +57,26 @@ defmodule SymphonyElixir.AgentRunner do
                 raise_run_error(issue_with_trace, reason)
             end
           after
+            maybe_send_pre_run_hook_phase_update(
+              codex_update_recipient,
+              issue_with_trace,
+              :pre_run_hook_exit,
+              trace_id,
+              pre_run_hook_window?
+            )
+
             Workspace.run_after_run_hook(workspace, issue_with_trace, trace_id: trace_id)
           end
 
         {:error, reason} ->
+          maybe_send_pre_run_hook_phase_update(
+            codex_update_recipient,
+            issue_with_trace,
+            :pre_run_hook_exit,
+            trace_id,
+            pre_run_hook_window?
+          )
+
           raise_run_error(issue_with_trace, reason)
       end
     end)
@@ -66,6 +102,49 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp send_codex_update(_recipient, _issue, _message, _trace_id), do: :ok
+
+  defp maybe_send_pre_run_hook_phase_update(
+         recipient,
+         issue,
+         phase,
+         trace_id,
+         true
+       )
+       when is_pid(recipient) do
+    issue_id = issue_id(issue)
+    timeout_ms = hook_timeout_ms()
+
+    if is_binary(issue_id) and phase in [:pre_run_hook_enter, :pre_run_hook_exit] do
+      payload = %{
+        phase: phase,
+        timestamp: DateTime.utc_now(),
+        trace_id: trace_id,
+        pre_run_hook_timeout_ms: timeout_ms
+      }
+
+      send(recipient, {:worker_phase_update, issue_id, payload})
+    end
+
+    :ok
+  end
+
+  defp maybe_send_pre_run_hook_phase_update(_recipient, _issue, _phase, _trace_id, _pre_run_hook_window?),
+    do: :ok
+
+  defp pre_run_hook_window_enabled? do
+    hooks = Config.settings!().hooks
+    hook_command_present?(hooks.after_create) or hook_command_present?(hooks.before_run)
+  end
+
+  defp hook_command_present?(command) when is_binary(command), do: String.trim(command) != ""
+  defp hook_command_present?(_command), do: false
+
+  defp hook_timeout_ms do
+    case Config.settings!().hooks.timeout_ms do
+      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 -> timeout_ms
+      _ -> nil
+    end
+  end
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
@@ -273,6 +352,14 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp issue_id(%Issue{id: issue_id}) when is_binary(issue_id), do: issue_id
+
+  defp issue_id(issue) when is_map(issue) do
+    case Map.get(issue, :id) do
+      issue_id when is_binary(issue_id) -> issue_id
+      _ -> nil
+    end
+  end
+
   defp issue_id(_issue), do: nil
 
   defp issue_identifier(%Issue{identifier: identifier}) when is_binary(identifier), do: identifier
