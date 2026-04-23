@@ -1361,50 +1361,100 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp normalize_linear_issue_attachments(_attachments), do: []
 
   defp maybe_guard_review_ready_issue_update(query, variables, linear_client, opts) do
+    case review_ready_issue_update_query?(query) do
+      false ->
+        :ok
+
+      true ->
+        state_id = review_ready_state_id(query, variables)
+        issue_id = review_ready_issue_id(query, variables)
+
+        case review_ready_transition_guard_mode(query, variables, state_id, issue_id) do
+          :blocked_missing_identifiers ->
+            unresolved_transition_identifier_error()
+
+          :skip_guard ->
+            :ok
+
+          :enforce_guard ->
+            enforce_review_ready_transition_guard(issue_id, state_id, linear_client, opts)
+        end
+    end
+  end
+
+  defp review_ready_transition_guard_mode(query, variables, state_id, issue_id) do
+    cond do
+      review_ready_transition_intent?(query, variables) and
+          (not is_binary(state_id) or not is_binary(issue_id)) ->
+        :blocked_missing_identifiers
+
+      is_binary(state_id) and is_binary(issue_id) ->
+        :enforce_guard
+
+      true ->
+        :skip_guard
+    end
+  end
+
+  defp unresolved_transition_identifier_error do
+    {:error,
+     {:review_ready_transition_blocked,
+      %{
+        "reason" => "cannot resolve transition identifiers for state-changing issueUpdate mutation",
+        "reason_code" => "unresolved_transition_identifiers",
+        "required_tool" => @symphony_handoff_check_tool
+      }}}
+  end
+
+  defp enforce_review_ready_transition_guard(issue_id, state_id, linear_client, opts) do
     review_ready_states = Config.settings!().verification.review_ready_states
 
-    with true <- review_ready_issue_update_query?(query),
-         state_id when is_binary(state_id) <- review_ready_state_id(query, variables),
-         issue_id when is_binary(issue_id) <- review_ready_issue_id(query, variables),
-         {:ok, state_name} <- resolve_issue_state_name(issue_id, state_id, linear_client),
+    with {:ok, state_name} <- resolve_issue_state_name(issue_id, state_id, linear_client),
          true <- state_name in review_ready_states do
-      manifest_path = Config.settings!().verification.manifest_path
-      workspace = Keyword.get(opts, :workspace)
-      expected_manifest_path = expand_upload_path(manifest_path, workspace)
-
-      handoff_opts =
-        [repo_path: workspace]
-        |> maybe_put_runner_opt(:git_runner, Keyword.get(opts, :git_runner))
-
-      case HandoffCheck.review_ready_transition_allowed?(
-             expected_manifest_path,
-             issue_id,
-             state_name,
-             nil,
-             handoff_opts
-           ) do
-        :ok ->
-          :ok
-
-        {:error, reason, details} ->
-          {:error,
-           {:review_ready_transition_blocked,
-            Map.merge(details, %{
-              "reason_code" => to_string(reason),
-              "required_tool" => @symphony_handoff_check_tool,
-              "manifest_path" => Path.expand(expected_manifest_path)
-            })}}
-      end
+      run_review_ready_handoff_guard(issue_id, state_name, opts)
     else
       false -> :ok
-      nil -> :ok
       {:error, reason} -> {:error, reason}
-      _ -> :ok
+    end
+  end
+
+  defp run_review_ready_handoff_guard(issue_id, state_name, opts) do
+    manifest_path = Config.settings!().verification.manifest_path
+    workspace = Keyword.get(opts, :workspace)
+    expected_manifest_path = expand_upload_path(manifest_path, workspace)
+
+    handoff_opts =
+      [repo_path: workspace]
+      |> maybe_put_runner_opt(:git_runner, Keyword.get(opts, :git_runner))
+
+    case HandoffCheck.review_ready_transition_allowed?(
+           expected_manifest_path,
+           issue_id,
+           state_name,
+           nil,
+           handoff_opts
+         ) do
+      :ok ->
+        :ok
+
+      {:error, reason, details} ->
+        {:error,
+         {:review_ready_transition_blocked,
+          Map.merge(details, %{
+            "reason_code" => to_string(reason),
+            "required_tool" => @symphony_handoff_check_tool,
+            "manifest_path" => Path.expand(expected_manifest_path)
+          })}}
     end
   end
 
   defp review_ready_issue_update_query?(query) when is_binary(query) do
     Regex.match?(~r/\bissueUpdate\s*\(/, query)
+  end
+
+  defp review_ready_transition_intent?(query, variables) when is_binary(query) do
+    Regex.match?(~r/\bissueUpdate\s*\([^)]*\bstate(?:Id|_id)\b/s, query) or
+      graphql_map_contains_key?(variables, ["stateId", "state_id"])
   end
 
   defp guard_unsupported_linear_comments_filter(query) when is_binary(query) do
@@ -1504,6 +1554,30 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         nil
     end)
   end
+
+  defp graphql_map_contains_key?(%{} = value, keys) when is_list(keys) do
+    Enum.any?(value, fn {map_key, nested_value} ->
+      key =
+        cond do
+          is_binary(map_key) -> map_key
+          is_atom(map_key) -> Atom.to_string(map_key)
+          true -> nil
+        end
+
+      (is_binary(key) and key in keys and present_graphql_key_value?(nested_value)) or
+        graphql_map_contains_key?(nested_value, keys)
+    end)
+  end
+
+  defp graphql_map_contains_key?(value, keys) when is_list(value) and is_list(keys) do
+    Enum.any?(value, &graphql_map_contains_key?(&1, keys))
+  end
+
+  defp graphql_map_contains_key?(_value, _keys), do: false
+
+  defp present_graphql_key_value?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_graphql_key_value?(nil), do: false
+  defp present_graphql_key_value?(_value), do: true
 
   defp resolve_issue_state_name(issue_id, state_id, linear_client) do
     with {:ok, response} <- linear_client.(@symphony_handoff_check_state_query, %{"issueId" => issue_id}, []),
