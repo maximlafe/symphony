@@ -73,9 +73,16 @@ defmodule SymphonyElixir.HandoffCheckTest do
     - `summary`: Runtime proof, tests, and repo validation are complete.
     """
 
+    issue_description = """
+    ## Symphony
+    Repo: maximlafe/symphony
+    Required capabilities: runtime_smoke, artifact_upload, repo_validation
+    """
+
     assert {:ok, manifest} =
              HandoffCheck.evaluate(
                workpad,
+               issue_description: issue_description,
                issue_id: "LET-416",
                issue_identifier: "LET-416",
                workpad_path: "/tmp/workpad.md",
@@ -98,6 +105,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert manifest["contract_version"] == 2
     assert manifest["profile"] == "runtime"
     assert manifest["profile_source"] == "label"
+    assert manifest["issue"]["required_capabilities"] == ["runtime_smoke", "artifact_upload", "repo_validation"]
     assert manifest["validation_gate"]["gate"] == "final"
     assert manifest["git"]["head_sha"] == "abc123"
     assert manifest["missing_items"] == []
@@ -116,6 +124,60 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert manifest["profile"] == "generic"
     assert manifest["profile_source"] == "fallback"
     assert "pull request snapshot is missing" in manifest["missing_items"]
+  end
+
+  test "evaluate carries required capabilities into manifest and fails missing capability proof" do
+    workpad = """
+    ## Codex Workpad
+
+    ```text
+    host:/tmp/workspace@abc1234
+    ```
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [ ] uploaded attachment: `runtime-proof.log` -> runtime smoke log from the health check
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Runtime proof is pending.
+    """
+
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | bounded runtime smoke | artifact created | runtime_smoke | VPS | runtime_smoke |
+
+    ## Symphony
+    Repo: maximlafe/symphony
+    Required capabilities: runtime_smoke, artifact_upload
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_description: issue_description,
+               labels: ["verification:runtime"],
+               attachments: [],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert manifest["issue"]["required_capabilities"] == ["runtime_smoke", "artifact_upload"]
+    assert "required capability `runtime_smoke` is missing checked runtime smoke proof" in manifest["missing_items"]
+    assert "required capability `artifact_upload` is missing a checked uploaded Linear attachment" in manifest["missing_items"]
   end
 
   test "evaluate reports unsupported profile metadata and malformed artifact entries" do

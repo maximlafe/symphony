@@ -66,6 +66,7 @@ defmodule SymphonyElixir.ErrorClassifier do
     "is required for repo bootstrap",
     "no rule to make target 'symphony-bootstrap'",
     "repo bootstrap",
+    "acceptance capability preflight failed",
     "missing required auth",
     "missing required permissions",
     "missing required tools"

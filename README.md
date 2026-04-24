@@ -22,6 +22,7 @@ Fresh worker clones use the contract that lives in this repo:
 
 - `.agents/skills/` contains the worker skills that workspace clones rely on.
 - `make symphony-preflight` checks `codex`, `mise`, `gh auth status`, `LINEAR_API_KEY`, and non-interactive git access for the repo remote.
+- `make symphony-acceptance-preflight` checks explicit per-issue `Required capabilities:` entries from the task-spec against the current workspace and environment before execution claims capability blockers.
 - `make symphony-bootstrap` configures GitHub git auth with `gh auth setup-git`, installs the pinned toolchain via `mise`, and runs `mix setup` in `elixir/`.
 - `make symphony-dashboard-checks` runs the deterministic dashboard-focused test slice used for UI/runtime proof without invoking the real live e2e smoke.
 - `make symphony-runtime-smoke` runs the reusable local smoke scenarios for hooks, retry/reconcile, resume checkpoints, and workflow contract changes.

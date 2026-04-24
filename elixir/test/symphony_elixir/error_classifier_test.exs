@@ -39,6 +39,9 @@ defmodule SymphonyElixir.ErrorClassifierTest do
   end
 
   test "classifies unattended auth and bootstrap blockers as permanent" do
+    assert ErrorClassifier.classify({:agent_run_failed, "acceptance capability preflight failed; required=vps_ssh; missing=vps_ssh requires env `PROD_VPS_HOST`"}) ==
+             :permanent
+
     assert ErrorClassifier.classify({:workspace_hook_failed, "after_create", 1, "GH_TOKEN is required for unattended lead_status clone/push access."}) ==
              :permanent
 

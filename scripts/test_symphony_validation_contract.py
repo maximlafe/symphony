@@ -11,6 +11,8 @@ class SymphonyValidationContractTest(unittest.TestCase):
     def test_root_makefile_routes_runtime_smoke_and_repo_validation_to_dedicated_targets(self) -> None:
         makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 
+        self.assertIn("symphony-acceptance-preflight:", makefile)
+        self.assertIn("mix acceptance_capability.check", makefile)
         self.assertIn("symphony-runtime-smoke:", makefile)
         self.assertIn('cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) runtime-smoke SCENARIO="$(SCENARIO)"', makefile)
         self.assertIn("symphony-validate:", makefile)
@@ -57,6 +59,13 @@ class SymphonyValidationContractTest(unittest.TestCase):
         self.assertIn("working-directory:", workflow)
         self.assertIn("default: elixir", workflow)
         self.assertIn("working-directory: ${{ inputs.working-directory }}", workflow)
+
+    def test_push_skill_creates_pr_with_body_file_before_first_ci_event(self) -> None:
+        skill = (REPO_ROOT / ".agents/skills/push/SKILL.md").read_text(encoding="utf-8")
+
+        self.assertIn("Draft the complete PR body before any `gh pr create` call.", skill)
+        self.assertIn("gh pr create --base \"$base_branch\" --title \"$pr_title\" --body-file \"$pr_body_file\"", skill)
+        self.assertNotIn("gh pr create --base \"$base_branch\" --title \"$pr_title\"\n", skill)
 
 
 if __name__ == "__main__":
