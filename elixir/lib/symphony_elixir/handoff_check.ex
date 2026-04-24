@@ -3,7 +3,7 @@ defmodule SymphonyElixir.HandoffCheck do
   Evaluates the review-ready handoff contract and writes a machine-readable manifest.
   """
 
-  alias SymphonyElixir.{TelemetrySchema, ValidationGate}
+  alias SymphonyElixir.{AcceptanceCapability, TelemetrySchema, ValidationGate}
 
   @allowed_checkpoint_types ["human-verify", "decision", "human-action"]
   @allowed_risk_levels ["low", "medium", "high"]
@@ -61,6 +61,7 @@ defmodule SymphonyElixir.HandoffCheck do
 
     parsed_workpad = parse_workpad(workpad_body)
     {acceptance_matrix_items, acceptance_matrix_errors} = parse_acceptance_matrix(issue_description)
+    {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(issue_description)
 
     {validation_gate, git_metadata, validation_gate_errors} =
       resolve_validation_gate(parsed_workpad, opts)
@@ -80,6 +81,13 @@ defmodule SymphonyElixir.HandoffCheck do
         acceptance_matrix_errors
       )
 
+    capability_context = %{
+      required_capabilities: required_capabilities,
+      capability_parse_errors: capability_parse_errors,
+      proof_signals: proof_signals,
+      acceptance_matrix_missing_items: acceptance_matrix_missing_items
+    }
+
     missing_items =
       collect_missing_items(
         parsed_workpad,
@@ -89,7 +97,7 @@ defmodule SymphonyElixir.HandoffCheck do
         profile,
         profile_errors,
         validation_context,
-        acceptance_matrix_missing_items
+        capability_context
       )
 
     passed = missing_items == []
@@ -109,6 +117,7 @@ defmodule SymphonyElixir.HandoffCheck do
           "id" => issue_id,
           "identifier" => issue_identifier,
           "labels" => issue_labels,
+          "required_capabilities" => required_capabilities,
           "attachment_titles" => Enum.map(attachments, & &1["title"]),
           "acceptance_matrix" => acceptance_matrix_items
         },
@@ -914,16 +923,25 @@ defmodule SymphonyElixir.HandoffCheck do
          profile,
          profile_errors,
          validation_context,
-         acceptance_matrix_missing_items
+         capability_context
        ) do
     []
     |> Kernel.++(profile_errors)
+    |> Kernel.++(Map.get(capability_context, :capability_parse_errors, []))
     |> Kernel.++(validation_context["errors"])
     |> Kernel.++(validation_missing_items(parsed_workpad["validation"], issue_labels, validation_context["gate"]))
     |> Kernel.++(validation_gate_missing_items(validation_context["gate"], validation_context["git"]))
     |> Kernel.++(checkpoint_missing_items(parsed_workpad["checkpoint"]))
     |> Kernel.++(artifact_manifest_missing_items(parsed_workpad["artifacts"], attachments))
-    |> Kernel.++(acceptance_matrix_missing_items)
+    |> Kernel.++(Map.get(capability_context, :acceptance_matrix_missing_items, []))
+    |> Kernel.++(
+      required_capability_missing_items(
+        Map.get(capability_context, :required_capabilities, []),
+        parsed_workpad,
+        attachments,
+        Map.get(capability_context, :proof_signals, %{})
+      )
+    )
     |> Kernel.++(profile_missing_items(profile, parsed_workpad["artifacts"], attachments))
     |> Kernel.++(pr_snapshot_missing_items(pr_snapshot))
     |> Enum.uniq()
@@ -968,6 +986,45 @@ defmodule SymphonyElixir.HandoffCheck do
   defp validation_gate_change_classes(_validation_gate), do: []
 
   defp human_check_label(check) when is_binary(check), do: String.replace(check, "_", " ")
+
+  defp required_capability_missing_items(required_capabilities, parsed_workpad, attachments, proof_signals)
+       when is_list(required_capabilities) do
+    validation_items = parsed_workpad["validation"] || []
+    artifact_items = parsed_workpad["artifacts"] || []
+
+    []
+    |> maybe_require_capability(
+      "runtime_smoke" in required_capabilities,
+      Map.get(proof_signals, "runtime_smoke") == true,
+      "required capability `runtime_smoke` is missing checked runtime smoke proof"
+    )
+    |> maybe_require_capability(
+      "artifact_upload" in required_capabilities,
+      checked_uploaded_attachment_present?(artifact_items, attachments),
+      "required capability `artifact_upload` is missing a checked uploaded Linear attachment"
+    )
+    |> maybe_require_capability(
+      "repo_validation" in required_capabilities,
+      checked_validation_label?(validation_items, "repo validation"),
+      "required capability `repo_validation` is missing checked repo validation proof"
+    )
+  end
+
+  defp maybe_require_capability(acc, true, true, _message), do: acc
+  defp maybe_require_capability(acc, true, false, message), do: acc ++ [message]
+  defp maybe_require_capability(acc, false, _passed, _message), do: acc
+
+  defp checked_uploaded_attachment_present?(artifact_items, attachments) do
+    Enum.any?(artifact_items, fn item ->
+      item["checked"] == true and item["kind"] == "uploaded_attachment" and attachment_present?(attachments, item["title"])
+    end)
+  end
+
+  defp checked_validation_label?(validation_items, label) do
+    Enum.any?(validation_items, fn item ->
+      item["checked"] == true and item["label"] == label and not placeholder_value?(item["command"])
+    end)
+  end
 
   defp checkpoint_missing_items(checkpoint) do
     []

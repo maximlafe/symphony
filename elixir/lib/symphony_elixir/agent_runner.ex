@@ -5,8 +5,14 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   import Bitwise
+  alias SymphonyElixir.AcceptanceCapability
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, ErrorClassifier, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.ErrorClassifier
+  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.PromptBuilder
+  alias SymphonyElixir.Tracker
+  alias SymphonyElixir.Workspace
 
   defmodule RunError do
     @moduledoc false
@@ -50,6 +56,7 @@ defmodule SymphonyElixir.AgentRunner do
             )
 
             with :ok <- before_run_result,
+                 :ok <- run_acceptance_capability_preflight(workspace, issue_with_trace),
                  :ok <- run_codex_turns(workspace, issue_with_trace, codex_update_recipient, opts) do
               :ok
             else
@@ -80,6 +87,16 @@ defmodule SymphonyElixir.AgentRunner do
           raise_run_error(issue_with_trace, reason)
       end
     end)
+  end
+
+  defp run_acceptance_capability_preflight(workspace, issue) do
+    case AcceptanceCapability.evaluate(workspace, issue) do
+      {:ok, _report} ->
+        :ok
+
+      {:error, report} ->
+        {:error, AcceptanceCapability.summarize_failure(report)}
+    end
   end
 
   defp codex_message_handler(recipient, issue, trace_id) do

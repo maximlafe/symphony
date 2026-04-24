@@ -40,13 +40,16 @@ description:
 5. Resolve the PR base branch from `.symphony-base-branch`, otherwise fall back
    to the repo default branch and then `main`.
 6. Ensure a PR exists for the branch:
-   - If no PR exists, create one.
+   - Draft the complete PR body before any `gh pr create` call.
+   - If no PR exists, create one with `--body-file`; do not create an empty
+     or placeholder PR and edit it later, because CI may validate the body
+     immediately on the first pull request event.
    - If a PR exists and is open, update it, including the base branch.
    - If branch is tied to a closed/merged PR, create a new branch + PR.
    - Write a proper PR title that clearly describes the change outcome
    - For branch updates, explicitly reconsider whether current PR title still
      matches the latest scope; update it if it no longer does.
-7. Write/update PR body explicitly using `.github/pull_request_template.md`:
+7. Write/update PR body explicitly using `.github/pull_request_template.md` before publishing or updating the PR:
    - Fill every section with concrete content for this change.
    - Replace all placeholder comments (`<!-- ... -->`).
    - Keep bullets/checkboxes where template expects them.
@@ -93,22 +96,31 @@ fi
 
 # Write a clear, human-friendly title that summarizes the shipped change.
 pr_title="<clear PR title written for this change>"
-if [ -z "$pr_state" ]; then
-  gh pr create --base "$base_branch" --title "$pr_title"
-else
-  # Reconsider title and base branch on every branch update; edit if scope shifted.
-  gh pr edit --base "$base_branch" --title "$pr_title"
+# Write/edit PR body to match .github/pull_request_template.md before validation
+# and before creating a new PR.
+# Example workflow:
+# 1) open the template and draft body content for this PR into /tmp/pr_body.md
+# 2) validate it locally before create/edit when the repo exposes a validator
+# 3) for branch updates, re-check that title/body still match current diff
+pr_body_file=/tmp/pr_body.md
+test -s "$pr_body_file"
+
+if [ -f elixir/mix.exs ]; then
+  (cd elixir && mix pr_body.check --file "$pr_body_file")
 fi
 
-# Write/edit PR body to match .github/pull_request_template.md before validation.
-# Example workflow:
-# 1) open the template and draft body content for this PR
-# 2) gh pr edit --base "$base_branch" --body-file /tmp/pr_body.md
-# 3) for branch updates, re-check that title/body still match current diff
+if [ -z "$pr_state" ]; then
+  gh pr create --base "$base_branch" --title "$pr_title" --body-file "$pr_body_file"
+else
+  # Reconsider title and base branch on every branch update; edit if scope shifted.
+  gh pr edit --base "$base_branch" --title "$pr_title" --body-file "$pr_body_file"
+fi
 
 tmp_pr_body=$(mktemp)
 gh pr view --json body -q .body > "$tmp_pr_body"
-(cd elixir && mix pr_body.check --file "$tmp_pr_body")
+if [ -f elixir/mix.exs ]; then
+  (cd elixir && mix pr_body.check --file "$tmp_pr_body")
+fi
 rm -f "$tmp_pr_body"
 
 # Show PR URL for the reply

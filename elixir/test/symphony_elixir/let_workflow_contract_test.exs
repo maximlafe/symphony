@@ -7,6 +7,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
   @default_workflow_path Path.expand("../../WORKFLOW.md", __DIR__)
   @research_skill_path Path.expand("../../../.agents/skills/research-mode/SKILL.md", __DIR__)
   @plan_skill_path Path.expand("../../../.agents/skills/plan-mode/SKILL.md", __DIR__)
+  @execute_skill_path Path.expand("../../../.agents/skills/execute-mode/SKILL.md", __DIR__)
 
   test "LET workflow routes todo by mode labels and keeps spec prep optional" do
     assert {:ok, %{config: config, prompt: prompt}} = Workflow.load(@let_workflow_path)
@@ -32,10 +33,14 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "Если на issue одновременно стоят `mode:research` и `mode:plan`, `mode:research` выигрывает."
     assert prompt =~ ".agents/skills/research-mode/SKILL.md"
     assert prompt =~ ".agents/skills/plan-mode/SKILL.md"
+    assert prompt =~ ".agents/skills/execute-mode/SKILL.md"
     assert prompt =~ "$CODEX_HOME/skills/research-mode/SKILL.md"
     assert prompt =~ "$CODEX_HOME/skills/plan-mode/SKILL.md"
+    assert prompt =~ "$CODEX_HOME/skills/execute-mode/SKILL.md"
     assert prompt =~ "Acceptance Matrix"
     assert prompt =~ "Proof Mapping"
+    assert prompt =~ "Required capabilities"
+    assert prompt =~ "vps_ssh"
     assert prompt =~ "red proof"
     assert prompt =~ "не помечай `n/a`"
     assert prompt =~ "`codex.cost_profiles`"
@@ -80,9 +85,10 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
            ] = Enum.map(accounts, &Map.take(&1, ["codex_home"]))
   end
 
-  test "research and plan mode skills exist with no-implementation guardrails" do
+  test "research, plan, and execute mode skills exist with the expected guardrails" do
     research_skill = File.read!(@research_skill_path)
     plan_skill = File.read!(@plan_skill_path)
+    execute_skill = File.read!(@execute_skill_path)
 
     assert research_skill =~ "name: research-mode"
     assert research_skill =~ "Do not edit product code as a shipped fix."
@@ -122,6 +128,14 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert plan_skill =~ "critique pass 1"
     assert plan_skill =~ "critique pass 2"
     assert plan_skill =~ "positive and negative proof cases"
+
+    assert execute_skill =~ "name: execute-mode"
+    assert execute_skill =~ "Finish an execution-ready task"
+    assert execute_skill =~ "Run `make symphony-preflight`"
+    assert execute_skill =~ "repo/task acceptance preflight"
+    assert execute_skill =~ "Do not use CI green as a substitute"
+    assert execute_skill =~ "Update Linear in Russian"
+    assert execute_skill =~ "Blocked"
   end
 
   defp non_planning_default_profiles_have_xhigh?(profiles) when is_map(profiles) do
