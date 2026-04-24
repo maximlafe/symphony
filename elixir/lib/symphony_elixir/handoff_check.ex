@@ -22,6 +22,10 @@ defmodule SymphonyElixir.HandoffCheck do
   @runtime_extensions MapSet.new([".json", ".log", ".md", ".txt"])
   @matrix_proof_types MapSet.new(["test", "artifact", "runtime_smoke"])
   @matrix_semantics MapSet.new(["surface_exists", "run_executed", "runtime_smoke"])
+  @default_handoff_phase "review"
+  @supported_handoff_phases ["review", "done"]
+  @default_matrix_required_before "review"
+  @matrix_required_before MapSet.new(["review", "done"])
 
   @type result :: {:ok, map()} | {:error, map()}
 
@@ -50,6 +54,7 @@ defmodule SymphonyElixir.HandoffCheck do
     attachments = normalize_attachments(Keyword.get(opts, :attachments, []))
     pr_snapshot = normalize_pr_snapshot(Keyword.get(opts, :pr_snapshot))
     profile_labels = normalize_profile_labels(Keyword.get(opts, :profile_labels, @default_profile_labels))
+    {phase, phase_errors} = normalize_handoff_phase(Keyword.get(opts, :phase))
 
     {profile, profile_source, profile_errors} =
       select_profile(
@@ -71,13 +76,14 @@ defmodule SymphonyElixir.HandoffCheck do
       "errors" => validation_gate_errors
     }
 
-    {proof_signals, acceptance_matrix_missing_items} =
+    {proof_signals, acceptance_matrix_missing_items, deferred_proofs} =
       acceptance_matrix_missing_items(
         acceptance_matrix_items,
         parsed_workpad,
         issue_labels,
         attachments,
-        acceptance_matrix_errors
+        acceptance_matrix_errors,
+        phase
       )
 
     missing_items =
@@ -89,7 +95,7 @@ defmodule SymphonyElixir.HandoffCheck do
         profile,
         profile_errors,
         validation_context,
-        acceptance_matrix_missing_items
+        phase_errors ++ acceptance_matrix_missing_items
       )
 
     passed = missing_items == []
@@ -99,12 +105,14 @@ defmodule SymphonyElixir.HandoffCheck do
         "contract_version" => 2,
         "checked_at" => DateTime.to_iso8601(checked_at),
         "passed" => passed,
+        "phase" => phase,
         "profile" => profile,
         "profile_source" => profile_source,
         "validation_gate" => validation_gate,
         "git" => git_metadata,
         "summary" => summary_for_manifest(passed, profile, missing_items),
         "proof_signals" => proof_signals,
+        "deferred_proofs" => deferred_proofs,
         "issue" => %{
           "id" => issue_id,
           "identifier" => issue_identifier,
@@ -275,6 +283,26 @@ defmodule SymphonyElixir.HandoffCheck do
            "manifest" => manifest
          }}
     end
+  end
+
+  defp normalize_handoff_phase(nil), do: {@default_handoff_phase, []}
+
+  defp normalize_handoff_phase(value) when is_binary(value) do
+    normalized =
+      value
+      |> String.downcase()
+      |> String.trim()
+      |> String.replace(~r/[\s-]+/, "_")
+
+    if normalized in @supported_handoff_phases do
+      {normalized, []}
+    else
+      {@default_handoff_phase, ["handoff phase `#{value}` is unsupported; expected one of: #{Enum.join(@supported_handoff_phases, ", ")}"]}
+    end
+  end
+
+  defp normalize_handoff_phase(value) do
+    {@default_handoff_phase, ["handoff phase must be a string, got: #{inspect(value)}"]}
   end
 
   defp select_profile(explicit_profile, issue_labels, profile_labels, default_profile) do
@@ -492,10 +520,20 @@ defmodule SymphonyElixir.HandoffCheck do
       |> Enum.map(&String.trim/1)
 
     case cells do
-      [id, scenario, expected_outcome, proof_type, proof_target, proof_semantic | _rest] ->
+      [id, scenario, expected_outcome, proof_type, proof_target, proof_semantic | rest] ->
+        required_before =
+          case rest do
+            [] -> @default_matrix_required_before
+            [value | _rest] -> value
+          end
+
         with true <- not placeholder_value?(id),
-             canonical_type when is_binary(canonical_type) <- normalize_matrix_proof_type(proof_type),
-             canonical_semantic when is_binary(canonical_semantic) <- normalize_matrix_semantic(proof_semantic),
+             {:proof_type, canonical_type} when is_binary(canonical_type) <-
+               {:proof_type, normalize_matrix_proof_type(proof_type)},
+             {:proof_semantic, canonical_semantic} when is_binary(canonical_semantic) <-
+               {:proof_semantic, normalize_matrix_semantic(proof_semantic)},
+             {:required_before, canonical_required_before} when is_binary(canonical_required_before) <-
+               {:required_before, normalize_matrix_required_before(required_before)},
              true <- not placeholder_value?(proof_target) do
           {:ok,
            %{
@@ -504,14 +542,21 @@ defmodule SymphonyElixir.HandoffCheck do
              "expected_outcome" => expected_outcome,
              "proof_type" => canonical_type,
              "proof_target" => strip_wrapping_backticks(proof_target),
-             "proof_semantic" => canonical_semantic
+             "proof_semantic" => canonical_semantic,
+             "required_before" => canonical_required_before
            }}
         else
           false ->
             {:error, "acceptance matrix row is missing required id or proof_target: #{row}"}
 
-          nil ->
+          {:proof_type, nil} ->
             {:error, "acceptance matrix row has unsupported proof_type/proof_semantic: #{row}"}
+
+          {:proof_semantic, nil} ->
+            {:error, "acceptance matrix row has unsupported proof_type/proof_semantic: #{row}"}
+
+          {:required_before, nil} ->
+            {:error, "acceptance matrix row has unsupported required_before: #{row}"}
         end
 
       _ ->
@@ -550,6 +595,26 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
+  defp normalize_matrix_required_before(value) when is_binary(value) do
+    normalized =
+      value
+      |> strip_wrapping_backticks()
+      |> String.downcase()
+      |> String.trim()
+      |> String.replace(~r/[\s-]+/, "_")
+
+    cond do
+      normalized in ["", "default"] ->
+        @default_matrix_required_before
+
+      MapSet.member?(@matrix_required_before, normalized) ->
+        normalized
+
+      true ->
+        nil
+    end
+  end
+
   defp mapping_matrix_item_id(text) when is_binary(text) do
     case Regex.run(~r/`([^`]+)`/, text) do
       [_, id] -> String.trim(id)
@@ -574,7 +639,7 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp acceptance_matrix_missing_items(acceptance_matrix_items, parsed_workpad, issue_labels, attachments, parse_errors) do
+  defp acceptance_matrix_missing_items(acceptance_matrix_items, parsed_workpad, issue_labels, attachments, parse_errors, phase) do
     validation_items = parsed_workpad["validation"] || []
     proof_mapping_items = parsed_workpad["proof_mapping"] || []
     artifact_items = parsed_workpad["artifacts"] || []
@@ -582,7 +647,7 @@ defmodule SymphonyElixir.HandoffCheck do
 
     case requires_acceptance_matrix?(issue_labels, acceptance_matrix_items) do
       false ->
-        {skipped_matrix_proof_signals(runtime_smoke_checked?), []}
+        {skipped_matrix_proof_signals(runtime_smoke_checked?), [], []}
 
       true ->
         evaluate_acceptance_matrix(
@@ -592,7 +657,8 @@ defmodule SymphonyElixir.HandoffCheck do
           proof_mapping_items,
           attachments,
           parse_errors,
-          runtime_smoke_checked?
+          runtime_smoke_checked?,
+          phase
         )
     end
   end
@@ -604,8 +670,11 @@ defmodule SymphonyElixir.HandoffCheck do
          proof_mapping_items,
          attachments,
          parse_errors,
-         runtime_smoke_checked?
+         runtime_smoke_checked?,
+         phase
        ) do
+    required_items = Enum.filter(acceptance_matrix_items, &matrix_item_required_for_phase?(&1, phase))
+    deferred_proofs = deferred_proofs_for_phase(acceptance_matrix_items, phase)
     checked_mappings = checked_proof_mapping_items(proof_mapping_items)
     mapping_groups = Enum.group_by(checked_mappings, & &1["matrix_item_id"])
     matrix_ids = MapSet.new(Enum.map(acceptance_matrix_items, & &1["id"]))
@@ -619,7 +688,7 @@ defmodule SymphonyElixir.HandoffCheck do
       |> Kernel.++(duplicate_reference_errors(checked_mappings))
 
     {item_errors, signals} =
-      Enum.reduce(acceptance_matrix_items, {base_errors, initial_proof_signals(runtime_smoke_checked?)}, fn matrix_item, {errors, signals} ->
+      Enum.reduce(required_items, {base_errors, initial_proof_signals(runtime_smoke_checked?)}, fn matrix_item, {errors, signals} ->
         validate_single_matrix_item(
           matrix_item,
           Map.get(mapping_groups, matrix_item["id"], []),
@@ -631,8 +700,27 @@ defmodule SymphonyElixir.HandoffCheck do
         )
       end)
 
-    finalized_signals = Map.put(signals, "acceptance_matrix_covered", item_errors == [])
-    {finalized_signals, Enum.uniq(item_errors)}
+    finalized_signals =
+      signals
+      |> Map.put("acceptance_matrix_covered", item_errors == [])
+      |> Map.put("acceptance_matrix_required_items", length(required_items))
+      |> Map.put("acceptance_matrix_deferred_items", length(deferred_proofs))
+
+    {finalized_signals, Enum.uniq(item_errors), deferred_proofs}
+  end
+
+  defp matrix_item_required_for_phase?(matrix_item, "done") do
+    matrix_item["required_before"] in ["review", "done"]
+  end
+
+  defp matrix_item_required_for_phase?(matrix_item, _phase) do
+    Map.get(matrix_item, "required_before", @default_matrix_required_before) == "review"
+  end
+
+  defp deferred_proofs_for_phase(acceptance_matrix_items, phase) do
+    acceptance_matrix_items
+    |> Enum.reject(&matrix_item_required_for_phase?(&1, phase))
+    |> Enum.map(&Map.take(&1, ["id", "scenario", "proof_type", "proof_target", "proof_semantic", "required_before"]))
   end
 
   defp validate_single_matrix_item(matrix_item, [], _validation_items, _artifact_items, _attachments, errors, signals) do

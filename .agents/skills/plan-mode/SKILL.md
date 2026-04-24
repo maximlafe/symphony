@@ -40,7 +40,7 @@ Minimum enforcement:
 - If code grounding or critique reveals that the issue body and recent comments point to different solutions, rewrite the description so the canonical body reflects the current recommendation.
 - If the planned change simultaneously alters semantics, storage, runtime policy, diagnostics, or proof contracts, either justify why this is still one smallest coherent change or split the rest into follow-up tickets.
 - Decide whether execution should be opt-in TDD. Use `delivery:tdd` only when a cheap deterministic failing test or reproducer should be part of the fix contract; avoid it for docs, deploy, CI, visual-only UI work, and flaky integration/runtime-heavy tasks.
-- For execution/review-oriented tasks, include a machine-readable `Acceptance Matrix` section with atomic proof items (`id`, `scenario`, `expected_outcome`, `proof_type`, `proof_target`, `proof_semantic`) and define expected `Proof Mapping` behavior for handoff.
+- For execution/review-oriented tasks, include a machine-readable `Acceptance Matrix` section with atomic proof items (`id`, `scenario`, `expected_outcome`, `proof_type`, `proof_target`, `proof_semantic`, `required_before`) and define expected `Proof Mapping` behavior for handoff.
 
 ## Allowed
 
@@ -78,7 +78,7 @@ Include, when relevant:
 Preserve all material user facts, capture the observed behavior and expected behavior inside the task-spec where they belong, and always keep the final `## Symphony` block intact.
 
 For tasks about coverage, routing, classification, merge behavior, or quality changes, `План валидации` must name the regression dataset or case set, the baseline, the target delta or threshold, and the false-positive ceiling.
-When `Acceptance Matrix` is present, require that every matrix item is mappable to concrete proof (`test` / `artifact` / `runtime`) and that `surface exists` and `run executed` semantics are not collapsed.
+When `Acceptance Matrix` is present, require that every matrix item is mappable to concrete proof (`test` / `artifact` / `runtime`) and that `surface exists` and `run executed` semantics are not collapsed. Use `required_before=review` for proof that must exist before `In Review`; use `required_before=done` only for post-merge/runtime proof that cannot be valid before review.
 
 ## Workpad expectations
 

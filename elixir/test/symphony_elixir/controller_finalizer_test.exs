@@ -951,6 +951,7 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
          }},
       "symphony_handoff_check" => fn args, _opts ->
         assert args["repo"] == "acme/symphony"
+        assert args["phase"] == "review"
 
         {:ok,
          %{

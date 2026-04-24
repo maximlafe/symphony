@@ -752,7 +752,8 @@ Instructions:
    - always pass the absolute path to local `workpad.md` when calling `sync_workpad`.
 6. Update the issue-description task-spec only when required sections are missing or the task contract materially changed:
    - use canonical Russian headings `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and keep a final `## Symphony` section;
-   - for execution/review-oriented tasks, add mandatory `## Acceptance Matrix` with atomic items (`id`, `scenario`, `expected_outcome`, `proof_type`, `proof_target`, `proof_semantic`);
+   - for execution/review-oriented tasks, add mandatory `## Acceptance Matrix` with atomic items (`id`, `scenario`, `expected_outcome`, `proof_type`, `proof_target`, `proof_semantic`, `required_before`);
+   - use `required_before=review` for proof that must exist before `In Review`; use `required_before=done` only for post-merge/runtime proof that cannot be valid before review;
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
    - keep `## Symphony` as the last section with `Repo: <resolved owner/name>`, `Base branch: <configured branch>`, and `Working branch: <configured branch name>` when `.symphony-working-branch` exists;
    - if `.symphony-source-repository`, `.symphony-base-branch`, or `.symphony-working-branch` exist, treat them as authoritative when repopulating `Repo:`, `Base branch:`, and `Working branch:` during normalization;
@@ -1013,9 +1014,9 @@ Use this structure when creating a new issue description or normalizing an exist
 
 ## Acceptance Matrix
 
-| id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
-| -- | -- | -- | -- | -- | -- |
-| AM-1 | <scenario> | <expected outcome> | <test|artifact|runtime_smoke> | <target> | <surface_exists|run_executed|runtime_smoke> |
+| id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+| -- | -- | -- | -- | -- | -- | -- |
+| AM-1 | <scenario> | <expected outcome> | <test|artifact|runtime_smoke> | <target> | <surface_exists|run_executed|runtime_smoke> | <review|done> |
 
 ## Вне скоупа
 

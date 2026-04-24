@@ -420,7 +420,8 @@ defmodule SymphonyElixir.ControllerFinalizer do
       "issue_id" => context.issue_id,
       "file_path" => context.workpad_path,
       "repo" => context.repo,
-      "pr_number" => context.pr_number
+      "pr_number" => context.pr_number,
+      "phase" => "review"
     }
   end
 
