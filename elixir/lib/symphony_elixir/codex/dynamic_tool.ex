@@ -286,6 +286,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "type" => ["string", "null"],
         "description" => "Optional explicit verification profile override."
       },
+      "phase" => %{
+        "type" => ["string", "null"],
+        "description" => "Optional handoff phase. Use `review` before moving to review-ready states and `done` before final closure."
+      },
       "manifest_path" => %{
         "type" => ["string", "null"],
         "description" => "Optional workspace-relative path for the verification manifest JSON file."
@@ -532,7 +536,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp execute_symphony_handoff_check(arguments, opts) do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
 
-    with {:ok, issue_id, workpad_path, repo, pr_number, profile, manifest_path} <-
+    with {:ok, issue_id, workpad_path, repo, pr_number, profile, phase, manifest_path} <-
            normalize_symphony_handoff_check_arguments(arguments, opts),
          {:ok, workpad_body} <- read_workpad_file(workpad_path, :symphony_handoff_check),
          {:ok, issue_context} <- fetch_handoff_issue_context(issue_id, linear_client),
@@ -548,6 +552,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           workpad_path: workpad_path,
           repo: repo,
           pr_number: pr_number,
+          phase: phase,
           profile: profile || Config.settings!().verification.profile,
           labels: Map.get(issue_context, "labels", []),
           attachments: Map.get(issue_context, "attachments", []),
@@ -901,13 +906,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
            normalize_workspace_file_path(file_path, workspace, :symphony_handoff_check),
          {:ok, profile} <-
            normalize_optional_string_arg(arguments, "profile", :symphony_handoff_check),
+         {:ok, phase} <-
+           normalize_optional_string_arg(arguments, "phase", :symphony_handoff_check),
          {:ok, manifest_path} <-
            normalize_workspace_manifest_path(
              get_argument(arguments, "manifest_path") || verification.manifest_path,
              workspace,
              :symphony_handoff_check
            ) do
-      {:ok, issue_id, resolved_workpad_path, repo, pr_number, profile, manifest_path}
+      {:ok, issue_id, resolved_workpad_path, repo, pr_number, profile, phase || "review", manifest_path}
     end
   end
 

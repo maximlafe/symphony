@@ -38,6 +38,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert handoff_spec["inputSchema"]["required"] == ["issue_id", "file_path", "repo", "pr_number"]
     assert handoff_spec["description"] =~ "handoff"
+    assert get_in(handoff_spec, ["inputSchema", "properties", "phase", "description"]) =~ "handoff phase"
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -1661,7 +1662,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "issue_id" => "LET-416",
           "file_path" => workpad_path,
           "repo" => "maximlafe/symphony",
-          "pr_number" => 52
+          "pr_number" => 52,
+          "phase" => "review"
         },
         workspace: workspace,
         linear_client: fn query, _variables, _opts ->
@@ -1823,6 +1825,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["success"] == true
     payload = decode_tool_text(response)
     assert payload["passed"] == true
+    assert payload["phase"] == "review"
     assert payload["missing_items"] == []
   end
 

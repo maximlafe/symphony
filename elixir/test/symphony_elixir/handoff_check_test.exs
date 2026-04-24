@@ -472,6 +472,129 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "acceptance matrix item `AM-2` requires executed proof; mapped validation command looks surface-only (`--help`)" in manifest["missing_items"]
   end
 
+  test "evaluate defers done-phase acceptance matrix proofs during review handoff" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:targeted tests`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `review-proof.log` -> review handoff proof
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Review proof is complete; runtime proof is post-merge.
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-518",
+               phase: "review",
+               labels: ["mode:plan", "verification:generic"],
+               issue_description: phase_acceptance_matrix_description(),
+               attachments: [%{"title" => "review-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert manifest["phase"] == "review"
+    assert manifest["missing_items"] == []
+    assert get_in(manifest, ["proof_signals", "acceptance_matrix_covered"]) == true
+    assert get_in(manifest, ["proof_signals", "acceptance_matrix_required_items"]) == 1
+    assert get_in(manifest, ["proof_signals", "acceptance_matrix_deferred_items"]) == 1
+    assert [%{"id" => "AM-2", "required_before" => "done"}] = manifest["deferred_proofs"]
+  end
+
+  test "evaluate requires deferred acceptance matrix proofs during done handoff" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:targeted tests`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `review-proof.log` -> review handoff proof
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Done proof is still missing.
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-518",
+               phase: "done",
+               labels: ["mode:plan", "verification:generic"],
+               issue_description: phase_acceptance_matrix_description(),
+               attachments: [%{"title" => "review-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert manifest["phase"] == "done"
+    assert manifest["deferred_proofs"] == []
+    assert "acceptance matrix item `AM-2` is missing a checked proof mapping entry" in manifest["missing_items"]
+  end
+
+  test "evaluate fails closed for unsupported handoff phase values" do
+    assert {:error, string_phase_manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-518",
+               phase: "release",
+               profile: "runtime",
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert string_phase_manifest["phase"] == "review"
+    assert "handoff phase `release` is unsupported; expected one of: review, done" in string_phase_manifest["missing_items"]
+
+    assert {:error, non_string_phase_manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-518",
+               phase: :done,
+               profile: "runtime",
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert non_string_phase_manifest["phase"] == "review"
+    assert "handoff phase must be a string, got: :done" in non_string_phase_manifest["missing_items"]
+  end
+
   test "evaluate reports missing and malformed acceptance matrix definitions" do
     assert {:error, non_binary_manifest} =
              HandoffCheck.evaluate(
@@ -507,6 +630,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
     | --- | --- | --- | --- | --- | --- |
     | <id> | bad | bad | test | <target> | run_executed |
+    | AM-TYPE | bad | bad | unknown | target | run_executed |
     | AM-BAD | bad | bad | test | target | unknown |
     | AM-DUP | dup one | dup | test | target-a | run_executed |
     | AM-DUP | dup two | dup | test | target-b | run_executed |
@@ -529,6 +653,28 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert Enum.any?(malformed_manifest["missing_items"], &String.contains?(&1, "unsupported proof_type/proof_semantic"))
     assert Enum.any?(malformed_manifest["missing_items"], &String.contains?(&1, "invalid column count"))
     assert "acceptance matrix contains duplicate id `AM-DUP`" in malformed_manifest["missing_items"]
+
+    unsupported_phase_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | AM-PHASE | bad | bad | test | target | run_executed | release |
+    """
+
+    assert {:error, unsupported_phase_manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: unsupported_phase_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert Enum.any?(unsupported_phase_manifest["missing_items"], &String.contains?(&1, "unsupported required_before"))
   end
 
   test "evaluate validates proof mapping format, unknown ids, duplicate refs, and duplicate matrix mappings" do
@@ -1424,6 +1570,17 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
   defp acceptance_matrix_description_run_executed_runtime do
     String.replace(acceptance_matrix_description(), "surface_exists", "run_executed")
+  end
+
+  defp phase_acceptance_matrix_description do
+    """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Review proof | Targeted tests pass | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed | review |
+    | AM-2 | Post-merge runtime proof | Runtime smoke is dispatched on main | runtime_smoke | post-merge workflow dispatch | runtime_smoke | done |
+    """
   end
 
   defp green_pr_snapshot do
