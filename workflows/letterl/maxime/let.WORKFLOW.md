@@ -754,6 +754,7 @@ Instructions:
    - use canonical Russian headings `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and keep a final `## Symphony` section;
    - for execution/review-oriented tasks, add mandatory `## Acceptance Matrix` with atomic items (`id`, `scenario`, `expected_outcome`, `proof_type`, `proof_target`, `proof_semantic`, `required_before`);
    - use `required_before=review` for proof that must exist before `In Review`; use `required_before=done` only for post-merge/runtime proof that cannot be valid before review;
+   - when an acceptance item requires external infrastructure before execution can complete, add a machine-readable `Required capabilities: ...` line to the final `## Symphony` section. Use the canonical capability names `repo_validation`, `pr_publication`, `pr_body_contract`, `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`;
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
    - keep `## Symphony` as the last section with `Repo: <resolved owner/name>`, `Base branch: <configured branch>`, and `Working branch: <configured branch name>` when `.symphony-working-branch` exists;
    - if `.symphony-source-repository`, `.symphony-base-branch`, or `.symphony-working-branch` exist, treat them as authoritative when repopulating `Repo:`, `Base branch:`, and `Working branch:` during normalization;
@@ -853,20 +854,22 @@ Use this only when completion is blocked by missing required tools or missing au
 ## Step 2: Execution phase (In Progress -> In Review or Blocked)
 
 1. Ensure exactly one separate top-level comment `Начал выполнение задачи: <DD.MM.YYYY HH:MM MSK>` exists for the current `In Progress` stage before any repo-changing command or the first live workpad sync of that stage. If this run entered `In Progress` directly from `Todo`, that comment should already exist from Step 0.
-2. Recover from the existing task-spec description and workpad using the minimal-recovery rules unless the issue requires a full reread.
-3. If this run entered `In Progress` directly from `Todo`, do one short readiness check before the first repo-changing command:
+2. Load and follow repo-local `.agents/skills/execute-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/execute-mode/SKILL.md`. If both files are absent, do not start implementation: fill `Checkpoint` with `checkpoint_type: human-action`, record that the execution skill contract is missing, move the issue to `Blocked`, and stop.
+3. Recover from the existing task-spec description and workpad using the minimal-recovery rules unless the issue requires a full reread.
+4. If this run entered `In Progress` directly from `Todo`, do one short readiness check before the first repo-changing command:
    - if the issue description is already implementation-ready, continue execution;
    - if the task contract is materially underspecified, do not improvise hidden scope in the workpad; normalize the task-spec, sync the workpad once, move the issue to `Spec Review`, and stop before product code changes.
-4. Ignore `mode:*` labels once the issue is in `In Progress`; the current state is authoritative for routing.
-5. Run the `pull` skill against the configured base branch from `.symphony-base-branch` before code edits, then record the result in `Заметки` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
+5. Ignore `mode:*` labels once the issue is in `In Progress`; the current state is authoritative for routing.
+6. Run the `pull` skill against the configured base branch from `.symphony-base-branch` before code edits, then record the result in `Заметки` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
    - if the run creates a fresh working branch from `origin/<configured base branch>`, record `Новая ветка <branch> создана от origin/<configured base branch>.` in `Заметки` on the next live workpad sync;
    - if the run resumes on an existing non-base branch and no lineage note exists yet, record `Текущая рабочая ветка <branch>; базовая ветка origin/<configured base branch>.` instead of inventing a creation event.
-6. Use the issue description as the canonical task contract and local `workpad.md` as the implementation plan and detailed execution log.
-7. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before final handoff.
+7. Use the issue description as the canonical task contract and local `workpad.md` as the implementation plan and detailed execution log.
+8. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before final handoff.
    - milestone sync points in this stage are `code-ready`, `validation-running`, `PR-opened`, `CI-failed`, `handoff-ready`;
    - фиксируй повторные попытки исправить один и тот же сигнал в workpad и соблюдай лимит auto-fix attempts ниже;
-8. Run the required validation for the scope:
+9. Run the required validation for the scope:
    - run `make symphony-preflight` before concluding that auth/env/tooling is missing for the current task;
+   - run `make symphony-acceptance-preflight` when the task-spec declares `Required capabilities`;
    - apply the validation matrix above instead of picking tests heuristically;
    - execute every ticket-provided validation/test-plan requirement when present;
    - prefer targeted proof for the changed behavior;
@@ -874,14 +877,14 @@ Use this only when completion is blocked by missing required tools or missing au
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, attach a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
    - if the task produced review-relevant export/report files or machine-readable validation artifacts, attach them to the issue instead of leaving them only in the workpad, logs, or local runtime.
-9. Before every `git push`, rerun the required validation and confirm it passes.
-10. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
-11. Merge latest `origin/<configured base branch>` into the branch before final handoff, resolve conflicts, and rerun required validation.
-12. Before moving to `In Review`, use the compact PR/check flow:
+10. Before every `git push`, rerun the required validation and confirm it passes.
+11. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
+12. Merge latest `origin/<configured base branch>` into the branch before final handoff, resolve conflicts, and rerun required validation.
+13. Before moving to `In Review`, use the compact PR/check flow:
    - run the PR feedback and checks protocol above;
    - if checks are green and no actionable feedback remains, first rewrite every final checklist item so it is already true before the state transition (for example, `PR checks зелёные; задача готова к переводу в In Review` instead of `задача переведена в In Review`), затем заполни `Checkpoint` с `checkpoint_type: human-verify`, обоснованным `risk_level` и однострочным `summary`, закрой все выполненные parent/child checkboxes, финализируй local `workpad.md`, убедись что в `Артефакты` перечислены загруженные вложения, их claims и ожидаемые, но не созданные артефакты, один раз синхронизируй live workpad, при необходимости один раз обнови task-spec description и только потом переводи issue в `In Review`;
    - do not repeat label or attachment checks in the same run unless the PR changed.
-13. If PR publication or handoff is blocked by missing required non-GitHub tools/auth/permissions after all fallbacks, заполни `Checkpoint` с `checkpoint_type: human-action`, подходящим `risk_level` и blocker summary, затем переводи issue в `Blocked` с blocker brief и явным unblock action; после выполнения unblock action человек должен вручную вернуть issue в `In Progress`.
+14. If PR publication or handoff is blocked by missing required non-GitHub tools/auth/permissions after all fallbacks, заполни `Checkpoint` с `checkpoint_type: human-action`, подходящим `risk_level` и blocker summary, затем переводи issue в `Blocked` с blocker brief и явным unblock action; после выполнения unblock action человек должен вручную вернуть issue в `In Progress`.
 
 ## Step 3: In Review and merge handling
 

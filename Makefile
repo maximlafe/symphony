@@ -1,10 +1,10 @@
-.PHONY: help test symphony-bootstrap symphony-dashboard-checks symphony-handoff-check symphony-live-e2e symphony-preflight symphony-runtime-smoke symphony-validate symphony-nginx-proxy-contract symphony-nginx-proxy-smoke
+.PHONY: help test symphony-acceptance-preflight symphony-bootstrap symphony-dashboard-checks symphony-handoff-check symphony-live-e2e symphony-preflight symphony-runtime-smoke symphony-validate symphony-nginx-proxy-contract symphony-nginx-proxy-smoke
 
 MISE ?= mise
 ELIXIR_DIR ?= elixir
 
 help:
-	@echo "Targets: test, symphony-preflight, symphony-bootstrap, symphony-dashboard-checks, symphony-handoff-check, symphony-runtime-smoke, symphony-validate, symphony-live-e2e, symphony-nginx-proxy-contract, symphony-nginx-proxy-smoke"
+	@echo "Targets: test, symphony-preflight, symphony-acceptance-preflight, symphony-bootstrap, symphony-dashboard-checks, symphony-handoff-check, symphony-runtime-smoke, symphony-validate, symphony-live-e2e, symphony-nginx-proxy-contract, symphony-nginx-proxy-smoke"
 
 test: symphony-validate symphony-dashboard-checks symphony-nginx-proxy-contract
 
@@ -35,6 +35,9 @@ symphony-preflight:
 		exit 1; \
 	fi
 	@echo "Symphony preflight passed."
+
+symphony-acceptance-preflight:
+	cd $(ELIXIR_DIR) && $(MISE) exec -- mix acceptance_capability.check --workspace ..
 
 symphony-bootstrap:
 	@if ! command -v gh >/dev/null 2>&1; then \
