@@ -1,0 +1,212 @@
+{
+  "ticket": "PARITY-01",
+  "assignee_filter": "symphony",
+  "scope": {
+    "team_key": "LET",
+    "active_states": ["Todo", "Spec Prep", "In Progress", "Merging", "Rework"],
+    "manual_intervention_state": "Blocked",
+    "terminal_states": ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+  },
+  "cases": [
+    {
+      "case_id": "MATRIX-01",
+      "issue": {
+        "id": "issue-1",
+        "identifier": "LET-M1",
+        "title": "Todo assigned to symphony",
+        "state": { "name": "Todo" },
+        "assignee": { "id": "user-1", "email": "symphony@example.com", "name": "symphony" },
+        "labels": { "nodes": [] },
+        "inverseRelations": { "nodes": [] }
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": true
+      }
+    },
+    {
+      "case_id": "MATRIX-02",
+      "issue": {
+        "id": "issue-2",
+        "identifier": "LET-M2",
+        "title": "Todo assigned to someone else",
+        "state": { "name": "Todo" },
+        "assignee": { "id": "user-2", "email": "other@example.com", "name": "other" },
+        "labels": { "nodes": [] },
+        "inverseRelations": { "nodes": [] }
+      },
+      "expected": {
+        "assigned_to_worker": false,
+        "dispatch_eligible": false
+      }
+    },
+    {
+      "case_id": "MATRIX-03",
+      "issue": {
+        "id": "issue-3",
+        "identifier": "LET-M3",
+        "title": "Todo blocked by in-progress blocker",
+        "state": { "name": "Todo" },
+        "assignee": { "id": "user-1", "email": "symphony@example.com", "name": "symphony" },
+        "labels": { "nodes": [{ "name": "backend" }] },
+        "inverseRelations": {
+          "nodes": [
+            { "type": "blocks", "issue": { "id": "b-1", "identifier": "B-1", "state": { "name": "In Progress" } } }
+          ]
+        }
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": false
+      }
+    },
+    {
+      "case_id": "MATRIX-04",
+      "issue": {
+        "id": "issue-4",
+        "identifier": "LET-M4",
+        "title": "Todo blocked only by terminal blocker",
+        "state": { "name": "Todo" },
+        "assignee": { "id": "user-1", "email": "symphony@example.com", "name": "symphony" },
+        "labels": { "nodes": [] },
+        "inverseRelations": {
+          "nodes": [
+            { "type": "blocks", "issue": { "id": "b-2", "identifier": "B-2", "state": { "name": "Done" } } }
+          ]
+        }
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": true
+      }
+    },
+    {
+      "case_id": "MATRIX-05",
+      "issue": {
+        "id": "issue-5",
+        "identifier": "LET-M5",
+        "title": "Spec Prep assigned to symphony",
+        "state": { "name": "Spec Prep" },
+        "assignee": { "id": "user-1", "email": "symphony@example.com", "name": "symphony" },
+        "labels": { "nodes": [{ "name": "mode:plan" }] },
+        "inverseRelations": { "nodes": [] }
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": true
+      }
+    },
+    {
+      "case_id": "MATRIX-06",
+      "issue": {
+        "id": "issue-6",
+        "identifier": "LET-M6",
+        "title": "In Progress assigned to symphony",
+        "state": { "name": "In Progress" },
+        "assignee": { "id": "user-1", "email": "symphony@example.com", "name": "symphony" },
+        "labels": { "nodes": [] },
+        "inverseRelations": { "nodes": [] }
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": true
+      }
+    },
+    {
+      "case_id": "MATRIX-07",
+      "issue": {
+        "id": "issue-7",
+        "identifier": "LET-M7",
+        "title": "Merging assigned to symphony",
+        "state": { "name": "Merging" },
+        "assignee": { "id": "user-1", "email": "symphony@example.com", "name": "symphony" },
+        "labels": { "nodes": [{ "name": "delivery:tdd" }] },
+        "inverseRelations": { "nodes": [] }
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": true
+      }
+    },
+    {
+      "case_id": "MATRIX-08",
+      "issue": {
+        "id": "issue-8",
+        "identifier": "LET-M8",
+        "title": "Rework assigned to symphony",
+        "state": { "name": "Rework" },
+        "assignee": { "id": "user-1", "email": "symphony@example.com", "name": "symphony" },
+        "labels": { "nodes": [] },
+        "inverseRelations": { "nodes": [] }
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": true
+      }
+    },
+    {
+      "case_id": "MATRIX-09",
+      "issue": {
+        "id": "issue-9",
+        "identifier": "LET-M9",
+        "title": "Blocked manual intervention state",
+        "state": { "name": "Blocked" },
+        "assignee": { "id": "user-1", "email": "symphony@example.com", "name": "symphony" },
+        "labels": { "nodes": [] },
+        "inverseRelations": { "nodes": [] }
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": false
+      }
+    },
+    {
+      "case_id": "MATRIX-10",
+      "issue": {
+        "id": "issue-10",
+        "identifier": "LET-M10",
+        "title": "Terminal done state",
+        "state": { "name": "Done" },
+        "assignee": { "id": "user-1", "email": "symphony@example.com", "name": "symphony" },
+        "labels": { "nodes": [] },
+        "inverseRelations": { "nodes": [] }
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": false
+      }
+    },
+    {
+      "case_id": "MATRIX-11",
+      "issue": {
+        "id": "issue-11",
+        "identifier": "LET-M11",
+        "title": "In Review is outside LET active states",
+        "state": { "name": "In Review" },
+        "assignee": { "id": "user-1", "email": "symphony@example.com", "name": "symphony" },
+        "labels": { "nodes": [] },
+        "inverseRelations": { "nodes": [] }
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": false
+      }
+    },
+    {
+      "case_id": "MATRIX-12",
+      "issue": {
+        "id": "issue-12",
+        "identifier": "LET-M12",
+        "title": "Unassigned todo is not routable with assignee filter",
+        "state": { "name": "Todo" },
+        "assignee": null,
+        "labels": { "nodes": [] },
+        "inverseRelations": { "nodes": [] }
+      },
+      "expected": {
+        "assigned_to_worker": false,
+        "dispatch_eligible": false
+      }
+    }
+  ]
+}
