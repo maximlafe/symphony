@@ -1,0 +1,187 @@
+{
+  "ticket": "PARITY-04",
+  "scope": {
+    "team_key": "LET",
+    "sources": [
+      "workspace_checkpoint",
+      "workpad",
+      "issue_comment",
+      "issue_attachment",
+      "branch_lookup"
+    ],
+    "source_precedence": [
+      "workspace_checkpoint",
+      "workpad",
+      "issue_comment",
+      "issue_attachment",
+      "branch_lookup"
+    ],
+    "fail_closed": "source=none without guessed PR context"
+  },
+  "source": {
+    "kind": "deterministic_matrix"
+  },
+  "cases": [
+    {
+      "case_id": "DET-WORKSPACE-CHECKPOINT",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "workspace_checkpoint": {
+          "open_pr": {
+            "number": 145,
+            "url": "https://github.com/maximlafe/symphony/pull/145"
+          }
+        }
+      },
+      "expected": {
+        "source": "workspace_checkpoint",
+        "repo": "maximlafe/symphony",
+        "pr_number": 145,
+        "url": "https://github.com/maximlafe/symphony/pull/145"
+      }
+    },
+    {
+      "case_id": "DET-WORKPAD-MARKER",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "workpad_body": "## Codex Workpad\n- continue from PR #146\n"
+      },
+      "expected": {
+        "source": "workpad",
+        "repo": "maximlafe/symphony",
+        "pr_number": 146,
+        "url": "https://github.com/maximlafe/symphony/pull/146"
+      }
+    },
+    {
+      "case_id": "DET-ISSUE-COMMENT-URL",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "issue_comments": [
+          {
+            "body": "handoff note: see https://github.com/openai/symphony/pull/147 for context"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "openai/symphony",
+        "pr_number": 147,
+        "url": "https://github.com/openai/symphony/pull/147"
+      }
+    },
+    {
+      "case_id": "DET-ISSUE-ATTACHMENT-URL",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "issue_attachments": [
+          {
+            "title": "PR artifact",
+            "url": "https://github.com/maximlafe/symphony/pull/148"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/symphony",
+        "pr_number": 148,
+        "url": "https://github.com/maximlafe/symphony/pull/148"
+      }
+    },
+    {
+      "case_id": "DET-ISSUE-ATTACHMENT-MARKER",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "issue_attachments": [
+          {
+            "title": "follow-up for PR #149",
+            "subtitle": "ready for review"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/symphony",
+        "pr_number": 149,
+        "url": "https://github.com/maximlafe/symphony/pull/149"
+      }
+    },
+    {
+      "case_id": "DET-BRANCH-LOOKUP",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "issue_branch_name": "parity/parity-04-freeze-pr-evidence-contract"
+      },
+      "lookup_result": {
+        "number": 150,
+        "url": "https://github.com/maximlafe/symphony/pull/150"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/symphony",
+        "pr_number": 150,
+        "url": "https://github.com/maximlafe/symphony/pull/150"
+      }
+    },
+    {
+      "case_id": "DET-PRECEDENCE-WORKSPACE-WINS",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "workspace_checkpoint": {
+          "open_pr": {
+            "number": 151,
+            "url": "https://github.com/maximlafe/symphony/pull/151"
+          }
+        },
+        "workpad_body": "resume from PR #999",
+        "issue_comments": [
+          {
+            "body": "comment references https://github.com/maximlafe/symphony/pull/998"
+          }
+        ],
+        "issue_attachments": [
+          {
+            "title": "https://github.com/maximlafe/symphony/pull/997"
+          }
+        ],
+        "issue_branch_name": "codex/some-branch"
+      },
+      "lookup_result": {
+        "number": 996,
+        "url": "https://github.com/maximlafe/symphony/pull/996"
+      },
+      "expected": {
+        "source": "workspace_checkpoint",
+        "repo": "maximlafe/symphony",
+        "pr_number": 151,
+        "url": "https://github.com/maximlafe/symphony/pull/151"
+      }
+    },
+    {
+      "case_id": "DET-FAIL-CLOSED-NONE",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "workpad_body": "no github link here",
+        "issue_comments": [
+          {
+            "body": "just status text"
+          }
+        ],
+        "issue_attachments": [
+          {
+            "title": "artifact without pr reference",
+            "subtitle": "no pr marker"
+          }
+        ],
+        "issue_branch_name": "codex/unknown-branch"
+      },
+      "lookup_result": null,
+      "expected": {
+        "source": "none",
+        "repo": null,
+        "pr_number": null,
+        "url": null
+      }
+    }
+  ]
+}
