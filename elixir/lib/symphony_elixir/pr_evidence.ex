@@ -10,9 +10,11 @@ defmodule SymphonyElixir.PrEvidence do
 
   @type evidence :: map()
 
-  @spec resolve(map(), keyword()) :: evidence()
-  def resolve(input, opts \\ [])
+  @spec resolve(map()) :: evidence()
+  def resolve(input) when is_map(input), do: resolve(input, [])
+  def resolve(_input), do: none_evidence()
 
+  @spec resolve(map(), keyword()) :: evidence()
   def resolve(input, opts) when is_map(input) and is_list(opts) do
     repo_hint = normalize_repo_hint(map_any(input, ["repo", :repo]))
 
@@ -93,18 +95,7 @@ defmodule SymphonyElixir.PrEvidence do
   defp issue_attachment_evidence(input, repo_hint) when is_map(input) do
     case map_any(input, ["issue_attachments", :issue_attachments]) do
       attachments when is_list(attachments) ->
-        Enum.find_value(attachments, fn attachment ->
-          attachment_url(attachment)
-          |> extract_from_text(repo_hint, "issue_attachment")
-          |> case do
-            nil ->
-              attachment_marker_text(attachment)
-              |> extract_from_text(repo_hint, "issue_attachment")
-
-            evidence ->
-              evidence
-          end
-        end)
+        Enum.find_value(attachments, &attachment_evidence(&1, repo_hint))
 
       _ ->
         nil
@@ -129,8 +120,6 @@ defmodule SymphonyElixir.PrEvidence do
     end
   end
 
-  defp branch_lookup_evidence(_input, _repo_hint, _opts), do: nil
-
   defp normalize_branch_lookup_result(result, repo_hint) when is_map(result) do
     url = normalize_optional_string(map_any(result, ["url", :url]))
     number = normalize_pr_number(map_any(result, ["number", :number])) || pr_number_from_text(url)
@@ -140,8 +129,6 @@ defmodule SymphonyElixir.PrEvidence do
       build_evidence(repo, number, url, "branch_lookup")
     end
   end
-
-  defp normalize_branch_lookup_result(_result, _repo_hint), do: nil
 
   defp normalize_none_evidence(%{} = evidence), do: evidence
   defp normalize_none_evidence(_value), do: none_evidence()
@@ -177,25 +164,31 @@ defmodule SymphonyElixir.PrEvidence do
   defp extract_url_evidence(text) when is_binary(text) do
     case Regex.named_captures(@pr_url_regex, text) do
       %{"owner" => owner, "repo" => repo, "number" => number} ->
-        with {pr_number, ""} <- Integer.parse(number) do
-          repo_full = "#{owner}/#{repo}"
-          %{"repo" => repo_full, "pr_number" => pr_number, "url" => "https://github.com/#{repo_full}/pull/#{pr_number}"}
-        else
-          _ -> nil
-        end
+        pr_number = String.to_integer(number)
+        repo_full = "#{owner}/#{repo}"
+        %{"repo" => repo_full, "pr_number" => pr_number, "url" => "https://github.com/#{repo_full}/pull/#{pr_number}"}
 
       _ ->
         nil
     end
   end
 
+  defp attachment_evidence(attachment, repo_hint) do
+    case attachment_url(attachment)
+         |> extract_from_text(repo_hint, "issue_attachment") do
+      %{} = evidence ->
+        evidence
+
+      _ ->
+        attachment_marker_text(attachment)
+        |> extract_from_text(repo_hint, "issue_attachment")
+    end
+  end
+
   defp extract_marker_pr_number(text) when is_binary(text) do
     case Regex.named_captures(@pr_marker_regex, text) do
       %{"number" => number} ->
-        case Integer.parse(number) do
-          {pr_number, ""} -> pr_number
-          _ -> nil
-        end
+        String.to_integer(number)
 
       _ ->
         nil

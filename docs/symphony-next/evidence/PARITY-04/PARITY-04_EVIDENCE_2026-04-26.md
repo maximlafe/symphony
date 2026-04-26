@@ -23,6 +23,7 @@
   - `scripts/generate_parity_04_live_sanitized_fixture.sh`
 - Executable suite:
   - `elixir/test/symphony_elixir/pr_evidence_parity_test.exs`
+  - `elixir/test/symphony_elixir/pr_evidence_test.exs`
 
 ## Acceptance Matrix Mapping
 
@@ -70,15 +71,17 @@ Executed in `/private/tmp/symphony-parity-main`:
 4. `cd elixir && mise exec -- mix format --check-formatted`
 5. `cd elixir && mise exec -- mix test test/symphony_elixir/pr_evidence_parity_test.exs test/symphony_elixir/linear_routing_parity_test.exs test/symphony_elixir/issue_trace_parity_test.exs test/symphony_elixir/resume_legacy_parity_test.exs`
 6. `cd elixir && mise exec -- mix test test/symphony_elixir/telemetry_schema_test.exs test/symphony_elixir/resume_checkpoint_test.exs test/symphony_elixir/core_test.exs`
+7. `cd elixir && mise exec -- make all`
 
 Result: all listed commands passed.
 
 ## Artifact Hashes (SHA256)
 
 - `f4e981b7d4bfd7f2e32c197d6854f74d07072e898012dc8e02a11e3a88d54433` — `docs/symphony-next/contracts/PARITY-04_PR_EVIDENCE_CONTRACT.md`
-- `d0397e98a6daaa2c9b30d6866e7dcc6c1d15f0d8439cdc49c01d2c18da655130` — `elixir/lib/symphony_elixir/pr_evidence.ex`
+- `4c490ad538e5a3f77a827790ba28f36559064f507c986273cdb975f4304a24be` — `elixir/lib/symphony_elixir/pr_evidence.ex`
 - `87ae73b0be785442f555a47bbabaf86cf81d3d622231ff259b797669b9167feb` — `elixir/test/fixtures/parity/parity_04_pr_evidence_matrix.json`
 - `aac0ed2bf0a9954f403f2b9cab04fca3e7c889880149de7a68470f43f3ee87fa` — `elixir/test/fixtures/parity/parity_04_pr_evidence_live_sanitized.json`
+- `f334dd79dbaed7a12362bc84abeded8016b6b0adf060df723f750d17a395a6c2` — `elixir/test/symphony_elixir/pr_evidence_test.exs`
 - `051128459e5515c63dff636bb69c85bd072fc2ded5f5819ff819611af8ea76e1` — `elixir/test/symphony_elixir/pr_evidence_parity_test.exs`
 - `46c4753274069691e220eacc1dd3ea6b9e8ddc8a4797d91d5f04e76d7c33de11` — `scripts/generate_parity_04_live_sanitized_fixture.sh`
 

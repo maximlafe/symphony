@@ -167,5 +167,7 @@
 - Что пошло не по плану:
   - `gh pr list --head` не дал стабильных соответствий для исторических head-веток в sampled dataset;
   - branch lookup live-cases зафиксированы через `issue_trace_url_fallback` (реальные issue branch + PR URL traces).
+  - первичный CI прогон (`make-all/infra-pass`) упал на `@spec`/coverage gate для нового модуля;
+  - добавлен отдельный exhaustive unit suite `pr_evidence_test.exs`, чтобы вернуть `make all` и global coverage к `100%`.
 - Текущие блокеры/риски:
   - блокеров по `PARITY-04` нет; остаётся PR/CI/merge цикл.
