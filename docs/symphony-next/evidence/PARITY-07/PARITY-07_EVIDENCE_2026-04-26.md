@@ -97,14 +97,6 @@ Result: all listed commands passed.
 - `2578948e3d7f2a664713107eb76c2c7df9bbc31ab79866c05e375569d3b7d13b` —
   `scripts/generate_parity_07_live_sanitized_fixture.sh`
 
-## Post-merge Sanity (AM-10)
-
-- PR: `https://github.com/maximlafe/symphony/pull/150`
-- Merge commit: `05ab8ae51510b1c87c552c78d5897d5db870848a`
-- Commands:
-  - `make symphony-preflight` — pass
-  - `cd elixir && mise exec -- mix test test/symphony_elixir/runtime_recovery_parity_test.exs` — pass
-
 ## Blockers
 
 - None on implementation/proof path for `PARITY-07`.
