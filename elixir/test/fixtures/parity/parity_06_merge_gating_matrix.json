@@ -1,0 +1,196 @@
+{
+  "ticket": "PARITY-06",
+  "scope": {
+    "team_key": "LET",
+    "decision_surface": [
+      "merge_ready",
+      "not_ready",
+      "stale_proof"
+    ],
+    "snapshot_fields": [
+      "all_checks_green",
+      "has_pending_checks",
+      "has_actionable_feedback",
+      "merge_state_status"
+    ]
+  },
+  "source": {
+    "kind": "deterministic_matrix"
+  },
+  "cases": [
+    {
+      "case_id": "DET-MERGE-READY-CLEAN",
+      "kind": "evaluate",
+      "pr_snapshot": {
+        "all_checks_green": true,
+        "has_pending_checks": false,
+        "has_actionable_feedback": false,
+        "merge_state_status": "CLEAN",
+        "url": "https://example.test/pr/601"
+      },
+      "expected": {
+        "outcome": "ok",
+        "required_missing_items": []
+      }
+    },
+    {
+      "case_id": "DET-NOT-READY-CHECKS-FAILED",
+      "kind": "evaluate",
+      "pr_snapshot": {
+        "all_checks_green": false,
+        "has_pending_checks": false,
+        "has_actionable_feedback": false,
+        "merge_state_status": "CLEAN",
+        "url": "https://example.test/pr/602"
+      },
+      "expected": {
+        "outcome": "error",
+        "required_missing_items": [
+          "pull request checks are not fully green"
+        ]
+      }
+    },
+    {
+      "case_id": "DET-NOT-READY-PENDING",
+      "kind": "evaluate",
+      "pr_snapshot": {
+        "all_checks_green": true,
+        "has_pending_checks": true,
+        "has_actionable_feedback": false,
+        "merge_state_status": "CLEAN",
+        "url": "https://example.test/pr/603"
+      },
+      "expected": {
+        "outcome": "error",
+        "required_missing_items": [
+          "pull request still has pending checks"
+        ]
+      }
+    },
+    {
+      "case_id": "DET-NOT-READY-ACTIONABLE",
+      "kind": "evaluate",
+      "pr_snapshot": {
+        "all_checks_green": true,
+        "has_pending_checks": false,
+        "has_actionable_feedback": true,
+        "merge_state_status": "CLEAN",
+        "url": "https://example.test/pr/604"
+      },
+      "expected": {
+        "outcome": "error",
+        "required_missing_items": [
+          "pull request still has actionable feedback"
+        ]
+      }
+    },
+    {
+      "case_id": "DET-NOT-READY-MERGE-UNSTABLE",
+      "kind": "evaluate",
+      "pr_snapshot": {
+        "all_checks_green": true,
+        "has_pending_checks": false,
+        "has_actionable_feedback": false,
+        "merge_state_status": "UNSTABLE",
+        "url": "https://example.test/pr/605"
+      },
+      "expected": {
+        "outcome": "error",
+        "required_missing_items": [
+          "pull request is not merge-ready"
+        ]
+      }
+    },
+    {
+      "case_id": "DET-NOT-READY-MERGE-MISSING",
+      "kind": "evaluate",
+      "pr_snapshot": {
+        "all_checks_green": true,
+        "has_pending_checks": false,
+        "has_actionable_feedback": false,
+        "merge_state_status": null,
+        "url": "https://example.test/pr/606"
+      },
+      "expected": {
+        "outcome": "error",
+        "required_missing_items": [
+          "pull request is not merge-ready"
+        ]
+      }
+    },
+    {
+      "case_id": "DET-TRANSITION-STALE-HEAD",
+      "kind": "transition",
+      "transition_input": {
+        "issue_id": "LET-PARITY06-STALE-HEAD",
+        "state_name": "In Review",
+        "workpad_body": "runtime evidence unchanged\n",
+        "manifest_git": {
+          "head_sha": "head-manifest",
+          "tree_sha": "tree-sha",
+          "worktree_clean": true
+        },
+        "runtime_git": {
+          "head_sha": "head-current",
+          "tree_sha": "tree-sha",
+          "worktree_clean": true
+        },
+        "mutate_workpad": false
+      },
+      "expected": {
+        "allowed": false,
+        "error_type": "handoff_manifest_stale",
+        "reason_contains": "validation gate final proof is stale or incomplete",
+        "details_contains": "final proof HEAD does not match current HEAD"
+      }
+    },
+    {
+      "case_id": "DET-TRANSITION-STALE-WORKPAD",
+      "kind": "transition",
+      "transition_input": {
+        "issue_id": "LET-PARITY06-STALE-WORKPAD",
+        "state_name": "In Review",
+        "workpad_body": "runtime evidence unchanged\n",
+        "manifest_git": {
+          "head_sha": "head-sha",
+          "tree_sha": "tree-sha",
+          "worktree_clean": true
+        },
+        "runtime_git": {
+          "head_sha": "head-sha",
+          "tree_sha": "tree-sha",
+          "worktree_clean": true
+        },
+        "mutate_workpad": true
+      },
+      "expected": {
+        "allowed": false,
+        "error_type": "handoff_manifest_stale",
+        "reason_contains": "workpad changed after the last successful handoff check"
+      }
+    },
+    {
+      "case_id": "DET-TRANSITION-FRESH",
+      "kind": "transition",
+      "transition_input": {
+        "issue_id": "LET-PARITY06-FRESH",
+        "state_name": "In Review",
+        "workpad_body": "runtime evidence unchanged\n",
+        "manifest_git": {
+          "head_sha": "head-sha",
+          "tree_sha": "tree-sha",
+          "worktree_clean": true
+        },
+        "runtime_git": {
+          "head_sha": "head-sha",
+          "tree_sha": "tree-sha",
+          "worktree_clean": true
+        },
+        "mutate_workpad": false
+      },
+      "expected": {
+        "allowed": true
+      }
+    }
+  ]
+}
