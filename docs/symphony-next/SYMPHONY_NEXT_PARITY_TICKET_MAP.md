@@ -252,5 +252,4 @@ Everything else is secondary.
 
 | Ticket | Status | Branch | PR | Merge commit | Evidence summary |
 | --- | --- | --- | --- | --- | --- |
-| `PARITY-01` | `done` | `parity/parity-01-freeze-linear-routing-contract` | `https://github.com/maximlafe/symphony/pull/143` | `094cbd9105e607aa7b303fe8b0b8655a5c92afaf` | Canonical routing contract + fixture-backed matrix + live-sanitized sample validated; CI green + merged; post-merge sanity passed (`make symphony-preflight`, `mix test test/symphony_elixir/linear_routing_parity_test.exs`). Evidence: `docs/symphony-next/evidence/PARITY-01/PARITY-01_EVIDENCE_2026-04-26.md` |
-| `PARITY-02` | `partial` | `parity/parity-02-freeze-issue-trace-contract` | `-` | `-` | Canonical issue trace contract + deterministic/live fixtures + parity suite implemented and locally validated; see `docs/symphony-next/evidence/PARITY-02/PARITY-02_EVIDENCE_2026-04-26.md` |
+| `PARITY-01` | `partial` | `parity/parity-01-freeze-linear-routing-contract` | `-` | `-` | Canonical routing contract + fixture-backed matrix + live-sanitized sample validated; see `docs/symphony-next/evidence/PARITY-01/PARITY-01_EVIDENCE_2026-04-26.md` |
