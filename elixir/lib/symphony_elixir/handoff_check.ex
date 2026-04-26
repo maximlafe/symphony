@@ -20,7 +20,6 @@ defmodule SymphonyElixir.HandoffCheck do
   @visual_extensions MapSet.new([".gif", ".jpeg", ".jpg", ".mov", ".mp4", ".png", ".webm", ".webp"])
   @machine_readable_extensions MapSet.new([".csv", ".json", ".jsonl", ".md", ".ndjson", ".tsv"])
   @runtime_extensions MapSet.new([".json", ".log", ".md", ".txt"])
-  @merge_ready_status_allowlist MapSet.new(["CLEAN", "HAS_HOOKS"])
   @matrix_proof_types MapSet.new(["test", "artifact", "runtime_smoke"])
   @matrix_semantics MapSet.new(["surface_exists", "run_executed", "runtime_smoke"])
   @default_handoff_phase "review"
@@ -136,7 +135,6 @@ defmodule SymphonyElixir.HandoffCheck do
           "all_checks_green" => Map.get(pr_snapshot, "all_checks_green"),
           "has_pending_checks" => Map.get(pr_snapshot, "has_pending_checks"),
           "has_actionable_feedback" => Map.get(pr_snapshot, "has_actionable_feedback"),
-          "actionable_feedback_state" => Map.get(pr_snapshot, "actionable_feedback_state"),
           "merge_state_status" => Map.get(pr_snapshot, "merge_state_status"),
           "url" => Map.get(pr_snapshot, "url")
         },
@@ -1212,56 +1210,15 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp pr_snapshot_missing_items(pr_snapshot) do
-    merge_state_status = Map.get(pr_snapshot, "merge_state_status")
-
     []
     |> maybe_require_snapshot(Map.get(pr_snapshot, "all_checks_green") == true, "pull request checks are not fully green")
     |> maybe_require_snapshot(Map.get(pr_snapshot, "has_pending_checks") == false, "pull request still has pending checks")
-    |> maybe_require_snapshot(actionable_feedback_clear?(pr_snapshot), "pull request still has actionable feedback")
-    |> maybe_require_snapshot(merge_state_ready?(merge_state_status), "pull request is not merge-ready")
+    |> maybe_require_snapshot(Map.get(pr_snapshot, "has_actionable_feedback") == false, "pull request still has actionable feedback")
+    |> maybe_require_snapshot(Map.get(pr_snapshot, "merge_state_status") not in ["DIRTY", "BLOCKED", "UNKNOWN"], "pull request is not merge-ready")
   end
 
   defp maybe_require_snapshot(acc, true, _message), do: acc
   defp maybe_require_snapshot(acc, false, message), do: acc ++ [message]
-
-  defp merge_state_ready?(status) when is_binary(status) do
-    normalized =
-      status
-      |> String.trim()
-      |> String.upcase()
-
-    MapSet.member?(@merge_ready_status_allowlist, normalized)
-  end
-
-  defp merge_state_ready?(_status), do: false
-
-  defp actionable_feedback_clear?(pr_snapshot) when is_map(pr_snapshot) do
-    case normalize_actionable_feedback_state(Map.get(pr_snapshot, "actionable_feedback_state")) do
-      "none" ->
-        true
-
-      "changes_requested" ->
-        false
-
-      "actionable_comments" ->
-        false
-
-      nil ->
-        Map.get(pr_snapshot, "has_actionable_feedback") != true
-    end
-  end
-
-  defp normalize_actionable_feedback_state(value) when is_binary(value) do
-    normalized = String.trim(value)
-
-    if normalized in ["changes_requested", "actionable_comments", "none"] do
-      normalized
-    else
-      nil
-    end
-  end
-
-  defp normalize_actionable_feedback_state(_value), do: nil
 
   defp summary_for_manifest(true, profile, _missing_items),
     do: "verification passed for profile `#{profile}`"
