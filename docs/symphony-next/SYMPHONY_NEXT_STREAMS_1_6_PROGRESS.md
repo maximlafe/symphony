@@ -28,8 +28,8 @@
 | `PARITY-02` | Stream 1 | `done` | `parity/parity-02-freeze-issue-trace-contract` | `https://github.com/maximlafe/symphony/pull/144` | `1b101982afca8c4253925dd321501d3d7560ec89` | `docs/symphony-next/evidence/PARITY-02/PARITY-02_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-03` | Stream 1 | `done` | `parity/parity-03-prove-old-trace-resume-compatibility` | `https://github.com/maximlafe/symphony/pull/145` | `a2d7c5630637f7330f0be6e59a7344f30b64f2c6` | `docs/symphony-next/evidence/PARITY-03/PARITY-03_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-04` | Stream 2 | `done` | `parity/parity-04-freeze-pr-evidence-contract` | `https://github.com/maximlafe/symphony/pull/146` | `a013737db4d78693f7f97550a9a9159998edb572` | `docs/symphony-next/evidence/PARITY-04/PARITY-04_EVIDENCE_2026-04-26.md` | `-` |
-| `PARITY-05` | Stream 2 | `done` | `parity/parity-05-encode-review-finalizer-semantics` | `https://github.com/maximlafe/symphony/pull/147` | `45c97dce969cd57ec5bf02469250dded2510c729` | `docs/symphony-next/evidence/PARITY-05/PARITY-05_EVIDENCE_2026-04-26.md` | `-` |
-| `PARITY-06` | Stream 2 | `in_review_prep` | `parity/parity-06-prove-merge-gating-parity` | `-` | `-` | `docs/symphony-next/evidence/PARITY-06/PARITY-06_EVIDENCE_2026-04-26.md` | `-` |
+| `PARITY-05` | Stream 2 | `in_review_prep` | `parity/parity-05-encode-review-finalizer-semantics` | `-` | `-` | `docs/symphony-next/evidence/PARITY-05/PARITY-05_EVIDENCE_2026-04-26.md` | `-` |
+| `PARITY-06` | Stream 2 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-14` | Stream 2 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-07` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-08` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
@@ -202,39 +202,5 @@
   - `make all`
 - Что пошло не по плану:
   - первичный `make all` упал на complexity-gate в `finalizer_semantics_parity_test.exs`; live mapper декомпозирован на helper-функции, после чего lint/coverage/dialyzer снова зелёные.
-- Текущие блокеры/риски:
-  - implementation/evidence blockers отсутствуют.
-
-## PARITY-05 Post-merge (2026-04-26)
-
-- PR/merge:
-  - PR: `https://github.com/maximlafe/symphony/pull/147`
-  - merge commit: `45c97dce969cd57ec5bf02469250dded2510c729`
-- Post-merge sanity:
-  - `make symphony-preflight` — pass
-  - `mix test test/symphony_elixir/finalizer_semantics_parity_test.exs` — pass
-- Linear:
-  - `LET-640` обновлён русским execution-worklog и переведён в `Done`.
-
-## PARITY-06 Update (2026-04-26)
-
-- Что сделано:
-  - создан RU plan-spec (`docs/symphony-next/plans/PARITY-06_PLAN.md`) с Acceptance Matrix и 2 critique pass;
-  - создан canonical contract (`docs/symphony-next/contracts/PARITY-06_MERGE_GATING_CONTRACT.md`);
-  - merge-state gating в `HandoffCheck` переведён на fail-closed allowlist (`CLEAN`, `HAS_HOOKS`);
-  - добавлен deterministic fixture `parity_06_merge_gating_matrix.json`;
-  - добавлен live generator `scripts/generate_parity_06_live_sanitized_fixture.sh` (retry + control-byte sanitize);
-  - сгенерирован live-sanitized fixture `parity_06_merge_gating_live_sanitized.json`;
-  - добавлен executable parity suite `merge_gating_parity_test.exs`;
-  - собран evidence doc `docs/symphony-next/evidence/PARITY-06/PARITY-06_EVIDENCE_2026-04-26.md`.
-- Что проверено:
-  - `make symphony-preflight`
-  - `make symphony-acceptance-preflight`
-  - `mix format --check-formatted`
-  - `mix test test/symphony_elixir/merge_gating_parity_test.exs`
-  - `mix test test/symphony_elixir/merge_gating_parity_test.exs test/symphony_elixir/handoff_check_test.exs test/symphony_elixir/finalizer_semantics_parity_test.exs`
-  - `make all`
-- Что пошло не по плану:
-  - в live-generator один из retry-attempts к Linear дал `curl: (35)`; final retry завершился успешно и fixture сгенерирован.
 - Текущие блокеры/риски:
   - implementation/evidence blockers отсутствуют; осталось завершить PR/CI/merge цикл.
