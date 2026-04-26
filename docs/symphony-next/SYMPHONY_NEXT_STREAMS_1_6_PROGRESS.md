@@ -29,8 +29,8 @@
 | `PARITY-03` | Stream 1 | `done` | `parity/parity-03-prove-old-trace-resume-compatibility` | `https://github.com/maximlafe/symphony/pull/145` | `a2d7c5630637f7330f0be6e59a7344f30b64f2c6` | `docs/symphony-next/evidence/PARITY-03/PARITY-03_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-04` | Stream 2 | `done` | `parity/parity-04-freeze-pr-evidence-contract` | `https://github.com/maximlafe/symphony/pull/146` | `a013737db4d78693f7f97550a9a9159998edb572` | `docs/symphony-next/evidence/PARITY-04/PARITY-04_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-05` | Stream 2 | `done` | `parity/parity-05-encode-review-finalizer-semantics` | `https://github.com/maximlafe/symphony/pull/147` | `45c97dce969cd57ec5bf02469250dded2510c729` | `docs/symphony-next/evidence/PARITY-05/PARITY-05_EVIDENCE_2026-04-26.md` | `-` |
-| `PARITY-06` | Stream 2 | `in_review_prep` | `parity/parity-06-prove-merge-gating-parity` | `-` | `-` | `docs/symphony-next/evidence/PARITY-06/PARITY-06_EVIDENCE_2026-04-26.md` | `-` |
-| `PARITY-14` | Stream 2 | `todo` | `-` | `-` | `-` | `-` | `-` |
+| `PARITY-06` | Stream 2 | `done` | `parity/parity-06-prove-merge-gating-parity` | `https://github.com/maximlafe/symphony/pull/148` | `16a0dbbf163b9ed79b87596abb5549c82cd22e26` | `docs/symphony-next/evidence/PARITY-06/PARITY-06_EVIDENCE_2026-04-26.md` | `-` |
+| `PARITY-14` | Stream 2 | `in_progress` | `parity/parity-14-actionable-feedback-classification` | `-` | `-` | `docs/symphony-next/evidence/PARITY-14/PARITY-14_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-07` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-08` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-09` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
@@ -236,5 +236,54 @@
   - `make all`
 - Что пошло не по плану:
   - в live-generator один из retry-attempts к Linear дал `curl: (35)`; final retry завершился успешно и fixture сгенерирован.
+- Текущие блокеры/риски:
+  - implementation/evidence blockers отсутствуют; осталось завершить PR/CI/merge цикл.
+
+## PARITY-06 Post-merge (2026-04-26)
+
+- PR/merge:
+  - PR: `https://github.com/maximlafe/symphony/pull/148`
+  - merge commit: `16a0dbbf163b9ed79b87596abb5549c82cd22e26`
+- Post-merge sanity:
+  - `make symphony-preflight` — pass
+  - `mix test test/symphony_elixir/merge_gating_parity_test.exs` — pass
+- Linear:
+  - `LET-641` обновлён русским execution-worklog и переведён в `Done`.
+
+## PARITY-14 Update (2026-04-26)
+
+- Что сделано:
+  - создан RU plan-spec (`docs/symphony-next/plans/PARITY-14_PLAN.md`) с Acceptance Matrix и 2 critique pass;
+  - создан canonical contract (`docs/symphony-next/contracts/PARITY-14_ACTIONABLE_REVIEW_FEEDBACK_CONTRACT.md`);
+  - в `github_pr_snapshot` добавлены explicit поля:
+    - `review_state_summary`,
+    - `actionable_feedback_state`,
+    - item-level `classification` для actionable feedback;
+  - workflow guards (`ControllerFinalizer`, `HandoffCheck`) привязаны к
+    `actionable_feedback_state` с legacy bool fallback;
+  - добавлен deterministic fixture
+    `parity_14_actionable_feedback_matrix.json`;
+  - добавлен live generator
+    `scripts/generate_parity_14_live_sanitized_fixture.sh` с retry и
+    GitHub sampling;
+  - сгенерирован live-sanitized fixture
+    `parity_14_actionable_feedback_live_sanitized.json`;
+  - добавлен executable parity suite
+    `actionable_feedback_parity_test.exs`;
+  - собран evidence doc
+    `docs/symphony-next/evidence/PARITY-14/PARITY-14_EVIDENCE_2026-04-26.md`.
+- Что проверено:
+  - `scripts/generate_parity_14_live_sanitized_fixture.sh`
+  - `make symphony-preflight`
+  - `make symphony-acceptance-preflight`
+  - `mix format --check-formatted`
+  - `mix test test/symphony_elixir/actionable_feedback_parity_test.exs test/symphony_elixir/dynamic_tool_test.exs test/symphony_elixir/handoff_check_test.exs test/symphony_elixir/controller_finalizer_test.exs`
+  - `make all`
+- Что пошло не по плану:
+  - нестабильный GitHub API (`EOF`/TLS) при live sampling; добавлены retry в
+    generator и seed PR IDs с подтверждённым `CHANGES_REQUESTED` для
+    воспроизводимого live-dataset.
+  - первичный прогон `make all` падал из-за coverage gate 100%; закрыто
+    точечными test-cases и удалением недостижимых fallback clauses.
 - Текущие блокеры/риски:
   - implementation/evidence blockers отсутствуют; осталось завершить PR/CI/merge цикл.
