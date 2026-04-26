@@ -167,7 +167,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
                details: %{"snapshot" => snapshot}
              }}
 
-          actionable_feedback_blocking?(snapshot) ->
+          snapshot["has_actionable_feedback"] == true ->
             fallback_checkpoint =
               checkpoint_status(
                 checkpoint,
@@ -513,7 +513,6 @@ defmodule SymphonyElixir.ControllerFinalizer do
       "url" => payload["url"],
       "state" => payload["state"],
       "has_pending_checks" => payload["has_pending_checks"] == true,
-      "actionable_feedback_state" => normalize_actionable_feedback_state(payload["actionable_feedback_state"]),
       "has_actionable_feedback" => payload["has_actionable_feedback"] == true,
       "feedback_digest" => normalize_string(payload["feedback_digest"])
     }
@@ -532,31 +531,9 @@ defmodule SymphonyElixir.ControllerFinalizer do
     checkpoint
     |> Map.put("open_pr", open_pr)
     |> Map.put("pending_checks", snapshot["has_pending_checks"])
-    |> Map.put("open_feedback", actionable_feedback_blocking?(snapshot))
-    |> Map.put("open_feedback_state", snapshot["actionable_feedback_state"])
+    |> Map.put("open_feedback", snapshot["has_actionable_feedback"])
     |> Map.put("feedback_digest", snapshot["feedback_digest"])
   end
-
-  defp actionable_feedback_blocking?(snapshot) when is_map(snapshot) do
-    case snapshot["actionable_feedback_state"] do
-      "changes_requested" -> true
-      "actionable_comments" -> true
-      "none" -> false
-      _ -> snapshot["has_actionable_feedback"] == true
-    end
-  end
-
-  defp normalize_actionable_feedback_state(value) when is_binary(value) do
-    normalized = String.trim(value)
-
-    if normalized in ["changes_requested", "actionable_comments", "none"] do
-      normalized
-    else
-      nil
-    end
-  end
-
-  defp normalize_actionable_feedback_state(_value), do: nil
 
   defp normalize_open_pr(existing, snapshot) do
     number =
