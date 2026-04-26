@@ -1,0 +1,350 @@
+{
+  "ticket": "PARITY-07",
+  "generated_at": "2026-04-26T16:45:39Z",
+  "scope": {
+    "team_key": "LET",
+    "canonical_recovery_classes": [
+      "resume_checkpoint_recovery",
+      "fallback_reread_recovery",
+      "classified_handoff_stop"
+    ],
+    "observed_fields": [
+      "resume_mode",
+      "continuation_reason",
+      "selected_rule",
+      "selected_action"
+    ]
+  },
+  "source": {
+    "resume_filter": "comments contains \"resume_mode\"",
+    "retry_filter": "comments contains \"Retry/failover decision (auto-classified)\"",
+    "sampled_resume_issue_count": 5,
+    "sampled_retry_issue_count": 12,
+    "sampled_case_count": 17
+  },
+  "cases": [
+    {
+      "case_id": "LIVE-1",
+      "observed": {
+        "resume_mode": "resume_checkpoint",
+        "continuation_reason": null,
+        "selected_rule": null,
+        "selected_action": null
+      },
+      "expected": {
+        "recovery_class": "resume_checkpoint_recovery"
+      },
+      "source": {
+        "sampled_identifier": "LET-474",
+        "sampled_state": "In Review",
+        "sampled_created_at": "2026-04-19T16:15:51.334Z",
+        "sampled_excerpt": "Monitoring update (2026-04-19 16:15 UTC) - Active session is still `019da666-fb8d-7543-8676-1bb4d65b6d8e-019da666-fc0b-7321-9d76-f6bbfea6f94c` on trace `2e045d8a-d279-4cf5-80bd-0f5fdf353081`; no new retry/failover/replac",
+        "evidence_channel": "resume_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-2",
+      "observed": {
+        "resume_mode": "fallback_reread",
+        "continuation_reason": null,
+        "selected_rule": null,
+        "selected_action": null
+      },
+      "expected": {
+        "recovery_class": "fallback_reread_recovery"
+      },
+      "source": {
+        "sampled_identifier": "LET-559",
+        "sampled_state": "Canceled",
+        "sampled_created_at": "2026-04-18T18:03:56.451Z",
+        "sampled_excerpt": "Провёл разбор на VPS по `LET-559`. Что подтверждено: - Задача ушла не в execution smoke-path, а в planning/spec-prep path. - В workspace `/srv/symphony/workspaces/let/LET-559/workpad.md` зафиксировано: подтверждены состо",
+        "evidence_channel": "resume_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-3",
+      "observed": {
+        "resume_mode": "resume_checkpoint",
+        "continuation_reason": null,
+        "selected_rule": null,
+        "selected_action": null
+      },
+      "expected": {
+        "recovery_class": "resume_checkpoint_recovery"
+      },
+      "source": {
+        "sampled_identifier": "LET-638",
+        "sampled_state": "Done",
+        "sampled_created_at": "2026-04-26T12:57:19.569Z",
+        "sampled_excerpt": "Execute-mode по `PARITY-03` завершён. Что сделано: - зафиксирован контракт legacy resume compatibility; - добавлены deterministic/live fixtures и parity-suite; - устранён fail-closed drift: inconsistent legacy `resume_mo",
+        "evidence_channel": "resume_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-4",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "stale_workspace_head",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-473",
+        "sampled_state": "In Review",
+        "sampled_created_at": "2026-04-17T14:22:56.593Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `stale_workspace_head` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-473` - trace_id",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-5",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "stale_workspace_head",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-474",
+        "sampled_state": "In Review",
+        "sampled_created_at": "2026-04-19T20:25:46.550Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `stale_workspace_head` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-474` - trace_id",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-6",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "stale_workspace_head",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-518",
+        "sampled_state": "Blocked",
+        "sampled_created_at": "2026-04-24T16:50:30.809Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `stale_workspace_head` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-518` - trace_id",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-7",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "validation_env_mismatch",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-518",
+        "sampled_state": "Blocked",
+        "sampled_created_at": "2026-04-24T04:23:14.683Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `validation_env_mismatch` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-518` - trace",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-8",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "budget_exceeded_per_attempt_handoff",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-559",
+        "sampled_state": "Canceled",
+        "sampled_created_at": "2026-04-19T07:53:15.587Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `budget_exceeded_per_attempt_handoff` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `decision` - risk_level: `medium` - issue: `LET-55",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-9",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "validation_env_mismatch",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-559",
+        "sampled_state": "Canceled",
+        "sampled_created_at": "2026-04-19T08:44:24.884Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `validation_env_mismatch` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-559` - trace",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-10",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "stale_workspace_head",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-577",
+        "sampled_state": "Done",
+        "sampled_created_at": "2026-04-23T08:42:55.497Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `stale_workspace_head` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-577` - trace_id",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-11",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "validation_env_mismatch",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-577",
+        "sampled_state": "Done",
+        "sampled_created_at": "2026-04-21T09:13:54.107Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `validation_env_mismatch` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-577` - trace",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-12",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "validation_env_mismatch",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-598",
+        "sampled_state": "Blocked",
+        "sampled_created_at": "2026-04-23T10:00:08.997Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `validation_env_mismatch` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-598` - trace",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-13",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "validation_env_mismatch",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-599",
+        "sampled_state": "Done",
+        "sampled_created_at": "2026-04-23T12:11:13.067Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `validation_env_mismatch` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-599` - trace",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-14",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "validation_env_mismatch",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-609",
+        "sampled_state": "Done",
+        "sampled_created_at": "2026-04-23T13:10:41.890Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `validation_env_mismatch` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-609` - trace",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-15",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "validation_env_mismatch",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-610",
+        "sampled_state": "Done",
+        "sampled_created_at": "2026-04-23T14:29:07.583Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `validation_env_mismatch` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-610` - trace",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-16",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "stale_workspace_head",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-611",
+        "sampled_state": "Done",
+        "sampled_created_at": "2026-04-23T15:25:59.506Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `stale_workspace_head` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-611` - trace_id",
+        "evidence_channel": "retry_decision_comment"
+      }
+    },
+    {
+      "case_id": "LIVE-17",
+      "observed": {
+        "resume_mode": null,
+        "continuation_reason": null,
+        "selected_rule": "validation_env_mismatch",
+        "selected_action": "stop_with_classified_handoff"
+      },
+      "expected": {
+        "recovery_class": "classified_handoff_stop"
+      },
+      "source": {
+        "sampled_identifier": "LET-611",
+        "sampled_state": "Done",
+        "sampled_created_at": "2026-04-23T14:27:23.546Z",
+        "sampled_excerpt": "### Retry/failover decision (auto-classified) - selected_rule: `validation_env_mismatch` - selected_action: `stop_with_classified_handoff` - checkpoint_type: `human-action` - risk_level: `high` - issue: `LET-611` - trace",
+        "evidence_channel": "retry_decision_comment"
+      }
+    }
+  ]
+}

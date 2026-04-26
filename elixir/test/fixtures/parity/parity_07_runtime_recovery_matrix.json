@@ -1,0 +1,129 @@
+{
+  "ticket": "PARITY-07",
+  "scope": {
+    "team_key": "LET",
+    "decision_surface": [
+      "stall_restart_retry",
+      "pre_run_hook_guard",
+      "retry_terminal_reconcile",
+      "resume_checkpoint_reload",
+      "orphaned_claim_reconcile",
+      "event_log_replay_stability"
+    ],
+    "runtime_fields": [
+      "retry_attempts",
+      "claimed",
+      "resume_mode",
+      "resume_fallback_reason",
+      "turn_count",
+      "codex_total_tokens",
+      "session_id"
+    ]
+  },
+  "source": {
+    "kind": "deterministic_matrix"
+  },
+  "cases": [
+    {
+      "case_id": "DET-STALL-RETRY-BACKOFF",
+      "kind": "stall_retry",
+      "expected": {
+        "attempt": 1,
+        "identifier": "PARITY07-STALL",
+        "error_class": "transient",
+        "error_prefix": "stalled for "
+      }
+    },
+    {
+      "case_id": "DET-PRE-RUN-HOOK-GUARD",
+      "kind": "pre_run_hook_guard",
+      "expected": {
+        "retry_scheduled": false
+      }
+    },
+    {
+      "case_id": "DET-RETRY-TERMINAL-RECONCILE",
+      "kind": "retry_terminal_reconcile",
+      "expected": {
+        "claim_released": true,
+        "retry_cleared": true
+      }
+    },
+    {
+      "case_id": "DET-RESUME-CHECKPOINT-RELOAD",
+      "kind": "resume_reload",
+      "expected": {
+        "resume_mode": "resume_checkpoint",
+        "resume_fallback_reason": null,
+        "resume_ready": true
+      }
+    },
+    {
+      "case_id": "DET-ORPHANED-CLAIM-RECONCILE",
+      "kind": "orphaned_claim_reconcile",
+      "expected": {
+        "claim_released": true
+      }
+    },
+    {
+      "case_id": "DET-REPLAY-STABILITY",
+      "kind": "replay_stability",
+      "event_log": [
+        {
+          "event": "session_started",
+          "timestamp": "2026-04-26T11:00:00Z",
+          "session_id": "thread-parity07-turn-1",
+          "thread_id": "thread-parity07",
+          "turn_id": "turn-1",
+          "trace_id": "trace-parity07",
+          "codex_model": "gpt-5.3-codex",
+          "codex_effort": "medium"
+        },
+        {
+          "event": "notification",
+          "timestamp": "2026-04-26T11:00:05Z",
+          "payload": {
+            "method": "turn/completed",
+            "usage": {
+              "input_tokens": 100,
+              "output_tokens": 20,
+              "total_tokens": 120
+            }
+          }
+        },
+        {
+          "event": "notification",
+          "timestamp": "2026-04-26T11:00:06Z",
+          "payload": {
+            "method": "turn/completed",
+            "usage": {
+              "input_tokens": 100,
+              "output_tokens": 20,
+              "total_tokens": 120
+            }
+          }
+        }
+      ],
+      "expected": {
+        "turn_count": 1,
+        "session_id": "thread-parity07-turn-1",
+        "codex_total_tokens": 120,
+        "stable_fields": [
+          "session_id",
+          "thread_id",
+          "turn_id",
+          "trace_id",
+          "turn_count",
+          "codex_input_tokens",
+          "codex_output_tokens",
+          "codex_total_tokens",
+          "codex_last_reported_input_tokens",
+          "codex_last_reported_output_tokens",
+          "codex_last_reported_total_tokens",
+          "routing_parity_status",
+          "routing_parity_reason"
+        ]
+      }
+    }
+  ]
+}
