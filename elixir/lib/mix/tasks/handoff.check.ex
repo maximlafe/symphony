@@ -6,7 +6,7 @@ defmodule Mix.Tasks.Handoff.Check do
   @moduledoc """
   Runs the repo-owned handoff verification contract and prints the resulting manifest.
 
-      mix handoff.check --issue LET-416 --workpad ../workpad.md --repo maximlafe/symphony --pr 52
+      mix handoff.check --issue LET-416 --workpad ../workpad.md --repo maximlafe/symphony --pr 52 --phase review
   """
 
   alias SymphonyElixir.Codex.DynamicTool
@@ -18,6 +18,7 @@ defmodule Mix.Tasks.Handoff.Check do
     workpad: :string,
     repo: :string,
     pr: :integer,
+    phase: :string,
     profile: :string,
     manifest: :string
   ]
@@ -49,6 +50,7 @@ defmodule Mix.Tasks.Handoff.Check do
           "file_path" => workpad_path,
           "repo" => repo,
           "pr_number" => pr_number,
+          "phase" => Keyword.get(opts, :phase) || "review",
           "profile" => Keyword.get(opts, :profile) || verification.profile,
           "manifest_path" => manifest_path
         },
