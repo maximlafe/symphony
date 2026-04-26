@@ -1,0 +1,128 @@
+{
+  "ticket": "PARITY-02",
+  "scope": {
+    "team_key": "LET",
+    "trace_channels": [
+      "workpad_comment",
+      "artifact_attachment",
+      "handoff_decision_comment",
+      "handoff_milestone_comment",
+      "trace_timing"
+    ]
+  },
+  "cases": [
+    {
+      "case_id": "DET-WORKPAD-01",
+      "trace_kind": "workpad",
+      "comments": [
+        {
+          "channel": "workpad_comment",
+          "created_at": "2026-04-15T06:54:09.694Z",
+          "author": "operator",
+          "body": "## Codex Workpad\n\nPlan and status trace."
+        }
+      ],
+      "attachments": [],
+      "expected": {
+        "requires_workpad_signal": true,
+        "requires_artifact_signal": false,
+        "requires_handoff_decision": false,
+        "requires_handoff_milestone": false,
+        "requires_valid_timing": true
+      }
+    },
+    {
+      "case_id": "DET-ARTIFACT-01",
+      "trace_kind": "artifact",
+      "comments": [],
+      "attachments": [
+        {
+          "title": "LET-530: Skip finalizer failure retry when pre-pipeline workpad is missing",
+          "subtitle": "",
+          "url": "https://example.test/artifacts/let-530-proof",
+          "created_at": "2026-04-17T15:05:10.420Z"
+        }
+      ],
+      "expected": {
+        "requires_workpad_signal": false,
+        "requires_artifact_signal": true,
+        "requires_handoff_decision": false,
+        "requires_handoff_milestone": false,
+        "requires_valid_timing": true
+      }
+    },
+    {
+      "case_id": "DET-HANDOFF-DECISION-01",
+      "trace_kind": "handoff_decision",
+      "comments": [
+        {
+          "channel": "handoff_decision_comment",
+          "created_at": "2026-04-23T10:00:08.997Z",
+          "author": "operator",
+          "body": "selected_rule: validation_env_mismatch\nselected_action: stop_with_classified_handoff\ncheckpoint_type: human-action"
+        }
+      ],
+      "attachments": [],
+      "expected": {
+        "requires_workpad_signal": false,
+        "requires_artifact_signal": false,
+        "requires_handoff_decision": true,
+        "requires_handoff_milestone": false,
+        "requires_valid_timing": true
+      }
+    },
+    {
+      "case_id": "DET-HANDOFF-MILESTONE-01",
+      "trace_kind": "handoff_milestone",
+      "comments": [
+        {
+          "channel": "handoff_milestone_comment",
+          "created_at": "2026-04-24T04:23:06.699Z",
+          "author": "operator",
+          "body": "### Symphony milestone\n- milestone: handoff-ready\n- summary: PR checks are green."
+        }
+      ],
+      "attachments": [],
+      "expected": {
+        "requires_workpad_signal": false,
+        "requires_artifact_signal": false,
+        "requires_handoff_decision": false,
+        "requires_handoff_milestone": true,
+        "requires_valid_timing": true
+      }
+    },
+    {
+      "case_id": "DET-COMBINED-01",
+      "trace_kind": "combined",
+      "comments": [
+        {
+          "channel": "workpad_comment",
+          "created_at": "2026-04-25T13:33:42.654Z",
+          "author": "operator",
+          "body": "## Рабочий журнал Codex\n\nExecution context."
+        },
+        {
+          "channel": "handoff_decision_comment",
+          "created_at": "2026-04-25T14:08:57.051Z",
+          "author": "operator",
+          "body": "selected_rule: validation_env_mismatch\nselected_action: stop_with_classified_handoff\ncheckpoint_type: human-action"
+        }
+      ],
+      "attachments": [
+        {
+          "title": "LET-633: add task_v3 deal registry",
+          "subtitle": "",
+          "url": "https://example.test/artifacts/let-633-proof",
+          "created_at": "2026-04-25T14:00:25.098Z"
+        }
+      ],
+      "expected": {
+        "requires_workpad_signal": true,
+        "requires_artifact_signal": true,
+        "requires_handoff_decision": true,
+        "requires_handoff_milestone": false,
+        "requires_valid_timing": true
+      }
+    }
+  ]
+}
