@@ -31,7 +31,7 @@
 | `PARITY-05` | Stream 2 | `done` | `parity/parity-05-encode-review-finalizer-semantics` | `https://github.com/maximlafe/symphony/pull/147` | `45c97dce969cd57ec5bf02469250dded2510c729` | `docs/symphony-next/evidence/PARITY-05/PARITY-05_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-06` | Stream 2 | `done` | `parity/parity-06-prove-merge-gating-parity` | `https://github.com/maximlafe/symphony/pull/148` | `16a0dbbf163b9ed79b87596abb5549c82cd22e26` | `docs/symphony-next/evidence/PARITY-06/PARITY-06_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-14` | Stream 2 | `done` | `parity/parity-14-actionable-feedback-classification` | `https://github.com/maximlafe/symphony/pull/149` | `d57aea23eb66ad66b4cc5bf4e8fcb7d676f8ee14` | `docs/symphony-next/evidence/PARITY-14/PARITY-14_EVIDENCE_2026-04-26.md` | `-` |
-| `PARITY-07` | Stream 3 | `in_review` | `parity/parity-07-long-lived-runtime-recovery` | `https://github.com/maximlafe/symphony/pull/150` | `-` | `docs/symphony-next/evidence/PARITY-07/PARITY-07_EVIDENCE_2026-04-26.md` | `-` |
+| `PARITY-07` | Stream 3 | `done` | `parity/parity-07-long-lived-runtime-recovery` | `https://github.com/maximlafe/symphony/pull/150` | `05ab8ae51510b1c87c552c78d5897d5db870848a` | `docs/symphony-next/evidence/PARITY-07/PARITY-07_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-08` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-09` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-19` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
@@ -320,4 +320,13 @@
   - первичный live-generation дропал resume-cases из-за jq no-match semantics (`empty`);
   - первичный тестовый прогон падал на `get_in/2` по `Orchestrator.State` (без Access), исправлено точечной заменой на `Map.fetch!/Map.get`.
 - Текущие блокеры/риски:
-  - implementation/evidence blockers отсутствуют; осталось завершить PR/CI/merge цикл.
+  - implementation/evidence blockers отсутствуют.
+
+## PARITY-07 Post-merge (2026-04-26)
+
+- PR/merge:
+  - PR: `https://github.com/maximlafe/symphony/pull/150`
+  - merge commit: `05ab8ae51510b1c87c552c78d5897d5db870848a`
+- Post-merge sanity:
+  - `make symphony-preflight` — pass
+  - `mix test test/symphony_elixir/runtime_recovery_parity_test.exs` — pass
