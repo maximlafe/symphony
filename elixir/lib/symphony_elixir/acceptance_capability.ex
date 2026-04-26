@@ -248,7 +248,7 @@ defmodule SymphonyElixir.AcceptanceCapability do
     uri = URI.parse(database_url)
 
     cond do
-      uri.scheme not in ["postgres", "postgresql"] ->
+      not postgres_database_scheme?(uri.scheme) ->
         ["stateful_db requires postgres DATABASE_URL"]
 
       is_nil(uri.host) or uri.host == "" ->
@@ -263,6 +263,19 @@ defmodule SymphonyElixir.AcceptanceCapability do
         end
     end
   end
+
+  defp postgres_database_scheme?(scheme) when is_binary(scheme) do
+    normalized =
+      scheme
+      |> String.downcase()
+      |> String.trim()
+
+    normalized in ["postgres", "postgresql"] or
+      String.starts_with?(normalized, "postgres+") or
+      String.starts_with?(normalized, "postgresql+")
+  end
+
+  defp postgres_database_scheme?(_), do: false
 
   defp tcp_connect(host, port) do
     case :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false], 1_000) do

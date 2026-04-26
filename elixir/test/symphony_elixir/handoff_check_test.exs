@@ -960,6 +960,60 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert get_in(runtime_semantic_manifest, ["proof_signals", "acceptance_matrix_covered"]) == true
   end
 
+  test "evaluate accepts known legacy proof semantic aliases for mode:plan matrices" do
+    alias_semantics_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-NEG | Negative path guard | Negative-path checks are executed | test | make symphony-preflight | negative proof |
+    | AM-REG | Regression guard | Regression checks are executed | test | mix test test/symphony_elixir/handoff_check_test.exs | regression guard |
+    | AM-SIDE | Side-effect guard | Side effects are validated via executed check | test | make symphony-validate | side-effect guard |
+    """
+
+    alias_semantics_workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime evidence for validation guard requirements
+
+    ### Proof Mapping
+
+    - [x] `AM-NEG` -> `validation:preflight`
+    - [x] `AM-REG` -> `validation:targeted tests`
+    - [x] `AM-SIDE` -> `validation:repo validation`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Legacy semantics are normalized to canonical run semantics.
+    """
+
+    assert {:ok, alias_manifest} =
+             HandoffCheck.evaluate(
+               alias_semantics_workpad,
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:generic"],
+               issue_description: alias_semantics_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert get_in(alias_manifest, ["proof_signals", "acceptance_matrix_covered"]) == true
+  end
+
   test "evaluate normalizes validation gate errors and git changed paths for invalid change classes" do
     assert {:error, manifest} =
              HandoffCheck.evaluate(

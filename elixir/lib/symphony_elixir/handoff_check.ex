@@ -22,6 +22,11 @@ defmodule SymphonyElixir.HandoffCheck do
   @runtime_extensions MapSet.new([".json", ".log", ".md", ".txt"])
   @matrix_proof_types MapSet.new(["test", "artifact", "runtime_smoke"])
   @matrix_semantics MapSet.new(["surface_exists", "run_executed", "runtime_smoke"])
+  @matrix_semantic_aliases %{
+    "negative_proof" => "run_executed",
+    "regression_guard" => "run_executed",
+    "side_effect_guard" => "run_executed"
+  }
   @default_handoff_phase "review"
   @supported_handoff_phases ["review", "done"]
   @default_matrix_required_before "review"
@@ -595,6 +600,9 @@ defmodule SymphonyElixir.HandoffCheck do
     cond do
       normalized in ["", "default"] ->
         "run_executed"
+
+      is_binary(Map.get(@matrix_semantic_aliases, normalized)) ->
+        Map.get(@matrix_semantic_aliases, normalized)
 
       MapSet.member?(@matrix_semantics, normalized) ->
         normalized
