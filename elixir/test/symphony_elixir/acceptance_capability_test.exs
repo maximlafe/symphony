@@ -145,6 +145,15 @@ defmodule SymphonyElixir.AcceptanceCapabilityTest do
              )
 
     assert report["passed"] == true
+
+    assert {:ok, sql_alchemy_report} =
+             AcceptanceCapability.evaluate("/tmp/workspace", %{"description" => description},
+               manifest_result: {:ok, @manifest},
+               env: %{"DATABASE_URL" => "postgresql+psycopg2://user:pass@db.example:5432/app"},
+               tcp_connect: fn "db.example", 5432 -> :ok end
+             )
+
+    assert sql_alchemy_report["passed"] == true
   end
 
   test "checks stateful database reachability through the default tcp connector" do
@@ -199,6 +208,14 @@ defmodule SymphonyElixir.AcceptanceCapabilityTest do
              )
 
     assert "stateful_db requires postgres DATABASE_URL" in scheme_report["missing"]
+
+    assert {:error, missing_scheme_report} =
+             AcceptanceCapability.evaluate("/tmp/workspace", %{"description" => description},
+               manifest_result: {:ok, @manifest},
+               env: %{"DATABASE_URL" => "//db.example:5432/app"}
+             )
+
+    assert "stateful_db requires postgres DATABASE_URL" in missing_scheme_report["missing"]
 
     assert {:error, unreachable_report} =
              AcceptanceCapability.evaluate("/tmp/workspace", %{"description" => description},

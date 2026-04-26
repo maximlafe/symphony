@@ -753,6 +753,7 @@ Instructions:
 6. Update the issue-description task-spec only when required sections are missing or the task contract materially changed:
    - use canonical Russian headings `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and keep a final `## Symphony` section;
    - for execution/review-oriented tasks, add mandatory `## Acceptance Matrix` with atomic items (`id`, `scenario`, `expected_outcome`, `proof_type`, `proof_target`, `proof_semantic`);
+   - keep `proof_type` canonical (`test`, `artifact`, `runtime_smoke`) and `proof_semantic` canonical (`surface_exists`, `run_executed`, `runtime_smoke`); legacy labels (`negative proof`, `regression guard`, `side-effect guard`) are tolerated only for backward compatibility of old tasks and must not be used in new specs;
    - when an acceptance item requires external infrastructure before execution can complete, add a machine-readable `Required capabilities: ...` line to the final `## Symphony` section. Use the canonical capability names `repo_validation`, `pr_publication`, `pr_body_contract`, `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`;
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
    - keep `## Symphony` as the last section with `Repo: <resolved owner/name>`, `Base branch: <configured branch>`, and `Working branch: <configured branch name>` when `.symphony-working-branch` exists;

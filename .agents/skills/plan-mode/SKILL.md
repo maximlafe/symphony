@@ -78,7 +78,7 @@ Include, when relevant:
 Preserve all material user facts, capture the observed behavior and expected behavior inside the task-spec where they belong, and always keep the final `## Symphony` block intact.
 
 For tasks about coverage, routing, classification, merge behavior, or quality changes, `План валидации` must name the regression dataset or case set, the baseline, the target delta or threshold, and the false-positive ceiling.
-When `Acceptance Matrix` is present, require that every matrix item is mappable to concrete proof (`test` / `artifact` / `runtime`) and that `surface exists` and `run executed` semantics are not collapsed.
+When `Acceptance Matrix` is present, require that every matrix item is mappable to concrete proof (`test` / `artifact` / `runtime`) and that `surface exists` and `run executed` semantics are not collapsed. Use canonical values: `proof_type` in (`test`, `artifact`, `runtime_smoke`) and `proof_semantic` in (`surface_exists`, `run_executed`, `runtime_smoke`).
 
 ## Workpad expectations
 
