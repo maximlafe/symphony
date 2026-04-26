@@ -12,7 +12,7 @@ defmodule SymphonyElixir.LinearRoutingParityTest do
 
     configure_replacement_scope!(payload["scope"], payload["assignee_filter"])
     cases = Map.get(payload, "cases", [])
-    assert length(cases) > 0
+    refute Enum.empty?(cases)
 
     assert_matrix_cases!(cases, payload["assignee_filter"])
   end
@@ -25,7 +25,7 @@ defmodule SymphonyElixir.LinearRoutingParityTest do
 
     configure_replacement_scope!(payload["scope"], payload["assignee_filter"])
     cases = Map.get(payload, "cases", [])
-    assert length(cases) > 0
+    refute Enum.empty?(cases)
 
     assert_matrix_cases!(cases, payload["assignee_filter"])
   end
