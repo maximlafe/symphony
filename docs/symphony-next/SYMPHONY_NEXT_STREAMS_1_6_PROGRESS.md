@@ -30,7 +30,7 @@
 | `PARITY-04` | Stream 2 | `done` | `parity/parity-04-freeze-pr-evidence-contract` | `https://github.com/maximlafe/symphony/pull/146` | `a013737db4d78693f7f97550a9a9159998edb572` | `docs/symphony-next/evidence/PARITY-04/PARITY-04_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-05` | Stream 2 | `done` | `parity/parity-05-encode-review-finalizer-semantics` | `https://github.com/maximlafe/symphony/pull/147` | `45c97dce969cd57ec5bf02469250dded2510c729` | `docs/symphony-next/evidence/PARITY-05/PARITY-05_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-06` | Stream 2 | `done` | `parity/parity-06-prove-merge-gating-parity` | `https://github.com/maximlafe/symphony/pull/148` | `16a0dbbf163b9ed79b87596abb5549c82cd22e26` | `docs/symphony-next/evidence/PARITY-06/PARITY-06_EVIDENCE_2026-04-26.md` | `-` |
-| `PARITY-14` | Stream 2 | `done` | `parity/parity-14-actionable-feedback-classification` | `https://github.com/maximlafe/symphony/pull/149` | `d57aea23eb66ad66b4cc5bf4e8fcb7d676f8ee14` | `docs/symphony-next/evidence/PARITY-14/PARITY-14_EVIDENCE_2026-04-26.md` | `-` |
+| `PARITY-14` | Stream 2 | `in_progress` | `parity/parity-14-actionable-feedback-classification` | `-` | `-` | `docs/symphony-next/evidence/PARITY-14/PARITY-14_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-07` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-08` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-09` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
@@ -237,18 +237,7 @@
 - Что пошло не по плану:
   - в live-generator один из retry-attempts к Linear дал `curl: (35)`; final retry завершился успешно и fixture сгенерирован.
 - Текущие блокеры/риски:
-  - implementation/evidence blockers отсутствуют.
-
-## PARITY-14 Post-merge (2026-04-26)
-
-- PR/merge:
-  - PR: `https://github.com/maximlafe/symphony/pull/149`
-  - merge commit: `d57aea23eb66ad66b4cc5bf4e8fcb7d676f8ee14`
-- Post-merge sanity:
-  - `make symphony-preflight` — pass
-  - `mix test test/symphony_elixir/actionable_feedback_parity_test.exs` — pass
-- Linear:
-  - `LET-642` обновлён русским execution-worklog и переведён в `Done`.
+  - implementation/evidence blockers отсутствуют; осталось завершить PR/CI/merge цикл.
 
 ## PARITY-06 Post-merge (2026-04-26)
 
