@@ -136,6 +136,7 @@ defmodule SymphonyElixir.HandoffCheck do
           "all_checks_green" => Map.get(pr_snapshot, "all_checks_green"),
           "has_pending_checks" => Map.get(pr_snapshot, "has_pending_checks"),
           "has_actionable_feedback" => Map.get(pr_snapshot, "has_actionable_feedback"),
+          "actionable_feedback_state" => Map.get(pr_snapshot, "actionable_feedback_state"),
           "merge_state_status" => Map.get(pr_snapshot, "merge_state_status"),
           "url" => Map.get(pr_snapshot, "url")
         },
@@ -1216,7 +1217,7 @@ defmodule SymphonyElixir.HandoffCheck do
     []
     |> maybe_require_snapshot(Map.get(pr_snapshot, "all_checks_green") == true, "pull request checks are not fully green")
     |> maybe_require_snapshot(Map.get(pr_snapshot, "has_pending_checks") == false, "pull request still has pending checks")
-    |> maybe_require_snapshot(Map.get(pr_snapshot, "has_actionable_feedback") == false, "pull request still has actionable feedback")
+    |> maybe_require_snapshot(actionable_feedback_clear?(pr_snapshot), "pull request still has actionable feedback")
     |> maybe_require_snapshot(merge_state_ready?(merge_state_status), "pull request is not merge-ready")
   end
 
@@ -1233,6 +1234,34 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp merge_state_ready?(_status), do: false
+
+  defp actionable_feedback_clear?(pr_snapshot) when is_map(pr_snapshot) do
+    case normalize_actionable_feedback_state(Map.get(pr_snapshot, "actionable_feedback_state")) do
+      "none" ->
+        true
+
+      "changes_requested" ->
+        false
+
+      "actionable_comments" ->
+        false
+
+      nil ->
+        Map.get(pr_snapshot, "has_actionable_feedback") != true
+    end
+  end
+
+  defp normalize_actionable_feedback_state(value) when is_binary(value) do
+    normalized = String.trim(value)
+
+    if normalized in ["changes_requested", "actionable_comments", "none"] do
+      normalized
+    else
+      nil
+    end
+  end
+
+  defp normalize_actionable_feedback_state(_value), do: nil
 
   defp summary_for_manifest(true, profile, _missing_items),
     do: "verification passed for profile `#{profile}`"

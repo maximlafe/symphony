@@ -916,6 +916,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     payload = decode_tool_text(response)
 
     assert payload == %{
+             "actionable_feedback_state" => "none",
              "all_checks_green" => true,
              "checks" => [
                %{
@@ -933,6 +934,14 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "merge_state_status" => "CLEAN",
              "review_count" => 0,
              "review_decision" => nil,
+             "review_state_summary" => %{
+               "approved" => 0,
+               "changes_requested" => 0,
+               "commented" => 0,
+               "dismissed" => 0,
+               "pending" => 0,
+               "unknown" => 0
+             },
              "state" => "OPEN",
              "top_level_comment_count" => 0,
              "url" => "https://github.com/maximlafe/lead_status/pull/62"
@@ -1008,11 +1017,18 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert payload["has_pending_checks"] == true
     assert payload["all_checks_green"] == false
     assert payload["has_actionable_feedback"] == true
+    assert payload["actionable_feedback_state"] == "changes_requested"
     assert payload["feedback_digest"] == feedback_digest(payload["actionable_feedback"])
     assert payload["top_level_comment_count"] == 1
     assert payload["review_count"] == 1
     assert payload["inline_comment_count"] == 1
     assert payload["review_decision"] == "CHANGES_REQUESTED"
+    assert payload["review_state_summary"]["changes_requested"] == 1
+    assert payload["review_state_summary"]["approved"] == 0
+    assert payload["review_state_summary"]["commented"] == 0
+    assert payload["review_state_summary"]["dismissed"] == 0
+    assert payload["review_state_summary"]["pending"] == 0
+    assert payload["review_state_summary"]["unknown"] == 0
     assert length(payload["actionable_feedback"]) == 3
 
     assert Enum.any?(payload["actionable_feedback"], fn item ->
@@ -1028,6 +1044,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            end)
 
     assert Enum.all?(payload["actionable_feedback"], &(&1["potentially_actionable"] == true))
+    assert Enum.all?(payload["actionable_feedback"], &is_binary(&1["classification"]))
 
     changed_feedback =
       List.update_at(payload["actionable_feedback"], 0, fn item ->
@@ -1117,6 +1134,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert payload["all_checks_green"] == true
     assert payload["has_pending_checks"] == false
     assert payload["has_actionable_feedback"] == true
+    assert payload["actionable_feedback_state"] == "actionable_comments"
+    assert payload["review_state_summary"]["commented"] == 1
+    assert payload["review_state_summary"]["changes_requested"] == 0
     assert payload["top_level_comment_count"] == 0
     assert payload["review_count"] == 0
     assert payload["inline_comment_count"] == 1
@@ -1126,6 +1146,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "author" => "chatgpt-codex-connector[bot]",
                "body" => "Avoid exception-driven lookup",
                "channel" => "inline_comment",
+               "classification" => "actionable_comment",
                "created_at" => "2026-04-14T11:25:48Z",
                "line" => 40,
                "path" => "elixir/lib/symphony_elixir/config.ex",
@@ -1216,8 +1237,69 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert payload["all_checks_green"] == true
     assert payload["has_pending_checks"] == false
     assert payload["has_actionable_feedback"] == false
+    assert payload["actionable_feedback_state"] == "none"
+    assert payload["review_state_summary"]["changes_requested"] == 0
     assert payload["inline_comment_count"] == 0
     assert payload["actionable_feedback"] == []
+  end
+
+  test "github_pr_snapshot exposes explicit review_state_summary for non-blocking states" do
+    response =
+      DynamicTool.execute(
+        "github_pr_snapshot",
+        %{
+          "repo" => "maximlafe/lead_status",
+          "pr_number" => 75,
+          "include_feedback_details" => true
+        },
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "75", "-R", "maximlafe/lead_status", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://github.com/maximlafe/lead_status/pull/75",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "APPROVED",
+                 "mergeStateStatus" => "CLEAN",
+                 "statusCheckRollup" => [
+                   %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/lead_status/issues/75/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/lead_status/pulls/75/reviews?per_page=100"] ->
+              {:ok,
+               Jason.encode!([
+                 %{"user" => %{"login" => "reviewer-a"}, "state" => "APPROVED", "body" => "LGTM"},
+                 %{"user" => %{"login" => "reviewer-b"}, "state" => "COMMENTED", "body" => "nit: rename var"},
+                 %{"user" => %{"login" => "reviewer-c"}, "state" => "DISMISSED", "body" => "dismissed manually"},
+                 %{"user" => %{"login" => "reviewer-d"}, "state" => "PENDING", "body" => "still checking"},
+                 %{"user" => %{"login" => "reviewer-e"}, "state" => "WEIRD_STATE", "body" => "unknown state"}
+               ])}
+
+            ["api", "repos/maximlafe/lead_status/pulls/75/comments?per_page=100"] ->
+              {:ok, "[]"}
+          end
+        end
+      )
+
+    assert response["success"] == true
+    payload = decode_tool_text(response)
+
+    assert payload["has_actionable_feedback"] == false
+    assert payload["actionable_feedback_state"] == "none"
+
+    assert payload["review_state_summary"] == %{
+             "approved" => 1,
+             "changes_requested" => 0,
+             "commented" => 1,
+             "dismissed" => 1,
+             "pending" => 1,
+             "unknown" => 1
+           }
   end
 
   test "github_pr_snapshot sanitizes invalid UTF-8 in GitHub CLI error payloads" do
@@ -2228,6 +2310,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     |> Enum.map(fn item ->
       [
         item["channel"],
+        item["classification"],
         item["author"],
         item["state"],
         item["path"],

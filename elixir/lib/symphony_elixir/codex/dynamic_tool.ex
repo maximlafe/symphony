@@ -1736,8 +1736,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       checks = normalize_checks(Map.get(core, "statusCheckRollup") || [])
       top_level_feedback = normalize_top_level_feedback(top_level_comments)
       review_feedback = normalize_review_feedback(reviews)
+      review_state_summary = summarize_review_states(reviews)
       inline_feedback = normalize_inline_feedback(inline_comments)
       actionable_feedback = top_level_feedback ++ review_feedback ++ inline_feedback
+      actionable_feedback_state = actionable_feedback_state(actionable_feedback, review_state_summary)
 
       snapshot =
         %{
@@ -1750,8 +1752,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           "all_checks_green" => Enum.all?(checks, &check_green?/1),
           "has_pending_checks" => Enum.any?(checks, &check_pending?/1),
           "review_count" => length(review_feedback),
+          "review_state_summary" => review_state_summary,
           "top_level_comment_count" => length(top_level_feedback),
           "inline_comment_count" => length(inline_feedback),
+          "actionable_feedback_state" => actionable_feedback_state,
           "has_actionable_feedback" => actionable_feedback != []
         }
         |> maybe_put_feedback_digest(actionable_feedback)
@@ -1935,6 +1939,43 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp normalize_review_feedback(_reviews), do: []
 
+  defp summarize_review_states(reviews) when is_list(reviews) do
+    Enum.reduce(reviews, empty_review_state_summary(), fn review, acc ->
+      author_login = extract_author_login(review)
+
+      if non_actionable_author?(author_login) do
+        acc
+      else
+        state_key = normalize_review_state_key(pick_first(review, ["state"]))
+        Map.update!(acc, state_key, &(&1 + 1))
+      end
+    end)
+  end
+
+  defp summarize_review_states(_reviews), do: empty_review_state_summary()
+
+  defp empty_review_state_summary do
+    %{
+      "changes_requested" => 0,
+      "approved" => 0,
+      "commented" => 0,
+      "dismissed" => 0,
+      "pending" => 0,
+      "unknown" => 0
+    }
+  end
+
+  defp normalize_review_state_key(state) do
+    case normalize_check_status(state) do
+      "CHANGES_REQUESTED" -> "changes_requested"
+      "APPROVED" -> "approved"
+      "COMMENTED" -> "commented"
+      "DISMISSED" -> "dismissed"
+      "PENDING" -> "pending"
+      _ -> "unknown"
+    end
+  end
+
   defp normalize_review_feedback_item(review) do
     author_login = extract_author_login(review)
     state = normalize_check_status(pick_first(review, ["state"]))
@@ -1991,9 +2032,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     if potentially_actionable_feedback?(item) do
       item
       |> Map.put("potentially_actionable", true)
+      |> Map.put("classification", feedback_classification(item))
       |> Map.delete("in_reply_to_id")
     end
   end
+
+  defp feedback_classification(%{"channel" => "review", "state" => "CHANGES_REQUESTED"}), do: "changes_requested_review"
+  defp feedback_classification(%{"channel" => "top_level_comment"}), do: "actionable_comment"
+  defp feedback_classification(%{"channel" => "inline_comment"}), do: "actionable_comment"
+  defp feedback_classification(_item), do: "unknown"
 
   defp potentially_actionable_feedback?(%{"channel" => "review", "state" => "CHANGES_REQUESTED"}), do: true
 
@@ -2077,6 +2124,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp feedback_digest_entry(item) when is_map(item) do
     [
       Map.get(item, "channel"),
+      Map.get(item, "classification"),
       Map.get(item, "author"),
       Map.get(item, "state"),
       Map.get(item, "path"),
@@ -2127,6 +2175,20 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp non_actionable_author?(_author_login), do: false
+
+  defp actionable_feedback_state(actionable_feedback, review_state_summary)
+       when is_list(actionable_feedback) and is_map(review_state_summary) do
+    cond do
+      Map.get(review_state_summary, "changes_requested", 0) > 0 ->
+        "changes_requested"
+
+      actionable_feedback != [] ->
+        "actionable_comments"
+
+      true ->
+        "none"
+    end
+  end
 
   defp normalized_author_login(author_login) when is_binary(author_login) do
     author_login

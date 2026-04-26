@@ -1,0 +1,720 @@
+{
+  "ticket": "PARITY-14",
+  "generated_at": "2026-04-26T15:45:12Z",
+  "scope": {
+    "repositories": [
+      "maximlafe/symphony",
+      "maximlafe/lead_status",
+      "facebook/react"
+    ],
+    "decision_surface": [
+      "changes_requested",
+      "actionable_comments",
+      "none"
+    ],
+    "workflow_decision": "workflow_blocks"
+  },
+  "source": {
+    "sampled_case_count": 21,
+    "sampled_changes_requested_count": 5,
+    "sampled_actionable_comments_count": 8,
+    "sampled_none_count": 8
+  },
+  "cases": [
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 8604,
+        "pr_url": "https://github.com/facebook/react/pull/8604",
+        "review_state_summary": {
+          "changes_requested": 1,
+          "approved": 0,
+          "commented": 4,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "changes_requested",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 5,
+        "sampled_issue_comment_count": 13,
+        "sampled_inline_comment_count": 4,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "gaearon",
+            "body_excerpt": "I think this now already works on master. Can you amend this to just include the test?"
+          },
+          {
+            "channel": "top_level_comment",
+            "author": "bvaughn",
+            "body_excerpt": "I could, although I don't think Sebastian's recent change fixed this specific issue. It looks to me like we're still [not properly handling an error thrown in `render`](https://git"
+          },
+          {
+            "channel": "top_level_comment",
+            "author": "sebmarkbage",
+            "body_excerpt": "Two alternative solutions: A) If something fails to call the constructor, then nothing will be set of stateNode which will cause isContextProvider to be false. All you have to do i"
+          }
+        ]
+      },
+      "case_id": "LIVE-1"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 8627,
+        "pr_url": "https://github.com/facebook/react/pull/8627",
+        "review_state_summary": {
+          "changes_requested": 2,
+          "approved": 2,
+          "commented": 6,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "changes_requested",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 10,
+        "sampled_issue_comment_count": 25,
+        "sampled_inline_comment_count": 10,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "gaearon",
+            "body_excerpt": "I found one additional bug there but I can't figure out how to fix it. When an error boundary itself is a context provider, `beginFailedWork` doesn't push it. If I make it push it "
+          },
+          {
+            "channel": "top_level_comment",
+            "author": "bvaughn",
+            "body_excerpt": "Nice clean up Dan!"
+          },
+          {
+            "channel": "top_level_comment",
+            "author": "gaearon",
+            "body_excerpt": "My only concern is whether c57cf3ef6f18960026b18c7d5981259d89060f7e is bad from optimization point of view. I.e. maybe it prevents inlining or something. What do you think?"
+          }
+        ]
+      },
+      "case_id": "LIVE-2"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 31273,
+        "pr_url": "https://github.com/facebook/react/pull/31273",
+        "review_state_summary": {
+          "changes_requested": 1,
+          "approved": 0,
+          "commented": 1,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "changes_requested",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 2,
+        "sampled_issue_comment_count": 3,
+        "sampled_inline_comment_count": 3,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "nidhishgajjar",
+            "body_excerpt": "**Orb Code Review** (powered by GLM 5.1 on [Orb Cloud](https://orbcloud.dev)) ## Summary This PR attempts to fix legacy context propagation issues with React.memo, but has signific"
+          },
+          {
+            "channel": "review",
+            "author": "sebmarkbage",
+            "body_excerpt": "Legacy context should be deleted and it only exists for Meta's internal usage until they can delete it. \"Fixing\" the backwards compatible behavior pre-Fiber could break something i"
+          },
+          {
+            "channel": "inline_comment",
+            "author": "sophiebits",
+            "body_excerpt": "sloppy but who carez"
+          }
+        ]
+      },
+      "case_id": "LIVE-3"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 35124,
+        "pr_url": "https://github.com/facebook/react/pull/35124",
+        "review_state_summary": {
+          "changes_requested": 1,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "changes_requested",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 1,
+        "sampled_issue_comment_count": 6,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "josephsavona",
+            "body_excerpt": "Still need to actually run tests and update fixtures"
+          },
+          {
+            "channel": "top_level_comment",
+            "author": "manNomi",
+            "body_excerpt": "Hi @josephsavona All feedback has been addressed. Also curious about the React Compiler team's direction on this issue when you have time. Sorry for taking up your time, and thanks"
+          },
+          {
+            "channel": "top_level_comment",
+            "author": "manNomi",
+            "body_excerpt": "bump"
+          }
+        ]
+      },
+      "case_id": "LIVE-4"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 35137,
+        "pr_url": "https://github.com/facebook/react/pull/35137",
+        "review_state_summary": {
+          "changes_requested": 1,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "changes_requested",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 1,
+        "sampled_issue_comment_count": 2,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "mdmower-csnw",
+            "body_excerpt": "@gsathya - is this something you would be willing to consider as a small flexibility improvement on #29916?"
+          },
+          {
+            "channel": "review",
+            "author": "josephsavona",
+            "body_excerpt": "I think we'd have to make this an extra feature flag. At Meta, we follow a convention of pascal case for regular JS variables and snake case for things that come from GraphQL, so -"
+          }
+        ]
+      },
+      "case_id": "LIVE-5"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36319,
+        "pr_url": "https://github.com/facebook/react/pull/36319",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "actionable_comments",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 0,
+        "sampled_issue_comment_count": 2,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "maxwoolfdev",
+            "body_excerpt": "Fix the Meta CLA Check"
+          }
+        ]
+      },
+      "case_id": "LIVE-6"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36323,
+        "pr_url": "https://github.com/facebook/react/pull/36323",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "actionable_comments",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 0,
+        "sampled_issue_comment_count": 1,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "react-sizebot",
+            "body_excerpt": "<!-- 0 failure: 0 warning: 1 markdown notices DangerID: danger-id-stable; --> Comparing: 94643c3b8516928e4cc7fad99912272670a0a990...aef82eee886f7f7f60f4f755e40ab46ae62e5195 ## Crit"
+          }
+        ]
+      },
+      "case_id": "LIVE-7"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36326,
+        "pr_url": "https://github.com/facebook/react/pull/36326",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "actionable_comments",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 0,
+        "sampled_issue_comment_count": 2,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "react-sizebot",
+            "body_excerpt": "<!-- 0 failure: 0 warning: 1 markdown notices DangerID: danger-id-stable; --> Comparing: 94643c3b8516928e4cc7fad99912272670a0a990...684ee57cb8e45b0d1d764ad471b814ad4a18b053 ## Crit"
+          }
+        ]
+      },
+      "case_id": "LIVE-8"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36328,
+        "pr_url": "https://github.com/facebook/react/pull/36328",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "actionable_comments",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 0,
+        "sampled_issue_comment_count": 1,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "react-sizebot",
+            "body_excerpt": "<!-- 0 failure: 0 warning: 1 markdown notices DangerID: danger-id-stable; --> Comparing: 561ed529b3a6a16e5b2b76fa5ee86c09f959686c...2ba964add4caae70f68af6805e1af1caddef89fc ## Crit"
+          }
+        ]
+      },
+      "case_id": "LIVE-9"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36332,
+        "pr_url": "https://github.com/facebook/react/pull/36332",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 1,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "actionable_comments",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 1,
+        "sampled_issue_comment_count": 1,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "react-sizebot",
+            "body_excerpt": "<!-- 0 failure: 0 warning: 1 markdown notices DangerID: danger-id-stable; --> Comparing: 142cfde89edab3d4eabd6335458b4c8736cebfb6...cb3579b2ada32f1f8de9ab244a396da3a4ab987f ## Crit"
+          }
+        ]
+      },
+      "case_id": "LIVE-10"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36334,
+        "pr_url": "https://github.com/facebook/react/pull/36334",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "actionable_comments",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 0,
+        "sampled_issue_comment_count": 1,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "hassanzadeh-mj",
+            "body_excerpt": "Hi team, Just a gentle nudge on this PR. As discussed in #29034, the automatic form reset in React 19 is great for UX in most cases, but it creates challenges for multi-step forms "
+          }
+        ]
+      },
+      "case_id": "LIVE-11"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36339,
+        "pr_url": "https://github.com/facebook/react/pull/36339",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "actionable_comments",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 0,
+        "sampled_issue_comment_count": 2,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "Jah-yee",
+            "body_excerpt": "Hi maintainers 👋 This PR fixes a simple data-format issue in `packages/react-devtools-fusebox/package.json`: the `private` field is a string \"true\" but should be a boolean per npm "
+          },
+          {
+            "channel": "top_level_comment",
+            "author": "Jah-yee",
+            "body_excerpt": "## Test Evidence Added Added two validation scripts that prevent this class of bug from recurring: ### 1. Single-package validator ```bash node scripts/validate-package-private-fie"
+          }
+        ]
+      },
+      "case_id": "LIVE-12"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36340,
+        "pr_url": "https://github.com/facebook/react/pull/36340",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 1,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "actionable_comments",
+        "has_actionable_feedback": true
+      },
+      "expected": {
+        "workflow_blocks": true
+      },
+      "source": {
+        "sampled_review_count": 1,
+        "sampled_issue_comment_count": 1,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": [
+          {
+            "channel": "top_level_comment",
+            "author": "starboyvarun",
+            "body_excerpt": "@liufang88789-ui , Good catch , `isNaN(Infinity)` returns `false` so Infinity was slipping straight through. Switched to `!isFinite(value)` which covers NaN, Infinity, and -Infinit"
+          }
+        ]
+      },
+      "case_id": "LIVE-13"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36311,
+        "pr_url": "https://github.com/facebook/react/pull/36311",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "none",
+        "has_actionable_feedback": false
+      },
+      "expected": {
+        "workflow_blocks": false
+      },
+      "source": {
+        "sampled_review_count": 0,
+        "sampled_issue_comment_count": 1,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": []
+      },
+      "case_id": "LIVE-14"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36312,
+        "pr_url": "https://github.com/facebook/react/pull/36312",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "none",
+        "has_actionable_feedback": false
+      },
+      "expected": {
+        "workflow_blocks": false
+      },
+      "source": {
+        "sampled_review_count": 0,
+        "sampled_issue_comment_count": 1,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": []
+      },
+      "case_id": "LIVE-15"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36313,
+        "pr_url": "https://github.com/facebook/react/pull/36313",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "none",
+        "has_actionable_feedback": false
+      },
+      "expected": {
+        "workflow_blocks": false
+      },
+      "source": {
+        "sampled_review_count": 0,
+        "sampled_issue_comment_count": 0,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": []
+      },
+      "case_id": "LIVE-16"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36314,
+        "pr_url": "https://github.com/facebook/react/pull/36314",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 1,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "none",
+        "has_actionable_feedback": false
+      },
+      "expected": {
+        "workflow_blocks": false
+      },
+      "source": {
+        "sampled_review_count": 1,
+        "sampled_issue_comment_count": 0,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": []
+      },
+      "case_id": "LIVE-17"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36316,
+        "pr_url": "https://github.com/facebook/react/pull/36316",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "none",
+        "has_actionable_feedback": false
+      },
+      "expected": {
+        "workflow_blocks": false
+      },
+      "source": {
+        "sampled_review_count": 0,
+        "sampled_issue_comment_count": 0,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": []
+      },
+      "case_id": "LIVE-18"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36317,
+        "pr_url": "https://github.com/facebook/react/pull/36317",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "none",
+        "has_actionable_feedback": false
+      },
+      "expected": {
+        "workflow_blocks": false
+      },
+      "source": {
+        "sampled_review_count": 0,
+        "sampled_issue_comment_count": 0,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": []
+      },
+      "case_id": "LIVE-19"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36321,
+        "pr_url": "https://github.com/facebook/react/pull/36321",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 0,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "none",
+        "has_actionable_feedback": false
+      },
+      "expected": {
+        "workflow_blocks": false
+      },
+      "source": {
+        "sampled_review_count": 0,
+        "sampled_issue_comment_count": 2,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": []
+      },
+      "case_id": "LIVE-20"
+    },
+    {
+      "observed": {
+        "repo": "facebook/react",
+        "pr_number": 36322,
+        "pr_url": "https://github.com/facebook/react/pull/36322",
+        "review_state_summary": {
+          "changes_requested": 0,
+          "approved": 1,
+          "commented": 0,
+          "dismissed": 0,
+          "pending": 0,
+          "unknown": 0
+        },
+        "actionable_feedback_state": "none",
+        "has_actionable_feedback": false
+      },
+      "expected": {
+        "workflow_blocks": false
+      },
+      "source": {
+        "sampled_review_count": 1,
+        "sampled_issue_comment_count": 0,
+        "sampled_inline_comment_count": 0,
+        "actionable_items_preview": []
+      },
+      "case_id": "LIVE-21"
+    }
+  ]
+}

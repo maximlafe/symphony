@@ -481,6 +481,125 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert payload.checkpoint["feedback_digest"] == "feedback-digest-102"
   end
 
+  test "run/3 uses actionable_feedback_state as the workflow decision source when present" do
+    issue = %Issue{id: "issue-snapshot-stateful", identifier: "LET-462-SNAPSHOT-STATEFUL", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier)
+
+    checkpoint = %{
+      "head" => "head-snapshot-stateful",
+      "open_pr" => %{"number" => 112, "url" => "https://github.com/acme/symphony/pull/112"}
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/112",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false,
+           "actionable_feedback_state" => "changes_requested",
+           "feedback_digest" => "feedback-digest-112"
+         }}
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "pull request has actionable feedback"
+    assert payload.checkpoint["controller_finalizer"]["status"] == "action_required"
+    assert payload.checkpoint["open_feedback"] == true
+    assert payload.checkpoint["open_feedback_state"] == "changes_requested"
+  end
+
+  test "run/3 treats actionable_feedback_state actionable_comments as blocking even when bool is false" do
+    issue = %Issue{id: "issue-snapshot-comments", identifier: "LET-462-SNAPSHOT-COMMENTS", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier)
+
+    checkpoint = %{
+      "head" => "head-snapshot-comments",
+      "open_pr" => %{"number" => 113, "url" => "https://github.com/acme/symphony/pull/113"}
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/113",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false,
+           "actionable_feedback_state" => "actionable_comments"
+         }}
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "pull request has actionable feedback"
+    assert payload.checkpoint["open_feedback"] == true
+    assert payload.checkpoint["open_feedback_state"] == "actionable_comments"
+  end
+
+  test "run/3 lets handoff proceed when actionable_feedback_state is none even if bool is true" do
+    issue = %Issue{id: "issue-snapshot-clear", identifier: "LET-462-SNAPSHOT-CLEAR", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())
+
+    checkpoint = %{
+      "head" => "head-snapshot-clear",
+      "open_pr" => %{"number" => 114, "url" => "https://github.com/acme/symphony/pull/114"}
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/114",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => true,
+           "actionable_feedback_state" => "none"
+         }},
+      "symphony_handoff_check" => {:ok, %{"passed" => true, "manifest_path" => "/tmp/handoff-manifest.json"}}
+    }
+
+    assert {:ok, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "controller finalizer completed successfully"
+    assert payload.checkpoint["open_feedback"] == false
+    assert payload.checkpoint["open_feedback_state"] == "none"
+  end
+
+  test "run/3 falls back to legacy bool when actionable_feedback_state is invalid" do
+    issue = %Issue{id: "issue-snapshot-invalid-state", identifier: "LET-462-SNAPSHOT-INVALID", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier)
+
+    checkpoint = %{
+      "head" => "head-snapshot-invalid",
+      "open_pr" => %{"number" => 115, "url" => "https://github.com/acme/symphony/pull/115"}
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/115",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => true,
+           "actionable_feedback_state" => "weird-state"
+         }}
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "pull request has actionable feedback"
+    assert payload.checkpoint["open_feedback"] == true
+    assert payload.checkpoint["open_feedback_state"] == nil
+  end
+
   test "run/3 returns fallback when handoff tool execution fails" do
     issue = %Issue{id: "issue-handoff-error", identifier: "LET-462-HANDOFF-ERROR", state: "In Progress"}
     _workspace = create_workspace!(issue.identifier)

@@ -1532,6 +1532,74 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "uploaded attachment `evidence.txt` is missing a concrete proof claim" in claimless_manifest["missing_items"]
   end
 
+  test "evaluate uses actionable_feedback_state as the review feedback gate when present" do
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-416",
+               profile: "runtime",
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: %{
+                 "all_checks_green" => true,
+                 "has_pending_checks" => false,
+                 "has_actionable_feedback" => false,
+                 "actionable_feedback_state" => "changes_requested",
+                 "merge_state_status" => "CLEAN",
+                 "url" => "https://example.test/pr/999"
+               },
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "pull request still has actionable feedback" in manifest["missing_items"]
+    assert manifest["pull_request"]["actionable_feedback_state"] == "changes_requested"
+  end
+
+  test "evaluate blocks actionable_comments state even when legacy bool is false" do
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-416",
+               profile: "runtime",
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: %{
+                 "all_checks_green" => true,
+                 "has_pending_checks" => false,
+                 "has_actionable_feedback" => false,
+                 "actionable_feedback_state" => "actionable_comments",
+                 "merge_state_status" => "CLEAN",
+                 "url" => "https://example.test/pr/1000"
+               },
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "pull request still has actionable feedback" in manifest["missing_items"]
+    assert manifest["pull_request"]["actionable_feedback_state"] == "actionable_comments"
+  end
+
+  test "evaluate falls back to legacy bool when actionable_feedback_state is invalid" do
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-416",
+               profile: "runtime",
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: %{
+                 "all_checks_green" => true,
+                 "has_pending_checks" => false,
+                 "has_actionable_feedback" => true,
+                 "actionable_feedback_state" => "unexpected",
+                 "merge_state_status" => "CLEAN",
+                 "url" => "https://example.test/pr/1001"
+               },
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "pull request still has actionable feedback" in manifest["missing_items"]
+  end
+
   defp runtime_workpad do
     """
     ## Codex Workpad
