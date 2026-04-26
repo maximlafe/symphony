@@ -1,0 +1,895 @@
+{
+  "ticket": "PARITY-04",
+  "generated_at": "2026-04-26T13:16:48Z",
+  "scope": {
+    "team_key": "LET",
+    "sources": [
+      "workspace_checkpoint",
+      "workpad",
+      "issue_comment",
+      "issue_attachment",
+      "branch_lookup"
+    ],
+    "live_required_sources": [
+      "issue_comment",
+      "issue_attachment",
+      "branch_lookup"
+    ]
+  },
+  "source": {
+    "team_key": "LET",
+    "comments_filter": "comments contains \"/pull/\"",
+    "github_repo_for_branch_lookup": "maximlafe/symphony",
+    "sampled_comment_issue_count": 80,
+    "sampled_branch_issue_count": 120,
+    "sampled_comment_case_count": 12,
+    "sampled_attachment_case_count": 12,
+    "sampled_branch_case_count": 12
+  },
+  "cases": [
+    {
+      "case_id": "LIVE-COMMENT-1",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_comments": [
+          {
+            "body": "PR evidence: https://github.com/maximlafe/lead_status/pull/241"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 241,
+        "url": "https://github.com/maximlafe/lead_status/pull/241"
+      },
+      "source": {
+        "sampled_identifier": "LET-488",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-488-company-library-v2-vvesti-generic-preparse-i-temp0",
+        "sampled_comment_created_at": "2026-04-15T12:42:53.215Z",
+        "evidence_channel": "comment"
+      }
+    },
+    {
+      "case_id": "LIVE-COMMENT-2",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_comments": [
+          {
+            "body": "PR evidence: https://github.com/maximlafe/lead_status/pull/242"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 242,
+        "url": "https://github.com/maximlafe/lead_status/pull/242"
+      },
+      "source": {
+        "sampled_identifier": "LET-489",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-489-company-library-v2-zamenit-manifeststaging-bridge-ploskoi",
+        "sampled_comment_created_at": "2026-04-15T13:56:41.398Z",
+        "evidence_channel": "comment"
+      }
+    },
+    {
+      "case_id": "LIVE-COMMENT-3",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_comments": [
+          {
+            "body": "PR evidence: https://github.com/maximlafe/lead_status/pull/243"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 243,
+        "url": "https://github.com/maximlafe/lead_status/pull/243"
+      },
+      "source": {
+        "sampled_identifier": "LET-490",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-490-company-library-v2-perenesti-canonical-matcher-i-claim",
+        "sampled_comment_created_at": "2026-04-15T17:06:58.148Z",
+        "evidence_channel": "comment"
+      }
+    },
+    {
+      "case_id": "LIVE-COMMENT-4",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_comments": [
+          {
+            "body": "PR evidence: https://github.com/maximlafe/lead_status/pull/244"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 244,
+        "url": "https://github.com/maximlafe/lead_status/pull/244"
+      },
+      "source": {
+        "sampled_identifier": "LET-496",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-496-company-library-v2-ispravit-replay-reconciliation-i-dobavit",
+        "sampled_comment_created_at": "2026-04-16T05:35:53.212Z",
+        "evidence_channel": "comment"
+      }
+    },
+    {
+      "case_id": "LIVE-COMMENT-5",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_comments": [
+          {
+            "body": "PR evidence: https://github.com/maximlafe/lead_status/pull/246"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 246,
+        "url": "https://github.com/maximlafe/lead_status/pull/246"
+      },
+      "source": {
+        "sampled_identifier": "LET-512",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-512-zapustit-i-ottrekat-improvement-loop-dlya-prompt-plan-mode-v",
+        "sampled_comment_created_at": "2026-04-17T15:02:04.647Z",
+        "evidence_channel": "comment"
+      }
+    },
+    {
+      "case_id": "LIVE-COMMENT-6",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_comments": [
+          {
+            "body": "PR evidence: https://github.com/maximlafe/lead_status/pull/247"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 247,
+        "url": "https://github.com/maximlafe/lead_status/pull/247"
+      },
+      "source": {
+        "sampled_identifier": "LET-509",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-509-let-506-dobavit-zhestkii-non-creating-guardrail-dlya",
+        "sampled_comment_created_at": "2026-04-16T15:51:04.480Z",
+        "evidence_channel": "comment"
+      }
+    },
+    {
+      "case_id": "LIVE-COMMENT-7",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_comments": [
+          {
+            "body": "PR evidence: https://github.com/maximlafe/lead_status/pull/248"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 248,
+        "url": "https://github.com/maximlafe/lead_status/pull/248"
+      },
+      "source": {
+        "sampled_identifier": "LET-513",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-513-let-506-follow-up-low-risk-hybrid-source-contract-role",
+        "sampled_comment_created_at": "2026-04-17T04:12:54.772Z",
+        "evidence_channel": "comment"
+      }
+    },
+    {
+      "case_id": "LIVE-COMMENT-8",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_comments": [
+          {
+            "body": "PR evidence: https://github.com/maximlafe/lead_status/pull/251"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 251,
+        "url": "https://github.com/maximlafe/lead_status/pull/251"
+      },
+      "source": {
+        "sampled_identifier": "LET-491",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-491-company-library-v2-udalit-legacy-publicationruntime-contour",
+        "sampled_comment_created_at": "2026-04-17T07:43:20.103Z",
+        "evidence_channel": "comment"
+      }
+    },
+    {
+      "case_id": "LIVE-COMMENT-9",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_comments": [
+          {
+            "body": "PR evidence: https://github.com/maximlafe/lead_status/pull/252"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 252,
+        "url": "https://github.com/maximlafe/lead_status/pull/252"
+      },
+      "source": {
+        "sampled_identifier": "LET-517",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-517-avtomatizirovat-bounded-real-data-proof-let-495-kak-ruchnoi",
+        "sampled_comment_created_at": "2026-04-17T09:22:44.084Z",
+        "evidence_channel": "comment"
+      }
+    },
+    {
+      "case_id": "LIVE-COMMENT-10",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_comments": [
+          {
+            "body": "PR evidence: https://github.com/maximlafe/lead_status/pull/256"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 256,
+        "url": "https://github.com/maximlafe/lead_status/pull/256"
+      },
+      "source": {
+        "sampled_identifier": "LET-528",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-528-company-library-v2-determinirovat-ownership-po-earliest",
+        "sampled_comment_created_at": "2026-04-17T14:45:39.858Z",
+        "evidence_channel": "comment"
+      }
+    },
+    {
+      "case_id": "LIVE-COMMENT-11",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_comments": [
+          {
+            "body": "PR evidence: https://github.com/maximlafe/lead_status/pull/259"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 259,
+        "url": "https://github.com/maximlafe/lead_status/pull/259"
+      },
+      "source": {
+        "sampled_identifier": "LET-555",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-555-company-library-v2-partial-publish-v-backfill-pri-source",
+        "sampled_comment_created_at": "2026-04-18T07:41:01.019Z",
+        "evidence_channel": "comment"
+      }
+    },
+    {
+      "case_id": "LIVE-COMMENT-12",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_comments": [
+          {
+            "body": "PR evidence: https://github.com/maximlafe/lead_status/pull/261"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_comment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 261,
+        "url": "https://github.com/maximlafe/lead_status/pull/261"
+      },
+      "source": {
+        "sampled_identifier": "LET-520",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-520-company-library-v2-vipolnit-pervii-cold-startbackfill-i",
+        "sampled_comment_created_at": "2026-04-18T19:26:40.459Z",
+        "evidence_channel": "comment"
+      }
+    },
+    {
+      "case_id": "LIVE-ATTACHMENT-1",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_attachments": [
+          {
+            "title": "PR evidence attachment",
+            "url": "https://github.com/maximlafe/lead_status/pull/241"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 241,
+        "url": "https://github.com/maximlafe/lead_status/pull/241"
+      },
+      "source": {
+        "sampled_identifier": "LET-488",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-488-company-library-v2-vvesti-generic-preparse-i-temp0",
+        "sampled_attachment_created_at": "2026-04-15T12:13:07.608Z",
+        "evidence_channel": "attachment"
+      }
+    },
+    {
+      "case_id": "LIVE-ATTACHMENT-2",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_attachments": [
+          {
+            "title": "PR evidence attachment",
+            "url": "https://github.com/maximlafe/lead_status/pull/242"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 242,
+        "url": "https://github.com/maximlafe/lead_status/pull/242"
+      },
+      "source": {
+        "sampled_identifier": "LET-489",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-489-company-library-v2-zamenit-manifeststaging-bridge-ploskoi",
+        "sampled_attachment_created_at": "2026-04-15T13:45:43.473Z",
+        "evidence_channel": "attachment"
+      }
+    },
+    {
+      "case_id": "LIVE-ATTACHMENT-3",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_attachments": [
+          {
+            "title": "PR evidence attachment",
+            "url": "https://github.com/maximlafe/lead_status/pull/243"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 243,
+        "url": "https://github.com/maximlafe/lead_status/pull/243"
+      },
+      "source": {
+        "sampled_identifier": "LET-490",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-490-company-library-v2-perenesti-canonical-matcher-i-claim",
+        "sampled_attachment_created_at": "2026-04-15T14:31:33.241Z",
+        "evidence_channel": "attachment"
+      }
+    },
+    {
+      "case_id": "LIVE-ATTACHMENT-4",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_attachments": [
+          {
+            "title": "PR evidence attachment",
+            "url": "https://github.com/maximlafe/lead_status/pull/244"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 244,
+        "url": "https://github.com/maximlafe/lead_status/pull/244"
+      },
+      "source": {
+        "sampled_identifier": "LET-496",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-496-company-library-v2-ispravit-replay-reconciliation-i-dobavit",
+        "sampled_attachment_created_at": "2026-04-15T20:42:59.066Z",
+        "evidence_channel": "attachment"
+      }
+    },
+    {
+      "case_id": "LIVE-ATTACHMENT-5",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_attachments": [
+          {
+            "title": "PR evidence attachment",
+            "url": "https://github.com/maximlafe/lead_status/pull/246"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 246,
+        "url": "https://github.com/maximlafe/lead_status/pull/246"
+      },
+      "source": {
+        "sampled_identifier": "LET-507",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-507-company-library-v2-dominik-dedupe-regression-ulalic-sozdayut",
+        "sampled_attachment_created_at": "2026-04-16T13:22:28.724Z",
+        "evidence_channel": "attachment"
+      }
+    },
+    {
+      "case_id": "LIVE-ATTACHMENT-6",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_attachments": [
+          {
+            "title": "PR evidence attachment",
+            "url": "https://github.com/maximlafe/lead_status/pull/247"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 247,
+        "url": "https://github.com/maximlafe/lead_status/pull/247"
+      },
+      "source": {
+        "sampled_identifier": "LET-509",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-509-let-506-dobavit-zhestkii-non-creating-guardrail-dlya",
+        "sampled_attachment_created_at": "2026-04-16T15:29:30.397Z",
+        "evidence_channel": "attachment"
+      }
+    },
+    {
+      "case_id": "LIVE-ATTACHMENT-7",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_attachments": [
+          {
+            "title": "PR evidence attachment",
+            "url": "https://github.com/maximlafe/lead_status/pull/248"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 248,
+        "url": "https://github.com/maximlafe/lead_status/pull/248"
+      },
+      "source": {
+        "sampled_identifier": "LET-513",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-513-let-506-follow-up-low-risk-hybrid-source-contract-role",
+        "sampled_attachment_created_at": "2026-04-16T20:40:54.365Z",
+        "evidence_channel": "attachment"
+      }
+    },
+    {
+      "case_id": "LIVE-ATTACHMENT-8",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_attachments": [
+          {
+            "title": "PR evidence attachment",
+            "url": "https://github.com/maximlafe/lead_status/pull/249"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 249,
+        "url": "https://github.com/maximlafe/lead_status/pull/249"
+      },
+      "source": {
+        "sampled_identifier": "LET-491",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-491-company-library-v2-udalit-legacy-publicationruntime-contour",
+        "sampled_attachment_created_at": "2026-04-17T06:38:02.036Z",
+        "evidence_channel": "attachment"
+      }
+    },
+    {
+      "case_id": "LIVE-ATTACHMENT-9",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_attachments": [
+          {
+            "title": "PR evidence attachment",
+            "url": "https://github.com/maximlafe/lead_status/pull/250"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 250,
+        "url": "https://github.com/maximlafe/lead_status/pull/250"
+      },
+      "source": {
+        "sampled_identifier": "LET-491",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-491-company-library-v2-udalit-legacy-publicationruntime-contour",
+        "sampled_attachment_created_at": "2026-04-17T07:12:17.371Z",
+        "evidence_channel": "attachment"
+      }
+    },
+    {
+      "case_id": "LIVE-ATTACHMENT-10",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_attachments": [
+          {
+            "title": "PR evidence attachment",
+            "url": "https://github.com/maximlafe/lead_status/pull/251"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 251,
+        "url": "https://github.com/maximlafe/lead_status/pull/251"
+      },
+      "source": {
+        "sampled_identifier": "LET-491",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-491-company-library-v2-udalit-legacy-publicationruntime-contour",
+        "sampled_attachment_created_at": "2026-04-17T07:24:09.553Z",
+        "evidence_channel": "attachment"
+      }
+    },
+    {
+      "case_id": "LIVE-ATTACHMENT-11",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_attachments": [
+          {
+            "title": "PR evidence attachment",
+            "url": "https://github.com/maximlafe/lead_status/pull/252"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 252,
+        "url": "https://github.com/maximlafe/lead_status/pull/252"
+      },
+      "source": {
+        "sampled_identifier": "LET-517",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-517-avtomatizirovat-bounded-real-data-proof-let-495-kak-ruchnoi",
+        "sampled_attachment_created_at": "2026-04-17T09:21:19.596Z",
+        "evidence_channel": "attachment"
+      }
+    },
+    {
+      "case_id": "LIVE-ATTACHMENT-12",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_attachments": [
+          {
+            "title": "PR evidence attachment",
+            "url": "https://github.com/maximlafe/lead_status/pull/253"
+          }
+        ]
+      },
+      "expected": {
+        "source": "issue_attachment",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 253,
+        "url": "https://github.com/maximlafe/lead_status/pull/253"
+      },
+      "source": {
+        "sampled_identifier": "LET-517",
+        "sampled_state": "Done",
+        "sampled_branch_name": "maxime/let-517-avtomatizirovat-bounded-real-data-proof-let-495-kak-ruchnoi",
+        "sampled_attachment_created_at": "2026-04-17T09:34:51.115Z",
+        "evidence_channel": "attachment"
+      }
+    },
+    {
+      "case_id": "LIVE-BRANCH-1",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "issue_branch_name": "maxime/let-483-symphony-dobit-elixir-coverage-threshold-do-100-dlya-make"
+      },
+      "lookup_result": {
+        "number": 75,
+        "url": "https://github.com/maximlafe/symphony/pull/75"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/symphony",
+        "pr_number": 75,
+        "url": "https://github.com/maximlafe/symphony/pull/75"
+      },
+      "source": {
+        "sampled_identifier": "LET-483",
+        "sampled_branch_name": "maxime/let-483-symphony-dobit-elixir-coverage-threshold-do-100-dlya-make",
+        "evidence_channel": "branch_lookup",
+        "lookup_origin": "issue_trace_url_fallback"
+      }
+    },
+    {
+      "case_id": "LIVE-BRANCH-2",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "issue_branch_name": "maxime/let-484-token-burn-validation-env-guardrail-make-repo-validation"
+      },
+      "lookup_result": {
+        "number": 79,
+        "url": "https://github.com/maximlafe/symphony/pull/79"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/symphony",
+        "pr_number": 79,
+        "url": "https://github.com/maximlafe/symphony/pull/79"
+      },
+      "source": {
+        "sampled_identifier": "LET-484",
+        "sampled_branch_name": "maxime/let-484-token-burn-validation-env-guardrail-make-repo-validation",
+        "evidence_channel": "branch_lookup",
+        "lookup_origin": "issue_trace_url_fallback"
+      }
+    },
+    {
+      "case_id": "LIVE-BRANCH-3",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "issue_branch_name": "maxime/let-485-token-burn-preserve-compact-resume-checkpoint-across"
+      },
+      "lookup_result": {
+        "number": 81,
+        "url": "https://github.com/maximlafe/symphony/pull/81"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/symphony",
+        "pr_number": 81,
+        "url": "https://github.com/maximlafe/symphony/pull/81"
+      },
+      "source": {
+        "sampled_identifier": "LET-485",
+        "sampled_branch_name": "maxime/let-485-token-burn-preserve-compact-resume-checkpoint-across",
+        "evidence_channel": "branch_lookup",
+        "lookup_origin": "issue_trace_url_fallback"
+      }
+    },
+    {
+      "case_id": "LIVE-BRANCH-4",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "issue_branch_name": "maxime/let-486-token-burn-graceful-failover-policy-drain-active-runs-and"
+      },
+      "lookup_result": {
+        "number": 86,
+        "url": "https://github.com/maximlafe/symphony/pull/86"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/symphony",
+        "pr_number": 86,
+        "url": "https://github.com/maximlafe/symphony/pull/86"
+      },
+      "source": {
+        "sampled_identifier": "LET-486",
+        "sampled_branch_name": "maxime/let-486-token-burn-graceful-failover-policy-drain-active-runs-and",
+        "evidence_channel": "branch_lookup",
+        "lookup_origin": "issue_trace_url_fallback"
+      }
+    },
+    {
+      "case_id": "LIVE-BRANCH-5",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_branch_name": "maxime/let-488-company-library-v2-vvesti-generic-preparse-i-temp0"
+      },
+      "lookup_result": {
+        "number": 241,
+        "url": "https://github.com/maximlafe/lead_status/pull/241"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 241,
+        "url": "https://github.com/maximlafe/lead_status/pull/241"
+      },
+      "source": {
+        "sampled_identifier": "LET-488",
+        "sampled_branch_name": "maxime/let-488-company-library-v2-vvesti-generic-preparse-i-temp0",
+        "evidence_channel": "branch_lookup",
+        "lookup_origin": "issue_trace_url_fallback"
+      }
+    },
+    {
+      "case_id": "LIVE-BRANCH-6",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_branch_name": "maxime/let-489-company-library-v2-zamenit-manifeststaging-bridge-ploskoi"
+      },
+      "lookup_result": {
+        "number": 242,
+        "url": "https://github.com/maximlafe/lead_status/pull/242"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 242,
+        "url": "https://github.com/maximlafe/lead_status/pull/242"
+      },
+      "source": {
+        "sampled_identifier": "LET-489",
+        "sampled_branch_name": "maxime/let-489-company-library-v2-zamenit-manifeststaging-bridge-ploskoi",
+        "evidence_channel": "branch_lookup",
+        "lookup_origin": "issue_trace_url_fallback"
+      }
+    },
+    {
+      "case_id": "LIVE-BRANCH-7",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_branch_name": "maxime/let-490-company-library-v2-perenesti-canonical-matcher-i-claim"
+      },
+      "lookup_result": {
+        "number": 243,
+        "url": "https://github.com/maximlafe/lead_status/pull/243"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 243,
+        "url": "https://github.com/maximlafe/lead_status/pull/243"
+      },
+      "source": {
+        "sampled_identifier": "LET-490",
+        "sampled_branch_name": "maxime/let-490-company-library-v2-perenesti-canonical-matcher-i-claim",
+        "evidence_channel": "branch_lookup",
+        "lookup_origin": "issue_trace_url_fallback"
+      }
+    },
+    {
+      "case_id": "LIVE-BRANCH-8",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_branch_name": "maxime/let-491-company-library-v2-udalit-legacy-publicationruntime-contour"
+      },
+      "lookup_result": {
+        "number": 251,
+        "url": "https://github.com/maximlafe/lead_status/pull/251"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 251,
+        "url": "https://github.com/maximlafe/lead_status/pull/251"
+      },
+      "source": {
+        "sampled_identifier": "LET-491",
+        "sampled_branch_name": "maxime/let-491-company-library-v2-udalit-legacy-publicationruntime-contour",
+        "evidence_channel": "branch_lookup",
+        "lookup_origin": "issue_trace_url_fallback"
+      }
+    },
+    {
+      "case_id": "LIVE-BRANCH-9",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "issue_branch_name": "maxime/let-492-token-burn-retryfailover-decision-matrix-precedence-contract"
+      },
+      "lookup_result": {
+        "number": 84,
+        "url": "https://github.com/maximlafe/symphony/pull/84"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/symphony",
+        "pr_number": 84,
+        "url": "https://github.com/maximlafe/symphony/pull/84"
+      },
+      "source": {
+        "sampled_identifier": "LET-492",
+        "sampled_branch_name": "maxime/let-492-token-burn-retryfailover-decision-matrix-precedence-contract",
+        "evidence_channel": "branch_lookup",
+        "lookup_origin": "issue_trace_url_fallback"
+      }
+    },
+    {
+      "case_id": "LIVE-BRANCH-10",
+      "input": {
+        "repo": "maximlafe/symphony",
+        "issue_branch_name": "maxime/let-494-token-burn-telemetry-schema-normalization-for-budget-retry"
+      },
+      "lookup_result": {
+        "number": 82,
+        "url": "https://github.com/maximlafe/symphony/pull/82"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/symphony",
+        "pr_number": 82,
+        "url": "https://github.com/maximlafe/symphony/pull/82"
+      },
+      "source": {
+        "sampled_identifier": "LET-494",
+        "sampled_branch_name": "maxime/let-494-token-burn-telemetry-schema-normalization-for-budget-retry",
+        "evidence_channel": "branch_lookup",
+        "lookup_origin": "issue_trace_url_fallback"
+      }
+    },
+    {
+      "case_id": "LIVE-BRANCH-11",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_branch_name": "maxime/let-495-company-library-v2-zafiksirovat-i-proiti-real-data"
+      },
+      "lookup_result": {
+        "number": 248,
+        "url": "https://github.com/maximlafe/lead_status/pull/248"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 248,
+        "url": "https://github.com/maximlafe/lead_status/pull/248"
+      },
+      "source": {
+        "sampled_identifier": "LET-495",
+        "sampled_branch_name": "maxime/let-495-company-library-v2-zafiksirovat-i-proiti-real-data",
+        "evidence_channel": "branch_lookup",
+        "lookup_origin": "issue_trace_url_fallback"
+      }
+    },
+    {
+      "case_id": "LIVE-BRANCH-12",
+      "input": {
+        "repo": "maximlafe/lead_status",
+        "issue_branch_name": "maxime/let-496-company-library-v2-ispravit-replay-reconciliation-i-dobavit"
+      },
+      "lookup_result": {
+        "number": 244,
+        "url": "https://github.com/maximlafe/lead_status/pull/244"
+      },
+      "expected": {
+        "source": "branch_lookup",
+        "repo": "maximlafe/lead_status",
+        "pr_number": 244,
+        "url": "https://github.com/maximlafe/lead_status/pull/244"
+      },
+      "source": {
+        "sampled_identifier": "LET-496",
+        "sampled_branch_name": "maxime/let-496-company-library-v2-ispravit-replay-reconciliation-i-dobavit",
+        "evidence_channel": "branch_lookup",
+        "lookup_origin": "issue_trace_url_fallback"
+      }
+    }
+  ]
+}
