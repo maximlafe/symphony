@@ -31,7 +31,7 @@
 | `PARITY-05` | Stream 2 | `done` | `parity/parity-05-encode-review-finalizer-semantics` | `https://github.com/maximlafe/symphony/pull/147` | `45c97dce969cd57ec5bf02469250dded2510c729` | `docs/symphony-next/evidence/PARITY-05/PARITY-05_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-06` | Stream 2 | `done` | `parity/parity-06-prove-merge-gating-parity` | `https://github.com/maximlafe/symphony/pull/148` | `16a0dbbf163b9ed79b87596abb5549c82cd22e26` | `docs/symphony-next/evidence/PARITY-06/PARITY-06_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-14` | Stream 2 | `done` | `parity/parity-14-actionable-feedback-classification` | `https://github.com/maximlafe/symphony/pull/149` | `d57aea23eb66ad66b4cc5bf4e8fcb7d676f8ee14` | `docs/symphony-next/evidence/PARITY-14/PARITY-14_EVIDENCE_2026-04-26.md` | `-` |
-| `PARITY-07` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
+| `PARITY-07` | Stream 3 | `in_progress` | `parity/parity-07-long-lived-runtime-recovery` | `-` | `-` | `docs/symphony-next/evidence/PARITY-07/PARITY-07_EVIDENCE_2026-04-26.md` | `-` |
 | `PARITY-08` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-09` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-19` | Stream 3 | `todo` | `-` | `-` | `-` | `-` | `-` |
@@ -296,5 +296,28 @@
     воспроизводимого live-dataset.
   - первичный прогон `make all` падал из-за coverage gate 100%; закрыто
     точечными test-cases и удалением недостижимых fallback clauses.
+- Текущие блокеры/риски:
+  - implementation/evidence blockers отсутствуют; осталось завершить PR/CI/merge цикл.
+
+## PARITY-07 Update (2026-04-26)
+
+- Что сделано:
+  - создан RU plan-spec (`docs/symphony-next/plans/PARITY-07_PLAN.md`) с Acceptance Matrix и 2 critique pass;
+  - создан canonical contract (`docs/symphony-next/contracts/PARITY-07_RUNTIME_RECOVERY_CONTRACT.md`);
+  - добавлен deterministic fixture `parity_07_runtime_recovery_matrix.json`;
+  - добавлен live generator `scripts/generate_parity_07_live_sanitized_fixture.sh` с retry + control-byte sanitize;
+  - исправлен jq extractor в live generator (no-match теперь `null`, а не `empty`, чтобы не терять resume-mode cases);
+  - сгенерирован live-sanitized fixture `parity_07_runtime_recovery_live_sanitized.json`;
+  - добавлен executable parity suite `runtime_recovery_parity_test.exs`;
+  - собран evidence doc `docs/symphony-next/evidence/PARITY-07/PARITY-07_EVIDENCE_2026-04-26.md`.
+- Что проверено:
+  - `scripts/generate_parity_07_live_sanitized_fixture.sh`
+  - `make symphony-preflight`
+  - `make symphony-acceptance-preflight`
+  - `cd elixir && mise exec -- mix test test/symphony_elixir/runtime_recovery_parity_test.exs`
+  - `make symphony-validate`
+- Что пошло не по плану:
+  - первичный live-generation дропал resume-cases из-за jq no-match semantics (`empty`);
+  - первичный тестовый прогон падал на `get_in/2` по `Orchestrator.State` (без Access), исправлено точечной заменой на `Map.fetch!/Map.get`.
 - Текущие блокеры/риски:
   - implementation/evidence blockers отсутствуют; осталось завершить PR/CI/merge цикл.
