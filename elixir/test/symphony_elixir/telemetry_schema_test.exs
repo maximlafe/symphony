@@ -215,19 +215,6 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
 
     assert blank_override_payload["resume_fallback_reason"] == "checkpoint_capture_failed"
 
-    inconsistent_resume_mode_payload =
-      TelemetrySchema.checkpoint_payload(
-        %{
-          "resume_ready" => false,
-          "resume_mode" => "resume_checkpoint",
-          "fallback_reasons" => ["missing `branch` in resume checkpoint"]
-        },
-        "resume_checkpoint"
-      )
-
-    assert inconsistent_resume_mode_payload["resume_mode"] == "fallback_reread"
-    assert inconsistent_resume_mode_payload["resume_fallback_reason"] == "checkpoint_missing_required_field"
-
     ready_payload =
       TelemetrySchema.checkpoint_payload(
         %{

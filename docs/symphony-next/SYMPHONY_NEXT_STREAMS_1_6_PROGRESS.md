@@ -8,7 +8,7 @@
   - `codex/hegemonikon-symphony-integration`
   - local modified/untracked files were **not** overwritten
 - `main` sync status in execution worktree:
-  - `main` fast-forwarded to `origin/main` (`1b10198`)
+  - `main` fast-forwarded to `origin/main` (`094cbd9`)
   - `git status`: clean
 
 ## Streams In Scope
@@ -25,8 +25,8 @@
 | ticket | stream | status | branch | PR | merge commit | evidence | blockers |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `PARITY-01` | Stream 1 | `done` | `parity/parity-01-freeze-linear-routing-contract` | `https://github.com/maximlafe/symphony/pull/143` | `094cbd9105e607aa7b303fe8b0b8655a5c92afaf` | `docs/symphony-next/evidence/PARITY-01/PARITY-01_EVIDENCE_2026-04-26.md` | `-` |
-| `PARITY-02` | Stream 1 | `done` | `parity/parity-02-freeze-issue-trace-contract` | `https://github.com/maximlafe/symphony/pull/144` | `1b101982afca8c4253925dd321501d3d7560ec89` | `docs/symphony-next/evidence/PARITY-02/PARITY-02_EVIDENCE_2026-04-26.md` | `-` |
-| `PARITY-03` | Stream 1 | `in_review_prep` | `parity/parity-03-prove-old-trace-resume-compatibility` | `-` | `-` | `docs/symphony-next/evidence/PARITY-03/PARITY-03_EVIDENCE_2026-04-26.md` | `-` |
+| `PARITY-02` | Stream 1 | `in_review_prep` | `parity/parity-02-freeze-issue-trace-contract` | `-` | `-` | `docs/symphony-next/evidence/PARITY-02/PARITY-02_EVIDENCE_2026-04-26.md` | `pending PR/CI/merge` |
+| `PARITY-03` | Stream 1 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-04` | Stream 2 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-05` | Stream 2 | `todo` | `-` | `-` | `-` | `-` | `-` |
 | `PARITY-06` | Stream 2 | `todo` | `-` | `-` | `-` | `-` | `-` |
@@ -105,35 +105,4 @@
   - intermittent TLS/reset к Linear API во время live queries; обойдены retry-пайплайном генератора;
   - raw control-bytes в части live comment body ломали JSON parse; добавлен sanitize step в generator contract.
 - Текущие блокеры/риски:
-  - implementation/evidence blockers отсутствуют.
-
-## PARITY-02 Post-merge (2026-04-26)
-
-- PR/merge:
-  - PR: `https://github.com/maximlafe/symphony/pull/144`
-  - merge commit: `1b101982afca8c4253925dd321501d3d7560ec89`
-- Post-merge sanity:
-  - `make symphony-preflight` — pass
-  - `mix test test/symphony_elixir/issue_trace_parity_test.exs` — pass
-
-## PARITY-03 Update (2026-04-26)
-
-- Что сделано:
-  - создан RU plan-spec (`docs/symphony-next/plans/PARITY-03_PLAN.md`) с Acceptance Matrix и 2 critique pass;
-  - создан canonical contract (`docs/symphony-next/contracts/PARITY-03_LEGACY_RESUME_COMPATIBILITY_CONTRACT.md`);
-  - добавлен deterministic fixture `parity_03_resume_legacy_matrix.json`;
-  - добавлен live generator `scripts/generate_parity_03_live_sanitized_fixture.sh` (retry + control-byte sanitize);
-  - сгенерирован live-sanitized fixture `parity_03_resume_legacy_live_sanitized.json` на historical LET traces;
-  - добавлен executable parity suite `resume_legacy_parity_test.exs`;
-  - устранён fail-closed drift в `TelemetrySchema` для legacy inconsistent `resume_mode` payload;
-  - собран evidence doc `docs/symphony-next/evidence/PARITY-03/PARITY-03_EVIDENCE_2026-04-26.md`.
-- Что проверено:
-  - `make symphony-preflight`
-  - `make symphony-acceptance-preflight`
-  - `mix format --check-formatted`
-  - `mix test test/symphony_elixir/resume_legacy_parity_test.exs test/symphony_elixir/telemetry_schema_test.exs test/symphony_elixir/resume_checkpoint_test.exs test/symphony_elixir/core_test.exs`
-  - `mix test test/symphony_elixir/linear_routing_parity_test.exs test/symphony_elixir/issue_trace_parity_test.exs test/symphony_elixir/resume_legacy_parity_test.exs`
-- Что пошло не по плану:
-  - первоначальная версия live-case ожидала `resume_checkpoint` по явному trace marker, но normalized checkpoint shape был not-ready; зафиксирован и устранён ambiguity drift fail-closed нормализацией.
-- Текущие блокеры/риски:
-  - implementation/evidence blockers отсутствуют; осталось PR/CI/merge прохождение.
+  - implementation/evidence blockers отсутствуют; остались PR/CI/merge шаги.
