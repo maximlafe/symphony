@@ -1,0 +1,559 @@
+{
+  "ticket": "PARITY-01",
+  "generated_at": "2026-04-26T11:47:28Z",
+  "assignee_filter": "symphony",
+  "scope": {
+    "team_key": "LET",
+    "active_states": [
+      "Todo",
+      "Spec Prep",
+      "In Progress",
+      "Merging",
+      "Rework"
+    ],
+    "manual_intervention_state": "Blocked",
+    "terminal_states": [
+      "Closed",
+      "Cancelled",
+      "Canceled",
+      "Duplicate",
+      "Done"
+    ]
+  },
+  "source": {
+    "team_key": "LET",
+    "state_names": [
+      "Todo",
+      "Spec Prep",
+      "In Progress",
+      "Merging",
+      "Rework",
+      "Blocked"
+    ],
+    "sampled_issue_count": 11
+  },
+  "cases": [
+    {
+      "case_id": "LIVE-1",
+      "issue": {
+        "id": "live-issue-1",
+        "identifier": "LIVE-1",
+        "title": "Live sanitized routing sample",
+        "description": null,
+        "priority": 0,
+        "project": {
+          "slugId": "71e95eaccbef",
+          "name": "Symphony"
+        },
+        "state": {
+          "name": "Spec Prep"
+        },
+        "assignee": null,
+        "labels": {
+          "nodes": []
+        },
+        "inverseRelations": {
+          "nodes": []
+        },
+        "createdAt": "2026-04-26T11:34:59.996Z",
+        "updatedAt": "2026-04-26T11:37:49.550Z"
+      },
+      "expected": {
+        "assigned_to_worker": false,
+        "dispatch_eligible": false
+      },
+      "source": {
+        "original_state": "Spec Prep",
+        "blockers_count": 0,
+        "has_assignee": false
+      }
+    },
+    {
+      "case_id": "LIVE-2",
+      "issue": {
+        "id": "live-issue-2",
+        "identifier": "LIVE-2",
+        "title": "Live sanitized routing sample",
+        "description": null,
+        "priority": 2,
+        "project": {
+          "slugId": "71e95eaccbef",
+          "name": "Symphony"
+        },
+        "state": {
+          "name": "In Progress"
+        },
+        "assignee": {
+          "id": "other-id",
+          "email": "other@example.com",
+          "name": "other"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "delivery:tdd"
+            },
+            {
+              "name": "repo:masked"
+            }
+          ]
+        },
+        "inverseRelations": {
+          "nodes": []
+        },
+        "createdAt": "2026-04-26T10:20:32.366Z",
+        "updatedAt": "2026-04-26T11:36:38.319Z"
+      },
+      "expected": {
+        "assigned_to_worker": false,
+        "dispatch_eligible": false
+      },
+      "source": {
+        "original_state": "In Progress",
+        "blockers_count": 0,
+        "has_assignee": true
+      }
+    },
+    {
+      "case_id": "LIVE-3",
+      "issue": {
+        "id": "live-issue-3",
+        "identifier": "LIVE-3",
+        "title": "Live sanitized routing sample",
+        "description": null,
+        "priority": 2,
+        "project": {
+          "slugId": "22c1ee5795bb",
+          "name": "Извлечение задач"
+        },
+        "state": {
+          "name": "Spec Prep"
+        },
+        "assignee": null,
+        "labels": {
+          "nodes": [
+            {
+              "name": "mode:research"
+            },
+            {
+              "name": "delivery:tdd"
+            },
+            {
+              "name": "repo:masked"
+            },
+            {
+              "name": "bug"
+            }
+          ]
+        },
+        "inverseRelations": {
+          "nodes": []
+        },
+        "createdAt": "2026-04-26T08:32:08.459Z",
+        "updatedAt": "2026-04-26T08:32:08.459Z"
+      },
+      "expected": {
+        "assigned_to_worker": false,
+        "dispatch_eligible": false
+      },
+      "source": {
+        "original_state": "Spec Prep",
+        "blockers_count": 0,
+        "has_assignee": false
+      }
+    },
+    {
+      "case_id": "LIVE-4",
+      "issue": {
+        "id": "live-issue-4",
+        "identifier": "LIVE-4",
+        "title": "Live sanitized routing sample",
+        "description": null,
+        "priority": 0,
+        "project": {
+          "slugId": "22c1ee5795bb",
+          "name": "Извлечение задач"
+        },
+        "state": {
+          "name": "Blocked"
+        },
+        "assignee": {
+          "id": "symphony-id",
+          "email": "symphony@example.com",
+          "name": "symphony"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "repo:masked"
+            },
+            {
+              "name": "mode:plan"
+            },
+            {
+              "name": "delivery:tdd"
+            }
+          ]
+        },
+        "inverseRelations": {
+          "nodes": []
+        },
+        "createdAt": "2026-04-25T13:31:44.826Z",
+        "updatedAt": "2026-04-25T14:08:57.562Z"
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": false
+      },
+      "source": {
+        "original_state": "Blocked",
+        "blockers_count": 0,
+        "has_assignee": true
+      }
+    },
+    {
+      "case_id": "LIVE-5",
+      "issue": {
+        "id": "live-issue-5",
+        "identifier": "LIVE-5",
+        "title": "Live sanitized routing sample",
+        "description": null,
+        "priority": 2,
+        "project": {
+          "slugId": "97268b8c6bc6",
+          "name": "Мастер команд"
+        },
+        "state": {
+          "name": "Blocked"
+        },
+        "assignee": {
+          "id": "other-id",
+          "email": "other@example.com",
+          "name": "other"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "repo:masked"
+            },
+            {
+              "name": "must-have"
+            },
+            {
+              "name": "delivery:tdd"
+            },
+            {
+              "name": "verification:data-extraction"
+            },
+            {
+              "name": "bug"
+            }
+          ]
+        },
+        "inverseRelations": {
+          "nodes": []
+        },
+        "createdAt": "2026-04-25T04:14:34.930Z",
+        "updatedAt": "2026-04-25T06:03:00.635Z"
+      },
+      "expected": {
+        "assigned_to_worker": false,
+        "dispatch_eligible": false
+      },
+      "source": {
+        "original_state": "Blocked",
+        "blockers_count": 0,
+        "has_assignee": true
+      }
+    },
+    {
+      "case_id": "LIVE-6",
+      "issue": {
+        "id": "live-issue-6",
+        "identifier": "LIVE-6",
+        "title": "Live sanitized routing sample",
+        "description": null,
+        "priority": 4,
+        "project": {
+          "slugId": null,
+          "name": null
+        },
+        "state": {
+          "name": "Todo"
+        },
+        "assignee": null,
+        "labels": {
+          "nodes": []
+        },
+        "inverseRelations": {
+          "nodes": []
+        },
+        "createdAt": "2026-04-25T04:00:22.138Z",
+        "updatedAt": "2026-04-26T09:11:49.648Z"
+      },
+      "expected": {
+        "assigned_to_worker": false,
+        "dispatch_eligible": false
+      },
+      "source": {
+        "original_state": "Todo",
+        "blockers_count": 0,
+        "has_assignee": false
+      }
+    },
+    {
+      "case_id": "LIVE-7",
+      "issue": {
+        "id": "live-issue-7",
+        "identifier": "LIVE-7",
+        "title": "Live sanitized routing sample",
+        "description": null,
+        "priority": 2,
+        "project": {
+          "slugId": "97268b8c6bc6",
+          "name": "Мастер команд"
+        },
+        "state": {
+          "name": "In Progress"
+        },
+        "assignee": null,
+        "labels": {
+          "nodes": [
+            {
+              "name": "repo:masked"
+            }
+          ]
+        },
+        "inverseRelations": {
+          "nodes": [
+            {
+              "type": "blocks",
+              "issue": {
+                "id": "blocker",
+                "identifier": "BLOCKER",
+                "state": {
+                  "name": "Blocked"
+                }
+              }
+            },
+            {
+              "type": "blocks",
+              "issue": {
+                "id": "blocker",
+                "identifier": "BLOCKER",
+                "state": {
+                  "name": "Done"
+                }
+              }
+            },
+            {
+              "type": "blocks",
+              "issue": {
+                "id": "blocker",
+                "identifier": "BLOCKER",
+                "state": {
+                  "name": "Done"
+                }
+              }
+            },
+            {
+              "type": "blocks",
+              "issue": {
+                "id": "blocker",
+                "identifier": "BLOCKER",
+                "state": {
+                  "name": "Done"
+                }
+              }
+            }
+          ]
+        },
+        "createdAt": "2026-04-24T10:31:32.480Z",
+        "updatedAt": "2026-04-25T04:14:36.251Z"
+      },
+      "expected": {
+        "assigned_to_worker": false,
+        "dispatch_eligible": false
+      },
+      "source": {
+        "original_state": "In Progress",
+        "blockers_count": 4,
+        "has_assignee": false
+      }
+    },
+    {
+      "case_id": "LIVE-8",
+      "issue": {
+        "id": "live-issue-8",
+        "identifier": "LIVE-8",
+        "title": "Live sanitized routing sample",
+        "description": null,
+        "priority": 2,
+        "project": {
+          "slugId": "22c1ee5795bb",
+          "name": "Извлечение задач"
+        },
+        "state": {
+          "name": "Blocked"
+        },
+        "assignee": {
+          "id": "symphony-id",
+          "email": "symphony@example.com",
+          "name": "symphony"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "delivery:tdd"
+            }
+          ]
+        },
+        "inverseRelations": {
+          "nodes": []
+        },
+        "createdAt": "2026-04-23T20:49:58.104Z",
+        "updatedAt": "2026-04-25T10:16:39.188Z"
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": false
+      },
+      "source": {
+        "original_state": "Blocked",
+        "blockers_count": 0,
+        "has_assignee": true
+      }
+    },
+    {
+      "case_id": "LIVE-9",
+      "issue": {
+        "id": "live-issue-9",
+        "identifier": "LIVE-9",
+        "title": "Live sanitized routing sample",
+        "description": null,
+        "priority": 0,
+        "project": {
+          "slugId": "71e95eaccbef",
+          "name": "Symphony"
+        },
+        "state": {
+          "name": "Blocked"
+        },
+        "assignee": {
+          "id": "symphony-id",
+          "email": "symphony@example.com",
+          "name": "symphony"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "mode:plan"
+            },
+            {
+              "name": "repo:masked"
+            }
+          ]
+        },
+        "inverseRelations": {
+          "nodes": []
+        },
+        "createdAt": "2026-04-23T07:32:54.909Z",
+        "updatedAt": "2026-04-23T10:00:09.641Z"
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": false
+      },
+      "source": {
+        "original_state": "Blocked",
+        "blockers_count": 0,
+        "has_assignee": true
+      }
+    },
+    {
+      "case_id": "LIVE-10",
+      "issue": {
+        "id": "live-issue-10",
+        "identifier": "LIVE-10",
+        "title": "Live sanitized routing sample",
+        "description": null,
+        "priority": 0,
+        "project": {
+          "slugId": "22c1ee5795bb",
+          "name": "Извлечение задач"
+        },
+        "state": {
+          "name": "In Progress"
+        },
+        "assignee": {
+          "id": "other-id",
+          "email": "other@example.com",
+          "name": "other"
+        },
+        "labels": {
+          "nodes": []
+        },
+        "inverseRelations": {
+          "nodes": []
+        },
+        "createdAt": "2026-04-20T20:30:02.153Z",
+        "updatedAt": "2026-04-25T09:09:44.972Z"
+      },
+      "expected": {
+        "assigned_to_worker": false,
+        "dispatch_eligible": false
+      },
+      "source": {
+        "original_state": "In Progress",
+        "blockers_count": 0,
+        "has_assignee": true
+      }
+    },
+    {
+      "case_id": "LIVE-11",
+      "issue": {
+        "id": "live-issue-11",
+        "identifier": "LIVE-11",
+        "title": "Live sanitized routing sample",
+        "description": null,
+        "priority": 3,
+        "project": {
+          "slugId": "97268b8c6bc6",
+          "name": "Мастер команд"
+        },
+        "state": {
+          "name": "Blocked"
+        },
+        "assignee": {
+          "id": "symphony-id",
+          "email": "symphony@example.com",
+          "name": "symphony"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "mode:plan"
+            },
+            {
+              "name": "repo:masked"
+            }
+          ]
+        },
+        "inverseRelations": {
+          "nodes": []
+        },
+        "createdAt": "2026-04-17T10:12:20.286Z",
+        "updatedAt": "2026-04-24T16:50:31.384Z"
+      },
+      "expected": {
+        "assigned_to_worker": true,
+        "dispatch_eligible": false
+      },
+      "source": {
+        "original_state": "Blocked",
+        "blockers_count": 0,
+        "has_assignee": true
+      }
+    }
+  ]
+}
