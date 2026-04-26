@@ -1,0 +1,118 @@
+{
+  "ticket": "PARITY-03",
+  "scope": {
+    "team_key": "LET",
+    "resume_modes": [
+      "resume_checkpoint",
+      "fallback_reread"
+    ],
+    "no_ambiguity_rule": "fallback mode requires machine-readable fallback reason"
+  },
+  "source": {
+    "kind": "deterministic_matrix"
+  },
+  "cases": [
+    {
+      "case_id": "DET-READY-CANONICAL",
+      "checkpoint_input": {
+        "available": true,
+        "resume_ready": true,
+        "branch": "main",
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "workpad_ref": "comment-ready-1",
+        "workpad_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "open_pr": {
+          "number": 42,
+          "url": "https://github.com/maximlafe/symphony/pull/42",
+          "state": "OPEN"
+        },
+        "pending_checks": false,
+        "open_feedback": false,
+        "fallback_reasons": []
+      },
+      "expected": {
+        "resume_mode": "resume_checkpoint",
+        "resume_fallback_reason": null,
+        "resume_ready": true,
+        "ambiguous_recovery": false
+      }
+    },
+    {
+      "case_id": "DET-FALLBACK-MISSING-REQUIRED",
+      "checkpoint_input": {
+        "resume_ready": false,
+        "fallback_reasons": [
+          "missing `workpad_ref` in resume checkpoint"
+        ]
+      },
+      "expected": {
+        "resume_mode": "fallback_reread",
+        "resume_fallback_reason": "checkpoint_missing_required_field",
+        "resume_ready": false,
+        "ambiguous_recovery": false
+      }
+    },
+    {
+      "case_id": "DET-FALLBACK-MISMATCH",
+      "checkpoint_input": {
+        "resume_ready": false,
+        "fallback_reasons": [
+          "resume checkpoint `head` mismatch: expected `abc`, current `def`"
+        ]
+      },
+      "expected": {
+        "resume_mode": "fallback_reread",
+        "resume_fallback_reason": "checkpoint_mismatch",
+        "resume_ready": false,
+        "ambiguous_recovery": false
+      }
+    },
+    {
+      "case_id": "DET-FALLBACK-UNAVAILABLE",
+      "checkpoint_input": {
+        "resume_ready": false,
+        "fallback_reasons": [
+          "resume checkpoint is unavailable"
+        ]
+      },
+      "expected": {
+        "resume_mode": "fallback_reread",
+        "resume_fallback_reason": "resume_checkpoint_unavailable",
+        "resume_ready": false,
+        "ambiguous_recovery": false
+      }
+    },
+    {
+      "case_id": "DET-LEGACY-EXPLICIT-RESUME-NOT-READY",
+      "checkpoint_input": {
+        "resume_mode": "resume_checkpoint",
+        "resume_ready": false,
+        "fallback_reasons": [
+          "missing `branch` in resume checkpoint"
+        ]
+      },
+      "expected": {
+        "resume_mode": "fallback_reread",
+        "resume_fallback_reason": "checkpoint_missing_required_field",
+        "resume_ready": false,
+        "ambiguous_recovery": false
+      }
+    },
+    {
+      "case_id": "DET-LEGACY-EXPLICIT-FALLBACK",
+      "checkpoint_input": {
+        "resume_mode": "fallback_reread",
+        "resume_ready": false,
+        "fallback_reasons": [
+          "resume checkpoint capture failed: boom"
+        ]
+      },
+      "expected": {
+        "resume_mode": "fallback_reread",
+        "resume_fallback_reason": "checkpoint_capture_failed",
+        "resume_ready": false,
+        "ambiguous_recovery": false
+      }
+    }
+  ]
+}

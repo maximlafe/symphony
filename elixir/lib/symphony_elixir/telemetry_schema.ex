@@ -349,8 +349,23 @@ defmodule SymphonyElixir.TelemetrySchema do
   defp loop_break_rule?(_selected_rule), do: false
 
   defp derive_resume_mode(checkpoint, resume_ready) do
-    normalize_string(fetch(checkpoint, :resume_mode)) ||
-      if(resume_ready == true, do: "resume_checkpoint", else: "fallback_reread")
+    explicit_mode = normalize_string(fetch(checkpoint, :resume_mode))
+
+    cond do
+      resume_ready == true ->
+        "resume_checkpoint"
+
+      explicit_mode == "fallback_reread" ->
+        "fallback_reread"
+
+      explicit_mode == "resume_checkpoint" ->
+        # Legacy traces may carry stale/incorrect explicit resume_mode while the
+        # normalized checkpoint is not ready; fail closed into fallback mode.
+        "fallback_reread"
+
+      true ->
+        "fallback_reread"
+    end
   end
 
   defp derive_resume_fallback_reason(_checkpoint, "resume_checkpoint", _fallback_reasons), do: nil
