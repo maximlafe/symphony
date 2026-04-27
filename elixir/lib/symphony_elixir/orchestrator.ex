@@ -4532,8 +4532,6 @@ defmodule SymphonyElixir.Orchestrator do
     git_trimmed(workspace, ["rev-parse", "--abbrev-ref", "HEAD"])
   end
 
-  defp resolve_current_workspace_branch(_workspace), do: nil
-
   defp resolve_base_branch(workspace) when is_binary(workspace) do
     case read_trimmed(Path.join(workspace, ".symphony-base-branch")) do
       branch when is_binary(branch) and branch != "" -> branch

@@ -973,19 +973,18 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp find_checked_validation_item(validation_items, reference_value, matrix_type) do
-    normalized_reference = normalize_validation_reference(reference_value)
+    normalized_reference = normalize_validation_reference(to_string(reference_value))
 
     exact_label_match =
       Enum.find(validation_items, fn item ->
-        item["checked"] == true and normalize_validation_reference(item["label"]) == normalized_reference
+        item["checked"] == true and normalize_validation_reference(to_string(item["label"])) == normalized_reference
       end)
 
     exact_label_match ||
       command_match_or_test_fallback(validation_items, normalized_reference, matrix_type)
   end
 
-  defp command_match_or_test_fallback(validation_items, normalized_reference, matrix_type)
-       when is_binary(normalized_reference) do
+  defp command_match_or_test_fallback(validation_items, normalized_reference, matrix_type) do
     command_match =
       Enum.find(validation_items, fn item ->
         item["checked"] == true and command_contains_reference?(item["command"], normalized_reference)
@@ -998,20 +997,16 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp command_match_or_test_fallback(_validation_items, _normalized_reference, _matrix_type), do: nil
-
-  defp maybe_test_reference_fallback(validation_items, normalized_reference, "test")
-       when is_binary(normalized_reference) do
-    if test_selector_reference?(normalized_reference) do
+  defp maybe_test_reference_fallback(validation_items, normalized_reference, matrix_type) do
+    if matrix_type == "test" and test_selector_reference?(normalized_reference) do
       Enum.find(validation_items, fn item ->
-        item["checked"] == true and
-          MapSet.member?(@fallback_test_validation_labels, normalize_validation_reference(item["label"])) and
-          not surface_only_command?(item["command"])
+        checked? = item["checked"] == true
+        fallback_label? = MapSet.member?(@fallback_test_validation_labels, normalize_validation_reference(to_string(item["label"])))
+
+        checked? and fallback_label? and not surface_only_command?(item["command"])
       end)
     end
   end
-
-  defp maybe_test_reference_fallback(_validation_items, _normalized_reference, _matrix_type), do: nil
 
   defp normalize_validation_reference(value) when is_binary(value) do
     value
@@ -1020,25 +1015,22 @@ defmodule SymphonyElixir.HandoffCheck do
     |> String.downcase()
   end
 
-  defp normalize_validation_reference(value), do: normalize_validation_reference(to_string(value))
-
-  defp command_contains_reference?(command, normalized_reference)
-       when is_binary(command) and is_binary(normalized_reference) and normalized_reference != "" do
-    command
-    |> String.downcase()
-    |> String.contains?(normalized_reference)
+  defp command_contains_reference?(command, normalized_reference) do
+    normalized_reference != "" and
+      command
+      |> to_string()
+      |> String.downcase()
+      |> String.contains?(normalized_reference)
   end
 
-  defp command_contains_reference?(_command, _normalized_reference), do: false
+  defp test_selector_reference?(normalized_reference) do
+    normalized_reference = to_string(normalized_reference)
 
-  defp test_selector_reference?(normalized_reference) when is_binary(normalized_reference) do
     String.contains?(normalized_reference, "::") or
       String.contains?(normalized_reference, "[") or
       String.starts_with?(normalized_reference, "test_") or
       String.contains?(normalized_reference, "test_")
   end
-
-  defp test_selector_reference?(_normalized_reference), do: false
 
   defp validate_validation_match(nil, reference_value, matrix_item_id, _matrix_type, _matrix_semantic, errors, signals) do
     {errors ++ ["acceptance matrix item `#{matrix_item_id}` maps to validation `#{reference_value}` that is not checked"], signals}

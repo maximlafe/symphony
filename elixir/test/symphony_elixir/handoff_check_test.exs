@@ -1020,6 +1020,104 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert manifest["missing_items"] == []
   end
 
+  test "evaluate accepts selector mapping resolved directly from a checked command substring" do
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Command selector path | Selector proof resolves from checked command substring | test | tests/unit/test_team_master_ui.py | run_executed |
+    """
+
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `poetry run pytest tests/unit/test_team_master_ui.py -q`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `selector-proof.log` -> targeted selector coverage evidence
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:tests/unit/test_team_master_ui.py`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Command substring matching resolves selector mapping.
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-622",
+               labels: ["mode:plan", "verification:generic"],
+               issue_description: issue_description,
+               attachments: [%{"title" => "selector-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert manifest["missing_items"] == []
+  end
+
+  test "evaluate accepts pytest-style selector with scope delimiter" do
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Pytest selector path | Scoped selector resolves through targeted tests fallback | test | tests/unit/test_team_master_ui.py::test_apply_chat_add_source_close_policy_matrix | run_executed |
+    """
+
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `poetry run pytest tests/unit/test_team_master_ui.py -q`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `selector-proof.log` -> targeted selector coverage evidence
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:tests/unit/test_team_master_ui.py::test_apply_chat_add_source_close_policy_matrix`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Scoped selector fallback is accepted.
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-623",
+               labels: ["mode:plan", "verification:generic"],
+               issue_description: issue_description,
+               attachments: [%{"title" => "selector-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert manifest["missing_items"] == []
+  end
+
   test "evaluate enforces artifact and validation mapping types plus semantic execution checks" do
     artifact_description = """
     ## Acceptance Matrix
