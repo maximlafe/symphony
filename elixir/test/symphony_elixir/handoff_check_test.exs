@@ -102,7 +102,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
              )
 
     assert manifest["passed"]
-    assert manifest["contract_version"] == 2
+    assert manifest["contract_version"] == 3
     assert manifest["profile"] == "runtime"
     assert manifest["profile_source"] == "label"
     assert manifest["issue"]["required_capabilities"] == ["runtime_smoke", "artifact_upload", "repo_validation"]
@@ -124,6 +124,228 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert manifest["profile"] == "generic"
     assert manifest["profile_source"] == "fallback"
     assert "pull request snapshot is missing" in manifest["missing_items"]
+  end
+
+  test "evaluate freezes canonical acceptance contract revision in manifest" do
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               """
+               ## Codex Workpad
+
+               ### Validation
+
+               - [x] preflight: `make symphony-preflight`
+               - [x] cheap gate: `same HEAD targeted proof completed`
+               - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+               - [x] repo validation: `make symphony-validate`
+
+               ### Artifacts
+
+               - [x] uploaded attachment: `proof.log` -> deterministic proof artifact
+
+               ### Proof Mapping
+
+               - [x] `AM-1` -> validation:targeted tests
+
+               ### Checkpoint
+
+               - `checkpoint_type`: `human-verify`
+               - `risk_level`: `low`
+               - `summary`: Contract revision freeze path verified.
+               """,
+               issue_id: "LET-416",
+               issue_description: issue_description,
+               labels: ["mode:plan", "verification:generic"],
+               attachments: [%{"title" => "proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert manifest["acceptance_contract"]["version"] == 1
+    assert is_binary(manifest["contract_revision"])
+    assert manifest["contract_revision"] == get_in(manifest, ["acceptance_contract", "revision"])
+    assert manifest["contract_revision"] == get_in(manifest, ["issue", "acceptance_contract_revision"])
+    assert get_in(manifest, ["handoff_failure", "kind"]) == "none"
+  end
+
+  test "review_ready_transition_allowed? blocks stale acceptance contract revision" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `proof.log` -> deterministic proof artifact
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> validation:targeted tests
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Contract revision freeze path verified.
+    """
+
+    issue_description_v1 = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    """
+
+    issue_description_v2 = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | Positive path changed | Canonical proof passes with updated target | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    """
+
+    workpad_path = Path.join(System.tmp_dir!(), "handoff-check-contract-workpad-#{System.unique_integer([:positive])}.md")
+    manifest_path = Path.join(System.tmp_dir!(), "handoff-check-contract-manifest-#{System.unique_integer([:positive])}.json")
+    File.write!(workpad_path, workpad)
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-416",
+               issue_description: issue_description_v1,
+               workpad_path: workpad_path,
+               labels: ["mode:plan", "verification:generic"],
+               attachments: [%{"title" => "proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert {:ok, _path} = HandoffCheck.write_manifest(manifest, manifest_path)
+
+    assert :ok =
+             HandoffCheck.review_ready_transition_allowed?(
+               manifest_path,
+               "LET-416",
+               "In Review",
+               workpad_path,
+               issue_description: issue_description_v1,
+               git_runner: git_runner()
+             )
+
+    assert {:error, :handoff_manifest_stale, details} =
+             HandoffCheck.review_ready_transition_allowed?(
+               manifest_path,
+               "LET-416",
+               "In Review",
+               workpad_path,
+               issue_description: issue_description_v2,
+               git_runner: git_runner()
+             )
+
+    assert details["reason"] =~ "acceptance contract revision is stale"
+  end
+
+  test "review_ready_transition_allowed? supports nested contract revision fallback and fails when revision is missing" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `proof.log` -> deterministic proof artifact
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> validation:targeted tests
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Contract revision freeze path verified.
+    """
+
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    """
+
+    workpad_path = Path.join(System.tmp_dir!(), "handoff-check-contract-fallback-workpad-#{System.unique_integer([:positive])}.md")
+    manifest_path = Path.join(System.tmp_dir!(), "handoff-check-contract-fallback-manifest-#{System.unique_integer([:positive])}.json")
+    File.write!(workpad_path, workpad)
+
+    assert {:ok, baseline_manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-416",
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               labels: ["mode:plan", "verification:generic"],
+               attachments: [%{"title" => "proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    nested_only_revision_manifest =
+      baseline_manifest
+      |> Map.delete("contract_revision")
+      |> put_in(["acceptance_contract", "revision"], get_in(baseline_manifest, ["acceptance_contract", "revision"]))
+
+    assert {:ok, _path} = HandoffCheck.write_manifest(nested_only_revision_manifest, manifest_path)
+
+    assert :ok =
+             HandoffCheck.review_ready_transition_allowed?(
+               manifest_path,
+               "LET-416",
+               "In Review",
+               workpad_path,
+               issue_description: issue_description,
+               git_runner: git_runner()
+             )
+
+    missing_revision_manifest =
+      nested_only_revision_manifest
+      |> update_in(["acceptance_contract"], &Map.delete(&1, "revision"))
+
+    assert {:ok, _path} = HandoffCheck.write_manifest(missing_revision_manifest, manifest_path)
+
+    assert {:error, :handoff_manifest_stale, details} =
+             HandoffCheck.review_ready_transition_allowed?(
+               manifest_path,
+               "LET-416",
+               "In Review",
+               workpad_path,
+               issue_description: issue_description,
+               git_runner: git_runner()
+             )
+
+    assert details["reason"] =~ "acceptance contract revision is missing from manifest"
   end
 
   test "evaluate carries required capabilities into manifest and fails missing capability proof" do

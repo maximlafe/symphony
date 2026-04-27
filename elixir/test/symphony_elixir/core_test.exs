@@ -5227,6 +5227,134 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "recoverable symphony_handoff_check drift schedules bounded retry instead of immediate Blocked" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-verification-recoverable-drift"
+    issue = %Issue{id: issue_id, identifier: "LET-646", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      state =
+        base_dispatch_state("primary")
+        |> Map.put(:running, %{
+          issue_id => %{
+            pid: worker_pid,
+            ref: make_ref(),
+            identifier: issue.identifier,
+            issue: issue,
+            trace_id: "trace-verification-recoverable",
+            session_id: "thread-verification-recoverable",
+            codex_account_id: "primary",
+            run_phase: :editing,
+            started_at: DateTime.utc_now()
+          }
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+
+      update =
+        handoff_check_tool_update(%{
+          "profile" => "runtime",
+          "passed" => false,
+          "summary" => "proof mapping reference `validation:targeted tests` is reused by multiple acceptance matrix items: AM-1, AM-2",
+          "missing_items" => [
+            "proof mapping reference `validation:targeted tests` is reused by multiple acceptance matrix items: AM-1, AM-2"
+          ],
+          "handoff_failure" => %{
+            "kind" => "recoverable_drift",
+            "recoverable" => true
+          },
+          "checked_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        })
+
+      assert {:noreply, updated_state} =
+               Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+      assert %{^issue_id => retry_entry} = updated_state.retry_attempts
+      assert retry_entry.attempt == 1
+      assert retry_entry.error_class == "transient"
+      assert retry_entry.failure_class == "verification_recoverable_drift"
+      assert retry_entry.retry_failover_decision[:selected_rule] == "recoverable_drift"
+      assert retry_entry.retry_failover_decision[:selected_action] == "allow_retry"
+      refute Map.has_key?(updated_state.running, issue_id)
+      refute MapSet.member?(updated_state.claimed, issue_id)
+      refute Process.alive?(worker_pid)
+      refute_received {:memory_tracker_state_update, ^issue_id, "Blocked"}
+      refute_received {:memory_tracker_comment, ^issue_id, _comment}
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end
+  end
+
+  test "recoverable symphony_handoff_check drift escalates after bounded retry budget is exhausted" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-verification-recoverable-budget-exhausted"
+    issue = %Issue{id: issue_id, identifier: "LET-646", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      state =
+        base_dispatch_state("primary")
+        |> Map.put(:running, %{
+          issue_id => %{
+            pid: worker_pid,
+            ref: make_ref(),
+            identifier: issue.identifier,
+            issue: issue,
+            trace_id: "trace-verification-recoverable-budget",
+            session_id: "thread-verification-recoverable-budget",
+            codex_account_id: "primary",
+            run_phase: :editing,
+            retry_attempt: 1,
+            started_at: DateTime.utc_now()
+          }
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+
+      update =
+        handoff_check_tool_update(%{
+          "profile" => "runtime",
+          "passed" => false,
+          "summary" => "proof mapping reference `validation:targeted tests` is reused by multiple acceptance matrix items: AM-1, AM-2",
+          "missing_items" => [
+            "proof mapping reference `validation:targeted tests` is reused by multiple acceptance matrix items: AM-1, AM-2"
+          ],
+          "handoff_failure" => %{
+            "kind" => "recoverable_drift",
+            "recoverable" => true
+          },
+          "checked_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        })
+
+      assert {:noreply, updated_state} =
+               Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "selected_rule: `validation_env_mismatch`"
+      assert blocker_body =~ "recoverable drift exceeded auto-reconcile budget"
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+      refute Map.has_key?(updated_state.retry_attempts, issue_id)
+      refute Map.has_key?(updated_state.running, issue_id)
+      refute MapSet.member?(updated_state.claimed, issue_id)
+      refute Process.alive?(worker_pid)
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end
+  end
+
   test "passed symphony_handoff_check manifest updates metadata without stopping active run" do
     issue_id = "issue-verification-pass-through"
     issue = %Issue{id: issue_id, identifier: "LET-523", state: "In Progress"}

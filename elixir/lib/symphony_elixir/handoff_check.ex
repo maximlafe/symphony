@@ -31,6 +31,15 @@ defmodule SymphonyElixir.HandoffCheck do
   @supported_handoff_phases ["review", "done"]
   @default_matrix_required_before "review"
   @matrix_required_before MapSet.new(["review", "done"])
+  @acceptance_contract_version 1
+  @recoverable_drift_patterns [
+    ~r/^acceptance matrix contains duplicate id `/,
+    ~r/^acceptance matrix item `[^`]+` has multiple proof mapping entries; exactly one is required$/,
+    ~r/^proof mapping references unknown acceptance matrix item `/,
+    ~r/^proof mapping reference `[^`]+` is reused by multiple acceptance matrix items:/,
+    ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not checked in `Artifacts`$/,
+    ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not uploaded in Linear attachments$/
+  ]
 
   @type result :: {:ok, map()} | {:error, map()}
 
@@ -72,6 +81,7 @@ defmodule SymphonyElixir.HandoffCheck do
     parsed_workpad = parse_workpad(workpad_body)
     {acceptance_matrix_items, acceptance_matrix_errors} = parse_acceptance_matrix(issue_description)
     {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(issue_description)
+    acceptance_contract = acceptance_contract(acceptance_matrix_items, required_capabilities)
 
     {validation_gate, git_metadata, validation_gate_errors} =
       resolve_validation_gate(parsed_workpad, opts)
@@ -112,12 +122,15 @@ defmodule SymphonyElixir.HandoffCheck do
       )
 
     passed = missing_items == []
+    handoff_failure = classify_handoff_failure(passed, missing_items)
 
     manifest =
       %{
-        "contract_version" => 2,
+        "contract_version" => 3,
         "checked_at" => DateTime.to_iso8601(checked_at),
         "passed" => passed,
+        "contract_revision" => acceptance_contract["revision"],
+        "acceptance_contract" => acceptance_contract,
         "phase" => phase,
         "profile" => profile,
         "profile_source" => profile_source,
@@ -132,7 +145,8 @@ defmodule SymphonyElixir.HandoffCheck do
           "labels" => issue_labels,
           "required_capabilities" => required_capabilities,
           "attachment_titles" => Enum.map(attachments, & &1["title"]),
-          "acceptance_matrix" => acceptance_matrix_items
+          "acceptance_matrix" => acceptance_matrix_items,
+          "acceptance_contract_revision" => acceptance_contract["revision"]
         },
         "pull_request" => %{
           "repo" => repo,
@@ -152,6 +166,7 @@ defmodule SymphonyElixir.HandoffCheck do
           "proof_mapping" => parsed_workpad["proof_mapping"],
           "checkpoint" => parsed_workpad["checkpoint"]
         },
+        "handoff_failure" => handoff_failure,
         "missing_items" => missing_items
       }
       |> Map.merge(
@@ -199,6 +214,7 @@ defmodule SymphonyElixir.HandoffCheck do
       when is_binary(manifest_path) and is_binary(issue_id) and is_list(opts) do
     with {:ok, manifest} <- load_manifest(manifest_path),
          :ok <- validate_manifest_identity(manifest, issue_id, state_name),
+         :ok <- validate_manifest_contract_revision(manifest, opts),
          :ok <- validate_manifest_validation_gate(manifest, opts) do
       validate_manifest_workpad(manifest, expected_workpad_path)
     end
@@ -297,6 +313,67 @@ defmodule SymphonyElixir.HandoffCheck do
            "manifest" => manifest
          }}
     end
+  end
+
+  defp validate_manifest_contract_revision(manifest, opts) do
+    case expected_contract_revision(opts) do
+      {:skip, _reason} ->
+        :ok
+
+      {:ok, expected_revision} ->
+        manifest_revision =
+          manifest["contract_revision"] ||
+            get_in(manifest, ["acceptance_contract", "revision"])
+
+        cond do
+          not (is_binary(manifest_revision) and String.trim(manifest_revision) != "") ->
+            {:error, :handoff_manifest_stale,
+             %{
+               "reason" => "acceptance contract revision is missing from manifest",
+               "details" => ["re-run symphony_handoff_check to freeze the current acceptance contract revision"],
+               "manifest" => manifest
+             }}
+
+          manifest_revision != expected_revision ->
+            {:error, :handoff_manifest_stale,
+             %{
+               "reason" => "acceptance contract revision is stale for the current issue description",
+               "details" => [
+                 "expected_revision=#{expected_revision}",
+                 "manifest_revision=#{manifest_revision}"
+               ],
+               "manifest" => manifest
+             }}
+
+          true ->
+            :ok
+        end
+    end
+  end
+
+  defp expected_contract_revision(opts) do
+    issue_description = Keyword.get(opts, :issue_description)
+
+    if is_binary(issue_description) do
+      {acceptance_matrix_items, _errors} = parse_acceptance_matrix(issue_description)
+      {required_capabilities, _errors} = AcceptanceCapability.required_capabilities(issue_description)
+      payload = acceptance_contract_payload(acceptance_matrix_items, required_capabilities)
+
+      if enforce_contract_revision?(payload) do
+        {:ok, acceptance_contract_revision(payload)}
+      else
+        {:skip, :empty_contract}
+      end
+    else
+      {:skip, :missing_issue_description}
+    end
+  end
+
+  defp enforce_contract_revision?(%{
+         "acceptance_matrix" => acceptance_matrix_items,
+         "required_capabilities" => required_capabilities
+       }) do
+    acceptance_matrix_items != [] or required_capabilities != []
   end
 
   defp normalize_handoff_phase(nil), do: {@default_handoff_phase, []}
@@ -1238,6 +1315,63 @@ defmodule SymphonyElixir.HandoffCheck do
       |> Enum.join("; ")
 
     "verification failed for profile `#{profile}`: #{trimmed}"
+  end
+
+  defp acceptance_contract(acceptance_matrix_items, required_capabilities) do
+    payload = acceptance_contract_payload(acceptance_matrix_items, required_capabilities)
+
+    %{
+      "version" => @acceptance_contract_version,
+      "revision" => acceptance_contract_revision(payload),
+      "payload" => payload
+    }
+  end
+
+  defp acceptance_contract_payload(acceptance_matrix_items, required_capabilities) do
+    %{
+      "acceptance_matrix" => acceptance_matrix_items,
+      "required_capabilities" => required_capabilities
+    }
+  end
+
+  defp acceptance_contract_revision(payload) when is_map(payload) do
+    payload
+    |> :erlang.term_to_binary()
+    |> sha256()
+  end
+
+  defp classify_handoff_failure(true, _missing_items) do
+    %{
+      "kind" => "none",
+      "recoverable" => false,
+      "reason" => "verification passed",
+      "recoverable_items" => [],
+      "hard_items" => []
+    }
+  end
+
+  defp classify_handoff_failure(false, missing_items) when is_list(missing_items) do
+    {recoverable_items, hard_items} =
+      Enum.split_with(missing_items, &recoverable_drift_item?/1)
+
+    {kind, reason} =
+      if missing_items != [] and hard_items == [] do
+        {"recoverable_drift", "metadata/proof sync drift detected"}
+      else
+        {"hard_contract_failure", "required handoff contract evidence is missing or invalid"}
+      end
+
+    %{
+      "kind" => kind,
+      "recoverable" => kind == "recoverable_drift",
+      "reason" => reason,
+      "recoverable_items" => recoverable_items,
+      "hard_items" => hard_items
+    }
+  end
+
+  defp recoverable_drift_item?(item) when is_binary(item) do
+    Enum.any?(@recoverable_drift_patterns, &Regex.match?(&1, item))
   end
 
   defp attachment_present?(attachments, title) when is_binary(title) do

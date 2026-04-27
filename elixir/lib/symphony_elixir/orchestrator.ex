@@ -36,6 +36,15 @@ defmodule SymphonyElixir.Orchestrator do
   @github_pr_snapshot_tool "github_pr_snapshot"
   @github_wait_for_checks_tool "github_wait_for_checks"
   @symphony_handoff_check_tool "symphony_handoff_check"
+  @verification_recoverable_drift_max_attempts 1
+  @verification_recoverable_drift_patterns [
+    ~r/^acceptance matrix contains duplicate id `/,
+    ~r/^acceptance matrix item `[^`]+` has multiple proof mapping entries; exactly one is required$/,
+    ~r/^proof mapping references unknown acceptance matrix item `/,
+    ~r/^proof mapping reference `[^`]+` is reused by multiple acceptance matrix items:/,
+    ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not checked in `Artifacts`$/,
+    ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not uploaded in Linear attachments$/
+  ]
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -438,34 +447,44 @@ defmodule SymphonyElixir.Orchestrator do
       trace_id = running_entry_trace_id(running_entry)
       failure_attempt = next_failure_attempt_from_running(running_entry)
       checkpoint = capture_resume_checkpoint(issue, running_entry)
-      decision = verification_guard_failure_decision(running_entry, manifest)
+      decision = verification_guard_failure_decision(running_entry, manifest, failure_attempt)
 
-      with_log_metadata(issue_log_metadata(issue_id, identifier, session_id, trace_id), fn ->
-        Logger.warning("Fail-closing active run after failed verification guard for issue_id=#{issue_id} issue_identifier=#{identifier}")
-      end)
+      failure_context = %{
+        issue_id: issue_id,
+        identifier: identifier,
+        session_id: session_id,
+        trace_id: trace_id
+      }
 
-      log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
+      metadata =
+        %{
+          issue_id: issue_id,
+          identifier: identifier,
+          trace_id: trace_id,
+          session_id: session_id,
+          thread_id: Map.get(running_entry, :thread_id),
+          turn_id: Map.get(running_entry, :turn_id),
+          replacement_of_session_id: Map.get(running_entry, :replacement_of_session_id),
+          replacement_session_id: Map.get(running_entry, :replacement_session_id),
+          codex_account_id: Map.get(running_entry, :codex_account_id),
+          resume_checkpoint: checkpoint
+        }
+        |> Map.merge(TelemetrySchema.validation_guard_payload(running_entry))
+        |> Map.merge(retry_execution_metadata(running_entry, checkpoint))
 
       state =
         state
         |> Map.put(:running, Map.put(state.running, issue_id, running_entry))
         |> terminate_running_issue(issue_id, false)
-        |> escalate_issue_for_retry_failover_handoff(
+
+      state =
+        apply_verification_guard_failure_decision(
+          state,
           issue,
           decision,
           failure_attempt,
-          %{
-            issue_id: issue_id,
-            identifier: identifier,
-            trace_id: trace_id,
-            codex_account_id: Map.get(running_entry, :codex_account_id),
-            error_class: ErrorClassifier.to_string(:permanent),
-            failure_class: "verification_guard_failed",
-            retry_action: :stop,
-            resume_checkpoint: checkpoint
-          }
-          |> Map.merge(TelemetrySchema.validation_guard_payload(running_entry))
-          |> Map.merge(retry_execution_metadata(running_entry, checkpoint))
+          metadata,
+          failure_context
         )
 
       {:verification_guard_stop, state}
@@ -487,23 +506,162 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp verification_guard_failure_decision(running_entry, manifest)
+  defp verification_guard_failure_decision(running_entry, manifest, failure_attempt)
+       when is_map(running_entry) and is_map(manifest) do
+    context = verification_guard_failure_context(running_entry, manifest)
+
+    if verification_guard_recoverable_drift?(manifest) do
+      recoverable_verification_guard_decision(context, failure_attempt)
+    else
+      hard_verification_guard_decision(context, "verification guard failed for profile `#{context.profile}`: #{context.summary}", "hard_contract_failure")
+    end
+  end
+
+  defp verification_guard_recoverable_drift?(manifest) when is_map(manifest) do
+    case get_in(manifest, ["handoff_failure", "kind"]) do
+      "recoverable_drift" ->
+        true
+
+      "hard_contract_failure" ->
+        false
+
+      _ ->
+        missing_items = normalize_manifest_missing_items(manifest["missing_items"])
+        missing_items != [] and Enum.all?(missing_items, &recoverable_verification_drift_item?/1)
+    end
+  end
+
+  defp recoverable_verification_drift_item?(item) when is_binary(item) do
+    Enum.any?(@verification_recoverable_drift_patterns, &Regex.match?(&1, item))
+  end
+
+  defp recoverable_verification_drift_item?(_item), do: false
+
+  defp apply_verification_guard_failure_decision(
+         state,
+         issue,
+         %RetryFailoverDecision{selected_rule: :recoverable_drift} = decision,
+         failure_attempt,
+         metadata,
+         %{
+           issue_id: issue_id,
+           identifier: identifier,
+           session_id: session_id,
+           trace_id: trace_id
+         }
+       ) do
+    with_log_metadata(issue_log_metadata(issue_id, identifier, session_id, trace_id), fn ->
+      Logger.warning(
+        "Recoverable verification drift detected for issue_id=#{issue_id} issue_identifier=#{identifier}; scheduling bounded auto-reconcile retry attempt #{failure_attempt}/#{@verification_recoverable_drift_max_attempts}"
+      )
+    end)
+
+    schedule_failure_retry_or_dedupe_hit(
+      state,
+      issue,
+      failure_attempt,
+      metadata
+      |> Map.merge(%{
+        error: decision.reason,
+        error_class: ErrorClassifier.to_string(:transient),
+        failure_class: "verification_recoverable_drift",
+        retry_failover_signals: %{
+          recoverable_drift: %{
+            reason: decision.reason,
+            log_fields: decision.log_fields
+          }
+        }
+      })
+    )
+  end
+
+  defp apply_verification_guard_failure_decision(
+         state,
+         issue,
+         decision,
+         failure_attempt,
+         metadata,
+         %{
+           issue_id: issue_id,
+           identifier: identifier,
+           session_id: session_id,
+           trace_id: trace_id
+         }
+       ) do
+    with_log_metadata(issue_log_metadata(issue_id, identifier, session_id, trace_id), fn ->
+      Logger.warning("Fail-closing active run after failed verification guard for issue_id=#{issue_id} issue_identifier=#{identifier}")
+    end)
+
+    log_retry_failover_decision(issue_id, identifier, session_id, trace_id, decision)
+
+    escalate_issue_for_retry_failover_handoff(
+      state,
+      issue,
+      decision,
+      failure_attempt,
+      metadata
+      |> Map.merge(%{
+        error_class: ErrorClassifier.to_string(:permanent),
+        failure_class: "verification_guard_failed",
+        retry_action: :stop
+      })
+    )
+  end
+
+  defp verification_guard_failure_context(running_entry, manifest)
        when is_map(running_entry) and is_map(manifest) do
     profile = Map.get(running_entry, :verification_profile) || manifest["profile"] || "unknown"
     summary = Map.get(running_entry, :verification_summary) || manifest["summary"] || "verification guard failed"
     missing_items = normalize_manifest_missing_items(manifest["missing_items"])
 
+    %{
+      profile: profile,
+      summary: summary,
+      missing_items: missing_items,
+      log_fields: %{
+        validation_guard_name: profile,
+        validation_guard_result: "failed",
+        validation_guard_reason: summary,
+        verification_missing_items: Enum.join(missing_items, ", ")
+      }
+    }
+  end
+
+  defp recoverable_verification_guard_decision(context, failure_attempt) when is_map(context) do
+    if failure_attempt <= @verification_recoverable_drift_max_attempts do
+      RetryFailoverDecision.decide(%{
+        recoverable_drift: %{
+          reason: "verification guard recoverable drift for profile `#{context.profile}`: #{context.summary}",
+          log_fields:
+            Map.merge(context.log_fields, %{
+              handoff_failure_kind: "recoverable_drift",
+              recoverable_attempt: failure_attempt,
+              recoverable_attempt_limit: @verification_recoverable_drift_max_attempts
+            })
+        }
+      })
+    else
+      hard_verification_guard_decision(
+        context,
+        "verification guard recoverable drift exceeded auto-reconcile budget (attempt #{failure_attempt}/#{@verification_recoverable_drift_max_attempts}) for profile `#{context.profile}`: #{context.summary}",
+        "recoverable_drift_budget_exhausted",
+        recoverable_attempt: failure_attempt,
+        recoverable_attempt_limit: @verification_recoverable_drift_max_attempts
+      )
+    end
+  end
+
+  defp hard_verification_guard_decision(context, reason, failure_kind, extra_log_fields \\ [])
+       when is_map(context) and is_binary(reason) and is_binary(failure_kind) and is_list(extra_log_fields) do
     RetryFailoverDecision.decide(%{
       validation_env_mismatch: %{
-        reason: "verification guard failed for profile `#{profile}`: #{summary}",
+        reason: reason,
         checkpoint_type: "human-action",
         risk_level: "high",
-        log_fields: %{
-          validation_guard_name: profile,
-          validation_guard_result: "failed",
-          validation_guard_reason: summary,
-          verification_missing_items: Enum.join(missing_items, ", ")
-        }
+        log_fields:
+          context.log_fields
+          |> Map.merge(%{handoff_failure_kind: failure_kind})
+          |> Map.merge(Enum.into(extra_log_fields, %{}))
       }
     })
   end

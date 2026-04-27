@@ -2191,6 +2191,155 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert_received {:issue_update_without_git_runner, %{"id" => "LET-416", "stateId" => "in-review-state-id"}}
   end
 
+  test "linear_graphql blocks review-ready transition when acceptance contract revision is stale" do
+    workspace = Path.join(System.tmp_dir!(), "handoff_contract_guard_workspace_#{System.unique_integer([:positive])}")
+
+    workpad_path =
+      write_tmp_file(workspace, "workpad.md", """
+      ## Codex Workpad
+
+      ### Validation
+
+      - [x] preflight: `make symphony-preflight`
+      - [x] cheap gate: `same HEAD targeted proof completed`
+      - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+      - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
+      - [x] repo validation: `make symphony-validate`
+
+      ### Artifacts
+
+      - [x] uploaded attachment: `proof.log` -> deterministic proof artifact
+
+      ### Proof Mapping
+
+      - [x] `AM-1` -> validation:targeted tests
+
+      ### Checkpoint
+
+      - `checkpoint_type`: `human-verify`
+      - `risk_level`: `low`
+      - `summary`: Contract revision freeze path verified.
+      """)
+
+    issue_description_v1 = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    """
+
+    issue_description_v2 = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Positive path changed | Canonical proof passes with updated target | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    """
+
+    assert DynamicTool.execute(
+             "symphony_handoff_check",
+             %{
+               "issue_id" => "LET-416",
+               "file_path" => workpad_path,
+               "repo" => "maximlafe/symphony",
+               "pr_number" => 52,
+               "profile" => "generic"
+             },
+             workspace: workspace,
+             linear_client: fn query, _variables, _opts ->
+               if query =~ "SymphonyHandoffCheckIssue" do
+                 {:ok,
+                  %{
+                    "data" => %{
+                      "issue" => %{
+                        "id" => "LET-416",
+                        "identifier" => "LET-416",
+                        "state" => %{"name" => "In Progress"},
+                        "description" => issue_description_v1,
+                        "labels" => %{"nodes" => [%{"name" => "mode:plan"}, %{"name" => "verification:generic"}]},
+                        "attachments" => %{"nodes" => [%{"title" => "proof.log", "url" => "https://example.test/proof.log"}]}
+                      }
+                    }
+                  }}
+               else
+                 flunk("unexpected handoff query for stale contract setup: #{query}")
+               end
+             end,
+             git_runner: handoff_git_runner(),
+             gh_runner: fn args, _opts ->
+               case args do
+                 ["pr", "view", "52", "-R", "maximlafe/symphony", "--json", _] ->
+                   {:ok,
+                    Jason.encode!(%{
+                      "state" => "OPEN",
+                      "url" => "https://example.test/pr/52",
+                      "labels" => [%{"name" => "symphony"}],
+                      "reviewDecision" => "",
+                      "mergeStateStatus" => "CLEAN",
+                      "statusCheckRollup" => [
+                        %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                      ]
+                    })}
+
+                 ["api", "repos/maximlafe/symphony/issues/52/comments?per_page=100"] ->
+                   {:ok, "[]"}
+
+                 ["api", "repos/maximlafe/symphony/pulls/52/reviews?per_page=100"] ->
+                   {:ok, "[]"}
+
+                 ["api", "repos/maximlafe/symphony/pulls/52/comments?per_page=100"] ->
+                   {:ok, "[]"}
+
+                 _ ->
+                   flunk("unexpected gh command for stale contract setup: #{inspect(args)}")
+               end
+             end
+           )["success"] == true
+
+    blocked =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-416", "stateId" => "in-review-state-id"}
+        },
+        workspace: workspace,
+        git_runner: handoff_git_runner(),
+        linear_client: fn query, _variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "description" => issue_description_v2,
+                     "team" => %{
+                       "states" => %{
+                         "nodes" => [
+                           %{"id" => "in-review-state-id", "name" => "In Review"}
+                         ]
+                       }
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              flunk("issueUpdate should not execute when contract revision is stale")
+
+            true ->
+              flunk("unexpected GraphQL query in stale contract guard test: #{query}")
+          end
+        end
+      )
+
+    assert blocked["success"] == false
+    payload = decode_tool_text(blocked)
+    assert payload["error"]["details"]["reason"] =~ "acceptance contract revision is stale"
+    assert payload["error"]["details"]["reason_code"] == "handoff_manifest_stale"
+  end
+
   defp init_git_repo! do
     repo_path = Path.join(System.tmp_dir!(), "dynamic-tool-git-#{System.unique_integer([:positive])}")
     File.rm_rf!(repo_path)
