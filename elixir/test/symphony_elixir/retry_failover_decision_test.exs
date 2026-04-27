@@ -66,6 +66,35 @@ defmodule SymphonyElixir.RetryFailoverDecisionTest do
     assert decision.checkpoint_type == "human-action"
   end
 
+  test "recoverable drift keeps retry path open" do
+    decision =
+      RetryFailoverDecision.decide(%{
+        recoverable_drift: %{reason: "proof_mapping_metadata_drift"},
+        account_unhealthy: %{reason: "quota exhausted"},
+        checkpoint_available: true
+      })
+
+    assert decision.selected_rule == :recoverable_drift
+    assert decision.selected_action == :allow_retry
+    assert decision.reason == "proof_mapping_metadata_drift"
+    assert decision.suppressed_rules == [:account_unhealthy_checkpoint_available]
+    assert decision.checkpoint_type == nil
+    assert decision.risk_level == nil
+  end
+
+  test "hard validation mismatch wins over recoverable drift" do
+    decision =
+      RetryFailoverDecision.decide(%{
+        recoverable_drift: %{reason: "proof_mapping_metadata_drift"},
+        validation_env_mismatch: %{reason: "missing_runtime_proof"}
+      })
+
+    assert decision.selected_rule == :validation_env_mismatch
+    assert decision.selected_action == :stop_with_classified_handoff
+    assert decision.reason == "missing_runtime_proof"
+    assert decision.suppressed_rules == [:recoverable_drift]
+  end
+
   test "account unhealthy with milestone near drains instead of preempting" do
     decision =
       RetryFailoverDecision.decide(%{

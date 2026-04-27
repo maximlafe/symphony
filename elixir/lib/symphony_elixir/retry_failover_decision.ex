@@ -13,6 +13,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   @type rule ::
           :unsafe_preemption_required
           | :stale_workspace_head
+          | :recoverable_drift
           | :validation_env_mismatch
           | :retry_dedupe_hit
           | :continuation_attempt_limit_exceeded
@@ -92,6 +93,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp normalize_signals(input) do
     %{
       stale_workspace_head: normalize_signal(signal_input(input, :stale_workspace_head)),
+      recoverable_drift: normalize_signal(signal_input(input, :recoverable_drift)),
       retry_dedupe_hit: normalize_signal(signal_input(input, :retry_dedupe_hit)),
       continuation_attempt_limit: normalize_signal(signal_input(input, :continuation_attempt_limit)),
       validation_env_mismatch: normalize_signal(signal_input(input, :validation_env_mismatch)),
@@ -130,6 +132,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
     |> maybe_add_rule(:unsafe_preemption_required, signal_active?(signals.unsafe_preemption_required))
     |> maybe_add_rule(:stale_workspace_head, signal_active?(signals.stale_workspace_head))
     |> maybe_add_rule(:validation_env_mismatch, signal_active?(signals.validation_env_mismatch))
+    |> maybe_add_rule(:recoverable_drift, signal_active?(signals.recoverable_drift))
     |> maybe_add_rule(:retry_dedupe_hit, signal_active?(signals.retry_dedupe_hit))
     |> maybe_add_rule(
       :continuation_attempt_limit_exceeded,
@@ -154,6 +157,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
 
   defp action_for_rule(:unsafe_preemption_required), do: :immediate_preemption
   defp action_for_rule(:stale_workspace_head), do: :stop_with_classified_handoff
+  defp action_for_rule(:recoverable_drift), do: :allow_retry
   defp action_for_rule(:validation_env_mismatch), do: :stop_with_classified_handoff
   defp action_for_rule(:retry_dedupe_hit), do: :stop_with_classified_handoff
   defp action_for_rule(:continuation_attempt_limit_exceeded), do: :stop_with_classified_handoff
@@ -167,6 +171,9 @@ defmodule SymphonyElixir.RetryFailoverDecision do
 
   defp reason_for_rule(:stale_workspace_head, signals),
     do: signal_reason(signals.stale_workspace_head, "stale_workspace_head")
+
+  defp reason_for_rule(:recoverable_drift, signals),
+    do: signal_reason(signals.recoverable_drift, "recoverable_drift")
 
   defp reason_for_rule(:validation_env_mismatch, signals),
     do: signal_reason(signals.validation_env_mismatch, "validation_env_mismatch")
@@ -266,6 +273,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
   defp signals_payload(signals) do
     %{
       stale_workspace_head: signal_payload(signals.stale_workspace_head),
+      recoverable_drift: signal_payload(signals.recoverable_drift),
       retry_dedupe_hit: signal_payload(signals.retry_dedupe_hit),
       continuation_attempt_limit: signal_payload(signals.continuation_attempt_limit),
       validation_env_mismatch: signal_payload(signals.validation_env_mismatch),
@@ -301,6 +309,7 @@ defmodule SymphonyElixir.RetryFailoverDecision do
 
   defp signal_for_rule(signals, :unsafe_preemption_required), do: signals.unsafe_preemption_required
   defp signal_for_rule(signals, :stale_workspace_head), do: signals.stale_workspace_head
+  defp signal_for_rule(signals, :recoverable_drift), do: signals.recoverable_drift
   defp signal_for_rule(signals, :validation_env_mismatch), do: signals.validation_env_mismatch
   defp signal_for_rule(signals, :retry_dedupe_hit), do: signals.retry_dedupe_hit
   defp signal_for_rule(signals, :continuation_attempt_limit_exceeded), do: signals.continuation_attempt_limit

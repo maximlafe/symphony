@@ -250,6 +250,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   @symphony_handoff_check_state_query """
   query SymphonyHandoffCheckState($issueId: String!) {
     issue(id: $issueId) {
+      description
       team {
         states(first: 100) {
           nodes {
@@ -1416,22 +1417,28 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp enforce_review_ready_transition_guard(issue_id, state_id, linear_client, opts) do
     review_ready_states = Config.settings!().verification.review_ready_states
 
-    with {:ok, state_name} <- resolve_issue_state_name(issue_id, state_id, linear_client),
+    with {:ok, state_context} <- resolve_issue_state_context(issue_id, state_id, linear_client),
+         state_name = state_context.state_name,
          true <- state_name in review_ready_states do
-      run_review_ready_handoff_guard(issue_id, state_name, opts)
+      run_review_ready_handoff_guard(
+        issue_id,
+        state_name,
+        state_context.issue_description,
+        opts
+      )
     else
       false -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp run_review_ready_handoff_guard(issue_id, state_name, opts) do
+  defp run_review_ready_handoff_guard(issue_id, state_name, issue_description, opts) do
     manifest_path = Config.settings!().verification.manifest_path
     workspace = Keyword.get(opts, :workspace)
     expected_manifest_path = expand_upload_path(manifest_path, workspace)
 
     handoff_opts =
-      [repo_path: workspace]
+      [repo_path: workspace, issue_description: issue_description]
       |> maybe_put_runner_opt(:git_runner, Keyword.get(opts, :git_runner))
 
     case HandoffCheck.review_ready_transition_allowed?(
@@ -1586,15 +1593,20 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp present_graphql_key_value?(nil), do: false
   defp present_graphql_key_value?(_value), do: true
 
-  defp resolve_issue_state_name(issue_id, state_id, linear_client) do
+  defp resolve_issue_state_context(issue_id, state_id, linear_client) do
     with {:ok, response} <- linear_client.(@symphony_handoff_check_state_query, %{"issueId" => issue_id}, []),
-         states when is_list(states) <- get_in(response, ["data", "issue", "team", "states", "nodes"]),
+         issue when is_map(issue) <- get_in(response, ["data", "issue"]),
+         states when is_list(states) <- get_in(issue, ["team", "states", "nodes"]),
          state when is_map(state) <-
            Enum.find(states, fn state ->
              get_argument(state, "id") == state_id
            end),
          state_name when is_binary(state_name) <- get_argument(state, "name") do
-      {:ok, state_name}
+      {:ok,
+       %{
+         state_name: state_name,
+         issue_description: get_argument(issue, "description")
+       }}
     else
       {:error, reason} ->
         {:error, reason}
