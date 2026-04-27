@@ -262,8 +262,10 @@ defmodule SymphonyElixir.ValidationGate do
   def requirements(classes, gate) do
     with {:ok, canonical_classes} <- canonical_change_classes(classes),
          {:ok, canonical_gate} <- canonical_gate(gate) do
+      requirement_classes = requirement_change_classes(canonical_classes)
+
       required_checks =
-        canonical_classes
+        requirement_classes
         |> Enum.flat_map(&get_in(@requirements, [&1, canonical_gate]))
         |> Enum.uniq()
         |> sort_checks()
@@ -277,6 +279,16 @@ defmodule SymphonyElixir.ValidationGate do
          "required_checks" => required_checks,
          "remote_finalization_allowed" => canonical_gate == "final" and final_gate_required?(canonical_classes)
        }}
+    end
+  end
+
+  # When docs edits are bundled with executable/runtime changes, the stronger class
+  # checks are authoritative. `docs_review` remains mandatory for docs-only tickets.
+  defp requirement_change_classes(canonical_classes) when is_list(canonical_classes) do
+    if Enum.any?(canonical_classes, &(&1 != "docs_only")) do
+      Enum.reject(canonical_classes, &(&1 == "docs_only"))
+    else
+      canonical_classes
     end
   end
 

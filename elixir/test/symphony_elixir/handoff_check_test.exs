@@ -971,6 +971,55 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "acceptance matrix item `AM-1` has multiple proof mapping entries; exactly one is required" in manifest["missing_items"]
   end
 
+  test "evaluate accepts legacy proof aliases and selector-based test mappings" do
+    alias_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Legacy alias path | Selector proof is covered by checked targeted tests | artifact/test | test_apply_chat_add_source_close_policy_matrix[seed-presence-0] | positive proof |
+    """
+
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `poetry run pytest tests/unit/test_team_master_ui.py -q`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `selector-proof.log` -> targeted selector coverage evidence
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:test_apply_chat_add_source_close_policy_matrix[seed-presence-0]`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Legacy aliases are normalized.
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-619",
+               labels: ["mode:plan", "verification:generic"],
+               issue_description: alias_description,
+               attachments: [%{"title" => "selector-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert manifest["missing_items"] == []
+  end
+
   test "evaluate enforces artifact and validation mapping types plus semantic execution checks" do
     artifact_description = """
     ## Acceptance Matrix

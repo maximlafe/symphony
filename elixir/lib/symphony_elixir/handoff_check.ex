@@ -21,12 +21,20 @@ defmodule SymphonyElixir.HandoffCheck do
   @machine_readable_extensions MapSet.new([".csv", ".json", ".jsonl", ".md", ".ndjson", ".tsv"])
   @runtime_extensions MapSet.new([".json", ".log", ".md", ".txt"])
   @matrix_proof_types MapSet.new(["test", "artifact", "runtime_smoke"])
+  @matrix_proof_type_aliases %{
+    "artifact_test" => "test",
+    "runtime" => "runtime_smoke",
+    "smoke" => "runtime_smoke"
+  }
   @matrix_semantics MapSet.new(["surface_exists", "run_executed", "runtime_smoke"])
   @matrix_semantic_aliases %{
+    "positive_proof" => "run_executed",
+    "precedence_proof" => "run_executed",
     "negative_proof" => "run_executed",
     "regression_guard" => "run_executed",
     "side_effect_guard" => "run_executed"
   }
+  @fallback_test_validation_labels MapSet.new(["targeted tests", "repo validation"])
   @default_handoff_phase "review"
   @supported_handoff_phases ["review", "done"]
   @default_matrix_required_before "review"
@@ -661,9 +669,16 @@ defmodule SymphonyElixir.HandoffCheck do
       |> strip_wrapping_backticks()
       |> String.downcase()
       |> String.trim()
-      |> String.replace(~r/[\s-]+/, "_")
+      |> String.replace(~r/[\s\-\/]+/, "_")
 
-    if MapSet.member?(@matrix_proof_types, normalized), do: normalized
+    canonical_type =
+      if MapSet.member?(@matrix_proof_types, normalized) do
+        normalized
+      else
+        Map.get(@matrix_proof_type_aliases, normalized)
+      end
+
+    if MapSet.member?(@matrix_proof_types, canonical_type), do: canonical_type
   end
 
   defp normalize_matrix_semantic(value) when is_binary(value) do
@@ -940,7 +955,7 @@ defmodule SymphonyElixir.HandoffCheck do
        ) do
     case reference_type do
       type when type in ["validation", "runtime"] ->
-        validation_match = find_checked_validation_item(validation_items, reference_value)
+        validation_match = find_checked_validation_item(validation_items, reference_value, matrix_type)
 
         validate_validation_match(
           validation_match,
@@ -957,11 +972,73 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp find_checked_validation_item(validation_items, reference_value) do
-    Enum.find(validation_items, fn item ->
-      item["checked"] == true and String.downcase(to_string(item["label"])) == String.downcase(to_string(reference_value))
-    end)
+  defp find_checked_validation_item(validation_items, reference_value, matrix_type) do
+    normalized_reference = normalize_validation_reference(reference_value)
+
+    exact_label_match =
+      Enum.find(validation_items, fn item ->
+        item["checked"] == true and normalize_validation_reference(item["label"]) == normalized_reference
+      end)
+
+    exact_label_match ||
+      command_match_or_test_fallback(validation_items, normalized_reference, matrix_type)
   end
+
+  defp command_match_or_test_fallback(validation_items, normalized_reference, matrix_type)
+       when is_binary(normalized_reference) do
+    command_match =
+      Enum.find(validation_items, fn item ->
+        item["checked"] == true and command_contains_reference?(item["command"], normalized_reference)
+      end)
+
+    if command_match do
+      command_match
+    else
+      maybe_test_reference_fallback(validation_items, normalized_reference, matrix_type)
+    end
+  end
+
+  defp command_match_or_test_fallback(_validation_items, _normalized_reference, _matrix_type), do: nil
+
+  defp maybe_test_reference_fallback(validation_items, normalized_reference, "test")
+       when is_binary(normalized_reference) do
+    if test_selector_reference?(normalized_reference) do
+      Enum.find(validation_items, fn item ->
+        item["checked"] == true and
+          MapSet.member?(@fallback_test_validation_labels, normalize_validation_reference(item["label"])) and
+          not surface_only_command?(item["command"])
+      end)
+    end
+  end
+
+  defp maybe_test_reference_fallback(_validation_items, _normalized_reference, _matrix_type), do: nil
+
+  defp normalize_validation_reference(value) when is_binary(value) do
+    value
+    |> strip_wrapping_backticks()
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_validation_reference(value), do: normalize_validation_reference(to_string(value))
+
+  defp command_contains_reference?(command, normalized_reference)
+       when is_binary(command) and is_binary(normalized_reference) and normalized_reference != "" do
+    command
+    |> String.downcase()
+    |> String.contains?(normalized_reference)
+  end
+
+  defp command_contains_reference?(_command, _normalized_reference), do: false
+
+  defp test_selector_reference?(normalized_reference) when is_binary(normalized_reference) do
+    String.contains?(normalized_reference, "::") or
+      String.contains?(normalized_reference, "[") or
+      String.starts_with?(normalized_reference, "test_") or
+      String.contains?(normalized_reference, "test_")
+  end
+
+  defp test_selector_reference?(_normalized_reference), do: false
 
   defp validate_validation_match(nil, reference_value, matrix_item_id, _matrix_type, _matrix_semantic, errors, signals) do
     {errors ++ ["acceptance matrix item `#{matrix_item_id}` maps to validation `#{reference_value}` that is not checked"], signals}
