@@ -23,6 +23,21 @@ For the LET workflow, "finished" means one of:
 - Separate authoring from verification before any completion claim.
 - Treat missing auth, tooling, DB, runtime, deploy, or external service access as a capability question that must be proven by repo-owned preflight before blocking.
 
+## Acceptance Contract Discipline
+
+- When the issue contains `Acceptance Matrix`, treat `Acceptance Matrix` + workpad `Proof Mapping` + Linear attachments as one handoff contract surface.
+- Keep matrix item IDs stable during execution; do not rename or reuse IDs for different scenarios.
+- Use canonical matrix values in execution artifacts:
+  - `proof_type` in (`test`, `artifact`, `runtime_smoke`);
+  - `proof_semantic` in (`surface_exists`, `run_executed`, `runtime_smoke`);
+  - `required_before=review` for proof required before `In Review`, `required_before=done` only for post-merge/runtime proof.
+- Legacy proof semantics (`negative proof`, `regression guard`, `side-effect guard`) are backward-compatibility only; do not introduce them in new or rewritten specs/workpads.
+- Before handoff, ensure every required matrix item has exactly one checked `Proof Mapping` entry and that mapping type matches matrix `proof_type`.
+- For `artifact` mappings, ensure both are true:
+  - matching checked `uploaded attachment` entry exists in `Artifacts`;
+  - matching attachment exists in Linear issue attachments (same title).
+- Do not move the issue to `In Review` if matrix/mapping/artifact surface is stale or internally inconsistent.
+
 ## Required Execution Flow
 
 1. Resolve the current issue, state, repo, branch, PR, checks, review state, and recent related work before editing.
@@ -34,12 +49,14 @@ For the LET workflow, "finished" means one of:
 7. Add or update regression coverage or another proof that directly covers the changed behavior.
 8. Run `make symphony-preflight` and the repo/task acceptance preflight before declaring auth, env, DB, runtime, deploy, or tooling blockers.
 9. Run the validation matrix required by the workflow, the repo instructions, and the issue acceptance matrix.
-10. Publish or update the PR only after the PR body is complete enough to satisfy the repo PR contract.
-11. Triage CI, PR review feedback, and mergeability until no actionable feedback remains or a real blocker is proven.
-12. Do not move to `In Review` until handoff evidence is complete and true before the state transition.
-13. Do not merge directly unless the workflow explicitly routes the issue into an autonomous merge path; use the repo land flow when merging is allowed.
-14. After merge or deployment, verify the landed/released state before claiming completion.
-15. Update Linear in Russian with the final evidence and state.
+10. If `Acceptance Matrix` is present, run a pre-handoff consistency pass on `Proof Mapping` and `Artifacts` before final handoff validation.
+11. Preserve strict 1:1 mapping for required matrix items and resolve drift at source (matrix IDs, mapping references, attachment titles) before handoff.
+12. Publish or update the PR only after the PR body is complete enough to satisfy the repo PR contract.
+13. Triage CI, PR review feedback, and mergeability until no actionable feedback remains or a real blocker is proven.
+14. Do not move to `In Review` until handoff evidence is complete and true before the state transition.
+15. Do not merge directly unless the workflow explicitly routes the issue into an autonomous merge path; use the repo land flow when merging is allowed.
+16. After merge or deployment, verify the landed/released state before claiming completion.
+17. Update Linear in Russian with the final evidence and state.
 
 ## Capability Gate
 
@@ -86,6 +103,8 @@ Before handing off or closing:
 
 - required preflight passed or the missing capability is recorded as a blocker;
 - task acceptance criteria and acceptance matrix are mapped to checked proof;
+- acceptance matrix uses canonical `proof_type`/`proof_semantic` values and `required_before` is respected;
+- every required matrix item has exactly one checked `Proof Mapping` entry of the correct type;
 - required artifacts are uploaded or explicitly explained as impossible;
 - PR checks and review feedback are resolved when PR handoff is in scope;
 - the final state claim matches the workflow state.

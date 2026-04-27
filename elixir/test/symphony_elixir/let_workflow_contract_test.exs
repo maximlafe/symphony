@@ -134,6 +134,12 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert execute_skill =~ "Run `make symphony-preflight`"
     assert execute_skill =~ "repo/task acceptance preflight"
     assert execute_skill =~ "Do not use CI green as a substitute"
+    assert execute_skill =~ "Acceptance Matrix"
+    assert execute_skill =~ "Proof Mapping"
+    assert execute_skill =~ "proof_type"
+    assert execute_skill =~ "proof_semantic"
+    assert execute_skill =~ "required_before=review"
+    assert execute_skill =~ "exactly one checked `Proof Mapping` entry"
     assert execute_skill =~ "Update Linear in Russian"
     assert execute_skill =~ "Blocked"
   end
