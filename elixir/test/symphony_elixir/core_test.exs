@@ -4610,7 +4610,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "stale workspace head blocks dispatch before the worker starts" do
+  test "stale workspace head behind expected commit auto-reconciles before dispatch" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -4639,8 +4639,8 @@ defmodule SymphonyElixir.CoreTest do
         %Issue{
           id: issue_id,
           identifier: issue_identifier,
-          title: "Block stale workspace head",
-          description: "Do not dispatch stale runtime workspaces",
+          title: "Auto-reconcile stale workspace head",
+          description: "Behind runtime head should fast-forward before dispatch",
           state: "In Progress",
           url: "https://example.org/issues/#{issue_identifier}",
           labels: []
@@ -4680,25 +4680,30 @@ defmodule SymphonyElixir.CoreTest do
 
       send(pid, {:retry_issue, issue_id, retry_token})
 
-      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
-      assert blocker_body =~ "selected_rule: `stale_workspace_head`"
-      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
-      assert blocker_body =~ "reason=behind"
-      assert blocker_body =~ "stale_workspace_head"
-      assert blocker_body =~ runtime_head_sha
-      assert blocker_body =~ expected_head_sha
-      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
-
-      final_state =
+      state =
         wait_for_orchestrator_state(pid, fn state ->
-          state.running == %{} and
-            not Map.has_key?(state.retry_attempts, issue_id) and
-            not MapSet.member?(state.claimed, issue_id)
+          match?(
+            %{
+              runtime_head_sha: ^expected_head_sha,
+              expected_head_sha: ^expected_head_sha
+            },
+            Map.get(state.running, issue_id)
+          )
         end)
 
-      assert final_state.running == %{}
-      refute Map.has_key?(final_state.retry_attempts, issue_id)
-      refute MapSet.member?(final_state.claimed, issue_id)
+      assert %{
+               ^issue_id => %{
+                 pid: worker_pid,
+                 runtime_head_sha: ^expected_head_sha,
+                 expected_head_sha: ^expected_head_sha
+               }
+             } = state.running
+
+      refute_received {:memory_tracker_comment, ^issue_id, _comment}
+      refute_received {:memory_tracker_state_update, ^issue_id, "Blocked"}
+      refute runtime_head_sha == expected_head_sha
+
+      Process.exit(worker_pid, :kill)
     after
       restore_app_env(:memory_tracker_issues, previous_memory_issues)
       restore_app_env(:memory_tracker_recipient, previous_recipient)
@@ -4975,6 +4980,109 @@ defmodule SymphonyElixir.CoreTest do
             identifier: issue_identifier,
             trace_id: trace_id,
             error: "retry match workspace head"
+          }
+        })
+      end)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(
+            %{
+              runtime_head_sha: ^matching_head_sha,
+              expected_head_sha: ^matching_head_sha
+            },
+            Map.get(state.running, issue_id)
+          )
+        end)
+
+      assert %{
+               ^issue_id => %{
+                 pid: worker_pid,
+                 runtime_head_sha: ^matching_head_sha,
+                 expected_head_sha: ^matching_head_sha
+               }
+             } = state.running
+
+      refute_received {:memory_tracker_state_update, ^issue_id, "Blocked"}
+      refute_received {:memory_tracker_comment, ^issue_id, _comment}
+
+      Process.exit(worker_pid, :kill)
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "dispatch uses current checked-out branch when working branch marker is stale" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-stale-marker-head-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-stale-marker-head"
+    issue_identifier = "MT-STALE-MARKER-HEAD"
+    trace_id = "trace-stale-marker-head"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: issue_id,
+          identifier: issue_identifier,
+          title: "Ignore stale branch marker",
+          description: "Current checked-out branch should win over stale marker",
+          state: "In Progress",
+          url: "https://example.org/issues/#{issue_identifier}",
+          labels: []
+        }
+      ])
+
+      matching_head_sha =
+        create_workspace_with_stale_branch_marker!(
+          workspace_root,
+          issue_identifier,
+          "merge/current-feature",
+          "main"
+        )
+
+      orchestrator_name = Module.concat(__MODULE__, :StaleMarkerHeadOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      retry_token = make_ref()
+
+      :sys.replace_state(pid, fn _ ->
+        base_dispatch_state("primary")
+        |> Map.put(:retry_attempts, %{
+          issue_id => %{
+            attempt: 1,
+            timer_ref: nil,
+            retry_token: retry_token,
+            due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+            identifier: issue_identifier,
+            trace_id: trace_id,
+            error: "retry stale marker workspace head"
           }
         })
       end)
@@ -5569,6 +5677,10 @@ defmodule SymphonyElixir.CoreTest do
     git_ok!(workspace, ["commit", "-m", "runtime diverged head"])
     runtime_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
 
+    # Keep this fixture detached so stale-head tests continue to exercise marker-based
+    # expected-head resolution paths.
+    git_ok!(workspace, ["checkout", runtime_head_sha])
+
     File.write!(Path.join(workspace, ".symphony-working-branch"), execution_branch <> "\n")
 
     {runtime_head_sha, expected_head_sha}
@@ -5582,14 +5694,37 @@ defmodule SymphonyElixir.CoreTest do
     runtime_head_sha
   end
 
+  defp create_workspace_with_stale_branch_marker!(
+         workspace_root,
+         issue_identifier,
+         current_branch,
+         stale_marker_branch
+       ) do
+    workspace = init_workspace_repo!(workspace_root, issue_identifier)
+
+    git_ok!(workspace, ["checkout", "-b", current_branch])
+    File.write!(Path.join(workspace, "tracked.txt"), "current feature head\n")
+    git_ok!(workspace, ["add", "tracked.txt"])
+    git_ok!(workspace, ["commit", "-m", "current feature head"])
+    runtime_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
+
+    File.write!(Path.join(workspace, ".symphony-working-branch"), stale_marker_branch <> "\n")
+    runtime_head_sha
+  end
+
   defp create_workspace_with_unknown_expected_head!(
          workspace_root,
          issue_identifier,
          execution_branch
        ) do
     workspace = init_workspace_repo!(workspace_root, issue_identifier)
+    runtime_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
+
+    # Keep detached so expected-head resolution falls back to the explicit marker branch.
+    git_ok!(workspace, ["checkout", runtime_head_sha])
+
     File.write!(Path.join(workspace, ".symphony-working-branch"), execution_branch <> "\n")
-    git_output!(workspace, ["rev-parse", "HEAD"])
+    runtime_head_sha
   end
 
   defp create_rework_reconcilable_workspace!(workspace_root, issue_identifier, base_branch) do

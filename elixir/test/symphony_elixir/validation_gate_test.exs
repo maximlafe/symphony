@@ -76,7 +76,6 @@ defmodule SymphonyElixir.ValidationGateTest do
              "cheap_gate",
              "targeted_tests",
              "runtime_smoke",
-             "docs_review",
              "repo_validation"
            ]
   end
