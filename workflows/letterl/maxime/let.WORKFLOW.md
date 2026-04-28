@@ -1075,6 +1075,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 - [ ] cheap gate: `<same-HEAD targeted proof>`
 - [ ] red proof: `<command>` (обязательно при `delivery:tdd`; когда обязательно, не помечай `n/a`)
 - [ ] targeted tests: `<command>`
+- [ ] am-<id>: `<command>` (для каждого required `Acceptance Matrix` item с `proof_type=test` и `proof_semantic=run_executed`; label должен быть в lowercase, например `am-539-1`)
 - [ ] runtime smoke: `<command>` (для runtime/infra/workflow-contract/handoff изменений; когда обязательно, не помечай `n/a`)
 - [ ] stateful proof: `<command>` (для DB/schema/stateful изменений)
 - [ ] ui runtime proof: `<command>` (для hosted UI/frontend изменений)
@@ -1089,6 +1090,8 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Proof Mapping
 
 - [ ] `<AM-id>` -> `validation:<label>` | `artifact:<title>` | `runtime:<label>`
+- Для required `test/run_executed` используй канонический mapping: checked validation label `am-<am-id-lowercase>` и ссылка `validation:am-<am-id-lowercase>` (без prose-описаний после `validation:`).
+- Для `runtime_smoke` используй `validation:runtime smoke`.
 
 ### Checkpoint
 

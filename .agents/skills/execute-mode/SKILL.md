@@ -33,6 +33,9 @@ For the LET workflow, "finished" means one of:
   - `required_before=review` for proof required before `In Review`, `required_before=done` only for post-merge/runtime proof.
 - Legacy proof semantics (`negative proof`, `regression guard`, `side-effect guard`) are backward-compatibility only; do not introduce them in new or rewritten specs/workpads.
 - Before handoff, ensure every required matrix item has exactly one checked `Proof Mapping` entry and that mapping type matches matrix `proof_type`.
+- For required `test` + `run_executed` items, use canonical AM labels in `Validation`: add checked `am-<am-id-lowercase>: <command>` and map with `validation:am-<am-id-lowercase>`.
+- Do not use prose references after `validation:` (for example `validation:... @let_... ...`) because verifier cannot resolve them deterministically.
+- For `runtime_smoke` items, use `validation:runtime smoke` in `Proof Mapping`.
 - For `artifact` mappings, ensure both are true:
   - matching checked `uploaded attachment` entry exists in `Artifacts`;
   - matching attachment exists in Linear issue attachments (same title).
