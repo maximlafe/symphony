@@ -213,6 +213,124 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert_receive {:tracker_state_update, "issue-success", "In Review"}
   end
 
+  test "run/3 preserves issue description across struct/map issues and accepts git runner override" do
+    checkpoint = %{
+      "head" => "head-description-coverage",
+      "open_pr" => %{"number" => 42, "url" => "https://github.com/acme/symphony/pull/42"}
+    }
+
+    git_runner = fn _args, _opts ->
+      {:ok, ""}
+    end
+
+    struct_issue = %Issue{
+      id: "issue-struct-description",
+      identifier: "LET-462-DESC-STRUCT",
+      state: "In Progress",
+      description: "Struct issue description"
+    }
+
+    struct_workspace = create_workspace!(struct_issue.identifier)
+
+    struct_executor = fn
+      "sync_workpad", _args, _opts ->
+        tool_success(%{"comment_id" => "workpad-comment"})
+
+      "github_wait_for_checks", _args, _opts ->
+        tool_success(%{
+          "all_green" => true,
+          "pending_checks" => [],
+          "failed_checks" => [],
+          "checks" => []
+        })
+
+      "github_pr_snapshot", _args, _opts ->
+        tool_success(%{
+          "url" => "https://github.com/acme/symphony/pull/42",
+          "state" => "OPEN",
+          "has_pending_checks" => false,
+          "has_actionable_feedback" => false
+        })
+
+      "symphony_handoff_check", _args, _opts ->
+        maybe_write_contract_lock(struct_workspace, struct_issue.id, "test-contract-revision")
+
+        tool_success(%{
+          "manifest" => %{
+            "passed" => true,
+            "summary" => "final gate is fresh",
+            "contract_revision" => "test-contract-revision",
+            "issue" => %{"id" => struct_issue.id},
+            "manifest_path" => ".symphony/verification/handoff-manifest.json"
+          }
+        })
+    end
+
+    assert {:ok, _payload} =
+             ControllerFinalizer.run(
+               struct_issue,
+               checkpoint,
+               repo: "acme/symphony",
+               tracker_module: TrackerStub,
+               tool_executor: struct_executor,
+               git_runner: git_runner
+             )
+
+    map_issue = %{
+      "id" => "issue-map-description",
+      "identifier" => "LET-462-DESC-MAP",
+      "state" => "In Progress",
+      "description" => "Map issue description",
+      "labels" => []
+    }
+
+    map_workspace = create_workspace!(map_issue["identifier"])
+
+    map_executor = fn
+      "sync_workpad", _args, _opts ->
+        tool_success(%{"comment_id" => "workpad-comment"})
+
+      "github_wait_for_checks", _args, _opts ->
+        tool_success(%{
+          "all_green" => true,
+          "pending_checks" => [],
+          "failed_checks" => [],
+          "checks" => []
+        })
+
+      "github_pr_snapshot", _args, _opts ->
+        tool_success(%{
+          "url" => "https://github.com/acme/symphony/pull/42",
+          "state" => "OPEN",
+          "has_pending_checks" => false,
+          "has_actionable_feedback" => false
+        })
+
+      "symphony_handoff_check", _args, _opts ->
+        maybe_write_contract_lock(map_workspace, map_issue["id"], "test-contract-revision")
+
+        tool_success(%{
+          "manifest" => %{
+            "passed" => true,
+            "summary" => "final gate is fresh",
+            "contract_revision" => "test-contract-revision",
+            "issue" => %{"id" => map_issue["id"]},
+            "manifest_path" => ".symphony/verification/handoff-manifest.json"
+          }
+        })
+    end
+
+    assert {:ok, _payload} =
+             ControllerFinalizer.run(
+               map_issue,
+               checkpoint,
+               repo: "acme/symphony",
+               tracker_module: TrackerStub,
+               tool_executor: map_executor,
+               git_runner: git_runner
+             )
+  end
+
   test "run/3 returns fallback when controller context cannot be built" do
     issue = %Issue{id: "issue-context", identifier: "LET-462-MISSING-WORKSPACE", state: "In Progress"}
 

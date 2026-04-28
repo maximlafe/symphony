@@ -304,6 +304,36 @@ defmodule SymphonyElixir.WorkspaceCapabilityTest do
       assert details.command_class == :runtime
       assert details.approval_policy == "reject"
       assert "never" in details.supported_approval_policies
+
+      assert {:error, {:workspace_capability_rejected, empty_details}} =
+               WorkspaceCapability.prelaunch_gate(
+                 workspace,
+                 tool_probe: &always_available_tool/1,
+                 approval_policy: "   "
+               )
+
+      assert empty_details.reason == :unsupported_approval_policy
+      assert empty_details.approval_policy == "(empty)"
+
+      assert {:error, {:workspace_capability_rejected, unsupported_details}} =
+               WorkspaceCapability.prelaunch_gate(
+                 workspace,
+                 tool_probe: &always_available_tool/1,
+                 approval_policy: "reject"
+               )
+
+      assert unsupported_details.reason == :unsupported_approval_policy
+      assert unsupported_details.approval_policy == "reject"
+
+      assert {:error, {:workspace_capability_rejected, non_binary_details}} =
+               WorkspaceCapability.prelaunch_gate(
+                 workspace,
+                 tool_probe: &always_available_tool/1,
+                 approval_policy: 123
+               )
+
+      assert non_binary_details.reason == :unsupported_approval_policy
+      assert non_binary_details.approval_policy == "123"
     after
       File.rm_rf(test_root)
     end
