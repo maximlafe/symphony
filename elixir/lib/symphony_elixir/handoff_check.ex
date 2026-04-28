@@ -82,6 +82,14 @@ defmodule SymphonyElixir.HandoffCheck do
     acceptance_contract([], [])
   end
 
+  @spec acceptance_matrix_parse_errors(String.t() | nil) :: [String.t()]
+  def acceptance_matrix_parse_errors(issue_description) when is_binary(issue_description) do
+    {_items, errors} = parse_acceptance_matrix(issue_description)
+    errors
+  end
+
+  def acceptance_matrix_parse_errors(_issue_description), do: []
+
   @spec write_acceptance_contract_lock(Path.t(), map(), keyword()) :: {:ok, Path.t()} | {:error, term()}
   def write_acceptance_contract_lock(workspace, issue, opts \\ [])
 
@@ -92,7 +100,10 @@ defmodule SymphonyElixir.HandoffCheck do
     issue_id = issue_field(issue, [:id, "id"])
     issue_identifier = issue_field(issue, [:identifier, "identifier"])
     locked_at = Keyword.get(opts, :locked_at, DateTime.utc_now())
-    acceptance_contract = acceptance_contract_from_issue_description(issue_description)
+    {acceptance_matrix_items, acceptance_matrix_errors} = parse_acceptance_matrix(issue_description)
+    {required_capabilities, _capability_errors} = AcceptanceCapability.required_capabilities(issue_description)
+
+    acceptance_contract = acceptance_contract(acceptance_matrix_items, required_capabilities)
 
     lock_payload = %{
       "version" => 1,
@@ -108,9 +119,22 @@ defmodule SymphonyElixir.HandoffCheck do
     lock_path =
       Keyword.get(opts, :path, Path.join(Path.expand(workspace), @default_contract_lock_path))
 
-    with :ok <- File.mkdir_p(Path.dirname(lock_path)),
-         :ok <- File.write(lock_path, Jason.encode!(lock_payload, pretty: true)) do
-      {:ok, lock_path}
+    case acceptance_matrix_errors do
+      [] ->
+        with :ok <- File.mkdir_p(Path.dirname(lock_path)),
+             :ok <- File.write(lock_path, Jason.encode!(lock_payload, pretty: true)) do
+          {:ok, lock_path}
+        end
+
+      errors ->
+        {:error,
+         {:acceptance_matrix_parse_error,
+          %{
+            "reason" => "acceptance matrix section is malformed and cannot be frozen into contract lock",
+            "issue_id" => issue_id,
+            "issue_identifier" => issue_identifier,
+            "errors" => errors
+          }}}
     end
   end
 
@@ -874,11 +898,11 @@ defmodule SymphonyElixir.HandoffCheck do
   defp parse_acceptance_matrix(issue_description) when is_binary(issue_description) do
     section_body = markdown_h2_section_body(issue_description, "Acceptance Matrix")
 
-    rows =
+    {rows, row_recovery_errors} =
       section_body
       |> String.split(~r/\R/, trim: true)
       |> Enum.map(&String.trim/1)
-      |> Enum.filter(&(String.starts_with?(&1, "|") and String.ends_with?(&1, "|")))
+      |> acceptance_matrix_rows_from_lines()
 
     data_rows =
       rows
@@ -910,10 +934,77 @@ defmodule SymphonyElixir.HandoffCheck do
         {id, _dupes} -> ["acceptance matrix contains duplicate id `#{id}`"]
       end)
 
-    {items, Enum.uniq(row_errors ++ unique_errors)}
+    {items, Enum.uniq(row_recovery_errors ++ row_errors ++ unique_errors)}
   end
 
   defp parse_acceptance_matrix(_issue_description), do: {[], []}
+
+  defp acceptance_matrix_rows_from_lines(lines) when is_list(lines) do
+    {rows, open_row, errors} =
+      Enum.reduce(lines, {[], nil, []}, fn line, {rows, open_row, errors} ->
+        acceptance_matrix_rows_reduce(line, rows, open_row, errors)
+      end)
+
+    case open_row do
+      nil ->
+        {Enum.reverse(rows), Enum.reverse(errors)}
+
+      row when is_binary(row) ->
+        if String.ends_with?(row, "|") do
+          {Enum.reverse([row | rows]), Enum.reverse(errors)}
+        else
+          recovered_errors = ["acceptance matrix row is not terminated: #{row}" | errors]
+          {Enum.reverse(rows), Enum.reverse(recovered_errors)}
+        end
+    end
+  end
+
+  defp acceptance_matrix_rows_reduce(line, rows, nil, errors) do
+    cond do
+      String.starts_with?(line, "|") ->
+        {rows, line, errors}
+
+      String.contains?(line, "|") ->
+        recovered_errors = ["acceptance matrix line is malformed: #{line}" | errors]
+        {rows, nil, recovered_errors}
+
+      true ->
+        {rows, nil, errors}
+    end
+  end
+
+  defp acceptance_matrix_rows_reduce(line, rows, open_row, errors) when is_binary(open_row) do
+    cond do
+      String.ends_with?(open_row, "|") and String.starts_with?(line, "|") ->
+        {[open_row | rows], line, errors}
+
+      String.ends_with?(open_row, "|") ->
+        next_errors =
+          if String.contains?(line, "|"),
+            do: ["acceptance matrix line is malformed: #{line}" | errors],
+            else: errors
+
+        {[open_row | rows], nil, next_errors}
+
+      String.starts_with?(line, "|") and not acceptance_matrix_continuation_fragment?(line) ->
+        next_errors = ["acceptance matrix row is not terminated before next row starts: #{open_row}" | errors]
+        {rows, line, next_errors}
+
+      true ->
+        merged = String.trim_trailing(open_row) <> " " <> line
+        {rows, merged, errors}
+    end
+  end
+
+  defp acceptance_matrix_continuation_fragment?(line) when is_binary(line) do
+    line
+    |> String.trim("|")
+    |> String.split("|")
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> length()
+    |> Kernel.<=(2)
+  end
 
   defp markdown_h2_section_body(markdown, heading) when is_binary(markdown) and is_binary(heading) do
     escaped_heading = Regex.escape(heading)

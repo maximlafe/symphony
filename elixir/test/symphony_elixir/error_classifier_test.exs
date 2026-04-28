@@ -17,6 +17,8 @@ defmodule SymphonyElixir.ErrorClassifierTest do
     assert ErrorClassifier.classify({:workspace_symlink_escape, "/tmp/workspace", "/tmp"}) == :permanent
     assert ErrorClassifier.classify({:workspace_outside_root, "/tmp/workspace", "/tmp"}) == :permanent
     assert ErrorClassifier.classify({:workspace_path_unreadable, "/tmp/workspace", :eacces}) == :permanent
+    reason = {:acceptance_contract_lock_failed, {:acceptance_matrix_parse_error, %{}}}
+    assert ErrorClassifier.classify(reason) == :permanent
 
     assert ErrorClassifier.classify({:workspace_capability_rejected, %{reason: :missing_tool, tool: "rg"}}) ==
              :permanent

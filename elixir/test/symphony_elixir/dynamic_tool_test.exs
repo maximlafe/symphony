@@ -2120,6 +2120,70 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert_received {:issue_update_non_state, %{"id" => "LET-416", "title" => "keep metadata path"}}
   end
 
+  test "linear_graphql blocks issueUpdate(description) when acceptance matrix rows are malformed" do
+    malformed_description = """
+    ## Проблема
+
+    Регрессия по contract freeze.
+
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | malformed | malformed rows must fail before write | test | mix test
+    """
+
+    blocked =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+          "variables" => %{"id" => "LET-652", "input" => %{"description" => malformed_description}}
+        },
+        linear_client: fn _query, _variables, _opts ->
+          flunk("issueUpdate should not execute when Acceptance Matrix rows are malformed")
+        end
+      )
+
+    assert blocked["success"] == false
+    payload = decode_tool_text(blocked)
+    assert payload["error"]["message"] =~ "issueUpdate(description) is blocked"
+    assert payload["error"]["details"]["reason_code"] == "acceptance_matrix_parse_error"
+    assert payload["error"]["details"]["issue_id"] == "LET-652"
+
+    assert Enum.any?(
+             payload["error"]["details"]["acceptance_matrix_errors"],
+             &String.contains?(&1, "not terminated")
+           )
+  end
+
+  test "linear_graphql allows issueUpdate(description) when acceptance matrix rows are valid" do
+    valid_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | healthy | write guard permits valid matrix | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    """
+
+    allowed =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+          "variables" => %{"id" => "LET-652", "input" => %{"description" => valid_description}}
+        },
+        linear_client: fn query, variables, _opts ->
+          assert query =~ "issueUpdate"
+          send(self(), {:description_issue_update, variables})
+          {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+        end
+      )
+
+    assert allowed["success"] == true
+    assert_received {:description_issue_update, %{"id" => "LET-652", "input" => %{"description" => ^valid_description}}}
+  end
+
   test "linear_graphql review-ready guard works without an injected git_runner" do
     workspace = init_git_repo!()
     workpad_path = write_tmp_file(workspace, "workpad.md", "unchanged")
