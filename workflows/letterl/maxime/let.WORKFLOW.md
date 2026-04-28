@@ -786,7 +786,7 @@ Run `make symphony-preflight` once per run before treating auth/env/tooling gaps
 
 ## Validation matrix
 
-- Backend-only changes: run targeted pytest for the touched modules and at least `make test-unit`.
+- Backend-only changes: run targeted tests for the touched modules and at least `make symphony-validate`.
 - Stateful, `task_v3`, database, or schema changes: run targeted pytest, `poetry run pytest tests/integration/test_task_v3_stateful_repeatability.py -v -m integration`, and `poetry run alembic upgrade head`.
 - Hosted UI or frontend changes: run `make team-master-ui-e2e`; if the change is app-touching, use the `launch-app` skill, verify `/health` and `/api/dashboard`, and capture runtime evidence.
 - Repo-wide infra or runtime changes: run `make test` plus the relevant targeted smoke checks.
@@ -1079,7 +1079,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 - [ ] stateful proof: `<command>` (для DB/schema/stateful изменений)
 - [ ] ui runtime proof: `<command>` (для hosted UI/frontend изменений)
 - [ ] visual artifact: `<artifact title>` (для hosted UI/frontend изменений)
-- [ ] repo validation: `<repo-owned final validation command>`
+- [ ] repo validation: `make symphony-validate`
 
 ### Артефакты
 

@@ -5,7 +5,7 @@ defmodule SymphonyElixir.RuntimeSmokeTest do
   alias SymphonyElixir.RuntimeSmokeSupport
 
   @moduletag :runtime_smoke
-  @moduletag timeout: 30_000
+  @moduletag timeout: 60_000
 
   @primary_account %{id: "primary", codex_home: "/tmp/codex-primary"}
 

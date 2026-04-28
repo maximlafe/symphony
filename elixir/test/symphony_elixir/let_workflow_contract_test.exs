@@ -56,6 +56,15 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "fail closed into `Spec Prep` and treat it as the legacy `plan-mode` path."
   end
 
+  test "LET workflow uses symphony validation target for repo validation contract" do
+    assert {:ok, %{prompt: prompt}} = Workflow.load(@let_workflow_path)
+
+    assert prompt =~ "Backend-only changes: run targeted tests for the touched modules and at least `make symphony-validate`."
+    assert prompt =~ "- [ ] repo validation: `make symphony-validate`"
+    refute prompt =~ "make test-unit"
+    refute prompt =~ "<repo-owned final validation command>"
+  end
+
   test "default workflow documents the same stage-aware cost profile contract" do
     assert {:ok, %{config: config, prompt: prompt}} = Workflow.load(@default_workflow_path)
 
