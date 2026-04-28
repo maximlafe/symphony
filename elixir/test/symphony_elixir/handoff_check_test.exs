@@ -263,6 +263,30 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert Enum.map(get_in(contract, ["payload", "acceptance_matrix"]), & &1["id"]) == ["AM-1", "AM-2"]
   end
 
+  test "acceptance matrix parser reports malformed table fragments" do
+    description = """
+    ## Acceptance Matrix
+
+    orphan | fragment
+    prose without table delimiters
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+
+    | -- | -- | -- | -- | -- | -- |
+    dangling | fragment
+    plain prose outside the table
+    | AM-1 | unterminated row | parser reports it | test | mix test
+    | AM-2 | next row | forces unterminated error | test | mix test | run_executed |
+    trailing prose outside the table
+    """
+
+    errors = HandoffCheck.acceptance_matrix_parse_errors(description)
+
+    assert HandoffCheck.acceptance_matrix_parse_errors(nil) == []
+    assert Enum.any?(errors, &String.contains?(&1, "line is malformed: orphan | fragment"))
+    assert Enum.any?(errors, &String.contains?(&1, "line is malformed: dangling | fragment"))
+    assert Enum.any?(errors, &String.contains?(&1, "not terminated before next row starts"))
+  end
+
   test "acceptance contract helpers handle invalid inputs and lock edge cases" do
     assert is_binary(HandoffCheck.acceptance_contract_from_issue_description(nil)["revision"])
     assert {:error, :invalid_contract_lock_input} = HandoffCheck.write_acceptance_contract_lock(nil, %{}, [])

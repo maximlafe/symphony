@@ -959,8 +959,6 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp acceptance_matrix_rows_reduce("", rows, open_row, errors), do: {rows, open_row, errors}
-
   defp acceptance_matrix_rows_reduce(line, rows, nil, errors) do
     cond do
       String.starts_with?(line, "|") ->

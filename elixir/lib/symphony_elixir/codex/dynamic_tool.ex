@@ -1405,8 +1405,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp maybe_guard_issue_description_update(_query, _variables), do: :ok
-
   defp maybe_guard_acceptance_matrix_description(description, issue_id) when is_binary(description) do
     if Regex.match?(~r/(?:^|\n)##\s+Acceptance Matrix\b/m, description) do
       case HandoffCheck.acceptance_matrix_parse_errors(description) do
@@ -1436,13 +1434,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     issue_update_description_from_literal(query)
   end
 
-  defp issue_update_description(_query, _variables), do: nil
-
   defp issue_update_description_from_variables(%{} = variables) do
     graphql_map_find_string_value_by_key(variables, "description")
   end
-
-  defp issue_update_description_from_variables(_variables), do: nil
 
   defp issue_update_description_from_literal(query) when is_binary(query) do
     case Regex.run(~r/\bissueUpdate\s*\([^)]*\bdescription\s*:\s*"((?:[^"\\]|\\.)*)"/s, query, capture: :all_but_first) do
@@ -1453,8 +1447,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         nil
     end
   end
-
-  defp issue_update_description_from_literal(_query), do: nil
 
   defp decode_graphql_string_literal(value) when is_binary(value) do
     case Jason.decode("\"#{value}\"") do
@@ -1469,8 +1461,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp issue_update_query?(query) when is_binary(query) do
     Regex.match?(~r/\bissueUpdate\s*\(/, query)
   end
-
-  defp issue_update_query?(_query), do: false
 
   defp review_ready_transition_guard_mode(query, variables, state_id, issue_id) do
     cond do
@@ -1673,15 +1663,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp graphql_map_find_string_value_by_key(%{} = value, wanted_key) when is_binary(wanted_key) do
     Enum.find_value(value, fn {map_key, nested_value} ->
-      key =
-        cond do
-          is_binary(map_key) -> map_key
-          is_atom(map_key) -> Atom.to_string(map_key)
-          true -> nil
-        end
+      key = graphql_map_key_to_string(map_key)
 
       cond do
-        is_binary(key) and key == wanted_key and is_binary(nested_value) and String.trim(nested_value) != "" ->
+        key == wanted_key and non_blank_string?(nested_value) ->
           nested_value
 
         is_map(nested_value) or is_list(nested_value) ->
@@ -1699,6 +1684,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp graphql_map_find_string_value_by_key(_value, _wanted_key), do: nil
+
+  defp graphql_map_key_to_string(value) when is_binary(value), do: value
+  defp graphql_map_key_to_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp graphql_map_key_to_string(_value), do: nil
+
+  defp non_blank_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_blank_string?(_value), do: false
 
   defp present_graphql_key_value?(value) when is_binary(value), do: String.trim(value) != ""
   defp present_graphql_key_value?(nil), do: false
