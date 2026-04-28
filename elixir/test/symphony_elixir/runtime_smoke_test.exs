@@ -14,12 +14,16 @@ defmodule SymphonyElixir.RuntimeSmokeTest do
     test_root = RuntimeSmokeSupport.unique_test_root("symphony-runtime-smoke-hooks")
     workspace_root = Path.join(test_root, "workspaces")
     hook_marker = Path.join(test_root, "before-run.marker")
+    File.mkdir_p!(test_root)
+    codex_binary = RuntimeSmokeSupport.write_delayed_codex!(test_root, turn_completed_delay_s: "0")
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
         tracker_kind: "memory",
         workspace_root: workspace_root,
         tracker_active_states: ["In Progress"],
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never",
         codex_stall_timeout_ms: 100,
         max_turns: 1,
         hook_before_run: """
@@ -253,6 +257,8 @@ defmodule SymphonyElixir.RuntimeSmokeTest do
   test "workflow_contract reload applies updated before_run hook and codex settings to future runs" do
     test_root = RuntimeSmokeSupport.unique_test_root("symphony-runtime-smoke-workflow")
     workspace_root = Path.join(test_root, "workspaces")
+    File.mkdir_p!(test_root)
+    codex_binary = RuntimeSmokeSupport.write_delayed_codex!(test_root, turn_completed_delay_s: "0")
 
     issue =
       RuntimeSmokeSupport.issue_fixture(%{
@@ -270,6 +276,8 @@ defmodule SymphonyElixir.RuntimeSmokeTest do
         tracker_kind: "memory",
         workspace_root: workspace_root,
         tracker_active_states: ["In Progress"],
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never",
         codex_stall_timeout_ms: 111,
         max_turns: 1,
         hook_before_run: "printf 'v1' > workflow-contract.txt",
@@ -294,6 +302,8 @@ defmodule SymphonyElixir.RuntimeSmokeTest do
         tracker_kind: "memory",
         workspace_root: workspace_root,
         tracker_active_states: ["In Progress"],
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "never",
         codex_stall_timeout_ms: 222,
         max_turns: 1,
         hook_before_run: "printf 'v2' > workflow-contract.txt",
