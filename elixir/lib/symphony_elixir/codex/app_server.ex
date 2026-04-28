@@ -66,8 +66,12 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace),
+         {:ok, session_policies} <- session_policies(expanded_workspace),
          {:ok, _capability_manifest} <-
-           WorkspaceCapability.prelaunch_gate(expanded_workspace, workspace_capability_opts(opts)),
+           WorkspaceCapability.prelaunch_gate(
+             expanded_workspace,
+             workspace_capability_opts(opts, session_policies)
+           ),
          {:ok, port, cost_decision} <-
            start_port(
              expanded_workspace,
@@ -83,21 +87,21 @@ defmodule SymphonyElixir.Codex.AppServer do
         |> session_metadata(Keyword.put(opts, :workspace, expanded_workspace), cost_decision)
         |> maybe_put_account_id(account_id)
 
-      with {:ok, session_policies} <- session_policies(expanded_workspace),
-           {:ok, thread_id} <- do_start_session(port, expanded_workspace, session_policies) do
-        {:ok,
-         %{
-           port: port,
-           metadata: metadata,
-           account_id: account_id,
-           approval_policy: session_policies.approval_policy,
-           auto_approve_requests: session_policies.approval_policy == "never",
-           thread_sandbox: session_policies.thread_sandbox,
-           turn_sandbox_policy: session_policies.turn_sandbox_policy,
-           thread_id: thread_id,
-           workspace: expanded_workspace
-         }}
-      else
+      case do_start_session(port, expanded_workspace, session_policies) do
+        {:ok, thread_id} ->
+          {:ok,
+           %{
+             port: port,
+             metadata: metadata,
+             account_id: account_id,
+             approval_policy: session_policies.approval_policy,
+             auto_approve_requests: session_policies.approval_policy == "never",
+             thread_sandbox: session_policies.thread_sandbox,
+             turn_sandbox_policy: session_policies.turn_sandbox_policy,
+             thread_id: thread_id,
+             workspace: expanded_workspace
+           }}
+
         {:error, reason} ->
           stop_port(port)
           {:error, reason}
@@ -289,12 +293,13 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp cost_context_map(%{} = map), do: map
   defp cost_context_map(_issue), do: %{}
 
-  defp workspace_capability_opts(opts) when is_list(opts) do
+  defp workspace_capability_opts(opts, %{approval_policy: approval_policy}) when is_list(opts) do
     opts
     |> Keyword.take([:tool_probe, :time_source])
+    |> Keyword.put(:approval_policy, approval_policy)
   end
 
-  defp workspace_capability_opts(_opts), do: []
+  defp workspace_capability_opts(_opts, _session_policies), do: []
 
   defp normalize_command_env(command_env) when is_list(command_env) do
     {source_homes, remaining_env} =

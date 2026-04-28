@@ -11,6 +11,7 @@ defmodule SymphonyElixir.WorkspaceCapability do
 
   @runtime_required_tools ["rg"]
   @pr_tail_required_tools ["git", "gh"]
+  @supported_approval_policies ["untrusted", "on-failure", "on-request", "never"]
   @validation_entrypoints [
     {"preflight", "symphony-preflight"},
     {"repo_validation", "symphony-validate"},
@@ -26,7 +27,7 @@ defmodule SymphonyElixir.WorkspaceCapability do
           {:ok, manifest()} | {:error, {:workspace_capability_rejected, rejection_reason()} | term()}
   def prelaunch_gate(workspace, opts \\ []) do
     with {:ok, manifest} <- load_or_probe(workspace, opts),
-         :ok <- validate_command_classes(manifest) do
+         :ok <- validate_command_classes(manifest, opts) do
       {:ok, manifest}
     end
   end
@@ -87,13 +88,16 @@ defmodule SymphonyElixir.WorkspaceCapability do
     end
   end
 
-  defp validate_command_classes(%{"mode" => "non_repo_workspace"}), do: :ok
+  defp validate_command_classes(%{"mode" => "non_repo_workspace"} = manifest, opts) do
+    ensure_approval_policy(manifest, opts)
+  end
 
-  defp validate_command_classes(%{} = manifest) do
+  defp validate_command_classes(%{} = manifest, opts) do
     manifest
     |> ensure_runtime_class()
     |> continue_gate(fn -> ensure_validation_class(manifest) end)
     |> continue_gate(fn -> ensure_pr_tail_class(manifest) end)
+    |> continue_gate(fn -> ensure_approval_policy(manifest, opts) end)
   end
 
   defp continue_gate(:ok, next_fun) when is_function(next_fun, 0), do: next_fun.()
@@ -138,6 +142,56 @@ defmodule SymphonyElixir.WorkspaceCapability do
         {:error, rejection(manifest, :pr_tail, :missing_tool, %{tool: tool})}
     end
   end
+
+  defp ensure_approval_policy(manifest, opts) when is_map(manifest) and is_list(opts) do
+    case Keyword.get(opts, :approval_policy) do
+      nil ->
+        :ok
+
+      approval_policy ->
+        case normalize_approval_policy(approval_policy) do
+          {:ok, _normalized} ->
+            :ok
+
+          {:error, value} ->
+            {:error,
+             rejection(manifest, :runtime, :unsupported_approval_policy, %{
+               approval_policy: value,
+               supported_approval_policies: @supported_approval_policies
+             })}
+        end
+    end
+  end
+
+  defp ensure_approval_policy(_manifest, _opts), do: :ok
+
+  defp normalize_approval_policy(value) when is_binary(value) do
+    normalized =
+      value
+      |> String.trim()
+      |> String.downcase()
+
+    cond do
+      normalized == "" ->
+        {:error, "(empty)"}
+
+      normalized in @supported_approval_policies ->
+        {:ok, normalized}
+
+      true ->
+        {:error, normalized}
+    end
+  end
+
+  defp normalize_approval_policy(%{} = value) do
+    if Map.has_key?(value, "reject") or Map.has_key?(value, :reject) do
+      {:error, "reject"}
+    else
+      {:error, inspect(value)}
+    end
+  end
+
+  defp normalize_approval_policy(value), do: {:error, inspect(value)}
 
   defp first_missing_tool(manifest, required_tools) do
     Enum.find(required_tools, fn tool -> not tool_available?(manifest, tool) end)
@@ -187,6 +241,14 @@ defmodule SymphonyElixir.WorkspaceCapability do
 
   defp rejection_summary(command_class, :missing_make_target, %{target: target}) do
     "workspace capability rejected #{command_class}: missing required make target `#{target}`"
+  end
+
+  defp rejection_summary(
+         command_class,
+         :unsupported_approval_policy,
+         %{approval_policy: approval_policy, supported_approval_policies: supported}
+       ) do
+    "workspace capability rejected #{command_class}: unsupported approval policy `#{approval_policy}`; supported values: #{Enum.join(supported, ", ")}"
   end
 
   defp manifest_context(manifest) do

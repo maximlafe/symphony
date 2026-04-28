@@ -137,6 +137,73 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server rejects unsupported approval policy before starting codex session" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-approval-policy-gate-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-509")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-approval-policy-gate.trace")
+
+      File.mkdir_p!(Path.join(workspace, ".git"))
+
+      File.write!(Path.join(workspace, "Makefile"), """
+      .PHONY: symphony-preflight symphony-validate symphony-handoff-check
+      symphony-preflight:
+      \t@echo ok
+
+      symphony-validate:
+      \t@echo ok
+
+      symphony-handoff-check:
+      \t@echo ok
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      printf 'started\\n' >> "#{trace_file}"
+      exit 0
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: %{
+          reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}
+        }
+      )
+
+      issue = %Issue{
+        id: "issue-approval-policy-gate",
+        identifier: "MT-509",
+        title: "Reject unsupported approval policy before launch",
+        description: "Ensure approval policy compatibility fails before Codex starts",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-509",
+        labels: ["backend"]
+      }
+
+      tool_probe = fn tool -> "/tmp/fake-tools/#{tool}" end
+
+      assert {:error, {:workspace_capability_rejected, details}} =
+               AppServer.run(workspace, "guard", issue, tool_probe: tool_probe)
+
+      assert details.reason == :unsupported_approval_policy
+      assert details.command_class == :runtime
+      assert details.approval_policy == "reject"
+      refute File.exists?(trace_file)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server passes explicit turn sandbox policies through unchanged" do
     test_root =
       Path.join(
@@ -474,7 +541,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server fails when command execution approval is required under safer defaults" do
+  test "app server fails when command execution approval is required under on-request policy" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -515,7 +582,8 @@ defmodule SymphonyElixir.AppServerTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        codex_command: "#{codex_binary} app-server",
+        codex_approval_policy: "on-request"
       )
 
       issue = %Issue{

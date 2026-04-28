@@ -37,11 +37,14 @@ defmodule SymphonyElixir.Orchestrator do
   @github_wait_for_checks_tool "github_wait_for_checks"
   @symphony_handoff_check_tool "symphony_handoff_check"
   @verification_recoverable_drift_max_attempts 1
+  @stale_workspace_auto_remediation_max_attempts 1
   @verification_recoverable_drift_patterns [
     ~r/^acceptance matrix contains duplicate id `/,
     ~r/^acceptance matrix item `[^`]+` has multiple proof mapping entries; exactly one is required$/,
     ~r/^proof mapping references unknown acceptance matrix item `/,
     ~r/^proof mapping reference `[^`]+` is reused by multiple acceptance matrix items:/,
+    ~r/^artifact manifest is missing a checked uploaded attachment entry$/,
+    ~r/^required capability `artifact_upload` is missing a checked uploaded Linear attachment$/,
     ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not checked in `Artifacts`$/,
     ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not uploaded in Linear attachments$/
   ]
@@ -1208,6 +1211,7 @@ defmodule SymphonyElixir.Orchestrator do
     resolved_resume_checkpoint = resolve_resume_checkpoint(issue, resume_checkpoint)
     trace_id = dispatch_trace_id(issue, trace_id)
     execution_head = capture_execution_head(issue, retry_delay_type, resolved_resume_checkpoint)
+    dispatch_context = dispatch_context(attempt, trace_id, retry_delay_type, resolved_resume_checkpoint)
 
     case stale_execution_head_reason(execution_head) do
       nil ->
@@ -1222,43 +1226,140 @@ defmodule SymphonyElixir.Orchestrator do
           retry_metadata
         )
 
+      :runtime_ahead ->
+        dispatch_ready_issue(
+          state,
+          issue,
+          attempt,
+          trace_id,
+          retry_delay_type,
+          resolved_resume_checkpoint,
+          align_runtime_ahead_execution_head(execution_head),
+          retry_metadata
+        )
+
       stale_reason ->
-        case maybe_reconcile_stale_workspace(issue, trace_id, execution_head, stale_reason) do
-          {:ok, reconciled_execution_head} ->
-            dispatch_ready_issue(
-              state,
-              issue,
-              attempt,
-              trace_id,
-              retry_delay_type,
-              resolved_resume_checkpoint,
-              reconciled_execution_head,
-              retry_metadata
-            )
-
-          {:error, stale_block_reason, stale_execution_head} ->
-            block_stale_workspace_head(
-              state,
-              issue,
-              attempt,
-              trace_id,
-              resolved_resume_checkpoint,
-              stale_execution_head,
-              stale_block_reason
-            )
-
-          :not_applicable ->
-            block_stale_workspace_head(
-              state,
-              issue,
-              attempt,
-              trace_id,
-              resolved_resume_checkpoint,
-              execution_head,
-              stale_reason
-            )
-        end
+        handle_stale_workspace_dispatch(
+          state,
+          issue,
+          dispatch_context,
+          execution_head,
+          stale_reason,
+          retry_metadata
+        )
     end
+  end
+
+  defp handle_stale_workspace_dispatch(
+         %State{} = state,
+         issue,
+         %{
+           attempt: attempt,
+           trace_id: trace_id,
+           retry_delay_type: retry_delay_type,
+           resume_checkpoint: resolved_resume_checkpoint
+         } = dispatch_context,
+         execution_head,
+         stale_reason,
+         retry_metadata
+       ) do
+    {remediated_reason, remediated_execution_head} =
+      maybe_auto_remediate_stale_workspace(issue, trace_id, execution_head, stale_reason, retry_metadata)
+
+    case remediated_reason do
+      nil ->
+        dispatch_ready_issue(
+          state,
+          issue,
+          attempt,
+          trace_id,
+          retry_delay_type,
+          resolved_resume_checkpoint,
+          remediated_execution_head,
+          retry_metadata
+        )
+
+      :runtime_ahead ->
+        dispatch_ready_issue(
+          state,
+          issue,
+          attempt,
+          trace_id,
+          retry_delay_type,
+          resolved_resume_checkpoint,
+          align_runtime_ahead_execution_head(remediated_execution_head),
+          retry_metadata
+        )
+
+      _ ->
+        reconcile_or_block_stale_workspace(
+          state,
+          issue,
+          dispatch_context,
+          remediated_execution_head,
+          remediated_reason,
+          retry_metadata
+        )
+    end
+  end
+
+  defp reconcile_or_block_stale_workspace(
+         %State{} = state,
+         issue,
+         %{
+           attempt: attempt,
+           trace_id: trace_id,
+           retry_delay_type: retry_delay_type,
+           resume_checkpoint: resolved_resume_checkpoint
+         },
+         stale_execution_head,
+         stale_reason,
+         retry_metadata
+       ) do
+    case maybe_reconcile_stale_workspace(issue, trace_id, stale_execution_head, stale_reason) do
+      {:ok, reconciled_execution_head} ->
+        dispatch_ready_issue(
+          state,
+          issue,
+          attempt,
+          trace_id,
+          retry_delay_type,
+          resolved_resume_checkpoint,
+          reconciled_execution_head,
+          retry_metadata
+        )
+
+      {:error, stale_block_reason, failed_execution_head} ->
+        block_stale_workspace_head(
+          state,
+          issue,
+          attempt,
+          trace_id,
+          resolved_resume_checkpoint,
+          failed_execution_head,
+          stale_block_reason
+        )
+
+      :not_applicable ->
+        block_stale_workspace_head(
+          state,
+          issue,
+          attempt,
+          trace_id,
+          resolved_resume_checkpoint,
+          stale_execution_head,
+          stale_reason
+        )
+    end
+  end
+
+  defp dispatch_context(attempt, trace_id, retry_delay_type, resolved_resume_checkpoint) do
+    %{
+      attempt: attempt,
+      trace_id: trace_id,
+      retry_delay_type: retry_delay_type,
+      resume_checkpoint: resolved_resume_checkpoint
+    }
   end
 
   defp dispatch_ready_issue(
@@ -4408,7 +4509,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_expected_head_sha(workspace, execution_branch, _retry_delay_type, resume_checkpoint) do
-    resolve_expected_head_sha(workspace, execution_branch) || checkpoint_head(resume_checkpoint)
+    checkpoint_head(resume_checkpoint) || resolve_expected_head_sha(workspace, execution_branch)
   end
 
   defp block_stale_workspace_head(
@@ -4477,8 +4578,11 @@ defmodule SymphonyElixir.Orchestrator do
       git_status_success?(workspace, ["merge-base", "--is-ancestor", runtime_head_sha, expected_head_sha]) ->
         :behind
 
+      git_status_success?(workspace, ["merge-base", "--is-ancestor", expected_head_sha, runtime_head_sha]) ->
+        :runtime_ahead
+
       true ->
-        :known_mismatch_non_behind
+        :diverged
     end
   end
 
@@ -4496,8 +4600,101 @@ defmodule SymphonyElixir.Orchestrator do
       :behind ->
         "stale_workspace_head: reason=behind runtime #{Map.get(execution_head, :runtime_head_sha)} is behind expected #{Map.get(execution_head, :expected_head_sha)}#{branch_suffix}"
 
+      :runtime_ahead ->
+        "stale_workspace_head: reason=runtime_ahead runtime #{Map.get(execution_head, :runtime_head_sha)} is ahead of expected #{Map.get(execution_head, :expected_head_sha)}#{branch_suffix}"
+
       :known_mismatch_non_behind ->
-        "stale_workspace_head: reason=known_mismatch_non_behind runtime #{Map.get(execution_head, :runtime_head_sha)} mismatches expected #{Map.get(execution_head, :expected_head_sha)}#{branch_suffix}"
+        "stale_workspace_head: reason=diverged runtime #{Map.get(execution_head, :runtime_head_sha)} mismatches expected #{Map.get(execution_head, :expected_head_sha)}#{branch_suffix}"
+
+      :diverged ->
+        "stale_workspace_head: reason=diverged runtime #{Map.get(execution_head, :runtime_head_sha)} mismatches expected #{Map.get(execution_head, :expected_head_sha)}#{branch_suffix}"
+    end
+  end
+
+  defp align_runtime_ahead_execution_head(execution_head) when is_map(execution_head) do
+    runtime_head_sha = Map.get(execution_head, :runtime_head_sha)
+
+    if known_git_sha?(runtime_head_sha) do
+      Map.put(execution_head, :expected_head_sha, runtime_head_sha)
+    else
+      execution_head
+    end
+  end
+
+  defp align_runtime_ahead_execution_head(execution_head), do: execution_head
+
+  defp maybe_auto_remediate_stale_workspace(issue, trace_id, execution_head, stale_reason, retry_metadata)
+       when is_map(execution_head) do
+    if stale_auto_remediation_allowed?(retry_metadata) do
+      case auto_remediate_stale_workspace(issue, trace_id, execution_head, stale_reason) do
+        {:ok, remediated_execution_head} ->
+          {stale_execution_head_reason(remediated_execution_head), remediated_execution_head}
+
+        {:error, _reason, failed_execution_head} ->
+          {stale_reason, failed_execution_head}
+      end
+    else
+      {stale_reason, execution_head}
+    end
+  end
+
+  defp maybe_auto_remediate_stale_workspace(_issue, _trace_id, execution_head, stale_reason, _retry_metadata),
+    do: {stale_reason, execution_head}
+
+  defp stale_auto_remediation_allowed?(retry_metadata) when is_map(retry_metadata) do
+    attempt =
+      case Map.get(retry_metadata, :stale_workspace_auto_remediation_attempt) ||
+             Map.get(retry_metadata, "stale_workspace_auto_remediation_attempt") do
+        value when is_integer(value) and value >= 0 -> value
+        _ -> 0
+      end
+
+    attempt < @stale_workspace_auto_remediation_max_attempts
+  end
+
+  defp stale_auto_remediation_allowed?(_retry_metadata), do: true
+
+  defp auto_remediate_stale_workspace(issue, trace_id, execution_head, stale_reason)
+       when is_map(execution_head) do
+    workspace = Map.get(execution_head, :workspace)
+    execution_branch = Map.get(execution_head, :execution_branch)
+
+    case validate_stale_auto_remediation_inputs(workspace, execution_branch) do
+      :ok ->
+        with_log_metadata(issue_log_metadata(issue.id, issue.identifier, nil, trace_id), fn ->
+          Logger.info("Attempting stale workspace auto-remediation for #{issue_context(issue)} stale_reason=#{stale_reason} execution_branch=#{execution_branch}")
+        end)
+
+        case git_command(
+               workspace,
+               ["fetch", "origin", execution_branch],
+               :auto_remediate_fetch_origin_execution_branch
+             ) do
+          {:ok, _output} ->
+            {:ok, capture_execution_head(issue, nil, nil)}
+
+          {:error, reason} ->
+            {:error, reason, execution_head}
+        end
+
+      {:error, reason} ->
+        {:error, reason, execution_head}
+    end
+  end
+
+  defp auto_remediate_stale_workspace(_issue, _trace_id, execution_head, _stale_reason),
+    do: {:error, :invalid_execution_head, execution_head}
+
+  defp validate_stale_auto_remediation_inputs(workspace, execution_branch) do
+    cond do
+      not is_binary(workspace) or workspace == "" ->
+        {:error, "stale_auto_remediation: invalid_workspace"}
+
+      not is_binary(execution_branch) or execution_branch == "" ->
+        {:error, "stale_auto_remediation: missing_execution_branch"}
+
+      true ->
+        :ok
     end
   end
 
@@ -4704,16 +4901,71 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp resolve_expected_head_sha(workspace, execution_branch)
        when is_binary(workspace) and is_binary(execution_branch) and execution_branch != "" do
-    [
-      "refs/remotes/origin/#{execution_branch}",
-      "origin/#{execution_branch}",
-      "refs/heads/#{execution_branch}",
-      execution_branch
-    ]
-    |> Enum.find_value(&git_trimmed(workspace, ["rev-parse", &1]))
+    local_head_sha =
+      resolve_ref_sha(workspace, [
+        "refs/heads/#{execution_branch}",
+        execution_branch
+      ])
+
+    remote_head_sha =
+      resolve_ref_sha(workspace, [
+        "refs/remotes/origin/#{execution_branch}",
+        "origin/#{execution_branch}"
+      ])
+
+    case {known_git_sha?(local_head_sha), known_git_sha?(remote_head_sha)} do
+      {true, true} ->
+        choose_preferred_expected_head(workspace, local_head_sha, remote_head_sha)
+
+      {true, false} ->
+        local_head_sha
+
+      {false, true} ->
+        remote_head_sha
+
+      _ ->
+        nil
+    end
   end
 
   defp resolve_expected_head_sha(_workspace, _execution_branch), do: nil
+
+  defp choose_preferred_expected_head(_workspace, local_head_sha, remote_head_sha)
+       when local_head_sha == remote_head_sha,
+       do: local_head_sha
+
+  defp choose_preferred_expected_head(workspace, local_head_sha, remote_head_sha) do
+    cond do
+      git_status_success?(workspace, ["merge-base", "--is-ancestor", local_head_sha, remote_head_sha]) ->
+        remote_head_sha
+
+      git_status_success?(workspace, ["merge-base", "--is-ancestor", remote_head_sha, local_head_sha]) ->
+        local_head_sha
+
+      true ->
+        local_head_sha
+    end
+  end
+
+  defp resolve_ref_sha(workspace, refs) when is_binary(workspace) and is_list(refs) do
+    Enum.find_value(refs, fn ref ->
+      case git_trimmed(workspace, ["rev-parse", ref]) do
+        sha when is_binary(sha) ->
+          normalize_known_sha(sha)
+
+        _ ->
+          nil
+      end
+    end)
+  end
+
+  defp resolve_ref_sha(_workspace, _refs), do: nil
+
+  defp normalize_known_sha(sha) when is_binary(sha) do
+    if known_git_sha?(sha), do: sha, else: nil
+  end
+
+  defp normalize_known_sha(_sha), do: nil
 
   defp git_trimmed(workspace, args) when is_binary(workspace) and is_list(args) do
     case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do

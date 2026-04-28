@@ -278,6 +278,37 @@ defmodule SymphonyElixir.WorkspaceCapabilityTest do
     end
   end
 
+  test "prelaunch gate rejects unsupported approval policy before runtime launch" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-capability-approval-policy-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-508")
+
+      File.mkdir_p!(Path.join(workspace, ".git"))
+      write_makefile!(workspace, ["symphony-preflight", "symphony-validate", "symphony-handoff-check"])
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:error, {:workspace_capability_rejected, details}} =
+               WorkspaceCapability.prelaunch_gate(
+                 workspace,
+                 tool_probe: &always_available_tool/1,
+                 approval_policy: %{"reject" => %{"sandbox_approval" => true}}
+               )
+
+      assert details.reason == :unsupported_approval_policy
+      assert details.command_class == :runtime
+      assert details.approval_policy == "reject"
+      assert "never" in details.supported_approval_policies
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   defp write_makefile!(workspace, targets, extra_lines \\ [])
        when is_binary(workspace) and is_list(targets) and is_list(extra_lines) do
     phony = ".PHONY: " <> Enum.join(targets, " ")
