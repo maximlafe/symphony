@@ -163,8 +163,6 @@ defmodule SymphonyElixir.WorkspaceCapability do
     end
   end
 
-  defp ensure_approval_policy(_manifest, _opts), do: :ok
-
   defp normalize_approval_policy(value) when is_binary(value) do
     normalized =
       value

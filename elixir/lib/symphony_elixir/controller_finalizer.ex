@@ -873,8 +873,6 @@ defmodule SymphonyElixir.ControllerFinalizer do
     end
   end
 
-  defp issue_description(_issue), do: nil
-
   defp normalize_checkpoint(%{} = checkpoint), do: checkpoint
   defp normalize_checkpoint(_checkpoint), do: %{}
 

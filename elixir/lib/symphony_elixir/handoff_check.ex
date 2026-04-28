@@ -537,8 +537,6 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp resolve_contract_lock(_opts), do: {:skip, :invalid_lock_opts}
-
   defp resolve_missing_contract_lock_path(true) do
     {:error, :handoff_manifest_stale,
      %{
@@ -575,14 +573,6 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp read_contract_lock_file(_lock_path) do
-    {:error, :handoff_manifest_invalid,
-     %{
-       "reason" => "cannot read acceptance contract lock file",
-       "details" => "invalid lock path"
-     }}
-  end
-
   defp contract_lock_path(opts) when is_list(opts) do
     explicit_path = Keyword.get(opts, :contract_lock_path)
     repo_path = Keyword.get(opts, :repo_path)
@@ -598,8 +588,6 @@ defmodule SymphonyElixir.HandoffCheck do
         nil
     end
   end
-
-  defp contract_lock_path(_opts), do: nil
 
   defp expected_contract_revision(opts) do
     issue_description = Keyword.get(opts, :issue_description)
@@ -786,9 +774,6 @@ defmodule SymphonyElixir.HandoffCheck do
     |> Map.put("artifacts_auto_reconciled", auto_reconciled?)
   end
 
-  defp maybe_reconcile_workpad_artifacts(parsed_workpad, _attachments, _acceptance_matrix_items, _required_capabilities),
-    do: parsed_workpad
-
   defp artifact_proof_required?(acceptance_matrix_items, required_capabilities) do
     Enum.any?(acceptance_matrix_items, &(Map.get(&1, "proof_type") == "artifact")) or
       "artifact_upload" in required_capabilities
@@ -816,13 +801,6 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp reconcile_artifact_items_with_attachments(artifact_items, _attachments, _artifact_proof_required?)
-       when is_list(artifact_items),
-       do: {artifact_items, false}
-
-  defp reconcile_artifact_items_with_attachments(_artifact_items, _attachments, _artifact_proof_required?),
-    do: {[], false}
-
   defp synthetic_uploaded_attachment_item(title) when is_binary(title) do
     normalized_title = String.trim(title)
     text = "uploaded attachment: `#{normalized_title}` -> auto-synced from Linear attachment"
@@ -840,20 +818,14 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp attachment_titles(attachments) when is_list(attachments) do
     attachments
-    |> Enum.map(fn
-      %{} = attachment ->
-        attachment["title"]
-        |> to_string_or_nil()
-        |> normalize_attachment_title()
-
-      _ ->
-        nil
+    |> Enum.map(fn %{} = attachment ->
+      attachment["title"]
+      |> to_string_or_nil()
+      |> normalize_attachment_title()
     end)
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
   end
-
-  defp attachment_titles(_attachments), do: []
 
   defp normalize_attachment_title(value) when is_binary(value) do
     trimmed = String.trim(value)
@@ -1870,8 +1842,6 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp plain_artifact_title(_text), do: nil
-
   defp artifact_claim(text) do
     case String.split(text, "->", parts: 2) do
       [_, claim] -> String.trim(claim)
@@ -2093,8 +2063,6 @@ defmodule SymphonyElixir.HandoffCheck do
   defp issue_field(issue, keys) when is_map(issue) and is_list(keys) do
     Enum.find_value(keys, fn key -> normalize_issue_field_value(Map.get(issue, key)) end)
   end
-
-  defp issue_field(_issue, _keys), do: nil
 
   defp normalize_issue_field_value(value) when is_binary(value) do
     trimmed = String.trim(value)

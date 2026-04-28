@@ -212,6 +212,94 @@ defmodule SymphonyElixir.HandoffCheckTest do
     end
   end
 
+  test "acceptance contract helpers handle invalid inputs and lock edge cases" do
+    assert is_binary(HandoffCheck.acceptance_contract_from_issue_description(nil)["revision"])
+    assert {:error, :invalid_contract_lock_input} = HandoffCheck.write_acceptance_contract_lock(nil, %{}, [])
+
+    assert {:error, :handoff_manifest_invalid, invalid_manifest_details} =
+             HandoffCheck.validate_contract_lock(nil, [])
+
+    assert invalid_manifest_details["reason"] == "manifest is required for contract lock validation"
+
+    manifest_with_nested_revision = %{
+      "acceptance_contract" => %{"revision" => "rev-alpha"},
+      "issue" => %{"id" => "LET-EDGE"}
+    }
+
+    lock_with_nested_revision = %{
+      "acceptance_contract" => %{"revision" => "rev-alpha"},
+      "issue" => %{"id" => "LET-EDGE"}
+    }
+
+    assert :ok = HandoffCheck.validate_contract_lock(manifest_with_nested_revision)
+
+    assert :ok =
+             HandoffCheck.validate_contract_lock(
+               manifest_with_nested_revision,
+               contract_lock: lock_with_nested_revision
+             )
+
+    assert {:error, :handoff_manifest_stale, missing_lock_revision_details} =
+             HandoffCheck.validate_contract_lock(
+               manifest_with_nested_revision,
+               contract_lock: %{"issue" => %{"id" => "LET-EDGE"}}
+             )
+
+    assert missing_lock_revision_details["reason"] == "acceptance contract lock revision is missing"
+
+    assert {:error, :handoff_manifest_stale, missing_manifest_revision_details} =
+             HandoffCheck.validate_contract_lock(
+               %{"issue" => %{"id" => "LET-EDGE"}},
+               contract_lock: %{"contract_revision" => "rev-alpha", "issue" => %{"id" => "LET-EDGE"}}
+             )
+
+    assert missing_manifest_revision_details["reason"] == "acceptance contract revision is missing from manifest"
+
+    assert {:error, :handoff_manifest_invalid, wrong_issue_details} =
+             HandoffCheck.validate_contract_lock(
+               manifest_with_nested_revision,
+               contract_lock: %{"acceptance_contract" => %{"revision" => "rev-alpha"}, "issue" => %{"id" => "LET-OTHER"}}
+             )
+
+    assert wrong_issue_details["reason"] == "acceptance contract lock belongs to a different issue"
+
+    assert Enum.any?(wrong_issue_details["details"], fn detail ->
+             String.contains?(detail, "lock_issue_id=LET-OTHER")
+           end)
+
+    assert {:error, :handoff_manifest_stale, missing_path_details} =
+             HandoffCheck.validate_contract_lock(
+               manifest_with_nested_revision,
+               require_contract_lock: true
+             )
+
+    assert missing_path_details["reason"] == "acceptance contract lock path is missing"
+    assert missing_path_details["manifest"] == manifest_with_nested_revision
+
+    missing_lock_path = Path.join(System.tmp_dir!(), "handoff-check-missing-lock-#{System.unique_integer([:positive])}.json")
+
+    assert {:error, :handoff_manifest_stale, missing_file_details} =
+             HandoffCheck.validate_contract_lock(
+               manifest_with_nested_revision,
+               require_contract_lock: true,
+               contract_lock_path: missing_lock_path
+             )
+
+    assert missing_file_details["reason"] == "acceptance contract lock file is missing"
+
+    invalid_lock_path = Path.join(System.tmp_dir!(), "handoff-check-invalid-lock-#{System.unique_integer([:positive])}.json")
+    File.write!(invalid_lock_path, "{not-json")
+
+    assert {:error, :handoff_manifest_invalid, invalid_lock_details} =
+             HandoffCheck.validate_contract_lock(
+               manifest_with_nested_revision,
+               require_contract_lock: true,
+               contract_lock_path: invalid_lock_path
+             )
+
+    assert invalid_lock_details["reason"] == "cannot read acceptance contract lock file"
+  end
+
   test "review_ready_transition_allowed? blocks stale acceptance contract revision" do
     workpad = """
     ## Codex Workpad
@@ -696,6 +784,106 @@ defmodule SymphonyElixir.HandoffCheckTest do
              item["kind"] == "uploaded_attachment" and
                item["title"] == "LET-545: Fix ValidationGate JS TS classification"
            end)
+  end
+
+  test "evaluate auto-reconcile tolerates mixed attachment payload shapes" do
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | Validation-only proof | Targeted tests are recorded | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    """
+
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] runtime evidence artifact placeholder
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Attachment normalization edge cases are handled.
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-EDGE",
+               issue_description: issue_description,
+               labels: ["verification:generic"],
+               attachments: [%{"url" => "https://example.test/no-title"}, %{"title" => 123}, :bad_payload],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert get_in(manifest, ["workpad", "artifacts_auto_reconciled"]) == true
+
+    uploaded_titles =
+      get_in(manifest, ["workpad", "artifacts"])
+      |> Enum.filter(&(&1["kind"] == "uploaded_attachment"))
+      |> Enum.map(& &1["title"])
+
+    assert "123" in uploaded_titles
+  end
+
+  test "evaluate reports malformed uploaded attachment rows and missing artifact capability proof" do
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | Runtime proof | attachment rows must be valid | runtime_smoke | VPS | runtime_smoke |
+
+    ## Symphony
+    Required capabilities: artifact_upload
+    """
+
+    malformed_workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment:
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: malformed uploaded attachment should not satisfy artifact capability.
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               malformed_workpad,
+               issue_id: "LET-EDGE",
+               issue_description: issue_description,
+               labels: ["verification:runtime"],
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "artifact manifest entry must include an attachment title in backticks" in manifest["missing_items"]
   end
 
   test "evaluate requires explicit red proof when delivery:tdd is enabled" do
