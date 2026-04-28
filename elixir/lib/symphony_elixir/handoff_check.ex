@@ -46,10 +46,12 @@ defmodule SymphonyElixir.HandoffCheck do
     ~r/^acceptance matrix item `[^`]+` has multiple proof mapping entries; exactly one is required$/,
     ~r/^proof mapping references unknown acceptance matrix item `/,
     ~r/^proof mapping reference `[^`]+` is reused by multiple acceptance matrix items:/,
+    ~r/^acceptance matrix item `[^`]+` maps to validation `[^`]+` that is not checked$/,
     ~r/^artifact manifest is missing a checked uploaded attachment entry$/,
     ~r/^required capability `artifact_upload` is missing a checked uploaded Linear attachment$/,
     ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not checked in `Artifacts`$/,
-    ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not uploaded in Linear attachments$/
+    ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not uploaded in Linear attachments$/,
+    ~r/^acceptance matrix item `[^`]+` mapping drift: use canonical validation label /
   ]
 
   @type result :: {:ok, map()} | {:error, map()}
@@ -1275,7 +1277,13 @@ defmodule SymphonyElixir.HandoffCheck do
        ) do
     case reference_type do
       type when type in ["validation", "runtime"] ->
-        validation_match = find_checked_validation_item(validation_items, reference_value, matrix_type)
+        validation_match =
+          find_checked_validation_item(
+            validation_items,
+            reference_value,
+            matrix_type,
+            matrix_item_id
+          )
 
         validate_validation_match(
           validation_match,
@@ -1292,7 +1300,7 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp find_checked_validation_item(validation_items, reference_value, matrix_type) do
+  defp find_checked_validation_item(validation_items, reference_value, matrix_type, matrix_item_id) do
     normalized_reference = normalize_validation_reference(to_string(reference_value))
 
     exact_label_match =
@@ -1301,8 +1309,22 @@ defmodule SymphonyElixir.HandoffCheck do
       end)
 
     exact_label_match ||
-      command_match_or_test_fallback(validation_items, normalized_reference, matrix_type)
+      command_match_or_test_fallback(validation_items, normalized_reference, matrix_type) ||
+      matrix_item_label_fallback(validation_items, matrix_type, matrix_item_id)
   end
+
+  defp matrix_item_label_fallback(validation_items, "test", matrix_item_id) do
+    canonical_label = matrix_item_validation_label(matrix_item_id)
+
+    Enum.find(validation_items, fn item ->
+      checked? = item["checked"] == true
+      label_matches? = normalize_validation_reference(to_string(item["label"])) == canonical_label
+
+      checked? and label_matches? and not surface_only_command?(item["command"])
+    end)
+  end
+
+  defp matrix_item_label_fallback(_validation_items, _matrix_type, _matrix_item_id), do: nil
 
   defp command_match_or_test_fallback(validation_items, normalized_reference, matrix_type) do
     command_match =
@@ -1335,6 +1357,14 @@ defmodule SymphonyElixir.HandoffCheck do
     |> String.downcase()
   end
 
+  defp matrix_item_validation_label(matrix_item_id) do
+    matrix_item_id
+    |> to_string()
+    |> strip_wrapping_backticks()
+    |> String.trim()
+    |> String.downcase()
+  end
+
   defp command_contains_reference?(command, normalized_reference) do
     normalized_reference != "" and
       command
@@ -1350,6 +1380,19 @@ defmodule SymphonyElixir.HandoffCheck do
       String.contains?(normalized_reference, "[") or
       String.starts_with?(normalized_reference, "test_") or
       String.contains?(normalized_reference, "test_")
+  end
+
+  defp validate_validation_match(nil, reference_value, matrix_item_id, "test", _matrix_semantic, errors, signals) do
+    base_error =
+      "acceptance matrix item `#{matrix_item_id}` maps to validation `#{reference_value}` that is not checked"
+
+    canonical_label = matrix_item_validation_label(matrix_item_id)
+
+    hint_errors = [
+      "acceptance matrix item `#{matrix_item_id}` mapping drift: use canonical validation label `#{canonical_label}` in `Validation` and map via `validation:#{canonical_label}`"
+    ]
+
+    {errors ++ [base_error] ++ hint_errors, signals}
   end
 
   defp validate_validation_match(nil, reference_value, matrix_item_id, _matrix_type, _matrix_semantic, errors, signals) do

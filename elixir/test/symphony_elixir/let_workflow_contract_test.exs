@@ -39,6 +39,9 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "$CODEX_HOME/skills/execute-mode/SKILL.md"
     assert prompt =~ "Acceptance Matrix"
     assert prompt =~ "Proof Mapping"
+    assert prompt =~ "validation:am-<am-id-lowercase>"
+    assert prompt =~ "am-<id>:"
+    assert prompt =~ "repo validation: `make symphony-validate`"
     assert prompt =~ "Required capabilities"
     assert prompt =~ "vps_ssh"
     assert prompt =~ "red proof"
@@ -54,6 +57,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
     assert prompt =~ "`mode:research` и `reasoning:implementation-xhigh` не эскалируют"
     assert prompt =~ "fail closed into `Spec Prep` and treat it as the legacy `plan-mode` path."
+    refute prompt =~ "make test-unit"
   end
 
   test "default workflow documents the same stage-aware cost profile contract" do
@@ -140,6 +144,9 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert execute_skill =~ "proof_semantic"
     assert execute_skill =~ "required_before=review"
     assert execute_skill =~ "exactly one checked `Proof Mapping` entry"
+    assert execute_skill =~ "validation:am-<am-id-lowercase>"
+    assert execute_skill =~ "Do not use prose references after `validation:`"
+    assert execute_skill =~ "validation:runtime smoke"
     assert execute_skill =~ "Update Linear in Russian"
     assert execute_skill =~ "Blocked"
   end
