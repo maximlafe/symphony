@@ -9,6 +9,7 @@ defmodule SymphonyElixir.AgentRunner do
   alias SymphonyElixir.Codex.AppServer
   alias SymphonyElixir.Config
   alias SymphonyElixir.ErrorClassifier
+  alias SymphonyElixir.HandoffCheck
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.PromptBuilder
   alias SymphonyElixir.Tracker
@@ -57,6 +58,7 @@ defmodule SymphonyElixir.AgentRunner do
 
             with :ok <- before_run_result,
                  :ok <- run_acceptance_capability_preflight(workspace, issue_with_trace),
+                 :ok <- freeze_acceptance_contract_lock(workspace, issue_with_trace),
                  :ok <- run_codex_turns(workspace, issue_with_trace, codex_update_recipient, opts) do
               :ok
             else
@@ -96,6 +98,13 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, report} ->
         {:error, AcceptanceCapability.summarize_failure(report)}
+    end
+  end
+
+  defp freeze_acceptance_contract_lock(workspace, issue) do
+    case HandoffCheck.write_acceptance_contract_lock(workspace, issue) do
+      {:ok, _path} -> :ok
+      {:error, reason} -> {:error, {:acceptance_contract_lock_failed, reason}}
     end
   end
 

@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
   """
 
   alias SymphonyElixir.Codex.DynamicTool
-  alias SymphonyElixir.{Config, ValidationGate}
+  alias SymphonyElixir.{Config, HandoffCheck, ValidationGate}
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Tracker
 
@@ -264,38 +264,68 @@ defmodule SymphonyElixir.ControllerFinalizer do
   end
 
   defp finalize_handoff_success(context, checkpoint, snapshot, manifest, opts) do
-    case transition_issue_state(context.issue_id, opts) do
+    case validate_handoff_manifest_transition(context, manifest, opts) do
       :ok ->
-        final_checkpoint = checkpoint_status(checkpoint, "succeeded", nil, nil)
+        case transition_issue_state(context.issue_id, opts) do
+          :ok ->
+            final_checkpoint = checkpoint_status(checkpoint, "succeeded", nil, nil)
 
-        {:ok,
-         %{
-           checkpoint: final_checkpoint,
-           reason: "controller finalizer completed successfully",
-           details: %{
-             "repo" => context.repo,
-             "pr_number" => context.pr_number,
-             "pr_url" => snapshot["url"],
-             "manifest_path" => manifest["manifest_path"]
-           }
-         }}
+            {:ok,
+             %{
+               checkpoint: final_checkpoint,
+               reason: "controller finalizer completed successfully",
+               details: %{
+                 "repo" => context.repo,
+                 "pr_number" => context.pr_number,
+                 "pr_url" => snapshot["url"],
+                 "manifest_path" => manifest["manifest_path"]
+               }
+             }}
 
-      {:error, reason} ->
-        retry_checkpoint =
+          {:error, reason} ->
+            retry_checkpoint =
+              checkpoint_status(
+                checkpoint,
+                "waiting",
+                "failed to transition issue state",
+                nil
+              )
+
+            {:retry,
+             %{
+               checkpoint: retry_checkpoint,
+               reason: "failed to transition issue state",
+               details: %{"error" => inspect(reason)}
+             }}
+        end
+
+      {:error, reason, details} ->
+        fallback_checkpoint =
           checkpoint_status(
             checkpoint,
-            "waiting",
-            "failed to transition issue state",
-            nil
+            "action_required",
+            "handoff manifest transition guard failed",
+            checkpoint["head"]
           )
 
-        {:retry,
+        {:fallback,
          %{
-           checkpoint: retry_checkpoint,
-           reason: "failed to transition issue state",
-           details: %{"error" => inspect(reason)}
+           checkpoint: fallback_checkpoint,
+           reason: "handoff manifest transition guard failed",
+           details:
+             details
+             |> Map.put_new("reason_code", to_string(reason))
+             |> Map.put_new("manifest_path", manifest["manifest_path"])
          }}
     end
+  end
+
+  defp validate_handoff_manifest_transition(context, manifest, opts) do
+    handoff_opts =
+      [repo_path: context.workspace, issue_description: context.issue_description, require_contract_lock: true]
+      |> maybe_put_runner_opt(:git_runner, Keyword.get(opts, :git_runner))
+
+    HandoffCheck.validate_contract_lock(manifest, handoff_opts)
   end
 
   defp retry_or_fallback(checkpoint, %{transient?: true, message: message} = error) do
@@ -385,6 +415,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
          %{
            issue_id: issue_id,
            issue_identifier: identifier,
+           issue_description: issue_description(issue),
            workspace: workspace,
            workpad_path: workpad_path,
            comment_id: comment_id,
@@ -466,6 +497,12 @@ defmodule SymphonyElixir.ControllerFinalizer do
   end
 
   defp decode_tool_response(response), do: {:error, %{"error" => %{"message" => "invalid tool response: #{inspect(response)}"}}}
+
+  defp maybe_put_runner_opt(opts, key, runner) when is_function(runner, 2) do
+    Keyword.put(opts, key, runner)
+  end
+
+  defp maybe_put_runner_opt(opts, _key, _runner), do: opts
 
   defp decode_tool_payload(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text) do
     case Jason.decode(text) do
@@ -821,6 +858,16 @@ defmodule SymphonyElixir.ControllerFinalizer do
 
   defp issue_identifier(%{} = issue) do
     case issue[:identifier] || issue["identifier"] do
+      value when is_binary(value) -> value
+      _ -> nil
+    end
+  end
+
+  defp issue_description(%Issue{description: description}) when is_binary(description), do: description
+  defp issue_description(%Issue{}), do: nil
+
+  defp issue_description(%{} = issue) do
+    case issue[:description] || issue["description"] do
       value when is_binary(value) -> value
       _ -> nil
     end

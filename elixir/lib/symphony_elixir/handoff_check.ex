@@ -17,6 +17,7 @@ defmodule SymphonyElixir.HandoffCheck do
   }
   @default_review_ready_states ["In Review", "Human Review"]
   @default_manifest_path ".symphony/verification/handoff-manifest.json"
+  @default_contract_lock_path ".symphony/verification/acceptance-contract.lock.json"
   @visual_extensions MapSet.new([".gif", ".jpeg", ".jpg", ".mov", ".mp4", ".png", ".webm", ".webp"])
   @machine_readable_extensions MapSet.new([".csv", ".json", ".jsonl", ".md", ".ndjson", ".tsv"])
   @runtime_extensions MapSet.new([".json", ".log", ".md", ".txt"])
@@ -45,6 +46,8 @@ defmodule SymphonyElixir.HandoffCheck do
     ~r/^acceptance matrix item `[^`]+` has multiple proof mapping entries; exactly one is required$/,
     ~r/^proof mapping references unknown acceptance matrix item `/,
     ~r/^proof mapping reference `[^`]+` is reused by multiple acceptance matrix items:/,
+    ~r/^artifact manifest is missing a checked uploaded attachment entry$/,
+    ~r/^required capability `artifact_upload` is missing a checked uploaded Linear attachment$/,
     ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not checked in `Artifacts`$/,
     ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not uploaded in Linear attachments$/
   ]
@@ -62,6 +65,54 @@ defmodule SymphonyElixir.HandoffCheck do
 
   @spec default_manifest_path() :: String.t()
   def default_manifest_path, do: @default_manifest_path
+
+  @spec default_contract_lock_path() :: String.t()
+  def default_contract_lock_path, do: @default_contract_lock_path
+
+  @spec acceptance_contract_from_issue_description(String.t() | nil) :: map()
+  def acceptance_contract_from_issue_description(issue_description) when is_binary(issue_description) do
+    {acceptance_matrix_items, _errors} = parse_acceptance_matrix(issue_description)
+    {required_capabilities, _errors} = AcceptanceCapability.required_capabilities(issue_description)
+    acceptance_contract(acceptance_matrix_items, required_capabilities)
+  end
+
+  def acceptance_contract_from_issue_description(_issue_description) do
+    acceptance_contract([], [])
+  end
+
+  @spec write_acceptance_contract_lock(Path.t(), map(), keyword()) :: {:ok, Path.t()} | {:error, term()}
+  def write_acceptance_contract_lock(workspace, issue, opts \\ [])
+
+  @spec write_acceptance_contract_lock(Path.t(), map(), keyword()) :: {:ok, Path.t()} | {:error, term()}
+  def write_acceptance_contract_lock(workspace, issue, opts)
+      when is_binary(workspace) and is_map(issue) and is_list(opts) do
+    issue_description = issue_field(issue, [:description, "description"]) || ""
+    issue_id = issue_field(issue, [:id, "id"])
+    issue_identifier = issue_field(issue, [:identifier, "identifier"])
+    locked_at = Keyword.get(opts, :locked_at, DateTime.utc_now())
+    acceptance_contract = acceptance_contract_from_issue_description(issue_description)
+
+    lock_payload = %{
+      "version" => 1,
+      "locked_at" => DateTime.to_iso8601(locked_at),
+      "issue" => %{
+        "id" => issue_id,
+        "identifier" => issue_identifier
+      },
+      "contract_revision" => acceptance_contract["revision"],
+      "acceptance_contract" => acceptance_contract
+    }
+
+    lock_path =
+      Keyword.get(opts, :path, Path.join(Path.expand(workspace), @default_contract_lock_path))
+
+    with :ok <- File.mkdir_p(Path.dirname(lock_path)),
+         :ok <- File.write(lock_path, Jason.encode!(lock_payload, pretty: true)) do
+      {:ok, lock_path}
+    end
+  end
+
+  def write_acceptance_contract_lock(_workspace, _issue, _opts), do: {:error, :invalid_contract_lock_input}
 
   @spec evaluate(String.t(), keyword()) :: result()
   def evaluate(workpad_body, opts \\ []) when is_binary(workpad_body) do
@@ -86,9 +137,14 @@ defmodule SymphonyElixir.HandoffCheck do
         Keyword.get(opts, :default_profile, "generic")
       )
 
-    parsed_workpad = parse_workpad(workpad_body)
     {acceptance_matrix_items, acceptance_matrix_errors} = parse_acceptance_matrix(issue_description)
     {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(issue_description)
+
+    parsed_workpad =
+      workpad_body
+      |> parse_workpad()
+      |> maybe_reconcile_workpad_artifacts(attachments, acceptance_matrix_items, required_capabilities)
+
     acceptance_contract = acceptance_contract(acceptance_matrix_items, required_capabilities)
 
     {validation_gate, git_metadata, validation_gate_errors} =
@@ -171,6 +227,7 @@ defmodule SymphonyElixir.HandoffCheck do
           "sections" => parsed_workpad["sections"],
           "validation" => parsed_workpad["validation"],
           "artifacts" => parsed_workpad["artifacts"],
+          "artifacts_auto_reconciled" => parsed_workpad["artifacts_auto_reconciled"] == true,
           "proof_mapping" => parsed_workpad["proof_mapping"],
           "checkpoint" => parsed_workpad["checkpoint"]
         },
@@ -205,6 +262,18 @@ defmodule SymphonyElixir.HandoffCheck do
     review_ready_transition_allowed?(manifest_path, issue_id, state_name, nil)
   end
 
+  @spec validate_contract_lock(map(), keyword()) :: :ok | {:error, atom(), map()}
+  def validate_contract_lock(manifest, opts \\ [])
+
+  @spec validate_contract_lock(map(), keyword()) :: :ok | {:error, atom(), map()}
+  def validate_contract_lock(manifest, opts) when is_map(manifest) and is_list(opts) do
+    validate_manifest_contract_lock(manifest, opts)
+  end
+
+  def validate_contract_lock(_manifest, _opts) do
+    {:error, :handoff_manifest_invalid, %{"reason" => "manifest is required for contract lock validation"}}
+  end
+
   @spec review_ready_transition_allowed?(Path.t(), String.t(), String.t() | nil, String.t() | nil) ::
           :ok | {:error, atom(), map()}
   def review_ready_transition_allowed?(manifest_path, issue_id, state_name, expected_workpad_path)
@@ -223,6 +292,7 @@ defmodule SymphonyElixir.HandoffCheck do
     with {:ok, manifest} <- load_manifest(manifest_path),
          :ok <- validate_manifest_identity(manifest, issue_id, state_name),
          :ok <- validate_manifest_contract_revision(manifest, opts),
+         :ok <- validate_manifest_contract_lock(manifest, opts),
          :ok <- validate_manifest_validation_gate(manifest, opts) do
       validate_manifest_workpad(manifest, expected_workpad_path)
     end
@@ -356,6 +426,166 @@ defmodule SymphonyElixir.HandoffCheck do
           true ->
             :ok
         end
+    end
+  end
+
+  defp validate_manifest_contract_lock(manifest, opts) do
+    case resolve_contract_lock(opts) do
+      {:skip, _reason} ->
+        :ok
+
+      {:error, reason, details} ->
+        {:error, reason, Map.put(details, "manifest", manifest)}
+
+      {:ok, lock} ->
+        compare_manifest_with_contract_lock(manifest, lock)
+    end
+  end
+
+  defp compare_manifest_with_contract_lock(manifest, lock) do
+    manifest_revision =
+      manifest["contract_revision"] ||
+        get_in(manifest, ["acceptance_contract", "revision"])
+
+    lock_revision =
+      lock["contract_revision"] ||
+        get_in(lock, ["acceptance_contract", "revision"])
+
+    manifest_issue_id = get_in(manifest, ["issue", "id"])
+    lock_issue_id = get_in(lock, ["issue", "id"])
+
+    with :ok <- ensure_lock_revision_present(lock_revision),
+         :ok <- ensure_manifest_revision_present(manifest_revision),
+         :ok <- ensure_matching_contract_revisions(lock_revision, manifest_revision) do
+      ensure_matching_contract_issue(lock_issue_id, manifest_issue_id)
+    end
+  end
+
+  defp ensure_lock_revision_present(lock_revision) do
+    if is_binary(lock_revision) and String.trim(lock_revision) != "" do
+      :ok
+    else
+      {:error, :handoff_manifest_stale,
+       %{
+         "reason" => "acceptance contract lock revision is missing",
+         "details" => ["re-run execution to regenerate acceptance contract lock before handoff"]
+       }}
+    end
+  end
+
+  defp ensure_manifest_revision_present(manifest_revision) do
+    if is_binary(manifest_revision) and String.trim(manifest_revision) != "" do
+      :ok
+    else
+      {:error, :handoff_manifest_stale,
+       %{
+         "reason" => "acceptance contract revision is missing from manifest",
+         "details" => ["re-run symphony_handoff_check to freeze the current acceptance contract revision"]
+       }}
+    end
+  end
+
+  defp ensure_matching_contract_revisions(lock_revision, manifest_revision)
+       when lock_revision == manifest_revision,
+       do: :ok
+
+  defp ensure_matching_contract_revisions(lock_revision, manifest_revision) do
+    {:error, :handoff_manifest_stale,
+     %{
+       "reason" => "acceptance contract lock revision does not match manifest",
+       "details" => [
+         "lock_revision=#{lock_revision}",
+         "manifest_revision=#{manifest_revision}"
+       ]
+     }}
+  end
+
+  defp ensure_matching_contract_issue(lock_issue_id, manifest_issue_id)
+       when is_binary(lock_issue_id) and is_binary(manifest_issue_id) and
+              lock_issue_id != manifest_issue_id do
+    {:error, :handoff_manifest_invalid,
+     %{
+       "reason" => "acceptance contract lock belongs to a different issue",
+       "details" => [
+         "lock_issue_id=#{lock_issue_id}",
+         "manifest_issue_id=#{manifest_issue_id}"
+       ]
+     }}
+  end
+
+  defp ensure_matching_contract_issue(_lock_issue_id, _manifest_issue_id), do: :ok
+
+  defp resolve_contract_lock(opts) when is_list(opts) do
+    case Keyword.get(opts, :contract_lock) do
+      %{} = lock ->
+        {:ok, lock}
+
+      _ ->
+        require_lock? = Keyword.get(opts, :require_contract_lock, false)
+        lock_path = contract_lock_path(opts)
+
+        cond do
+          not is_binary(lock_path) or String.trim(lock_path) == "" ->
+            resolve_missing_contract_lock_path(require_lock?)
+
+          not File.exists?(lock_path) ->
+            resolve_missing_contract_lock_file(lock_path, require_lock?)
+
+          true ->
+            read_contract_lock_file(lock_path)
+        end
+    end
+  end
+
+  defp resolve_missing_contract_lock_path(true) do
+    {:error, :handoff_manifest_stale,
+     %{
+       "reason" => "acceptance contract lock path is missing",
+       "details" => ["ensure execution writes `acceptance-contract.lock.json` before review transition"]
+     }}
+  end
+
+  defp resolve_missing_contract_lock_path(false), do: {:skip, :missing_lock_path}
+
+  defp resolve_missing_contract_lock_file(lock_path, true) do
+    {:error, :handoff_manifest_stale,
+     %{
+       "reason" => "acceptance contract lock file is missing",
+       "contract_lock_path" => Path.expand(lock_path),
+       "details" => ["re-run execution to regenerate `acceptance-contract.lock.json`"]
+     }}
+  end
+
+  defp resolve_missing_contract_lock_file(_lock_path, false), do: {:skip, :missing_lock_file}
+
+  defp read_contract_lock_file(lock_path) when is_binary(lock_path) do
+    with {:ok, body} <- File.read(lock_path),
+         {:ok, lock} <- Jason.decode(body) do
+      {:ok, lock}
+    else
+      {:error, reason} ->
+        {:error, :handoff_manifest_invalid,
+         %{
+           "reason" => "cannot read acceptance contract lock file",
+           "contract_lock_path" => Path.expand(lock_path),
+           "details" => inspect(reason)
+         }}
+    end
+  end
+
+  defp contract_lock_path(opts) when is_list(opts) do
+    explicit_path = Keyword.get(opts, :contract_lock_path)
+    repo_path = Keyword.get(opts, :repo_path)
+
+    cond do
+      is_binary(explicit_path) and String.trim(explicit_path) != "" ->
+        explicit_path
+
+      is_binary(repo_path) and String.trim(repo_path) != "" ->
+        Path.join(Path.expand(repo_path), @default_contract_lock_path)
+
+      true ->
+        nil
     end
   end
 
@@ -517,6 +747,96 @@ defmodule SymphonyElixir.HandoffCheck do
       })
     end)
   end
+
+  defp maybe_reconcile_workpad_artifacts(
+         parsed_workpad,
+         attachments,
+         acceptance_matrix_items,
+         required_capabilities
+       )
+       when is_map(parsed_workpad) and
+              is_list(attachments) and
+              is_list(acceptance_matrix_items) and
+              is_list(required_capabilities) do
+    artifact_proof_required? = artifact_proof_required?(acceptance_matrix_items, required_capabilities)
+    artifact_items = Map.get(parsed_workpad, "artifacts", [])
+
+    {reconciled_artifacts, auto_reconciled?} =
+      reconcile_artifact_items_with_attachments(
+        artifact_items,
+        attachments,
+        artifact_proof_required?
+      )
+
+    parsed_workpad
+    |> Map.put("artifacts", reconciled_artifacts)
+    |> Map.put("artifact_proof_required", artifact_proof_required?)
+    |> Map.put("artifacts_auto_reconciled", auto_reconciled?)
+  end
+
+  defp artifact_proof_required?(acceptance_matrix_items, required_capabilities) do
+    Enum.any?(acceptance_matrix_items, &(Map.get(&1, "proof_type") == "artifact")) or
+      "artifact_upload" in required_capabilities
+  end
+
+  defp reconcile_artifact_items_with_attachments(artifact_items, attachments, _artifact_proof_required?)
+       when is_list(artifact_items) and is_list(attachments) do
+    has_checked_uploaded_entry? =
+      Enum.any?(artifact_items, fn item ->
+        item["checked"] == true and item["kind"] == "uploaded_attachment" and
+          is_binary(item["title"]) and String.trim(item["title"]) != ""
+      end)
+
+    if has_checked_uploaded_entry? do
+      {artifact_items, false}
+    else
+      case attachment_titles(attachments) do
+        [] ->
+          {artifact_items, false}
+
+        titles ->
+          reconciled_items = artifact_items ++ Enum.map(titles, &synthetic_uploaded_attachment_item/1)
+          {reconciled_items, true}
+      end
+    end
+  end
+
+  defp synthetic_uploaded_attachment_item(title) when is_binary(title) do
+    normalized_title = String.trim(title)
+    text = "uploaded attachment: `#{normalized_title}` -> auto-synced from Linear attachment"
+
+    %{
+      "checked" => true,
+      "text" => text,
+      "label" => checkbox_label(text),
+      "command" => checkbox_command(text),
+      "kind" => "uploaded_attachment",
+      "title" => normalized_title,
+      "claim" => "auto-synced from Linear attachment"
+    }
+  end
+
+  defp attachment_titles(attachments) when is_list(attachments) do
+    attachments
+    |> Enum.map(fn %{} = attachment ->
+      attachment["title"]
+      |> to_string_or_nil()
+      |> normalize_attachment_title()
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp normalize_attachment_title(value) when is_binary(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp normalize_attachment_title(_value), do: nil
+
+  defp to_string_or_nil(nil), do: nil
+  defp to_string_or_nil(value) when is_binary(value), do: value
+  defp to_string_or_nil(value), do: to_string(value)
 
   defp parse_proof_mapping_items(section_body) when is_binary(section_body) do
     parse_checkbox_items(section_body)
@@ -1174,7 +1494,13 @@ defmodule SymphonyElixir.HandoffCheck do
     |> Kernel.++(validation_missing_items(parsed_workpad["validation"], issue_labels, validation_context["gate"]))
     |> Kernel.++(validation_gate_missing_items(validation_context["gate"], validation_context["git"]))
     |> Kernel.++(checkpoint_missing_items(parsed_workpad["checkpoint"]))
-    |> Kernel.++(artifact_manifest_missing_items(parsed_workpad["artifacts"], attachments))
+    |> Kernel.++(
+      artifact_manifest_missing_items(
+        parsed_workpad["artifacts"],
+        attachments,
+        parsed_workpad["artifact_proof_required"] == true
+      )
+    )
     |> Kernel.++(Map.get(capability_context, :acceptance_matrix_missing_items, []))
     |> Kernel.++(
       required_capability_missing_items(
@@ -1306,14 +1632,18 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp artifact_manifest_missing_items(artifact_items, attachments) do
+  defp artifact_manifest_missing_items(artifact_items, attachments, artifact_proof_required?) do
     uploaded =
       Enum.filter(artifact_items, fn item ->
         item["checked"] == true and item["kind"] == "uploaded_attachment"
       end)
 
     if uploaded == [] do
-      ["artifact manifest is missing a checked uploaded attachment entry"]
+      if artifact_proof_required? do
+        ["artifact manifest is missing a checked uploaded attachment entry"]
+      else
+        []
+      end
     else
       attachment_titles = MapSet.new(Enum.map(attachments, & &1["title"]))
 
@@ -1488,8 +1818,27 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp artifact_title(text) do
     case Regex.run(~r/`([^`]+)`/, text) do
-      [_, title] -> String.trim(title)
-      _ -> nil
+      [_, title] ->
+        normalize_attachment_title(title)
+
+      _ ->
+        plain_artifact_title(text)
+    end
+  end
+
+  defp plain_artifact_title(text) when is_binary(text) do
+    normalized_text = String.trim(text)
+
+    case Regex.run(~r/^(?:uploaded attachment:|вложение:)\s*(.+)$/iu, normalized_text, capture: :all_but_first) do
+      [rest] ->
+        rest
+        |> String.split("->", parts: 2)
+        |> hd()
+        |> String.trim()
+        |> normalize_attachment_title()
+
+      _ ->
+        nil
     end
   end
 
@@ -1710,4 +2059,15 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp sanitize_manifest_key(key) when is_binary(key), do: sanitize_manifest_utf8(key)
   defp sanitize_manifest_key(key), do: key
+
+  defp issue_field(issue, keys) when is_map(issue) and is_list(keys) do
+    Enum.find_value(keys, fn key -> normalize_issue_field_value(Map.get(issue, key)) end)
+  end
+
+  defp normalize_issue_field_value(value) when is_binary(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp normalize_issue_field_value(_value), do: nil
 end
