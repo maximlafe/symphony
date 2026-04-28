@@ -68,7 +68,8 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert html =~ "Run phase"
     assert html =~ "Lifecycle"
     assert html =~ "full validate"
-    assert html =~ "attached"
+    assert html =~ "Active session"
+    refute html =~ ~s(>attached</span>)
     assert html =~ "slow"
     assert html =~ "make symphony-validate"
     assert html =~ "launch-app missing, using local HTTP/UI fallback"
@@ -95,6 +96,38 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     collapsed_html = render_dashboard(%{payload: payload}, codex_accounts_expanded: false)
     assert collapsed_html =~ "Table collapsed."
     refute collapsed_html =~ "Make active"
+  end
+
+  test "render separates current step details and uses user-facing lifecycle labels" do
+    long_current_step =
+      "reviewing an intentionally long current step that must wrap inside the current step column without crowding lifecycle or token details"
+
+    long_message =
+      "last message with enough detail to prove secondary status copy stays in its own muted row instead of sharing the primary line"
+
+    long_summary =
+      "verification summary with a long runtime profile explanation that should wrap inside the current step detail stack"
+
+    snapshot =
+      multi_account_snapshot()
+      |> put_in([:running, Access.at(0), :current_step], long_current_step)
+      |> put_in([:running, Access.at(0), :last_codex_message], long_message)
+      |> put_in([:running, Access.at(0), :verification_summary], long_summary)
+
+    payload = payload_from_snapshot(snapshot)
+    html = render_dashboard(%{payload: payload}, codex_accounts_expanded: true)
+
+    assert html =~ "Active session"
+    refute html =~ ~s(>attached</span>)
+    assert html =~ ~s(<td class="current-step-cell">)
+    assert html =~ ~s(<div class="current-step-stack">)
+    assert html =~ ~s(<span class="current-step-primary">)
+    assert html =~ ~s(<col style="width: 24rem;">)
+    assert html =~ ~s(class="current-step-detail muted event-meta")
+    assert html =~ ~s(class="current-step-detail muted")
+    assert html =~ long_current_step
+    assert html =~ long_message
+    assert html =~ long_summary
   end
 
   test "render anchors relative resetInSeconds to payload generated_at instead of runtime now" do
@@ -168,7 +201,7 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
 
     html = render_dashboard(%{payload: payload}, codex_accounts_expanded: true)
 
-    assert html =~ "replacing"
+    assert html =~ "Replacing session"
     assert html =~ "replaces"
     assert html =~ "thread-http"
     assert html =~ "reason"
@@ -295,7 +328,9 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
 
     refreshed_html = render_dashboard(refreshed_socket.assigns)
     assert refreshed_html =~ "Refresh now"
-    assert refreshed_html =~ "Refresh queued. The dashboard will update after the next reconcile finishes."
+
+    assert refreshed_html =~
+             "Refresh queued. The dashboard will update after the next reconcile finishes."
   end
 
   test "http server renders the prioritized dashboard and exposes the updated account payload" do
@@ -332,7 +367,8 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert running_sessions_offset < retry_queue_offset
     assert retry_queue_offset < codex_accounts_offset
     assert dashboard_body =~ "full validate"
-    assert dashboard_body =~ "attached"
+    assert dashboard_body =~ "Active session"
+    refute dashboard_body =~ ~s(>attached</span>)
     assert dashboard_body =~ "make symphony-validate"
     assert dashboard_body =~ "launch-app missing, using local HTTP/UI fallback"
     assert dashboard_body =~ "verification failed for profile `runtime`"
@@ -352,12 +388,16 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert get_in(api_response.body, ["running", Access.at(0), "run_phase"]) == "full validate"
     assert get_in(api_response.body, ["running", Access.at(0), "activity_state"]) == "slow"
     assert get_in(api_response.body, ["running", Access.at(0), "lifecycle_state"]) == "attached"
-    assert get_in(api_response.body, ["retrying", Access.at(0), "lifecycle_state"]) == "retry_scheduled"
+
+    assert get_in(api_response.body, ["retrying", Access.at(0), "lifecycle_state"]) ==
+             "retry_scheduled"
 
     assert get_in(api_response.body, ["running", Access.at(0), "current_command"]) ==
              "make symphony-validate"
 
-    assert get_in(api_response.body, ["running", Access.at(0), "verification_profile"]) == "runtime"
+    assert get_in(api_response.body, ["running", Access.at(0), "verification_profile"]) ==
+             "runtime"
+
     assert get_in(api_response.body, ["running", Access.at(0), "verification_result"]) == "failed"
 
     primary_account =
@@ -543,7 +583,9 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
           verification_profile: "runtime",
           verification_result: "failed",
           verification_summary: "verification failed for profile `runtime`: profile `runtime` is missing a matching uploaded proof artifact",
-          verification_missing_items: ["profile `runtime` is missing a matching uploaded proof artifact"],
+          verification_missing_items: [
+            "profile `runtime` is missing a matching uploaded proof artifact"
+          ],
           verification_checked_at: ~U[2026-03-25 21:26:00Z],
           last_codex_message: "rendered",
           last_codex_timestamp: nil,
