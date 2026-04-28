@@ -1424,6 +1424,111 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert manifest["missing_items"] == []
   end
 
+  test "evaluate accepts canonical AM label mapping for run_executed proof items" do
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Active retry path | Active retry proof is executed | test | retry active path | run_executed |
+    | AM-2 | Missing retry path | Missing retry proof is executed | test | retry missing path | run_executed |
+    """
+
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-1: `mix test test/symphony_elixir/handoff_check_test.exs --only am_1`
+    - [x] am-2: `mix test test/symphony_elixir/handoff_check_test.exs --only am_2`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `selector-proof.log` -> targeted selector coverage evidence
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:am-1`
+    - [x] `AM-2` -> `validation:am-2`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Canonical AM label mapping is explicit and deterministic.
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-651",
+               labels: ["mode:plan", "verification:generic"],
+               issue_description: issue_description,
+               attachments: [%{"title" => "selector-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert manifest["missing_items"] == []
+    assert get_in(manifest, ["proof_signals", "proof_run_executed"]) == true
+  end
+
+  test "evaluate reports deterministic AM label hint when prose mapping is not checked" do
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-539-1 | Active retry path | Active retry proof is executed | test | retry active path | run_executed |
+    """
+
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `cd elixir && mix test test/symphony_elixir/orchestrator_status_test.exs --include let_539 --only let_539`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `selector-proof.log` -> targeted selector coverage evidence
+
+    ### Proof Mapping
+
+    - [x] `AM-539-1` -> `validation:orchestrator_status_test.exs @let_539 active retry targeted fetch`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Prose mapping should be rejected with a canonical hint.
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-651",
+               labels: ["mode:plan", "verification:generic"],
+               issue_description: issue_description,
+               attachments: [%{"title" => "selector-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert "acceptance matrix item `AM-539-1` maps to validation `orchestrator_status_test.exs @let_539 active retry targeted fetch` that is not checked" in manifest["missing_items"]
+
+    assert "acceptance matrix item `AM-539-1` mapping drift: use canonical validation label `am-539-1` in `Validation` and map via `validation:am-539-1`" in manifest["missing_items"]
+  end
+
   test "evaluate accepts pytest-style selector with scope delimiter" do
     issue_description = """
     ## Acceptance Matrix
@@ -1580,6 +1685,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     | --- | --- | --- | --- | --- | --- |
     | AM-TYPE | Validation type check | Validation proof exists | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
     | AM-NIL | Missing validation check | Validation entry missing | test | missing validation | run_executed |
+    | AM-RUNTIME-MISSING | Runtime smoke missing check | Runtime smoke validation entry must exist | runtime_smoke | runtime smoke missing | runtime_smoke |
     | AM-RUNTIME-BAD | Runtime smoke check | Runtime smoke uses correct label | runtime_smoke | mix test test/symphony_elixir/handoff_check_test.exs | runtime_smoke |
     | AM-HELP | Executed proof check | Help-only command must fail | test | scripts/proof_runner --help | run_executed |
     | AM-SURFACE | Surface-only signal | Surface exists is allowed | test | mix test test/symphony_elixir/handoff_check_test.exs | surface_exists |
@@ -1604,6 +1710,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     - [x] `AM-TYPE` -> `artifact:runtime-proof.log`
     - [x] `AM-NIL` -> `validation:missing validation`
+    - [x] `AM-RUNTIME-MISSING` -> `validation:runtime smoke missing`
     - [x] `AM-RUNTIME-BAD` -> `validation:targeted tests`
     - [x] `AM-HELP` -> `validation:runtime smoke`
     - [x] `AM-SURFACE` -> `validation:targeted tests`
@@ -1629,6 +1736,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert "acceptance matrix item `AM-TYPE` expects validation mapping `validation:<label>`" in validation_manifest["missing_items"]
     assert "acceptance matrix item `AM-NIL` maps to validation `missing validation` that is not checked" in validation_manifest["missing_items"]
+    assert "acceptance matrix item `AM-RUNTIME-MISSING` maps to validation `runtime smoke missing` that is not checked" in validation_manifest["missing_items"]
 
     assert "acceptance matrix item `AM-RUNTIME-BAD` with proof_type `runtime_smoke` must map to `runtime smoke` validation entry" in validation_manifest["missing_items"]
 

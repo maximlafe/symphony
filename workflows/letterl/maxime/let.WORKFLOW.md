@@ -786,7 +786,7 @@ Run `make symphony-preflight` once per run before treating auth/env/tooling gaps
 
 ## Validation matrix
 
-- Backend-only changes: run targeted pytest for the touched modules and at least `make test-unit`.
+- Backend-only changes: run targeted tests for the touched modules and at least `make symphony-validate`.
 - Stateful, `task_v3`, database, or schema changes: run targeted pytest, `poetry run pytest tests/integration/test_task_v3_stateful_repeatability.py -v -m integration`, and `poetry run alembic upgrade head`.
 - Hosted UI or frontend changes: run `make team-master-ui-e2e`; if the change is app-touching, use the `launch-app` skill, verify `/health` and `/api/dashboard`, and capture runtime evidence.
 - Repo-wide infra or runtime changes: run `make test` plus the relevant targeted smoke checks.
@@ -1075,11 +1075,12 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 - [ ] cheap gate: `<same-HEAD targeted proof>`
 - [ ] red proof: `<command>` (обязательно при `delivery:tdd`; когда обязательно, не помечай `n/a`)
 - [ ] targeted tests: `<command>`
+- [ ] am-<id>: `<command>` (для каждого required `Acceptance Matrix` item с `proof_type=test` и `proof_semantic=run_executed`; label должен быть в lowercase, например `am-539-1`)
 - [ ] runtime smoke: `<command>` (для runtime/infra/workflow-contract/handoff изменений; когда обязательно, не помечай `n/a`)
 - [ ] stateful proof: `<command>` (для DB/schema/stateful изменений)
 - [ ] ui runtime proof: `<command>` (для hosted UI/frontend изменений)
 - [ ] visual artifact: `<artifact title>` (для hosted UI/frontend изменений)
-- [ ] repo validation: `<repo-owned final validation command>`
+- [ ] repo validation: `make symphony-validate`
 
 ### Артефакты
 
@@ -1089,6 +1090,8 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Proof Mapping
 
 - [ ] `<AM-id>` -> `validation:<label>` | `artifact:<title>` | `runtime:<label>`
+- Для required `test/run_executed` используй канонический mapping: checked validation label `am-<am-id-lowercase>` и ссылка `validation:am-<am-id-lowercase>` (без prose-описаний после `validation:`).
+- Для `runtime_smoke` используй `validation:runtime smoke`.
 
 ### Checkpoint
 

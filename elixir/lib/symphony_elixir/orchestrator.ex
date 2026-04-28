@@ -43,10 +43,12 @@ defmodule SymphonyElixir.Orchestrator do
     ~r/^acceptance matrix item `[^`]+` has multiple proof mapping entries; exactly one is required$/,
     ~r/^proof mapping references unknown acceptance matrix item `/,
     ~r/^proof mapping reference `[^`]+` is reused by multiple acceptance matrix items:/,
+    ~r/^acceptance matrix item `[^`]+` maps to validation `[^`]+` that is not checked$/,
     ~r/^artifact manifest is missing a checked uploaded attachment entry$/,
     ~r/^required capability `artifact_upload` is missing a checked uploaded Linear attachment$/,
     ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not checked in `Artifacts`$/,
-    ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not uploaded in Linear attachments$/
+    ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not uploaded in Linear attachments$/,
+    ~r/^acceptance matrix item `[^`]+` mapping drift: use canonical validation label /
   ]
   @empty_codex_totals %{
     input_tokens: 0,
