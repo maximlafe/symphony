@@ -9,6 +9,58 @@ defmodule SymphonyElixir.RuntimeSmokeTest do
 
   @primary_account %{id: "primary", codex_home: "/tmp/codex-primary"}
 
+  defmodule Let539LinearClient do
+    alias SymphonyElixir.Linear.Issue
+
+    def fetch_candidate_issues do
+      send_event(:fetch_candidate_issues)
+      {:ok, configured_issues()}
+    end
+
+    def fetch_issues_by_states(states) when is_list(states) do
+      normalized_states =
+        states
+        |> Enum.map(&normalize_state/1)
+        |> MapSet.new()
+
+      {:ok,
+       Enum.filter(configured_issues(), fn %Issue{state: state} ->
+         MapSet.member?(normalized_states, normalize_state(state))
+       end)}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) when is_list(issue_ids) do
+      send_event({:fetch_issue_states_by_ids, issue_ids})
+      wanted_ids = MapSet.new(issue_ids)
+
+      {:ok,
+       Enum.filter(configured_issues(), fn %Issue{id: id} ->
+         MapSet.member?(wanted_ids, id)
+       end)}
+    end
+
+    def graphql(_query, _variables), do: {:ok, %{"data" => %{}}}
+
+    defp configured_issues do
+      Application.get_env(:symphony_elixir, :let_539_runtime_linear_issues, [])
+    end
+
+    defp send_event(event) do
+      case Application.get_env(:symphony_elixir, :let_539_runtime_linear_recipient) do
+        pid when is_pid(pid) -> send(pid, event)
+        _ -> :ok
+      end
+    end
+
+    defp normalize_state(state) when is_binary(state) do
+      state
+      |> String.trim()
+      |> String.downcase()
+    end
+
+    defp normalize_state(_state), do: ""
+  end
+
   @tag :hooks_stall_guard
   test "hooks_stall_guard runs a long before_run hook on a low stall budget" do
     test_root = RuntimeSmokeSupport.unique_test_root("symphony-runtime-smoke-hooks")
@@ -135,6 +187,90 @@ defmodule SymphonyElixir.RuntimeSmokeTest do
     assert [%{issue_id: ^issue_id, attempt: 1, error_class: "transient"}] = snapshot.retrying
     assert snapshot.running == []
     refute Process.alive?(worker_pid)
+  end
+
+  @tag :let_539
+  test "let_539 retry timer runtime refreshes only the targeted issue state" do
+    issue_id = "issue-runtime-smoke-let-539"
+
+    issue =
+      RuntimeSmokeSupport.issue_fixture(%{
+        id: issue_id,
+        identifier: "RT-LET-539",
+        title: "Targeted retry refresh runtime smoke",
+        state: "In Progress"
+      })
+
+    previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    previous_issues = Application.get_env(:symphony_elixir, :let_539_runtime_linear_issues)
+    previous_recipient = Application.get_env(:symphony_elixir, :let_539_runtime_linear_recipient)
+
+    try do
+      Application.put_env(:symphony_elixir, :linear_client_module, Let539LinearClient)
+      Application.put_env(:symphony_elixir, :let_539_runtime_linear_issues, [issue])
+      Application.put_env(:symphony_elixir, :let_539_runtime_linear_recipient, self())
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "linear",
+        tracker_active_states: ["Todo", "In Progress", "Merging", "Rework"],
+        max_retry_backoff_ms: 10
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :Let539TargetedRetryOrchestrator)
+
+      {:ok, pid} =
+        Orchestrator.start_link(
+          name: orchestrator_name,
+          start_immediately?: false,
+          run_startup_housekeeping?: false
+        )
+
+      on_exit(fn ->
+        RuntimeSmokeSupport.stop_orchestrator(pid)
+      end)
+
+      retry_token = make_ref()
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | claimed: MapSet.put(state.claimed, issue_id),
+            retry_attempts: %{
+              issue_id => %{
+                attempt: 1,
+                retry_token: retry_token,
+                timer_ref: nil,
+                due_at_ms: 0,
+                identifier: issue.identifier,
+                trace_id: "trace-runtime-smoke-let-539",
+                error: nil,
+                error_class: nil,
+                delay_type: :continuation
+              }
+            }
+        }
+      end)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
+      refute_receive :fetch_candidate_issues, 100
+
+      state =
+        RuntimeSmokeSupport.wait_for_orchestrator_state(pid, fn state ->
+          retry = state.retry_attempts[issue_id]
+
+          is_map(retry) and retry.identifier == issue.identifier and
+            retry.error == "no healthy codex account available" and
+            retry.error_class == "transient"
+        end)
+
+      assert MapSet.member?(state.claimed, issue_id)
+    after
+      RuntimeSmokeSupport.restore_app_env!(:linear_client_module, previous_client_module)
+      RuntimeSmokeSupport.restore_app_env!(:let_539_runtime_linear_issues, previous_issues)
+      RuntimeSmokeSupport.restore_app_env!(:let_539_runtime_linear_recipient, previous_recipient)
+    end
   end
 
   @tag :resume_checkpoint
