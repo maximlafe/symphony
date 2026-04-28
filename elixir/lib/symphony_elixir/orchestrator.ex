@@ -4621,8 +4621,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp align_runtime_ahead_execution_head(execution_head), do: execution_head
-
   defp maybe_auto_remediate_stale_workspace(issue, trace_id, execution_head, stale_reason, retry_metadata)
        when is_map(execution_head) do
     if stale_auto_remediation_allowed?(retry_metadata) do
@@ -4638,9 +4636,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp maybe_auto_remediate_stale_workspace(_issue, _trace_id, execution_head, stale_reason, _retry_metadata),
-    do: {stale_reason, execution_head}
-
   defp stale_auto_remediation_allowed?(retry_metadata) when is_map(retry_metadata) do
     attempt =
       case Map.get(retry_metadata, :stale_workspace_auto_remediation_attempt) ||
@@ -4651,8 +4646,6 @@ defmodule SymphonyElixir.Orchestrator do
 
     attempt < @stale_workspace_auto_remediation_max_attempts
   end
-
-  defp stale_auto_remediation_allowed?(_retry_metadata), do: true
 
   defp auto_remediate_stale_workspace(issue, trace_id, execution_head, stale_reason)
        when is_map(execution_head) do
@@ -4681,9 +4674,6 @@ defmodule SymphonyElixir.Orchestrator do
         {:error, reason, execution_head}
     end
   end
-
-  defp auto_remediate_stale_workspace(_issue, _trace_id, execution_head, _stale_reason),
-    do: {:error, :invalid_execution_head, execution_head}
 
   defp validate_stale_auto_remediation_inputs(workspace, execution_branch) do
     cond do
@@ -4964,8 +4954,6 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_known_sha(sha) when is_binary(sha) do
     if known_git_sha?(sha), do: sha, else: nil
   end
-
-  defp normalize_known_sha(_sha), do: nil
 
   defp git_trimmed(workspace, args) when is_binary(workspace) and is_list(args) do
     case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
