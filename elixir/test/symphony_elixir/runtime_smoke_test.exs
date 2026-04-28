@@ -20,6 +20,7 @@ defmodule SymphonyElixir.RuntimeSmokeTest do
         tracker_kind: "memory",
         workspace_root: workspace_root,
         tracker_active_states: ["In Progress"],
+        codex_approval_policy: "never",
         codex_stall_timeout_ms: 100,
         max_turns: 1,
         hook_before_run: """
@@ -270,6 +271,7 @@ defmodule SymphonyElixir.RuntimeSmokeTest do
         tracker_kind: "memory",
         workspace_root: workspace_root,
         tracker_active_states: ["In Progress"],
+        codex_approval_policy: "never",
         codex_stall_timeout_ms: 111,
         max_turns: 1,
         hook_before_run: "printf 'v1' > workflow-contract.txt",
@@ -294,6 +296,7 @@ defmodule SymphonyElixir.RuntimeSmokeTest do
         tracker_kind: "memory",
         workspace_root: workspace_root,
         tracker_active_states: ["In Progress"],
+        codex_approval_policy: "never",
         codex_stall_timeout_ms: 222,
         max_turns: 1,
         hook_before_run: "printf 'v2' > workflow-contract.txt",

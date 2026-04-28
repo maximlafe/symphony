@@ -4711,6 +4711,108 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "stale remote-tracking head with local runtime ahead does not block dispatch" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-stale-remote-head-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-stale-remote-head"
+    issue_identifier = "MT-STALE-REMOTE-HEAD"
+    trace_id = "trace-stale-remote-head"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: issue_id,
+          identifier: issue_identifier,
+          title: "Ignore stale remote-tracking head when local runtime is ahead",
+          description: "Remote stale refs must not force a stale workspace blocker",
+          state: "In Progress",
+          url: "https://example.org/issues/#{issue_identifier}",
+          labels: []
+        }
+      ])
+
+      {runtime_head_sha, stale_remote_head_sha} =
+        create_remote_stale_local_ahead_workspace!(workspace_root, issue_identifier, "merge/stale-remote-01")
+
+      refute runtime_head_sha == stale_remote_head_sha
+
+      orchestrator_name = Module.concat(__MODULE__, :StaleRemoteHeadOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      retry_token = make_ref()
+
+      :sys.replace_state(pid, fn _ ->
+        base_dispatch_state("primary")
+        |> Map.put(:poll_interval_ms, initial_state.poll_interval_ms)
+        |> Map.put(:retry_attempts, %{
+          issue_id => %{
+            attempt: 1,
+            timer_ref: nil,
+            retry_token: retry_token,
+            due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+            identifier: issue_identifier,
+            trace_id: trace_id,
+            error: "retry stale remote-tracking head"
+          }
+        })
+      end)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          match?(
+            %{
+              runtime_head_sha: ^runtime_head_sha,
+              expected_head_sha: ^runtime_head_sha
+            },
+            Map.get(state.running, issue_id)
+          )
+        end)
+
+      assert %{
+               ^issue_id => %{
+                 pid: worker_pid,
+                 runtime_head_sha: ^runtime_head_sha,
+                 expected_head_sha: ^runtime_head_sha
+               }
+             } = state.running
+
+      refute_received {:memory_tracker_comment, ^issue_id, _comment}
+      refute_received {:memory_tracker_state_update, ^issue_id, "Blocked"}
+
+      Process.exit(worker_pid, :kill)
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "known non-behind workspace head mismatch blocks dispatch before the worker starts" do
     test_root =
       Path.join(
@@ -4784,7 +4886,7 @@ defmodule SymphonyElixir.CoreTest do
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
       assert blocker_body =~ "selected_rule: `stale_workspace_head`"
       assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
-      assert blocker_body =~ "known_mismatch_non_behind"
+      assert blocker_body =~ "reason=diverged"
       assert blocker_body =~ runtime_head_sha
       assert blocker_body =~ expected_head_sha
       assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
@@ -5684,6 +5786,27 @@ defmodule SymphonyElixir.CoreTest do
     File.write!(Path.join(workspace, ".symphony-working-branch"), execution_branch <> "\n")
 
     {runtime_head_sha, expected_head_sha}
+  end
+
+  defp create_remote_stale_local_ahead_workspace!(workspace_root, issue_identifier, execution_branch) do
+    workspace = init_workspace_repo!(workspace_root, issue_identifier)
+
+    git_ok!(workspace, ["checkout", "-b", execution_branch])
+    File.write!(Path.join(workspace, "tracked.txt"), "stale remote head\n")
+    git_ok!(workspace, ["add", "tracked.txt"])
+    git_ok!(workspace, ["commit", "-m", "stale remote head"])
+    stale_remote_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
+
+    git_ok!(workspace, ["update-ref", "refs/remotes/origin/#{execution_branch}", stale_remote_head_sha])
+
+    File.write!(Path.join(workspace, "tracked.txt"), "local ahead runtime head\n")
+    git_ok!(workspace, ["add", "tracked.txt"])
+    git_ok!(workspace, ["commit", "-m", "local ahead runtime head"])
+    runtime_head_sha = git_output!(workspace, ["rev-parse", "HEAD"])
+
+    File.write!(Path.join(workspace, ".symphony-working-branch"), execution_branch <> "\n")
+
+    {runtime_head_sha, stale_remote_head_sha}
   end
 
   defp create_matching_workspace!(workspace_root, issue_identifier, execution_branch) do
@@ -6728,16 +6851,8 @@ defmodule SymphonyElixir.CoreTest do
                  |> String.trim_leading("JSON:")
                  |> Jason.decode!()
                  |> then(fn payload ->
-                   expected_approval_policy = %{
-                     "reject" => %{
-                       "sandbox_approval" => true,
-                       "rules" => true,
-                       "mcp_elicitations" => true
-                     }
-                   }
-
                    payload["method"] == "thread/start" &&
-                     get_in(payload, ["params", "approvalPolicy"]) == expected_approval_policy &&
+                     get_in(payload, ["params", "approvalPolicy"]) == "never" &&
                      get_in(payload, ["params", "sandbox"]) == "workspace-write" &&
                      get_in(payload, ["params", "cwd"]) == canonical_workspace
                  end)
@@ -6761,17 +6876,9 @@ defmodule SymphonyElixir.CoreTest do
                  |> String.trim_leading("JSON:")
                  |> Jason.decode!()
                  |> then(fn payload ->
-                   expected_approval_policy = %{
-                     "reject" => %{
-                       "sandbox_approval" => true,
-                       "rules" => true,
-                       "mcp_elicitations" => true
-                     }
-                   }
-
                    payload["method"] == "turn/start" &&
                      get_in(payload, ["params", "cwd"]) == canonical_workspace &&
-                     get_in(payload, ["params", "approvalPolicy"]) == expected_approval_policy &&
+                     get_in(payload, ["params", "approvalPolicy"]) == "never" &&
                      get_in(payload, ["params", "sandboxPolicy"]) == expected_turn_sandbox_policy
                  end)
                else

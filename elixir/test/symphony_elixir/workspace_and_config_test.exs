@@ -2176,13 +2176,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.codex.cost_profiles == %{}
     assert config.codex.cost_policy == %{}
 
-    assert config.codex.approval_policy == %{
-             "reject" => %{
-               "sandbox_approval" => true,
-               "rules" => true,
-               "mcp_elicitations" => true
-             }
-           }
+    assert config.codex.approval_policy == "never"
 
     assert config.codex.thread_sandbox == "workspace-write"
 

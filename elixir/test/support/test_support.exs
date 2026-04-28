@@ -168,7 +168,7 @@ defmodule SymphonyElixir.TestSupport do
           codex_planning_command: nil,
           codex_implementation_command: nil,
           codex_handoff_command: nil,
-          codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
+          codex_approval_policy: "never",
           codex_thread_sandbox: "workspace-write",
           codex_turn_sandbox_policy: nil,
           codex_turn_timeout_ms: 3_600_000,

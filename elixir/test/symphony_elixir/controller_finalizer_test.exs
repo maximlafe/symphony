@@ -2,7 +2,7 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Codex.DynamicTool
-  alias SymphonyElixir.{Config, ControllerFinalizer}
+  alias SymphonyElixir.{Config, ControllerFinalizer, HandoffCheck}
   alias SymphonyElixir.Linear.Issue
 
   defmodule TrackerStub do
@@ -157,7 +157,7 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
 
   test "run/3 completes deterministic finalization and transitions issue state on success" do
     issue = %Issue{id: "issue-success", identifier: "LET-462-SUCCESS", state: "In Progress"}
-    _workspace = create_workspace!(issue.identifier)
+    workspace = create_workspace!(issue.identifier)
 
     checkpoint = %{
       "head" => "head-success",
@@ -185,10 +185,14 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
         })
 
       "symphony_handoff_check", _args, _opts ->
+        maybe_write_contract_lock(workspace, issue.id, "test-contract-revision")
+
         tool_success(%{
           "manifest" => %{
             "passed" => true,
             "summary" => "final gate is fresh",
+            "contract_revision" => "test-contract-revision",
+            "issue" => %{"id" => issue.id},
             "manifest_path" => ".symphony/verification/handoff-manifest.json"
           }
         })
@@ -227,6 +231,64 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
 
     assert payload.reason =~ "workspace is unavailable"
     assert payload.checkpoint["controller_finalizer"]["status"] == "action_required"
+  end
+
+  test "run/3 blocks review transition when acceptance contract lock mismatches handoff manifest" do
+    issue = %Issue{id: "issue-lock-mismatch", identifier: "LET-462-LOCK-MISMATCH", state: "In Progress"}
+    workspace = create_workspace!(issue.identifier)
+
+    checkpoint = %{
+      "head" => "head-lock-mismatch",
+      "open_pr" => %{"number" => 142, "url" => "https://github.com/acme/symphony/pull/142"}
+    }
+
+    executor = fn
+      "sync_workpad", _args, _opts ->
+        tool_success(%{"comment_id" => "workpad-comment"})
+
+      "github_wait_for_checks", _args, _opts ->
+        tool_success(%{
+          "all_green" => true,
+          "pending_checks" => [],
+          "failed_checks" => [],
+          "checks" => []
+        })
+
+      "github_pr_snapshot", _args, _opts ->
+        tool_success(%{
+          "url" => "https://github.com/acme/symphony/pull/142",
+          "state" => "OPEN",
+          "has_pending_checks" => false,
+          "has_actionable_feedback" => false
+        })
+
+      "symphony_handoff_check", _args, _opts ->
+        maybe_write_contract_lock(workspace, issue.id, "lock-revision-old")
+
+        tool_success(%{
+          "manifest" => %{
+            "passed" => true,
+            "summary" => "final gate is fresh",
+            "contract_revision" => "lock-revision-new",
+            "issue" => %{"id" => issue.id},
+            "manifest_path" => ".symphony/verification/handoff-manifest.json"
+          }
+        })
+    end
+
+    assert {:fallback, payload} =
+             ControllerFinalizer.run(
+               issue,
+               checkpoint,
+               repo: "acme/symphony",
+               tracker_module: TrackerStub,
+               tool_executor: executor
+             )
+
+    assert payload.reason == "handoff manifest transition guard failed"
+    assert payload.checkpoint["controller_finalizer"]["status"] == "action_required"
+    assert payload.details["reason_code"] == "handoff_manifest_stale"
+    refute_receive {:tracker_state_update, "issue-lock-mismatch", "In Review"}
   end
 
   test "run/3 returns retry when sync_workpad fails transiently" do
@@ -1116,11 +1178,24 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
   defp script_executor(script) when is_map(script) do
     fn tool, args, tool_opts ->
       case Map.get(script, tool) do
-        {:ok, payload} -> tool_success(payload)
-        {:error, payload} -> tool_failure(payload)
-        {:raw, response} -> response
-        fun when is_function(fun, 2) -> encode_result(fun.(args, tool_opts))
-        nil -> raise "unexpected tool call: #{tool}"
+        {:ok, payload} ->
+          payload
+          |> maybe_materialize_handoff_contract(tool, args, tool_opts)
+          |> tool_success()
+
+        {:error, payload} ->
+          tool_failure(payload)
+
+        {:raw, response} ->
+          response
+
+        fun when is_function(fun, 2) ->
+          fun.(args, tool_opts)
+          |> encode_result()
+          |> maybe_materialize_handoff_response(tool, args, tool_opts)
+
+        nil ->
+          raise "unexpected tool call: #{tool}"
       end
     end
   end
@@ -1128,6 +1203,65 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
   defp encode_result({:ok, payload}), do: tool_success(payload)
   defp encode_result({:error, payload}), do: tool_failure(payload)
   defp encode_result(response) when is_map(response), do: response
+
+  defp maybe_materialize_handoff_response(response, tool, args, tool_opts)
+       when is_map(response) and tool == "symphony_handoff_check" do
+    with true <- response["success"] == true,
+         %{"contentItems" => [%{"text" => text} | _]} <- response,
+         {:ok, payload} <- Jason.decode(text) do
+      payload = maybe_materialize_handoff_contract(payload, tool, args, tool_opts)
+
+      %{
+        response
+        | "contentItems" => [%{"type" => "inputText", "text" => Jason.encode!(payload)}]
+      }
+    else
+      _ -> response
+    end
+  end
+
+  defp maybe_materialize_handoff_response(response, _tool, _args, _tool_opts), do: response
+
+  defp maybe_materialize_handoff_contract(payload, "symphony_handoff_check", args, tool_opts)
+       when is_map(payload) and is_map(args) and is_list(tool_opts) do
+    case payload["manifest"] do
+      %{} = manifest ->
+        workspace = Keyword.get(tool_opts, :workspace)
+        issue_id = args["issue_id"]
+        revision = manifest["contract_revision"] || get_in(manifest, ["acceptance_contract", "revision"]) || "test-contract-revision"
+
+        normalized_manifest =
+          manifest
+          |> Map.put_new("contract_revision", revision)
+          |> Map.put_new("issue", %{"id" => issue_id})
+
+        maybe_write_contract_lock(workspace, issue_id, revision)
+
+        Map.put(payload, "manifest", normalized_manifest)
+
+      _ ->
+        payload
+    end
+  end
+
+  defp maybe_materialize_handoff_contract(payload, _tool, _args, _tool_opts), do: payload
+
+  defp maybe_write_contract_lock(workspace, issue_id, revision)
+       when is_binary(workspace) and workspace != "" and is_binary(revision) and revision != "" do
+    lock_path = Path.join(workspace, HandoffCheck.default_contract_lock_path())
+
+    lock_payload = %{
+      "version" => 1,
+      "issue" => %{"id" => issue_id},
+      "contract_revision" => revision,
+      "acceptance_contract" => %{"revision" => revision}
+    }
+
+    File.mkdir_p!(Path.dirname(lock_path))
+    File.write!(lock_path, Jason.encode!(lock_payload, pretty: true))
+  end
+
+  defp maybe_write_contract_lock(_workspace, _issue_id, _revision), do: :ok
 
   defp tool_success(payload) when is_map(payload) do
     %{

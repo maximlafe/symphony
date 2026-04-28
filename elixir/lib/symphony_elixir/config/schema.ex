@@ -210,15 +210,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:implementation_command, :string)
       field(:handoff_command, :string)
 
-      field(:approval_policy, StringOrMap,
-        default: %{
-          "reject" => %{
-            "sandbox_approval" => true,
-            "rules" => true,
-            "mcp_elicitations" => true
-          }
-        }
-      )
+      field(:approval_policy, StringOrMap, default: "never")
 
       field(:thread_sandbox, :string, default: "workspace-write")
       field(:turn_sandbox_policy, :map)
