@@ -212,6 +212,57 @@ defmodule SymphonyElixir.HandoffCheckTest do
     end
   end
 
+  test "write_acceptance_contract_lock fails closed on malformed acceptance matrix rows" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-handoff-contract-lock-malformed-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      File.mkdir_p!(workspace_root)
+
+      malformed_issue = %{
+        "id" => "LET-LOCK-BAD",
+        "identifier" => "LET-LOCK-BAD",
+        "description" => """
+        ## Acceptance Matrix
+
+        | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+        | -- | -- | -- | -- | -- | -- |
+        | AM-1 | malformed row | lock freeze must fail | test | mix test
+        """
+      }
+
+      assert {:error, {:acceptance_matrix_parse_error, details}} =
+               HandoffCheck.write_acceptance_contract_lock(workspace_root, malformed_issue)
+
+      assert details["reason"] =~ "cannot be frozen"
+      assert details["issue_id"] == "LET-LOCK-BAD"
+      assert Enum.any?(details["errors"], &String.contains?(&1, "not terminated"))
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "acceptance contract parser recovers continued acceptance matrix rows" do
+    description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | recovered row | row continuation is merged | test | mix test test/symphony_elixir/handoff_check_test.exs
+    | run_executed |
+    | AM-2 | intact row | parser remains stable | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    """
+
+    contract = HandoffCheck.acceptance_contract_from_issue_description(description)
+    errors = HandoffCheck.acceptance_matrix_parse_errors(description)
+
+    assert errors == []
+    assert Enum.map(get_in(contract, ["payload", "acceptance_matrix"]), & &1["id"]) == ["AM-1", "AM-2"]
+  end
+
   test "acceptance contract helpers handle invalid inputs and lock edge cases" do
     assert is_binary(HandoffCheck.acceptance_contract_from_issue_description(nil)["revision"])
     assert {:error, :invalid_contract_lock_input} = HandoffCheck.write_acceptance_contract_lock(nil, %{}, [])

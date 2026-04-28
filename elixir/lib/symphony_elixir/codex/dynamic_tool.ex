@@ -406,6 +406,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
     with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
          :ok <- guard_unsupported_linear_comments_filter(query),
+         :ok <- maybe_guard_issue_description_update(query, variables),
          :ok <- maybe_guard_review_ready_issue_update(query, variables, linear_client, opts),
          {:ok, response} <- linear_client.(query, variables, []) do
       graphql_response(response)
@@ -1390,6 +1391,87 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
+  defp maybe_guard_issue_description_update(query, variables) when is_binary(query) do
+    if issue_update_query?(query) do
+      case issue_update_description(query, variables) do
+        description when is_binary(description) ->
+          maybe_guard_acceptance_matrix_description(description, review_ready_issue_id(query, variables))
+
+        _ ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_guard_issue_description_update(_query, _variables), do: :ok
+
+  defp maybe_guard_acceptance_matrix_description(description, issue_id) when is_binary(description) do
+    if Regex.match?(~r/(?:^|\n)##\s+Acceptance Matrix\b/m, description) do
+      case HandoffCheck.acceptance_matrix_parse_errors(description) do
+        [] ->
+          :ok
+
+        errors ->
+          {:error,
+           {:issue_description_update_blocked,
+            %{
+              "reason" => "issueUpdate(description) contains malformed `Acceptance Matrix` rows; update blocked before write",
+              "reason_code" => "acceptance_matrix_parse_error",
+              "issue_id" => issue_id,
+              "acceptance_matrix_errors" => errors
+            }}}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp issue_update_description(query, variables) when is_binary(query) and is_map(variables) do
+    issue_update_description_from_variables(variables) || issue_update_description_from_literal(query)
+  end
+
+  defp issue_update_description(query, _variables) when is_binary(query) do
+    issue_update_description_from_literal(query)
+  end
+
+  defp issue_update_description(_query, _variables), do: nil
+
+  defp issue_update_description_from_variables(%{} = variables) do
+    graphql_map_find_string_value_by_key(variables, "description")
+  end
+
+  defp issue_update_description_from_variables(_variables), do: nil
+
+  defp issue_update_description_from_literal(query) when is_binary(query) do
+    case Regex.run(~r/\bissueUpdate\s*\([^)]*\bdescription\s*:\s*"((?:[^"\\]|\\.)*)"/s, query, capture: :all_but_first) do
+      [value] when is_binary(value) and value != "" ->
+        decode_graphql_string_literal(value)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp issue_update_description_from_literal(_query), do: nil
+
+  defp decode_graphql_string_literal(value) when is_binary(value) do
+    case Jason.decode("\"#{value}\"") do
+      {:ok, decoded} when is_binary(decoded) ->
+        if String.trim(decoded) == "", do: nil, else: decoded
+
+      _ ->
+        nil
+    end
+  end
+
+  defp issue_update_query?(query) when is_binary(query) do
+    Regex.match?(~r/\bissueUpdate\s*\(/, query)
+  end
+
+  defp issue_update_query?(_query), do: false
+
   defp review_ready_transition_guard_mode(query, variables, state_id, issue_id) do
     cond do
       review_ready_transition_intent?(query, variables) and
@@ -1588,6 +1670,35 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp graphql_map_contains_key?(_value, _keys), do: false
+
+  defp graphql_map_find_string_value_by_key(%{} = value, wanted_key) when is_binary(wanted_key) do
+    Enum.find_value(value, fn {map_key, nested_value} ->
+      key =
+        cond do
+          is_binary(map_key) -> map_key
+          is_atom(map_key) -> Atom.to_string(map_key)
+          true -> nil
+        end
+
+      cond do
+        is_binary(key) and key == wanted_key and is_binary(nested_value) and String.trim(nested_value) != "" ->
+          nested_value
+
+        is_map(nested_value) or is_list(nested_value) ->
+          graphql_map_find_string_value_by_key(nested_value, wanted_key)
+
+        true ->
+          nil
+      end
+    end)
+  end
+
+  defp graphql_map_find_string_value_by_key(value, wanted_key)
+       when is_list(value) and is_binary(wanted_key) do
+    Enum.find_value(value, &graphql_map_find_string_value_by_key(&1, wanted_key))
+  end
+
+  defp graphql_map_find_string_value_by_key(_value, _wanted_key), do: nil
 
   defp present_graphql_key_value?(value) when is_binary(value), do: String.trim(value) != ""
   defp present_graphql_key_value?(nil), do: false
@@ -2817,6 +2928,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{
       "error" => %{
         "message" => "review-ready issue transitions require a successful `symphony_handoff_check` in the current workspace.",
+        "details" => details
+      }
+    }
+  end
+
+  defp tool_error_payload({:issue_description_update_blocked, details}) do
+    %{
+      "error" => %{
+        "message" => "issueUpdate(description) is blocked until `Acceptance Matrix` table rows are valid.",
         "details" => details
       }
     }
