@@ -285,6 +285,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert Enum.any?(errors, &String.contains?(&1, "line is malformed: orphan | fragment"))
     assert Enum.any?(errors, &String.contains?(&1, "line is malformed: dangling | fragment"))
     assert Enum.any?(errors, &String.contains?(&1, "not terminated before next row starts"))
+  end
 
   test "acceptance contract parser preserves UTF-8 matrix rows for lock encoding" do
     description = """
