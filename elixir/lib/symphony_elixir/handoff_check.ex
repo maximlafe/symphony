@@ -723,7 +723,7 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp split_sections(body) do
     {sections, current_title, current_lines} =
-      Enum.reduce(String.split(body, ~r/\R/, trim: false), {%{}, nil, []}, fn line, {sections, current_title, current_lines} ->
+      Enum.reduce(String.split(body, ~r/\R/u, trim: false), {%{}, nil, []}, fn line, {sections, current_title, current_lines} ->
         case Regex.run(~r/^###\s+(.+?)\s*$/, line) do
           [_, title] ->
             sections =
@@ -747,7 +747,7 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp parse_checkbox_items(section_body) when is_binary(section_body) do
     section_body
-    |> String.split(~r/\R/, trim: true)
+    |> String.split(~r/\R/u, trim: true)
     |> Enum.map(&Regex.run(~r/^- \[([ xX])\]\s+(.*)$/, &1))
     |> Enum.reject(&is_nil/1)
     |> Enum.map(fn [_, checked, text] ->
@@ -884,7 +884,7 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp parse_checkpoint(section_body) when is_binary(section_body) do
     section_body
-    |> String.split(~r/\R/, trim: true)
+    |> String.split(~r/\R/u, trim: true)
     |> Enum.reduce(%{}, fn line, acc ->
       case Regex.run(~r/^- `([^`]+)`: (.+)$/, line) do
         [_, key, value] -> Map.put(acc, key, normalize_checkpoint_value(value))
@@ -900,7 +900,7 @@ defmodule SymphonyElixir.HandoffCheck do
 
     {rows, row_recovery_errors} =
       section_body
-      |> String.split(~r/\R/, trim: true)
+      |> String.split(~r/\R/u, trim: true)
       |> Enum.map(&String.trim/1)
       |> acceptance_matrix_rows_from_lines()
 

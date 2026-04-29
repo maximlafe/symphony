@@ -665,7 +665,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
   defp parse_validation_items(workpad_body) when is_binary(workpad_body) do
     workpad_body
     |> validation_section()
-    |> String.split(~r/\R/, trim: true)
+    |> String.split(~r/\R/u, trim: true)
     |> Enum.map(&Regex.run(~r/^- \[([ xX])\]\s+(.*)$/, &1))
     |> Enum.reject(&is_nil/1)
     |> Enum.map(fn [_, checked, text] ->
@@ -678,7 +678,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
   end
 
   defp validation_section(workpad_body) when is_binary(workpad_body) do
-    case Regex.named_captures(~r/###\s+(Validation|Проверка)\s*\R(?<body>.*?)(?:\R###\s+|\z)/ms, workpad_body) do
+    case Regex.named_captures(~r/###\s+(Validation|Проверка)\s*\R(?<body>.*?)(?:\R###\s+|\z)/msu, workpad_body) do
       %{"body" => body} -> body
       _ -> ""
     end
@@ -749,7 +749,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
 
   defp split_git_lines(output) when is_binary(output) do
     output
-    |> String.split(~r/\R/, trim: true)
+    |> String.split(~r/\R/u, trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
   end

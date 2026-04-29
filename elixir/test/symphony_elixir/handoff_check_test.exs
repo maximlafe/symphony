@@ -263,6 +263,24 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert Enum.map(get_in(contract, ["payload", "acceptance_matrix"]), & &1["id"]) == ["AM-1", "AM-2"]
   end
 
+  test "acceptance contract parser preserves UTF-8 matrix rows for lock encoding" do
+    description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | UTF-8 row | Текущий шаг и детали находятся в устойчивой разметке | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    | AM-2 | UTF-8 row | Совместимость API сохранена: raw `attached` остается в JSON | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    """
+
+    contract = HandoffCheck.acceptance_contract_from_issue_description(description)
+    matrix_items = get_in(contract, ["payload", "acceptance_matrix"])
+
+    assert Enum.map(matrix_items, & &1["id"]) == ["AM-1", "AM-2"]
+    assert Enum.all?(matrix_items, &String.valid?(&1["expected_outcome"]))
+    assert {:ok, _json} = Jason.encode(contract)
+  end
+
   test "acceptance contract helpers handle invalid inputs and lock edge cases" do
     assert is_binary(HandoffCheck.acceptance_contract_from_issue_description(nil)["revision"])
     assert {:error, :invalid_contract_lock_input} = HandoffCheck.write_acceptance_contract_lock(nil, %{}, [])
