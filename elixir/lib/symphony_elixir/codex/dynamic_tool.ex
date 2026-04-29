@@ -698,7 +698,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp split_git_lines(output) when is_binary(output) do
     output
-    |> String.split(~r/\R/, trim: true)
+    |> String.split(~r/\R/u, trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
   end
