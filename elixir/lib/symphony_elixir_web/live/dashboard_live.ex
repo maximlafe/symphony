@@ -93,13 +93,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
       %{coalesced: true} ->
         {:noreply,
          socket
-         |> assign(:refresh_notice, "Refresh already queued. Waiting for the current poll cycle to finish.")
+         |> assign(
+           :refresh_notice,
+           "Refresh already queued. Waiting for the current poll cycle to finish."
+         )
          |> assign(:refresh_error, nil)}
 
       %{} ->
         {:noreply,
          socket
-         |> assign(:refresh_notice, "Refresh queued. The dashboard will update after the next reconcile finishes.")
+         |> assign(
+           :refresh_notice,
+           "Refresh queued. The dashboard will update after the next reconcile finishes."
+         )
          |> assign(:refresh_error, nil)}
     end
   end
@@ -246,7 +252,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
                   <col style="width: 8.5rem;" />
-                  <col />
+                  <col style="width: 24rem;" />
                   <col style="width: 10rem;" />
                 </colgroup>
                 <thead>
@@ -300,7 +306,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="detail-stack">
                         <span class={lifecycle_badge_class(entry.lifecycle_state)}>
-                          <%= entry.lifecycle_state || "n/a" %>
+                          <%= lifecycle_label(entry.lifecycle_state) %>
                         </span>
                         <span :if={entry.replacement_of_session_id} class="muted cell-break">
                           replaces
@@ -350,25 +356,25 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </div>
                     </td>
                     <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
-                    <td>
-                      <div class="detail-stack">
-                        <span class="cell-break">
+                    <td class="current-step-cell">
+                      <div class="current-step-stack">
+                        <span class="current-step-primary">
                           <%= entry.current_step || "n/a" %>
                         </span>
-                        <span class="muted event-meta">
+                        <span class="current-step-detail muted event-meta">
                           <%= entry.last_message || to_string(entry.last_event || "n/a") %>
                         </span>
-                        <span :if={entry.verification_summary} class="muted cell-break">
+                        <span :if={entry.verification_summary} class="current-step-detail muted">
                           <%= entry.verification_summary %>
                         </span>
                         <span
                           :if={entry.verification_checked_at}
-                          class="muted event-meta"
+                          class="current-step-detail muted event-meta"
                         >
                           verified
                           <span class="mono numeric"><%= entry.verification_checked_at %></span>
                         </span>
-                        <span :if={entry.last_event_at} class="muted event-meta">
+                        <span :if={entry.last_event_at} class="current-step-detail muted event-meta">
                           <span class="mono numeric"><%= entry.last_event_at %></span>
                         </span>
                       </div>
@@ -640,8 +646,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp token_reason_polling_share(_payload), do: "n/a"
 
-  defp reason_total_tokens(%{"total_tokens" => total_tokens}) when is_integer(total_tokens), do: total_tokens
-  defp reason_total_tokens(%{total_tokens: total_tokens}) when is_integer(total_tokens), do: total_tokens
+  defp reason_total_tokens(%{"total_tokens" => total_tokens}) when is_integer(total_tokens),
+    do: total_tokens
+
+  defp reason_total_tokens(%{total_tokens: total_tokens}) when is_integer(total_tokens),
+    do: total_tokens
+
   defp reason_total_tokens(_totals), do: 0
 
   defp format_runtime_and_turns(started_at, turn_count, now)
@@ -737,7 +747,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
       String.contains?(normalized, "waiting") ->
         "#{base} state-badge-warning"
 
-      normalized in ["editing", "targeted tests", "runtime proof", "full validate", "publishing pr"] ->
+      normalized in [
+        "editing",
+        "targeted tests",
+        "runtime proof",
+        "full validate",
+        "publishing pr"
+      ] ->
         "#{base} state-badge-active"
 
       true ->
@@ -765,6 +781,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
       "retry_scheduled" -> "#{base} state-badge-warning"
       _ -> base
     end
+  end
+
+  defp lifecycle_label("attached"), do: "Active session"
+  defp lifecycle_label("launch_pending"), do: "Launch pending"
+  defp lifecycle_label("replacing"), do: "Replacing session"
+  defp lifecycle_label("retry_scheduled"), do: "Retry scheduled"
+  defp lifecycle_label(nil), do: "n/a"
+
+  defp lifecycle_label(lifecycle_state) do
+    lifecycle_state
+    |> to_string()
+    |> String.replace("_", " ")
+    |> String.capitalize()
   end
 
   defp limit_chip_class(true), do: "limit-chip mono"

@@ -404,7 +404,7 @@ html.liveview-connected .status-badge-liveview-offline,
 
 .data-table-running {
   table-layout: fixed;
-  min-width: 1360px;
+  min-width: 1720px;
 }
 
 .data-table-codex-accounts {
@@ -431,6 +431,7 @@ html.liveview-connected .status-badge-liveview-offline,
 .issue-stack,
 .session-stack,
 .detail-stack,
+.current-step-stack,
 .token-stack,
 .account-action-stack {
   display: grid;
@@ -442,6 +443,33 @@ html.liveview-connected .status-badge-liveview-offline,
   white-space: normal;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.current-step-cell {
+  min-width: 0;
+}
+
+.current-step-stack {
+  max-width: 100%;
+  line-height: 1.35;
+}
+
+.current-step-primary,
+.current-step-detail {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.current-step-primary {
+  font-weight: 650;
+  color: var(--text);
+}
+
+.current-step-detail {
+  display: block;
 }
 
 .limit-stack {
