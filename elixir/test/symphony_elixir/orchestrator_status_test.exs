@@ -5,7 +5,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     alias SymphonyElixir.Linear.Issue
 
     def fetch_candidate_issues do
-      {:ok, configured_issues()}
+      send_tracker_event(:fetch_candidate_issues)
+
+      case Application.get_env(:symphony_elixir, :phase_comment_linear_fetch_candidate_result) do
+        nil -> {:ok, configured_issues()}
+        result -> result
+      end
     end
 
     def fetch_issues_by_states(states) when is_list(states) do
@@ -21,6 +26,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
 
     def fetch_issue_states_by_ids(issue_ids) when is_list(issue_ids) do
+      send_tracker_event({:fetch_issue_states_by_ids, issue_ids})
+
+      case Application.get_env(:symphony_elixir, :phase_comment_linear_fetch_issue_states_result) do
+        nil -> fetch_configured_issue_states(issue_ids)
+        result -> result
+      end
+    end
+
+    defp fetch_configured_issue_states(issue_ids) do
       wanted_ids = MapSet.new(issue_ids)
 
       {:ok,
@@ -41,6 +55,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     defp configured_issues do
       Application.get_env(:symphony_elixir, :phase_comment_linear_issues, [])
+    end
+
+    defp send_tracker_event(event) do
+      case Application.get_env(:symphony_elixir, :phase_comment_linear_recipient) do
+        pid when is_pid(pid) -> send(pid, event)
+        _ -> :ok
+      end
     end
 
     defp send_graphql_event(query, variables) do
@@ -1232,6 +1253,224 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       File.rm_rf(test_root)
       File.rm_rf(issue_tmp_dir)
     end
+  end
+
+  @tag :let_539
+  test "retry timer refreshes active issue state by id without candidate poll" do
+    issue_id = "issue-let-539-active"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "LET-539-ACTIVE",
+      title: "Targeted retry active issue",
+      description: "Retry should use targeted state refresh",
+      state: "In Progress",
+      url: "https://example.org/issues/LET-539-ACTIVE",
+      updated_at: DateTime.utc_now()
+    }
+
+    with_phase_comment_linear_client([issue], fn ->
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "linear",
+        tracker_active_states: ["Todo", "In Progress", "Merging", "Rework"],
+        max_retry_backoff_ms: 10
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :Let539ActiveRetryOrchestrator)
+
+      {:ok, pid} =
+        Orchestrator.start_link(
+          name: orchestrator_name,
+          start_immediately?: false,
+          run_startup_housekeeping?: false
+        )
+
+      on_exit(fn -> stop_orchestrator(pid) end)
+
+      retry_token = install_retry_attempt(pid, issue_id, issue.identifier, attempt: 2)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
+      refute_receive :fetch_candidate_issues, 100
+
+      refreshed_state =
+        wait_for_orchestrator_state(pid, fn state ->
+          retry = state.retry_attempts[issue_id]
+
+          is_map(retry) and retry.identifier == issue.identifier and
+            retry.error == "no healthy codex account available"
+        end)
+
+      assert MapSet.member?(refreshed_state.claimed, issue_id)
+    end)
+  end
+
+  @tag :let_539
+  test "retry timer releases missing issue after targeted state refresh without candidate poll" do
+    issue_id = "issue-let-539-missing"
+
+    with_phase_comment_linear_client([], fn ->
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
+
+      orchestrator_name = Module.concat(__MODULE__, :Let539MissingRetryOrchestrator)
+
+      {:ok, pid} =
+        Orchestrator.start_link(
+          name: orchestrator_name,
+          start_immediately?: false,
+          run_startup_housekeeping?: false
+        )
+
+      on_exit(fn -> stop_orchestrator(pid) end)
+
+      retry_token = install_retry_attempt(pid, issue_id, "LET-539-MISSING", attempt: 1)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
+      refute_receive :fetch_candidate_issues, 100
+
+      wait_for_orchestrator_state(pid, fn state ->
+        not MapSet.member?(state.claimed, issue_id) and
+          not Map.has_key?(state.retry_attempts, issue_id)
+      end)
+    end)
+  end
+
+  @tag :let_539
+  test "retry timer releases terminal issue after targeted state refresh" do
+    issue_id = "issue-let-539-terminal"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "LET-539-TERMINAL",
+      title: "Targeted retry terminal issue",
+      description: "Terminal retry should release claim",
+      state: "Done",
+      url: "https://example.org/issues/LET-539-TERMINAL",
+      updated_at: DateTime.utc_now()
+    }
+
+    with_phase_comment_linear_client([issue], fn ->
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "linear",
+        tracker_active_states: ["Todo", "In Progress", "Merging", "Rework"],
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :Let539TerminalRetryOrchestrator)
+
+      {:ok, pid} =
+        Orchestrator.start_link(
+          name: orchestrator_name,
+          start_immediately?: false,
+          run_startup_housekeeping?: false
+        )
+
+      on_exit(fn -> stop_orchestrator(pid) end)
+
+      retry_token = install_retry_attempt(pid, issue_id, issue.identifier, attempt: 1)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
+      refute_receive :fetch_candidate_issues, 100
+
+      wait_for_orchestrator_state(pid, fn state ->
+        not MapSet.member?(state.claimed, issue_id) and
+          not Map.has_key?(state.retry_attempts, issue_id)
+      end)
+    end)
+  end
+
+  @tag :let_539
+  test "retry targeted fetch error reschedules transient retry with metadata preserved" do
+    issue_id = "issue-let-539-error"
+
+    with_phase_comment_linear_client([], fn ->
+      Application.put_env(
+        :symphony_elixir,
+        :phase_comment_linear_fetch_issue_states_result,
+        {:error, :linear_timeout}
+      )
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "linear",
+        max_retry_backoff_ms: 10
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :Let539FetchErrorRetryOrchestrator)
+
+      {:ok, pid} =
+        Orchestrator.start_link(
+          name: orchestrator_name,
+          start_immediately?: false,
+          run_startup_housekeeping?: false
+        )
+
+      on_exit(fn -> stop_orchestrator(pid) end)
+
+      retry_token =
+        install_retry_attempt(pid, issue_id, "LET-539-ERROR",
+          attempt: 3,
+          metadata: %{
+            trace_id: "trace-let-539",
+            delay_type: :continuation,
+            session_id: "session-let-539"
+          }
+        )
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
+      refute_receive :fetch_candidate_issues, 100
+
+      wait_for_orchestrator_state(pid, fn state ->
+        retry = state.retry_attempts[issue_id]
+
+        is_map(retry) and retry.identifier == "LET-539-ERROR" and
+          retry.trace_id == "trace-let-539" and retry.session_id == "session-let-539" and
+          retry.error_class == "transient" and
+          retry.error == "retry poll failed: :linear_timeout" and retry.delay_type == nil
+      end)
+    end)
+  end
+
+  @tag :let_539
+  test "normal dispatch poll still fetches candidate issues" do
+    issue = %Issue{
+      id: "issue-let-539-dispatch",
+      identifier: "LET-539-DISPATCH",
+      title: "Dispatch guard",
+      description: "Dispatch poll should keep full candidate query",
+      state: "Todo",
+      url: "https://example.org/issues/LET-539-DISPATCH",
+      updated_at: DateTime.utc_now()
+    }
+
+    with_phase_comment_linear_client([issue], fn ->
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "linear",
+        tracker_active_states: ["Todo", "In Progress"]
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :Let539DispatchPollOrchestrator)
+
+      {:ok, pid} =
+        Orchestrator.start_link(
+          name: orchestrator_name,
+          start_immediately?: false,
+          run_startup_housekeeping?: false
+        )
+
+      on_exit(fn -> stop_orchestrator(pid) end)
+
+      state = :sys.get_state(pid)
+      assert {:noreply, _updated_state} = Orchestrator.handle_info(:run_poll_cycle, state)
+
+      assert_receive :fetch_candidate_issues, 1_000
+    end)
   end
 
   test "merging issue does not trigger terminal cleanup" do
@@ -3929,6 +4168,73 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         Process.sleep(10)
         do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
       end
+    end
+  end
+
+  defp with_phase_comment_linear_client(issues, fun) when is_function(fun, 0) do
+    previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    previous_recipient = Application.get_env(:symphony_elixir, :phase_comment_linear_recipient)
+    previous_issues = Application.get_env(:symphony_elixir, :phase_comment_linear_issues)
+
+    previous_candidate_result =
+      Application.get_env(:symphony_elixir, :phase_comment_linear_fetch_candidate_result)
+
+    previous_issue_states_result =
+      Application.get_env(:symphony_elixir, :phase_comment_linear_fetch_issue_states_result)
+
+    try do
+      Application.put_env(:symphony_elixir, :linear_client_module, PhaseCommentLinearClient)
+      Application.put_env(:symphony_elixir, :phase_comment_linear_recipient, self())
+      Application.put_env(:symphony_elixir, :phase_comment_linear_issues, issues)
+
+      fun.()
+    after
+      restore_application_env(:linear_client_module, previous_client_module)
+      restore_application_env(:phase_comment_linear_recipient, previous_recipient)
+      restore_application_env(:phase_comment_linear_issues, previous_issues)
+      restore_application_env(:phase_comment_linear_fetch_candidate_result, previous_candidate_result)
+      restore_application_env(:phase_comment_linear_fetch_issue_states_result, previous_issue_states_result)
+    end
+  end
+
+  defp restore_application_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_application_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
+
+  defp install_retry_attempt(pid, issue_id, identifier, opts) do
+    retry_token = make_ref()
+    attempt = Keyword.get(opts, :attempt, 1)
+    metadata = Keyword.get(opts, :metadata, %{})
+
+    retry_entry =
+      Map.merge(
+        %{
+          attempt: attempt,
+          retry_token: retry_token,
+          timer_ref: nil,
+          due_at_ms: 0,
+          identifier: identifier,
+          trace_id: nil,
+          error: nil,
+          error_class: nil,
+          delay_type: :continuation
+        },
+        metadata
+      )
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | claimed: MapSet.put(state.claimed, issue_id),
+          retry_attempts: Map.put(state.retry_attempts, issue_id, retry_entry)
+      }
+    end)
+
+    retry_token
+  end
+
+  defp stop_orchestrator(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      Process.exit(pid, :normal)
     end
   end
 
