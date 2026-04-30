@@ -355,6 +355,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     conn = get(build_conn(), "/api/v1/state")
     state_payload = json_response(conn, 200)
+    dashboard_payload = json_response(get(build_conn(), "/api/dashboard"), 200)
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
@@ -447,6 +448,9 @@ defmodule SymphonyElixir.ExtensionsTest do
                "done_closed_keep_count" => 5
              }
            }
+
+    assert dashboard_payload == state_payload
+    assert json_response(get(build_conn(), "/health"), 200) == %{"status" => "ok"}
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
     issue_payload = json_response(conn, 200)
@@ -798,6 +802,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert json_response(post(build_conn(), "/api/v1/state", %{}), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
+    assert json_response(post(build_conn(), "/api/dashboard", %{}), 405) ==
+             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
+
+    assert json_response(post(build_conn(), "/health", %{}), 405) ==
+             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
+
     assert json_response(get(build_conn(), "/api/v1/refresh"), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
@@ -912,6 +922,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ ".status-badge-liveview-live"
     assert dashboard_css =~ ".metric-value-break"
     assert dashboard_css =~ ".limit-chip"
+    assert dashboard_css =~ ".data-table-retry"
+    assert dashboard_css =~ "content: attr(data-label)"
+    assert dashboard_css =~ ".data-table td::before"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-liveview-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-liveview-offline"
 

@@ -75,6 +75,18 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
     assert html =~ "launch-app missing, using local HTTP/UI fallback"
     assert html =~ "metric-value-break"
     assert html =~ "very.long.primary.email.address+alerts@example.com"
+    assert html =~ ~s(<table class="data-table data-table-running">)
+    assert html =~ ~s(<th>Current step</th>)
+    assert html =~ ~s(<td data-label="Current step" class="current-step-cell">)
+    assert html =~ ~s(<td data-label="Run phase">)
+    assert html =~ ~s(<td data-label="Tokens">)
+    assert html =~ ~s(<table class="data-table data-table-retry">)
+    assert html =~ ~s(<th>Error</th>)
+    assert html =~ ~s(<td data-label="Error">)
+    assert html =~ ~s(<table class="data-table data-table-codex-accounts">)
+    assert html =~ ~s(<th>Limits</th>)
+    assert html =~ ~s(<td data-label="Limits">)
+    assert html =~ ~s(<td data-label="Reason">)
     assert html =~ "ID primary"
     assert html =~ "enterprise"
     refute html =~ "<th>Email</th>"
@@ -119,7 +131,7 @@ defmodule SymphonyElixir.DashboardLiveBehaviorTest do
 
     assert html =~ "Active session"
     refute html =~ ~s(>attached</span>)
-    assert html =~ ~s(<td class="current-step-cell">)
+    assert html =~ ~s(<td data-label="Current step" class="current-step-cell">)
     assert html =~ ~s(<div class="current-step-stack">)
     assert html =~ ~s(<span class="current-step-primary">)
     assert html =~ ~s(<col style="width: 24rem;">)

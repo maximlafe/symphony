@@ -147,6 +147,7 @@ pre,
 .dashboard-shell {
   display: grid;
   gap: 1rem;
+  min-width: 0;
 }
 
 .hero-card,
@@ -170,6 +171,7 @@ pre,
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 1.25rem;
   align-items: start;
+  min-width: 0;
 }
 
 .eyebrow {
@@ -186,6 +188,8 @@ pre,
   font-size: clamp(2rem, 4vw, 3.3rem);
   line-height: 0.98;
   letter-spacing: -0.04em;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .hero-copy {
@@ -193,6 +197,7 @@ pre,
   max-width: 46rem;
   color: var(--muted);
   font-size: 1rem;
+  overflow-wrap: anywhere;
 }
 
 .meta-row {
@@ -206,6 +211,7 @@ pre,
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  max-width: 100%;
   min-height: 2rem;
   padding: 0.35rem 0.72rem;
   border-radius: 999px;
@@ -214,6 +220,7 @@ pre,
   color: var(--muted);
   font-size: 0.82rem;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .status-stack {
@@ -295,6 +302,7 @@ html.liveview-connected .status-badge-liveview-offline,
 .metric-card {
   border-radius: 22px;
   padding: 1rem 1.05rem 1.1rem;
+  min-width: 0;
 }
 
 .metric-label {
@@ -310,6 +318,7 @@ html.liveview-connected .status-badge-liveview-offline,
   font-size: clamp(1.6rem, 2vw, 2.1rem);
   line-height: 1.05;
   letter-spacing: -0.03em;
+  overflow-wrap: anywhere;
 }
 
 .metric-value-break {
@@ -322,6 +331,7 @@ html.liveview-connected .status-badge-liveview-offline,
   margin: 0.45rem 0 0;
   color: var(--muted);
   font-size: 0.88rem;
+  overflow-wrap: anywhere;
 }
 
 .metric-detail-block {
@@ -332,6 +342,7 @@ html.liveview-connected .status-badge-liveview-offline,
 .section-card {
   border-radius: 24px;
   padding: 1.15rem;
+  min-width: 0;
 }
 
 .section-header {
@@ -394,6 +405,7 @@ html.liveview-connected .status-badge-liveview-offline,
 .table-wrap {
   overflow-x: auto;
   margin-top: 1rem;
+  max-width: 100%;
 }
 
 .data-table {
@@ -405,6 +417,10 @@ html.liveview-connected .status-badge-liveview-offline,
 .data-table-running {
   table-layout: fixed;
   min-width: 1720px;
+}
+
+.data-table-retry {
+  min-width: 680px;
 }
 
 .data-table-codex-accounts {
@@ -426,6 +442,8 @@ html.liveview-connected .status-badge-liveview-offline,
   border-top: 1px solid var(--line);
   vertical-align: top;
   font-size: 0.94rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .issue-stack,
@@ -490,7 +508,9 @@ html.liveview-connected .status-badge-liveview-offline,
   color: var(--accent-ink);
   font-size: 0.78rem;
   line-height: 1.2;
-  white-space: nowrap;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .limit-chip-danger {
@@ -573,6 +593,9 @@ html.liveview-connected .status-badge-liveview-offline,
   border: 1px solid var(--line);
   color: #353740;
   font-size: 0.9rem;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-wrap: anywhere;
 }
 
 .empty-state {
@@ -618,6 +641,10 @@ html.liveview-connected .status-badge-liveview-offline,
 }
 
 @media (max-width: 560px) {
+  .app-shell {
+    padding-inline: 0.75rem;
+  }
+
   .metric-grid {
     grid-template-columns: 1fr;
   }
@@ -627,5 +654,87 @@ html.liveview-connected .status-badge-liveview-offline,
   .error-card {
     border-radius: 20px;
     padding: 1rem;
+  }
+
+  .section-header,
+  .section-header-actions {
+    display: grid;
+    justify-content: stretch;
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .section-header-actions .secondary {
+    width: 100%;
+  }
+
+  .table-wrap {
+    overflow-x: visible;
+  }
+
+  .data-table,
+  .data-table-running,
+  .data-table-retry,
+  .data-table-codex-accounts {
+    display: block;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .data-table colgroup,
+  .data-table thead {
+    display: none;
+  }
+
+  .data-table tbody {
+    display: grid;
+    gap: 0.85rem;
+    width: 100%;
+  }
+
+  .data-table tr {
+    display: grid;
+    gap: 0;
+    width: 100%;
+    padding: 0.2rem 0.85rem;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.58);
+  }
+
+  .data-table td {
+    display: grid;
+    grid-template-columns: minmax(6.5rem, 38%) minmax(0, 1fr);
+    gap: 0.75rem;
+    align-items: start;
+    padding: 0.72rem 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .data-table td:first-child {
+    border-top: 0;
+  }
+
+  .data-table td::before {
+    content: attr(data-label);
+    min-width: 0;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    overflow-wrap: anywhere;
+  }
+
+  .data-table td > * {
+    min-width: 0;
+  }
+
+  .event-meta,
+  .event-text {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
   }
 }
