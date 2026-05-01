@@ -1635,7 +1635,7 @@ defmodule SymphonyElixir.Orchestrator do
     identifier = metadata[:identifier] || issue_id
     trace_id = metadata[:trace_id]
 
-    case Tracker.fetch_candidate_issues() do
+    case Tracker.fetch_issue_states_by_ids([issue_id]) do
       {:ok, issues} ->
         issues
         |> find_issue_by_id(issue_id)

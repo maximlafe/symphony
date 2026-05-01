@@ -271,18 +271,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 </thead>
                 <tbody>
                   <tr :for={entry <- @payload.running}>
-                    <td>
+                    <td data-label="Issue">
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
-                    <td>
+                    <td data-label="Linear state">
                       <span class={state_badge_class(entry.state)}>
                         <%= entry.state %>
                       </span>
                     </td>
-                    <td>
+                    <td data-label="Run phase">
                       <div class="detail-stack">
                         <span class={phase_badge_class(entry.run_phase)}>
                           <%= entry.run_phase || "editing" %>
@@ -303,7 +303,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                       </div>
                     </td>
-                    <td>
+                    <td data-label="Lifecycle">
                       <div class="detail-stack">
                         <span class={lifecycle_badge_class(entry.lifecycle_state)}>
                           <%= lifecycle_label(entry.lifecycle_state) %>
@@ -322,7 +322,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                       </div>
                     </td>
-                    <td>
+                    <td data-label="Activity">
                       <div class="detail-stack">
                         <span class={activity_badge_class(entry.activity_state)}>
                           <%= entry.activity_state || "alive" %>
@@ -337,8 +337,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                       </div>
                     </td>
-                    <td class="mono"><%= entry.codex_account_id || "n/a" %></td>
-                    <td>
+                    <td data-label="Account" class="mono"><%= entry.codex_account_id || "n/a" %></td>
+                    <td data-label="Session">
                       <div class="session-stack">
                         <%= if entry.session_id do %>
                           <button
@@ -355,8 +355,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <% end %>
                       </div>
                     </td>
-                    <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
-                    <td class="current-step-cell">
+                    <td data-label="Runtime / turns" class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
+                    <td data-label="Current step" class="current-step-cell">
                       <div class="current-step-stack">
                         <span class="current-step-primary">
                           <%= entry.current_step || "n/a" %>
@@ -379,7 +379,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                       </div>
                     </td>
-                    <td>
+                    <td data-label="Tokens">
                       <div class="token-stack numeric">
                         <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
                         <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
@@ -404,7 +404,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="empty-state">No issues are currently backing off.</p>
           <% else %>
             <div class="table-wrap">
-              <table class="data-table" style="min-width: 680px;">
+              <table class="data-table data-table-retry">
                 <thead>
                   <tr>
                     <th>Issue</th>
@@ -416,16 +416,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 </thead>
                 <tbody>
                   <tr :for={entry <- @payload.retrying}>
-                    <td>
+                    <td data-label="Issue">
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
-                    <td><%= entry.attempt %></td>
-                    <td class="mono"><%= entry.due_at || "n/a" %></td>
-                    <td class="mono"><%= entry.error_class || "n/a" %></td>
-                    <td><%= entry.error || "n/a" %></td>
+                    <td data-label="Attempt"><%= entry.attempt %></td>
+                    <td data-label="Due at" class="mono"><%= entry.due_at || "n/a" %></td>
+                    <td data-label="Class" class="mono"><%= entry.error_class || "n/a" %></td>
+                    <td data-label="Error"><%= entry.error || "n/a" %></td>
                   </tr>
                 </tbody>
               </table>
@@ -500,20 +500,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 </thead>
                 <tbody>
                   <tr :for={account <- display_codex_accounts(@payload)}>
-                    <td>
+                    <td data-label="Account">
                       <div class="issue-stack">
                         <span class="issue-id"><%= account.id || "n/a" %></span>
                         <span :if={account.id == @payload.active_codex_account_id} class="muted">active</span>
                       </div>
                     </td>
-                    <td>
+                    <td data-label="Status">
                       <span class={state_badge_class(if(account.healthy, do: "active", else: "blocked"))}>
                         <%= if account.healthy, do: "healthy", else: "unhealthy" %>
                       </span>
                     </td>
-                    <td><%= account.auth_mode || "n/a" %></td>
-                    <td><%= account.plan_type || "n/a" %></td>
-                    <td>
+                    <td data-label="Auth"><%= account.auth_mode || "n/a" %></td>
+                    <td data-label="Plan"><%= account.plan_type || "n/a" %></td>
+                    <td data-label="Limits">
                       <div class="limit-stack">
                         <span
                           :for={item <- account_rate_limit_items(account.rate_limits, @payload.generated_at)}
@@ -531,7 +531,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                       </div>
                     </td>
-                    <td>
+                    <td data-label="Selection">
                       <div class="account-action-stack">
                         <span
                           :if={account.id == @payload.active_codex_account_id}
@@ -558,8 +558,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                       </div>
                     </td>
-                    <td class="mono"><%= account.checked_at || "n/a" %></td>
-                    <td><%= humanize_codex_account_reason(account.health_reason) || "n/a" %></td>
+                    <td data-label="Checked" class="mono"><%= account.checked_at || "n/a" %></td>
+                    <td data-label="Reason"><%= humanize_codex_account_reason(account.health_reason) || "n/a" %></td>
                   </tr>
                 </tbody>
               </table>
