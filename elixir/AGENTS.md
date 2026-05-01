@@ -38,9 +38,18 @@ make all
 Repo-owned task validation targets at the repository root:
 
 ```bash
+make symphony-acceptance-preflight
+make symphony-dashboard-checks
+make symphony-runtime-smoke SCENARIO=all
+make symphony-live-e2e
 make symphony-validate
 make symphony-handoff-check
 ```
+
+- Treat `make symphony-runtime-smoke SCENARIO=all` plus the smallest deterministic proof for the
+  touched behavior as the cheap gate during implementation.
+- Treat `make symphony-validate` plus any required runtime/UI/stateful proof as the final gate
+  before publish or review-ready handoff.
 
 ## Required Rules
 
