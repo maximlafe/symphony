@@ -1058,6 +1058,13 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     - [x] preflight: `make symphony-preflight`
     - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] am-plain-reg: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-inv: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-strict: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-fail: `make symphony-preflight`
+    - [x] am-neg: `make symphony-preflight`
+    - [x] am-reg: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-side: `make symphony-validate`
     - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
     - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
     - [x] repo validation: `make symphony-validate`
@@ -1355,6 +1362,13 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     - [x] preflight: `make symphony-preflight`
     - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] am-plain-reg: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-inv: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-strict: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-fail: `make symphony-preflight`
+    - [x] am-neg: `make symphony-preflight`
+    - [x] am-reg: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-side: `make symphony-validate`
     - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
     - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
     - [x] repo validation: `make symphony-validate`
@@ -1891,6 +1905,10 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
     | --- | --- | --- | --- | --- | --- |
+    | AM-PLAIN-REG | Plain regression alias | Plain regression legacy semantic is canonicalized | test | mix test test/symphony_elixir/handoff_check_test.exs | regression |
+    | AM-INV | Plain invariant alias | Plain invariant legacy semantic is canonicalized | test | mix test test/symphony_elixir/handoff_check_test.exs | invariant |
+    | AM-STRICT | Strictness invariant alias | Strictness invariant legacy semantic is canonicalized | test | mix test test/symphony_elixir/handoff_check_test.exs | strictness invariant |
+    | AM-FAIL | Fail-closed invariant alias | Fail-closed invariant legacy semantic is canonicalized | test | make symphony-preflight | fail-closed invariant |
     | AM-NEG | Negative path guard | Negative-path checks are executed | test | make symphony-preflight | negative proof |
     | AM-REG | Regression guard | Regression checks are executed | test | mix test test/symphony_elixir/handoff_check_test.exs | regression guard |
     | AM-SIDE | Side-effect guard | Side effects are validated via executed check | test | make symphony-validate | side-effect guard |
@@ -1903,6 +1921,13 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     - [x] preflight: `make symphony-preflight`
     - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] am-plain-reg: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-inv: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-strict: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-fail: `make symphony-preflight`
+    - [x] am-neg: `make symphony-preflight`
+    - [x] am-reg: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] am-side: `make symphony-validate`
     - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
     - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
     - [x] repo validation: `make symphony-validate`
@@ -1913,9 +1938,13 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     ### Proof Mapping
 
-    - [x] `AM-NEG` -> `validation:preflight`
-    - [x] `AM-REG` -> `validation:targeted tests`
-    - [x] `AM-SIDE` -> `validation:repo validation`
+    - [x] `AM-PLAIN-REG` -> `validation:am-plain-reg`
+    - [x] `AM-INV` -> `validation:am-inv`
+    - [x] `AM-STRICT` -> `validation:am-strict`
+    - [x] `AM-FAIL` -> `validation:am-fail`
+    - [x] `AM-NEG` -> `validation:am-neg`
+    - [x] `AM-REG` -> `validation:am-reg`
+    - [x] `AM-SIDE` -> `validation:am-side`
 
     ### Checkpoint
 
@@ -1937,6 +1966,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
              )
 
     assert get_in(alias_manifest, ["proof_signals", "acceptance_matrix_covered"]) == true
+    assert get_in(alias_manifest, ["proof_signals", "proof_run_executed"]) == true
   end
 
   test "evaluate normalizes validation gate errors and git changed paths for invalid change classes" do

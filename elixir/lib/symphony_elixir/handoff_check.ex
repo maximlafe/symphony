@@ -29,6 +29,10 @@ defmodule SymphonyElixir.HandoffCheck do
   }
   @matrix_semantics MapSet.new(["surface_exists", "run_executed", "runtime_smoke"])
   @matrix_semantic_aliases %{
+    "regression" => "run_executed",
+    "invariant" => "run_executed",
+    "strictness_invariant" => "run_executed",
+    "fail_closed_invariant" => "run_executed",
     "positive_proof" => "run_executed",
     "precedence_proof" => "run_executed",
     "negative_proof" => "run_executed",
