@@ -107,6 +107,10 @@ defmodule SymphonyElixir.ValidationGate do
     "/workflow",
     "/config"
   ]
+  @ui_path_prefixes ["assets/", "frontend/"]
+  @ui_path_fragments ["_web/", "/web/"]
+  @backend_javascript_extensions [".js", ".ts"]
+  @ui_asset_extensions [".css", ".heex", ".html", ".jsx", ".scss", ".vue"]
 
   @type change_class :: String.t()
   @type gate_type :: String.t()
@@ -504,11 +508,13 @@ defmodule SymphonyElixir.ValidationGate do
   end
 
   defp ui_path?(path) do
-    String.contains?(path, "_web/") or
-      String.contains?(path, "/web/") or
-      String.starts_with?(path, "assets/") or
-      String.starts_with?(path, "frontend/") or
-      Path.extname(path) in [".css", ".heex", ".html", ".js", ".jsx", ".scss", ".ts", ".tsx", ".vue"]
+    ui_root_path?(path) or
+      Path.extname(path) in @ui_asset_extensions
+  end
+
+  defp ui_root_path?(path) do
+    starts_with_any?(path, @ui_path_prefixes) or
+      contains_any?(path, @ui_path_fragments)
   end
 
   defp docs_path?(path) do
@@ -516,7 +522,12 @@ defmodule SymphonyElixir.ValidationGate do
   end
 
   defp backend_path?(path) do
-    Path.extname(path) in [".ex", ".exs", ".go", ".java", ".js", ".py", ".rb", ".rs", ".ts"]
+    Path.extname(path) in [".ex", ".exs", ".go", ".java", ".py", ".rb", ".rs"] or
+      backend_javascript_path?(path)
+  end
+
+  defp backend_javascript_path?(path) do
+    Path.extname(path) in @backend_javascript_extensions and not ui_root_path?(path)
   end
 
   defp final_gate_required?(classes) do

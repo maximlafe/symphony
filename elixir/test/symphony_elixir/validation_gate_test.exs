@@ -33,6 +33,21 @@ defmodule SymphonyElixir.ValidationGateTest do
     assert {:error, ["changed_paths must be a non-empty list"]} = ValidationGate.classify_paths([])
   end
 
+  test "classifies ambiguous TypeScript and JavaScript paths by location" do
+    assert {:ok, ["backend_only"]} =
+             ValidationGate.classify_paths(["scripts/sync_issue.ts", "lib/domain/rule.ts"])
+
+    assert {:ok, ["backend_only"]} =
+             ValidationGate.classify_paths(["server/worker.js"])
+
+    assert {:ok, ["ui"]} =
+             ValidationGate.classify_paths([
+               "frontend/app.ts",
+               "assets/js/app.js",
+               "elixir/lib/symphony_elixir_web/live/dashboard_live.tsx"
+             ])
+  end
+
   test "computes cheap and final requirements for backend-only changes" do
     assert {:ok, cheap} = ValidationGate.requirements(["backend_only"], "cheap")
 
