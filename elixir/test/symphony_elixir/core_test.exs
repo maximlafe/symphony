@@ -5417,6 +5417,9 @@ defmodule SymphonyElixir.CoreTest do
                Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "### What to do"
+      assert blocker_body =~ "Fix the handoff proof/artifact contract for guard `runtime`"
+      assert blocker_body =~ "rerun the verification guard"
       assert blocker_body =~ "selected_rule: `validation_env_mismatch`"
       assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
       assert blocker_body =~ "failure_class: `verification_guard_failed`"
@@ -5549,6 +5552,8 @@ defmodule SymphonyElixir.CoreTest do
                Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "### What to do"
+      assert blocker_body =~ "Fix the handoff proof/artifact contract for guard `runtime`"
       assert blocker_body =~ "selected_rule: `validation_env_mismatch`"
       assert blocker_body =~ "recoverable drift exceeded auto-reconcile budget"
       assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500

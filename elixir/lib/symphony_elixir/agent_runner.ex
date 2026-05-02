@@ -97,7 +97,7 @@ defmodule SymphonyElixir.AgentRunner do
         :ok
 
       {:error, report} ->
-        {:error, AcceptanceCapability.summarize_failure(report)}
+        {:error, {:acceptance_capability_preflight_failed, report}}
     end
   end
 

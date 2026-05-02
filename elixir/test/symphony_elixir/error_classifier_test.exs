@@ -23,6 +23,14 @@ defmodule SymphonyElixir.ErrorClassifierTest do
     assert ErrorClassifier.classify({:workspace_capability_rejected, %{reason: :missing_tool, tool: "rg"}}) ==
              :permanent
 
+    assert ErrorClassifier.classify(
+             {:acceptance_capability_preflight_failed,
+              %{
+                "required_capabilities" => ["vps_ssh"],
+                "missing" => ["vps_ssh requires env `PROD_VPS_HOST`"]
+              }}
+           ) == :permanent
+
     missing_target_reason = %{
       reason: :missing_make_target,
       command_class: :validation,
