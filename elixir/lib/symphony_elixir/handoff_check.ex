@@ -1695,7 +1695,6 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp required_capability_missing_items(required_capabilities, parsed_workpad, attachments, proof_signals)
        when is_list(required_capabilities) do
-    validation_items = parsed_workpad["validation"] || []
     artifact_items = parsed_workpad["artifacts"] || []
 
     []
@@ -1709,11 +1708,6 @@ defmodule SymphonyElixir.HandoffCheck do
       checked_uploaded_attachment_present?(artifact_items, attachments),
       "required capability `artifact_upload` is missing a checked uploaded Linear attachment"
     )
-    |> maybe_require_capability(
-      "repo_validation" in required_capabilities,
-      checked_validation_label?(validation_items, "repo validation"),
-      "required capability `repo_validation` is missing checked repo validation proof"
-    )
   end
 
   defp maybe_require_capability(acc, true, true, _message), do: acc
@@ -1723,12 +1717,6 @@ defmodule SymphonyElixir.HandoffCheck do
   defp checked_uploaded_attachment_present?(artifact_items, attachments) do
     Enum.any?(artifact_items, fn item ->
       item["checked"] == true and item["kind"] == "uploaded_attachment" and attachment_present?(attachments, item["title"])
-    end)
-  end
-
-  defp checked_validation_label?(validation_items, label) do
-    Enum.any?(validation_items, fn item ->
-      item["checked"] == true and item["label"] == label and not placeholder_value?(item["command"])
     end)
   end
 

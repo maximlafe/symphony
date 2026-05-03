@@ -17,13 +17,16 @@ defmodule SymphonyElixir.AcceptanceCapabilityTest do
   test "exposes supported capabilities" do
     assert "stateful_db" in AcceptanceCapability.supported_capabilities()
     assert "vps_ssh" in AcceptanceCapability.supported_capabilities()
+    refute "repo_validation" in AcceptanceCapability.supported_capabilities()
+    refute "pr_publication" in AcceptanceCapability.supported_capabilities()
+    refute "pr_body_contract" in AcceptanceCapability.supported_capabilities()
   end
 
   test "parses required capabilities from task spec aliases" do
     description = """
     ## Symphony
     Repo: maximlafe/lead_status
-    Required capabilities: db, runtime, vps, pr_body
+    Required capabilities: db, runtime, vps
     """
 
     assert {capabilities, []} = AcceptanceCapability.required_capabilities(description)
@@ -31,14 +34,31 @@ defmodule SymphonyElixir.AcceptanceCapabilityTest do
     assert capabilities == [
              "stateful_db",
              "runtime_smoke",
-             "vps_ssh",
-             "pr_body_contract"
+             "vps_ssh"
            ]
+  end
+
+  test "ignores execution-only required capability names without failing preflight" do
+    description = "Required capabilities: repo_validation, pr_publication, pr_body_contract"
+
+    assert {:ok, report} =
+             AcceptanceCapability.evaluate("/tmp/workspace", %{"description" => description},
+               manifest_result: {:ok, @manifest},
+               env: %{}
+             )
+
+    assert report["required_capabilities"] == []
+    assert report["ignored_capabilities"] == ["repo_validation", "pr_publication", "pr_body_contract"]
+    assert report["passed"] == true
   end
 
   test "reports unsupported capability names" do
     assert {[], ["unsupported required capability `moon_base`"]} =
              AcceptanceCapability.required_capabilities("Required capabilities: moon_base")
+  end
+
+  test "returns no capabilities for non-binary descriptions" do
+    assert {[], []} = AcceptanceCapability.required_capabilities(nil)
   end
 
   test "passes when no explicit capabilities are declared" do
@@ -54,7 +74,7 @@ defmodule SymphonyElixir.AcceptanceCapabilityTest do
 
   test "reports workspace capability manifest failures" do
     assert {:error, report} =
-             AcceptanceCapability.evaluate("/tmp/workspace", %{"description" => "Required capabilities: repo_validation"}, manifest_result: {:error, :enoent})
+             AcceptanceCapability.evaluate("/tmp/workspace", %{"description" => "Required capabilities: stateful_db"}, manifest_result: {:error, :enoent})
 
     assert report["passed"] == false
     assert "workspace capability manifest unavailable: :enoent" in report["missing"]
@@ -90,8 +110,8 @@ defmodule SymphonyElixir.AcceptanceCapabilityTest do
     assert report["passed"] == true
   end
 
-  test "checks required make targets" do
-    description = "Required capabilities: runtime_smoke, pr_body_contract"
+  test "checks required runtime smoke make target" do
+    description = "Required capabilities: runtime_smoke"
     manifest = put_in(@manifest, ["makefile", "targets"], ["symphony-validate"])
 
     assert {:error, report} =
@@ -101,19 +121,20 @@ defmodule SymphonyElixir.AcceptanceCapabilityTest do
              )
 
     assert Enum.any?(report["missing"], &String.contains?(&1, "runtime_smoke requires one Makefile target"))
-    assert Enum.any?(report["missing"], &String.contains?(&1, "pr_body_contract requires one Makefile target"))
   end
 
-  test "checks pr publication, artifact upload, repo validation, and ui runtime capabilities" do
-    description = "Required capabilities: pr_publication, artifact_upload, repo_validation, ui_runtime"
+  test "checks external capabilities and reports ignored execution-only values" do
+    description = "Required capabilities: pr_publication, artifact_upload, repo_validation, ui_runtime, pr_body_contract"
 
     assert {:ok, report} =
              AcceptanceCapability.evaluate("/tmp/workspace", %{"description" => description},
                manifest_result: {:ok, @manifest},
-               env: %{"GH_TOKEN" => "ghp_test", "LINEAR_API_KEY" => "lin_test"}
+               env: %{"LINEAR_API_KEY" => "lin_test"}
              )
 
     assert report["passed"] == true
+    assert report["required_capabilities"] == ["artifact_upload", "ui_runtime"]
+    assert report["ignored_capabilities"] == ["pr_publication", "repo_validation", "pr_body_contract"]
 
     missing_manifest = %{
       "tools" => %{"git" => %{"available" => false}, "gh" => %{"available" => false}},
@@ -126,12 +147,23 @@ defmodule SymphonyElixir.AcceptanceCapabilityTest do
                env: %{}
              )
 
-    assert "pr_publication requires tool `git`" in missing_report["missing"]
-    assert "pr_publication requires tool `gh`" in missing_report["missing"]
-    assert "pr_publication requires one env: `GH_TOKEN`, `GITHUB_TOKEN`" in missing_report["missing"]
     assert "artifact_upload requires env `LINEAR_API_KEY`" in missing_report["missing"]
-    assert Enum.any?(missing_report["missing"], &String.contains?(&1, "repo_validation requires one Makefile target"))
     assert Enum.any?(missing_report["missing"], &String.contains?(&1, "ui_runtime requires one Makefile target"))
+    assert missing_report["ignored_capabilities"] == ["pr_publication", "repo_validation", "pr_body_contract"]
+  end
+
+  test "fails closed on unsupported required capability names" do
+    description = "Required capabilities: moon_base"
+
+    assert {:error, report} =
+             AcceptanceCapability.evaluate("/tmp/workspace", %{"description" => description},
+               manifest_result: {:ok, @manifest},
+               env: %{}
+             )
+
+    assert report["required_capabilities"] == []
+    assert report["ignored_capabilities"] == []
+    assert report["missing"] == ["unsupported required capability `moon_base`"]
   end
 
   test "checks stateful database reachability through injectable connector" do
