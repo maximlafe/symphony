@@ -194,6 +194,20 @@ defmodule SymphonyElixir.ErrorClassifier do
     failure_details(:permanent, :invalid_workspace, :stop, :ready, "workspace path unreadable")
   end
 
+  def classify_details({:workspace_bootstrap_blocked, reason}) when is_binary(reason) do
+    failure_details(:permanent, :process_error, :stop, :ready, reason)
+  end
+
+  def classify_details({:workspace_bootstrap_blocked, _reason}) do
+    failure_details(
+      :permanent,
+      :process_error,
+      :stop,
+      :ready,
+      "workspace bootstrap blocked"
+    )
+  end
+
   def classify_details({:workspace_capability_rejected, details}) when is_map(details) do
     failure_details(:permanent, :process_error, :stop, :ready, summarize_workspace_capability(details))
   end

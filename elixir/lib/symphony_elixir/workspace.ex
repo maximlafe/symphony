@@ -15,6 +15,7 @@ defmodule SymphonyElixir.Workspace do
   @issue_cleanup_lock_dir ".symphony-cleanup-locks"
   @issue_cleanup_lock_retry_ms 10
   @issue_cleanup_lock_max_attempts 500
+  @bootstrap_blocker_marker ".symphony-base-branch-error"
 
   @spec create_for_issue(map() | String.t() | nil) :: {:ok, Path.t()} | {:error, term()}
   def create_for_issue(issue_or_identifier) do
@@ -25,8 +26,7 @@ defmodule SymphonyElixir.Workspace do
 
       with {:ok, workspace} <- workspace_path_for_issue(safe_id),
            :ok <- validate_workspace_path(workspace),
-           {:ok, created?} <- ensure_workspace(workspace, issue_context),
-           :ok <- maybe_run_after_create_hook(workspace, issue_context, created?) do
+           {:ok, _created?} <- prepare_workspace(workspace, issue_context) do
         {:ok, workspace}
       end
     rescue
@@ -77,6 +77,64 @@ defmodule SymphonyElixir.Workspace do
       File.exists?(Path.join(workspace, marker))
     end)
   end
+
+  defp prepare_workspace(workspace, issue_context) do
+    {:ok, created?} = ensure_workspace(workspace, issue_context)
+
+    case maybe_run_after_create_hook(workspace, issue_context, created?) do
+      :ok ->
+        case maybe_fail_closed_on_bootstrap_blocker(workspace, created?) do
+          :ok ->
+            {:ok, created?}
+
+          {:error, _reason} = error ->
+            maybe_cleanup_failed_new_workspace(workspace, created?)
+            error
+        end
+
+      {:error, _reason} = error ->
+        maybe_cleanup_failed_new_workspace(workspace, created?)
+        error
+    end
+  end
+
+  defp maybe_fail_closed_on_bootstrap_blocker(workspace, true) when is_binary(workspace) do
+    blocker_path = Path.join(workspace, @bootstrap_blocker_marker)
+
+    if File.exists?(blocker_path) do
+      blocker_reason =
+        blocker_path
+        |> read_blocker_reason()
+        |> default_blocker_reason()
+
+      {:error, {:workspace_bootstrap_blocked, blocker_reason}}
+    else
+      :ok
+    end
+  end
+
+  defp maybe_fail_closed_on_bootstrap_blocker(_workspace, _created?), do: :ok
+
+  defp maybe_cleanup_failed_new_workspace(workspace, true) when is_binary(workspace) do
+    File.rm_rf(workspace)
+    :ok
+  end
+
+  defp maybe_cleanup_failed_new_workspace(_workspace, _created?), do: :ok
+
+  defp read_blocker_reason(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, contents} ->
+        contents
+        |> String.trim()
+
+      {:error, _reason} ->
+        nil
+    end
+  end
+
+  defp default_blocker_reason(reason) when is_binary(reason) and reason != "", do: reason
+  defp default_blocker_reason(_reason), do: "workspace bootstrap blocked by #{@bootstrap_blocker_marker}"
 
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
   def remove(workspace) do
