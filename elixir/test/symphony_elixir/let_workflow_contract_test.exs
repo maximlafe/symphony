@@ -42,6 +42,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "validation:am-<am-id-lowercase>"
     assert prompt =~ "am-<id>:"
     assert prompt =~ "repo validation: `make symphony-validate`"
+    assert prompt =~ "строки `вложение` используй только для реальных file attachments в Linear"
+    assert prompt =~ "evidence по PR (`PR #...`, PR URL, `pull request`, `пулл-реквест`) должно оставаться в linked PR + `github_pr_snapshot`"
     assert prompt =~ "Required capabilities"
     assert prompt =~ "vps_ssh"
     assert prompt =~ "Use only external prerequisite names: `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`"
