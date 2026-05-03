@@ -853,6 +853,51 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert payload.checkpoint["controller_finalizer"]["status"] == "succeeded"
   end
 
+  test "run/3 fails fast before handoff when proof mapping drifts from acceptance matrix" do
+    issue = %Issue{
+      id: "issue-proof-contract-drift",
+      identifier: "LET-462-PROOF-CONTRACT-DRIFT",
+      state: "In Progress",
+      description: """
+      ## Acceptance Matrix
+
+      | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+      | -- | -- | -- | -- | -- | -- |
+      | AM-1 | attachment proof | uploaded attachment mapping is required | artifact | runtime-proof.log | run_executed |
+      """
+    }
+
+    _workspace = create_workspace!(issue.identifier, workpad_body: invalid_proof_mapping_workpad())
+
+    checkpoint = %{
+      "head" => "head-proof-contract-drift",
+      "open_pr" => %{"number" => 2061, "url" => "https://github.com/acme/symphony/pull/2061"},
+      "changed_files" => ["elixir/lib/symphony_elixir/handoff_check.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/2061",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run when proof contract is already inconsistent")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "proof contract is inconsistent before handoff"
+
+    assert "acceptance matrix item `AM-1` expects artifact mapping `artifact:<title>`" in
+             payload.details["proof_diagnostic"]["proof_contract_errors"]
+  end
+
   test "run/3 supports map issues with mixed label types and enforces red proof from atom labels" do
     issue = %{
       "id" => "issue-map-labels",
@@ -1403,6 +1448,23 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     - [x] preflight: `make symphony-preflight`
     - [x] targeted tests: `mix test test/symphony_elixir/controller_finalizer_test.exs`
     - [x] repo validation: `make symphony-validate`
+    """
+  end
+
+  defp invalid_proof_mapping_workpad do
+    """
+    ## Codex Workpad
+
+    ### Validation
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `mix test test/symphony_elixir/controller_finalizer_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime proof log
+
+    ### Proof Mapping
+    - [x] `AM-1` -> `validation:targeted tests`
     """
   end
 
