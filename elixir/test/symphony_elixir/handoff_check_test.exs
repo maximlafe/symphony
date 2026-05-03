@@ -979,6 +979,99 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "artifact manifest entry must include an attachment title in backticks" in manifest["missing_items"]
   end
 
+  test "evaluate rejects pull request evidence encoded as uploaded attachment artifacts" do
+    workpad_for_row = fn row ->
+      """
+      ## Codex Workpad
+
+      ### Validation
+
+      - [x] preflight: `make symphony-preflight`
+      - [x] cheap gate: `same HEAD targeted proof completed`
+      - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+      - [x] repo validation: `make symphony-validate`
+
+      ### Artifacts
+
+      - [x] #{row}
+
+      ### Checkpoint
+
+      - `checkpoint_type`: `human-verify`
+      - `risk_level`: `medium`
+      - `summary`: PR evidence must stay in linked PR/github_pr_snapshot.
+      """
+    end
+
+    for row <- [
+          "uploaded attachment: `PR #170` -> snapshot summary",
+          "uploaded attachment: `https://github.com/maximlafe/symphony/pull/170` -> snapshot summary",
+          "uploaded attachment: `pull request #170` -> snapshot summary",
+          "uploaded attachment: `пулл-реквест #170` -> snapshot summary"
+        ] do
+      assert {:error, manifest} =
+               HandoffCheck.evaluate(
+                 workpad_for_row.(row),
+                 issue_id: "LET-667",
+                 attachments: [],
+                 pr_snapshot: green_pr_snapshot(),
+                 change_classes: ["backend_only"],
+                 git: git_metadata()
+               )
+
+      assert Enum.any?(manifest["missing_items"], fn item ->
+               String.contains?(
+                 item,
+                 "pull request evidence must stay in linked PR/github_pr_snapshot, not in uploaded attachment artifacts"
+               )
+             end)
+
+      refute Enum.any?(manifest["missing_items"], fn item ->
+               String.contains?(item, "is missing from the Linear issue attachments")
+             end)
+    end
+  end
+
+  test "evaluate keeps linked PR evidence separate from uploaded attachment artifacts" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] PR: https://github.com/maximlafe/symphony/pull/170
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Linked PR and PR snapshot are sufficient for PR evidence.
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-667",
+               attachments: [],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    refute Enum.any?(manifest["missing_items"], fn item ->
+             String.contains?(
+               item,
+               "pull request evidence must stay in linked PR/github_pr_snapshot, not in uploaded attachment artifacts"
+             )
+           end)
+  end
+
   test "evaluate requires explicit red proof when delivery:tdd is enabled" do
     workpad_without_tdd_evidence = """
     ## Codex Workpad
