@@ -254,18 +254,12 @@ defmodule SymphonyElixir.ControllerFinalizer do
       Map.get(proof_diagnostic, "proof_contract_errors", []) == []
   end
 
-  defp pre_handoff_proof_ready?(_proof_diagnostic), do: false
-
   defp pre_handoff_guard_reason(%{"proof_contract_errors" => [_ | _]}) do
     "proof contract is inconsistent before handoff"
   end
 
   defp pre_handoff_guard_reason(%{"missing_checks" => [_ | _]}) do
     "required proof checks are missing before handoff"
-  end
-
-  defp pre_handoff_guard_reason(_proof_diagnostic) do
-    "pre-handoff proof validation failed"
   end
 
   defp run_handoff_check(context, checkpoint, snapshot, opts) do

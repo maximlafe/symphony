@@ -894,8 +894,7 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
     assert payload.reason == "proof contract is inconsistent before handoff"
 
-    assert "acceptance matrix item `AM-1` expects artifact mapping `artifact:<title>`" in
-             payload.details["proof_diagnostic"]["proof_contract_errors"]
+    assert "acceptance matrix item `AM-1` expects artifact mapping `artifact:<title>`" in payload.details["proof_diagnostic"]["proof_contract_errors"]
   end
 
   test "run/3 supports map issues with mixed label types and enforces red proof from atom labels" do
