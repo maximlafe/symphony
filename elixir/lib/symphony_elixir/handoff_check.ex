@@ -57,6 +57,12 @@ defmodule SymphonyElixir.HandoffCheck do
     ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not uploaded in Linear attachments$/,
     ~r/^acceptance matrix item `[^`]+` mapping drift: use canonical validation label /
   ]
+  @pull_request_evidence_patterns [
+    ~r/\bpr\s*#\d+\b/i,
+    ~r|github\.com/[^/\s]+/[^/\s]+/pull/\d+|i,
+    ~r/\bpull\s+request(?:\s*#\d+)?\b/i,
+    ~r/\bпулл[\s-]*реквест(?:\s*#\d+)?\b/iu
+  ]
 
   @type result :: {:ok, map()} | {:error, map()}
 
@@ -1764,32 +1770,39 @@ defmodule SymphonyElixir.HandoffCheck do
         item["checked"] == true and item["kind"] == "uploaded_attachment"
       end)
 
-    if uploaded == [] do
-      if artifact_proof_required? do
+    case uploaded do
+      [] when artifact_proof_required? ->
         ["artifact manifest is missing a checked uploaded attachment entry"]
-      else
+
+      [] ->
         []
-      end
-    else
-      attachment_titles = MapSet.new(Enum.map(attachments, & &1["title"]))
 
-      Enum.flat_map(uploaded, fn item ->
-        title = item["title"]
+      _ ->
+        attachment_titles = MapSet.new(Enum.map(attachments, & &1["title"]))
+        Enum.flat_map(uploaded, &uploaded_attachment_manifest_errors(&1, attachment_titles))
+    end
+  end
 
-        cond do
-          not is_binary(title) or title == "" ->
-            ["artifact manifest entry must include an attachment title in backticks"]
+  defp uploaded_attachment_manifest_errors(item, attachment_titles) do
+    title = item["title"]
 
-          not MapSet.member?(attachment_titles, title) ->
-            ["uploaded attachment `#{title}` is missing from the Linear issue attachments"]
+    cond do
+      not is_binary(title) or title == "" ->
+        ["artifact manifest entry must include an attachment title in backticks"]
 
-          placeholder_value?(item["claim"]) ->
-            ["uploaded attachment `#{title}` is missing a concrete proof claim"]
+      pull_request_evidence_attachment_title?(item) ->
+        [
+          "uploaded attachment `#{title}` is invalid: pull request evidence must stay in linked PR/github_pr_snapshot, not in uploaded attachment artifacts"
+        ]
 
-          true ->
-            []
-        end
-      end)
+      not MapSet.member?(attachment_titles, title) ->
+        ["uploaded attachment `#{title}` is missing from the Linear issue attachments"]
+
+      placeholder_value?(item["claim"]) ->
+        ["uploaded attachment `#{title}` is missing a concrete proof claim"]
+
+      true ->
+        []
     end
   end
 
@@ -1904,6 +1917,20 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp attachment_present?(_attachments, _title), do: false
+
+  defp pull_request_evidence_attachment_title?(item) when is_map(item) do
+    title =
+      item
+      |> Map.get("title")
+      |> to_string_or_nil()
+      |> normalize_attachment_title()
+
+    if is_binary(title) do
+      Enum.any?(@pull_request_evidence_patterns, &Regex.match?(&1, title))
+    else
+      false
+    end
+  end
 
   defp proof_matches_profile?("ui", title, claim) do
     visual_file?(title) or claim_matches?(claim, ["screenshot", "screen recording", "visual", "gif", "video"])

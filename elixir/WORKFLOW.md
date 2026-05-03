@@ -442,6 +442,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Artifacts
 
 - [ ] uploaded attachment: `<title>` -> <what it proves>
+- [ ] `uploaded attachment` rows are only for real Linear file attachments; PR evidence (`PR #...`, PR URL, `pull request`) must stay in linked PR + `github_pr_snapshot`
 - [ ] missing expected artifact: `<name>` -> <why it was not produced>
 
 ### Checkpoint
