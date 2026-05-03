@@ -105,7 +105,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert manifest["contract_version"] == 3
     assert manifest["profile"] == "runtime"
     assert manifest["profile_source"] == "label"
-    assert manifest["issue"]["required_capabilities"] == ["runtime_smoke", "artifact_upload", "repo_validation"]
+    assert manifest["issue"]["required_capabilities"] == ["runtime_smoke", "artifact_upload"]
     assert manifest["validation_gate"]["gate"] == "final"
     assert manifest["git"]["head_sha"] == "abc123"
     assert manifest["missing_items"] == []

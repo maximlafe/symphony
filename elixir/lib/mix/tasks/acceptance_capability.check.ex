@@ -56,9 +56,18 @@ defmodule Mix.Tasks.AcceptanceCapability.Check do
 
   defp description(_path), do: System.get_env("SYMPHONY_ISSUE_DESCRIPTION") || ""
 
-  defp summary(%{"required_capabilities" => []}), do: "no explicit required capabilities"
+  defp summary(%{"required_capabilities" => [], "ignored_capabilities" => []}),
+    do: "no explicit required capabilities"
 
-  defp summary(%{"required_capabilities" => capabilities}) do
+  defp summary(%{"required_capabilities" => [], "ignored_capabilities" => ignored}) do
+    "no explicit required capabilities; ignored execution-only values: #{Enum.join(ignored, ", ")}"
+  end
+
+  defp summary(%{"required_capabilities" => capabilities, "ignored_capabilities" => []}) do
     Enum.join(capabilities, ", ")
+  end
+
+  defp summary(%{"required_capabilities" => capabilities, "ignored_capabilities" => ignored}) do
+    "#{Enum.join(capabilities, ", ")}; ignored execution-only values: #{Enum.join(ignored, ", ")}"
   end
 end

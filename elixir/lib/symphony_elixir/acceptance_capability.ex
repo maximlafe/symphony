@@ -12,13 +12,16 @@ defmodule SymphonyElixir.AcceptanceCapability do
 
   @supported_capabilities [
     "artifact_upload",
-    "pr_body_contract",
-    "pr_publication",
-    "repo_validation",
     "runtime_smoke",
     "stateful_db",
     "ui_runtime",
     "vps_ssh"
+  ]
+
+  @execution_only_capabilities [
+    "pr_body_contract",
+    "pr_publication",
+    "repo_validation"
   ]
 
   @capability_aliases %{
@@ -50,7 +53,7 @@ defmodule SymphonyElixir.AcceptanceCapability do
   @spec evaluate(Path.t(), map() | struct(), keyword()) :: result()
   def evaluate(workspace, issue, opts \\ []) when is_binary(workspace) do
     description = issue_description(issue)
-    {capabilities, parse_errors} = required_capabilities(description)
+    {capabilities, parse_errors, ignored_capabilities} = parse_required_capabilities(description)
 
     env = Keyword.get_lazy(opts, :env, &System.get_env/0)
     tcp_connect = Keyword.get(opts, :tcp_connect, &tcp_connect/2)
@@ -64,7 +67,8 @@ defmodule SymphonyElixir.AcceptanceCapability do
           |> Enum.concat(parse_errors)
           |> Enum.uniq()
 
-        report = report(workspace, capabilities, manifest, missing)
+        report =
+          report(workspace, capabilities, get_in(manifest, ["makefile", "targets"]) || [], missing, ignored_capabilities)
 
         if missing == [] do
           {:ok, report}
@@ -78,6 +82,7 @@ defmodule SymphonyElixir.AcceptanceCapability do
            "passed" => false,
            "workspace" => workspace,
            "required_capabilities" => capabilities,
+           "ignored_capabilities" => ignored_capabilities,
            "missing" => ["workspace capability manifest unavailable: #{inspect(reason)}"]
          }}
     end
@@ -85,10 +90,8 @@ defmodule SymphonyElixir.AcceptanceCapability do
 
   @spec required_capabilities(String.t() | nil) :: {[String.t()], [String.t()]}
   def required_capabilities(description) when is_binary(description) do
-    description
-    |> required_capability_lines()
-    |> Enum.flat_map(&capability_values_from_line/1)
-    |> normalize_capability_values()
+    {capabilities, errors, _ignored} = parse_required_capabilities(description)
+    {capabilities, errors}
   end
 
   def required_capabilities(_description), do: {[], []}
@@ -110,14 +113,22 @@ defmodule SymphonyElixir.AcceptanceCapability do
     "acceptance capability preflight failed; required=#{required}; missing=#{missing_text}"
   end
 
-  defp report(workspace, capabilities, manifest, missing) do
+  defp report(workspace, capabilities, make_targets, missing, ignored_capabilities) do
     %{
       "passed" => missing == [],
       "workspace" => workspace,
       "required_capabilities" => capabilities,
+      "ignored_capabilities" => ignored_capabilities,
       "missing" => missing,
-      "make_targets" => get_in(manifest, ["makefile", "targets"]) || []
+      "make_targets" => make_targets
     }
+  end
+
+  defp parse_required_capabilities(description) when is_binary(description) do
+    description
+    |> required_capability_lines()
+    |> Enum.flat_map(&capability_values_from_line/1)
+    |> normalize_capability_values()
   end
 
   defp required_capability_lines(description) do
@@ -132,7 +143,7 @@ defmodule SymphonyElixir.AcceptanceCapability do
   end
 
   defp normalize_capability_values(values) do
-    Enum.reduce(values, {[], []}, fn value, {capabilities, errors} ->
+    Enum.reduce(values, {[], [], []}, fn value, {capabilities, errors, ignored} ->
       normalized =
         value
         |> String.downcase()
@@ -140,33 +151,27 @@ defmodule SymphonyElixir.AcceptanceCapability do
         |> String.trim("_")
 
       case Map.get(@capability_aliases, normalized) do
+        capability when capability in @execution_only_capabilities ->
+          {capabilities, errors, [capability | ignored]}
+
         capability when is_binary(capability) ->
-          {[capability | capabilities], errors}
+          {[capability | capabilities], errors, ignored}
 
         _ ->
-          {capabilities, ["unsupported required capability `#{value}`"]}
+          {capabilities, ["unsupported required capability `#{value}`"], ignored}
       end
     end)
-    |> then(fn {capabilities, errors} ->
-      {capabilities |> Enum.reverse() |> Enum.uniq(), errors |> Enum.reverse() |> Enum.uniq()}
+    |> then(fn {capabilities, errors, ignored} ->
+      {
+        capabilities |> Enum.reverse() |> Enum.uniq(),
+        errors |> Enum.reverse() |> Enum.uniq(),
+        ignored |> Enum.reverse() |> Enum.uniq()
+      }
     end)
   end
 
   defp missing_for_capability("artifact_upload", env, _manifest, _tcp_connect) do
     require_envs(env, "artifact_upload", ["LINEAR_API_KEY"])
-  end
-
-  defp missing_for_capability("pr_body_contract", _env, manifest, _tcp_connect) do
-    require_make_target(manifest, "pr_body_contract", ["symphony-pr-body-check", "pr-body-check"])
-  end
-
-  defp missing_for_capability("pr_publication", env, manifest, _tcp_connect) do
-    require_tools(manifest, "pr_publication", ["git", "gh"]) ++
-      require_one_env(env, "pr_publication", ["GH_TOKEN", "GITHUB_TOKEN"])
-  end
-
-  defp missing_for_capability("repo_validation", _env, manifest, _tcp_connect) do
-    require_make_target(manifest, "repo_validation", ["symphony-validate"])
   end
 
   defp missing_for_capability("runtime_smoke", _env, manifest, _tcp_connect) do
@@ -194,16 +199,6 @@ defmodule SymphonyElixir.AcceptanceCapability do
   defp missing_for_capability("vps_ssh", env, _manifest, _tcp_connect) do
     require_envs(env, "vps_ssh", ["PROD_VPS_HOST", "PROD_VPS_USER", "PROD_VPS_KNOWN_HOSTS"]) ++
       require_one_env(env, "vps_ssh", ["PROD_VPS_SSH_KEY", "PROD_VPS_SSH_KEY_PATH"])
-  end
-
-  defp require_tools(manifest, capability, tools) do
-    Enum.flat_map(tools, fn tool ->
-      if get_in(manifest, ["tools", tool, "available"]) == true do
-        []
-      else
-        ["#{capability} requires tool `#{tool}`"]
-      end
-    end)
   end
 
   defp require_make_target(manifest, capability, targets) do
