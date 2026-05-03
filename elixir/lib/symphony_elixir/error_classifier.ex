@@ -212,6 +212,16 @@ defmodule SymphonyElixir.ErrorClassifier do
     failure_details(:permanent, :process_error, :stop, :ready, summarize_workspace_capability(details))
   end
 
+  def classify_details({:acceptance_capability_preflight_failed, report}) when is_map(report) do
+    failure_details(
+      :permanent,
+      :process_error,
+      :stop,
+      :ready,
+      SymphonyElixir.AcceptanceCapability.summarize_failure(report)
+    )
+  end
+
   def classify_details({:workspace_hook_failed, _hook_name, _status, output}) when is_binary(output) do
     classify_workspace_hook_output(output)
   end

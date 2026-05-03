@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   alias SymphonyElixir.{
     AgentRunner,
+    BlockerNextSteps,
     Config,
     ControllerFinalizer,
     ErrorClassifier,
@@ -3715,8 +3716,26 @@ defmodule SymphonyElixir.Orchestrator do
           ""
       end
 
+    next_steps =
+      what_to_do_lines(
+        BlockerNextSteps.render_blocker(%{
+          identifier: identifier,
+          trace_id: trace_id,
+          reason: reason,
+          error_class: error_class,
+          failure_class: failure_class,
+          failed_attempt: failure_attempt,
+          codex_account_id: codex_account_id,
+          retry_action: retry_action
+        })
+      )
+
     """
     ### Blocker (auto-classified)
+
+    ### What to do
+
+    #{next_steps}
 
     - error_class: `#{error_class}`
     - failure_class: `#{failure_class}`
@@ -3735,6 +3754,10 @@ defmodule SymphonyElixir.Orchestrator do
 
     [
       "### Retry/failover decision (auto-classified)",
+      "",
+      "### What to do",
+      "",
+      what_to_do_lines(BlockerNextSteps.render_decision(decision, extra_fields)),
       "",
       decision_field_line("selected_rule", decision.selected_rule),
       decision_field_line("selected_action", decision.selected_action),
@@ -3766,6 +3789,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp decision_field_line(label, value), do: "- #{label}: `#{value}`"
+
+  defp what_to_do_lines(lines) when is_list(lines) do
+    lines
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join("\n", &"- #{&1}")
+  end
 
   defp release_issue_claim(%State{} = state, issue_id) do
     %{
