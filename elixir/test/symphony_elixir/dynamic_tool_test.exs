@@ -2148,13 +2148,89 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert blocked["success"] == false
     payload = decode_tool_text(blocked)
     assert payload["error"]["message"] =~ "issueUpdate(description) is blocked"
-    assert payload["error"]["details"]["reason_code"] == "acceptance_matrix_parse_error"
+    assert payload["error"]["details"]["reason_code"] == "proof_contract_error"
     assert payload["error"]["details"]["issue_id"] == "LET-652"
 
     assert Enum.any?(
-             payload["error"]["details"]["acceptance_matrix_errors"],
+             payload["error"]["details"]["proof_contract_errors"],
              &String.contains?(&1, "not terminated")
            )
+  end
+
+  test "linear_graphql blocks issueUpdate(description) when artifact proof maps to validation evidence" do
+    invalid_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | wrong mapping type | artifact proof must use uploaded attachment mapping | artifact | runtime-proof.log | run_executed |
+
+    ### Validation
+
+    - [x] targeted tests: `mix test test/symphony_elixir/dynamic_tool_test.exs`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime proof log
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:targeted tests`
+    """
+
+    blocked =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+          "variables" => %{"id" => "LET-657", "input" => %{"description" => invalid_description}}
+        },
+        linear_client: fn _query, _variables, _opts ->
+          flunk("issueUpdate should not execute when proof contract uses artifact->validation drift")
+        end
+      )
+
+    assert blocked["success"] == false
+    payload = decode_tool_text(blocked)
+    assert payload["error"]["details"]["reason_code"] == "proof_contract_error"
+
+    assert "acceptance matrix item `AM-1` expects artifact mapping `artifact:<title>`" in payload["error"]["details"]["proof_contract_errors"]
+  end
+
+  test "linear_graphql blocks issueUpdate(description) when uploaded attachment claim is a placeholder" do
+    invalid_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | placeholder attachment claim | artifact proof needs concrete claim | artifact | runtime-proof.log | run_executed |
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> n/a
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `artifact:runtime-proof.log`
+    """
+
+    blocked =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+          "variables" => %{"id" => "LET-660", "input" => %{"description" => invalid_description}}
+        },
+        linear_client: fn _query, _variables, _opts ->
+          flunk("issueUpdate should not execute when uploaded attachment proof is a placeholder")
+        end
+      )
+
+    assert blocked["success"] == false
+    payload = decode_tool_text(blocked)
+    assert payload["error"]["details"]["reason_code"] == "proof_contract_error"
+
+    assert "uploaded attachment `runtime-proof.log` is missing a concrete proof claim" in payload["error"]["details"]["proof_contract_errors"]
   end
 
   test "linear_graphql allows issueUpdate(description) when acceptance matrix rows are valid" do

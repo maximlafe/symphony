@@ -94,6 +94,122 @@ defmodule SymphonyElixir.HandoffCheck do
 
   def acceptance_matrix_parse_errors(_issue_description), do: []
 
+  @spec proof_contract_errors(String.t() | nil) :: [String.t()]
+  def proof_contract_errors(markdown), do: proof_contract_errors(markdown, [])
+
+  @spec proof_contract_errors(String.t() | nil, keyword()) :: [String.t()]
+  def proof_contract_errors(markdown, opts) when is_binary(markdown) and is_list(opts) do
+    {acceptance_matrix_items, parse_errors} = parse_acceptance_matrix(markdown)
+    {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(markdown)
+
+    parsed_workpad =
+      markdown
+      |> parse_workpad()
+      |> maybe_reconcile_workpad_artifacts([], acceptance_matrix_items, required_capabilities)
+
+    effective_attachments = effective_proof_contract_attachments(parsed_workpad, opts)
+    checked_mappings = checked_proof_mapping_items(parsed_workpad["proof_mapping"] || [])
+    mapping_errors = proof_contract_mapping_errors(acceptance_matrix_items, parsed_workpad, checked_mappings)
+
+    {matrix_mapping_errors, proof_signals} =
+      proof_contract_matrix_mapping_errors(
+        acceptance_matrix_items,
+        parsed_workpad,
+        checked_mappings,
+        effective_attachments
+      )
+
+    []
+    |> Kernel.++(capability_parse_errors)
+    |> Kernel.++(parse_errors)
+    |> Kernel.++(mapping_errors)
+    |> Kernel.++(matrix_mapping_errors)
+    |> Kernel.++(
+      artifact_manifest_missing_items(
+        parsed_workpad["artifacts"],
+        effective_attachments,
+        parsed_workpad["artifact_proof_required"] == true
+      )
+    )
+    |> Kernel.++(
+      required_capability_missing_items(
+        required_capabilities,
+        parsed_workpad,
+        effective_attachments,
+        proof_signals
+      )
+    )
+    |> Enum.uniq()
+  end
+
+  def proof_contract_errors(_markdown, _opts), do: []
+
+  defp effective_proof_contract_attachments(parsed_workpad, opts) do
+    if Keyword.has_key?(opts, :attachments) do
+      Keyword.get(opts, :attachments, [])
+    else
+      parsed_workpad["artifacts"]
+      |> Enum.filter(fn item ->
+        item["checked"] == true and item["kind"] == "uploaded_attachment" and
+          not placeholder_value?(item["title"])
+      end)
+      |> Enum.map(&%{"title" => &1["title"]})
+    end
+  end
+
+  defp proof_contract_mapping_errors(acceptance_matrix_items, parsed_workpad, checked_mappings) do
+    matrix_ids = MapSet.new(Enum.map(acceptance_matrix_items, & &1["id"]))
+    mapping_groups = Enum.group_by(checked_mappings, & &1["matrix_item_id"])
+
+    []
+    |> Kernel.++(proof_mapping_format_errors(parsed_workpad["proof_mapping"] || []))
+    |> Kernel.++(unknown_matrix_mapping_errors(checked_mappings, matrix_ids))
+    |> Kernel.++(duplicate_reference_errors(checked_mappings))
+    |> Kernel.++(duplicate_matrix_mapping_errors(mapping_groups))
+  end
+
+  defp duplicate_matrix_mapping_errors(mapping_groups) do
+    Enum.flat_map(mapping_groups, fn
+      {_matrix_item_id, [_single]} ->
+        []
+
+      {matrix_item_id, [_first, _second | _rest]} ->
+        ["acceptance matrix item `#{matrix_item_id}` has multiple proof mapping entries; exactly one is required"]
+    end)
+  end
+
+  defp proof_contract_matrix_mapping_errors(
+         acceptance_matrix_items,
+         parsed_workpad,
+         checked_mappings,
+         effective_attachments
+       ) do
+    Enum.reduce(
+      checked_mappings,
+      {[], initial_proof_signals(runtime_smoke_checked?(parsed_workpad["validation"] || []))},
+      fn mapping, {errors, signals} ->
+        case Enum.find(acceptance_matrix_items, &(&1["id"] == mapping["matrix_item_id"])) do
+          nil ->
+            {errors, signals}
+
+          matrix_item ->
+            {next_errors, next_signals} =
+              validate_matrix_mapping(
+                matrix_item,
+                mapping,
+                parsed_workpad["validation"] || [],
+                parsed_workpad["artifacts"] || [],
+                effective_attachments,
+                [],
+                signals
+              )
+
+            {errors ++ next_errors, next_signals}
+        end
+      end
+    )
+  end
+
   @spec write_acceptance_contract_lock(Path.t(), map(), keyword()) :: {:ok, Path.t()} | {:error, term()}
   def write_acceptance_contract_lock(workspace, issue, opts \\ [])
 
@@ -2138,7 +2254,10 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp placeholder_value?(value) when is_binary(value) do
     trimmed = String.trim(value)
-    trimmed == "" or String.starts_with?(trimmed, "<") or String.contains?(trimmed, "fill only")
+    normalized = String.downcase(trimmed)
+
+    trimmed == "" or normalized in ["n/a", "na"] or String.starts_with?(trimmed, "<") or
+      String.contains?(normalized, "fill only")
   end
 
   defp surface_only_command?(value), do: is_binary(value) and String.contains?(String.downcase(value), "--help")

@@ -287,6 +287,61 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert Enum.any?(errors, &String.contains?(&1, "not terminated before next row starts"))
   end
 
+  test "proof_contract_errors tolerates nil markdown" do
+    assert HandoffCheck.proof_contract_errors(nil) == []
+    assert HandoffCheck.proof_contract_errors(nil, attachments: [%{"title" => "proof.log"}]) == []
+  end
+
+  test "proof_contract_errors validates placeholder attachment claims with explicit attachments" do
+    markdown = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | placeholder attachment claim | artifact proof needs concrete claim | artifact | runtime-proof.log | run_executed |
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> n/a
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `artifact:runtime-proof.log`
+    """
+
+    errors =
+      HandoffCheck.proof_contract_errors(markdown,
+        attachments: [%{"title" => "runtime-proof.log"}]
+      )
+
+    assert "uploaded attachment `runtime-proof.log` is missing a concrete proof claim" in errors
+  end
+
+  test "proof_contract_errors reports duplicate and unknown proof mappings" do
+    markdown = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | duplicate mapping | exactly one mapping is required | test | mix test | run_executed |
+
+    ### Validation
+
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:targeted tests`
+    - [x] `AM-1` -> `validation:targeted tests`
+    - [x] `AM-UNKNOWN` -> `validation:targeted tests`
+    """
+
+    errors = HandoffCheck.proof_contract_errors(markdown)
+
+    assert "acceptance matrix item `AM-1` has multiple proof mapping entries; exactly one is required" in errors
+    assert "proof mapping references unknown acceptance matrix item `AM-UNKNOWN`" in errors
+  end
+
   test "acceptance contract parser preserves UTF-8 matrix rows for lock encoding" do
     description = """
     ## Acceptance Matrix
