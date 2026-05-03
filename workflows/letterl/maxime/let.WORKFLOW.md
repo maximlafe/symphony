@@ -1085,6 +1085,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Артефакты
 
 - [ ] вложение: `<title>` -> <что подтверждает>
+- [ ] строки `вложение` используй только для реальных file attachments в Linear; evidence по PR (`PR #...`, PR URL, `pull request`, `пулл-реквест`) должно оставаться в linked PR + `github_pr_snapshot`
 - [ ] ожидаемый, но не созданный артефакт: `<name>` -> <почему не был получен>
 
 ### Proof Mapping

@@ -192,34 +192,37 @@ defmodule SymphonyElixir.ControllerFinalizer do
   defp run_pre_handoff_guard(context, checkpoint, snapshot, opts) do
     proof_diagnostic = pre_handoff_proof_diagnostic(context, checkpoint)
 
-    if proof_diagnostic["missing_checks"] == [] do
+    if pre_handoff_proof_ready?(proof_diagnostic) do
       run_handoff_check(context, checkpoint, snapshot, opts)
     else
+      reason = pre_handoff_guard_reason(proof_diagnostic)
+
       fallback_checkpoint =
         checkpoint_status(
           checkpoint,
           "action_required",
-          "required proof checks are missing before handoff",
+          reason,
           checkpoint["head"]
         )
 
       {:fallback,
        %{
          checkpoint: fallback_checkpoint,
-         reason: "required proof checks are missing before handoff",
+         reason: reason,
          details: %{"proof_diagnostic" => proof_diagnostic}
        }}
     end
   end
 
   defp pre_handoff_proof_diagnostic(context, checkpoint) do
-    validation_items =
+    {workpad_body, validation_items} =
       case File.read(context.workpad_path) do
-        {:ok, workpad_body} -> parse_validation_items(workpad_body)
-        _ -> []
+        {:ok, body} -> {body, parse_validation_items(body)}
+        _ -> {nil, []}
       end
 
     change_classes = pre_handoff_change_classes(context.workspace, checkpoint)
+    proof_contract_errors = pre_handoff_proof_contract_errors(context, workpad_body)
 
     ValidationGate.missing_required_proof_checks(
       validation_items,
@@ -227,6 +230,36 @@ defmodule SymphonyElixir.ControllerFinalizer do
       change_classes
     )
     |> Map.put("change_classes", change_classes)
+    |> Map.put("proof_contract_errors", proof_contract_errors)
+  end
+
+  defp pre_handoff_proof_contract_errors(_context, workpad_body)
+       when not is_binary(workpad_body) or workpad_body == "",
+       do: []
+
+  defp pre_handoff_proof_contract_errors(context, workpad_body) do
+    context
+    |> merged_proof_contract_markdown(workpad_body)
+    |> HandoffCheck.proof_contract_errors()
+  end
+
+  defp merged_proof_contract_markdown(context, workpad_body) when is_map(context) do
+    [Map.get(context, :issue_description), workpad_body]
+    |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+    |> Enum.join("\n\n")
+  end
+
+  defp pre_handoff_proof_ready?(proof_diagnostic) when is_map(proof_diagnostic) do
+    Map.get(proof_diagnostic, "missing_checks", []) == [] and
+      Map.get(proof_diagnostic, "proof_contract_errors", []) == []
+  end
+
+  defp pre_handoff_guard_reason(%{"proof_contract_errors" => [_ | _]}) do
+    "proof contract is inconsistent before handoff"
+  end
+
+  defp pre_handoff_guard_reason(%{"missing_checks" => [_ | _]}) do
+    "required proof checks are missing before handoff"
   end
 
   defp run_handoff_check(context, checkpoint, snapshot, opts) do
