@@ -1211,6 +1211,56 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace fail-closes and cleans a new workspace when bootstrap blocker marker is written" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-bootstrap-blocked-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "printf '%s\\n' 'routing mismatch' > .symphony-base-branch-error"
+      )
+
+      workspace = Path.join(workspace_root, "MT-ROUTING-BLOCKED")
+      assert {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
+
+      assert {:error, {:workspace_bootstrap_blocked, "routing mismatch"}} =
+               Workspace.create_for_issue("MT-ROUTING-BLOCKED")
+
+      refute File.exists?(canonical_workspace)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "workspace uses a default blocker reason when bootstrap marker is unreadable" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-bootstrap-unreadable-blocker-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "mkdir -p .symphony-base-branch-error"
+      )
+
+      workspace = Path.join(workspace_root, "MT-ROUTING-BLOCKED-UNREADABLE")
+      assert {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
+
+      assert {:error, {:workspace_bootstrap_blocked, "workspace bootstrap blocked by .symphony-base-branch-error"}} =
+               Workspace.create_for_issue("MT-ROUTING-BLOCKED-UNREADABLE")
+
+      refute File.exists?(canonical_workspace)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "workspace surfaces after_create hook timeouts" do
     workspace_root =
       Path.join(
