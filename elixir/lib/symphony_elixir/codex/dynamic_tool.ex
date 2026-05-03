@@ -1407,7 +1407,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp maybe_guard_acceptance_matrix_description(description, issue_id) when is_binary(description) do
     if Regex.match?(~r/(?:^|\n)##\s+Acceptance Matrix\b/m, description) do
-      case HandoffCheck.acceptance_matrix_parse_errors(description) do
+      case HandoffCheck.proof_contract_errors(description) do
         [] ->
           :ok
 
@@ -1415,10 +1415,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           {:error,
            {:issue_description_update_blocked,
             %{
-              "reason" => "issueUpdate(description) contains malformed `Acceptance Matrix` rows; update blocked before write",
-              "reason_code" => "acceptance_matrix_parse_error",
+              "reason" => "issueUpdate(description) contains invalid proof contract; update blocked before write",
+              "reason_code" => "proof_contract_error",
               "issue_id" => issue_id,
-              "acceptance_matrix_errors" => errors
+              "proof_contract_errors" => errors
             }}}
       end
     else
