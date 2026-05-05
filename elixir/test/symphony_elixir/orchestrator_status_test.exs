@@ -1326,6 +1326,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       retry_token = install_retry_attempt(pid, issue_id, "LET-539-MISSING", attempt: 1)
 
+      flush_tracker_event(:fetch_candidate_issues)
       send(pid, {:retry_issue, issue_id, retry_token})
 
       assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
@@ -4280,6 +4281,14 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
+
+  defp flush_tracker_event(event) do
+    receive do
+      ^event -> flush_tracker_event(event)
+    after
+      0 -> :ok
+    end
+  end
 
   defp healthy_probe_status(account) do
     account_id = Map.fetch!(account, :id)
