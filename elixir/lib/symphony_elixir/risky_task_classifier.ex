@@ -107,13 +107,10 @@ defmodule SymphonyElixir.RiskyTaskClassifier do
   defp normalize_capabilities(_capabilities), do: []
 
   defp stateful_capability?(capabilities) when is_list(capabilities), do: @stateful_capability in capabilities
-  defp stateful_capability?(_capabilities), do: false
 
   defp risky_capability?(capabilities) when is_list(capabilities) do
     Enum.any?(capabilities, &MapSet.member?(@risky_capabilities, &1))
   end
-
-  defp risky_capability?(_capabilities), do: false
 
   defp label_match?(labels, fragments) when is_list(labels) and is_list(fragments) do
     Enum.any?(labels, fn label ->
@@ -123,13 +120,9 @@ defmodule SymphonyElixir.RiskyTaskClassifier do
     end)
   end
 
-  defp label_match?(_labels, _fragments), do: false
-
   defp map_get_any(map, keys) when is_map(map) and is_list(keys) do
     Enum.find_value(keys, fn key -> Map.get(map, key) end)
   end
-
-  defp map_get_any(_map, _keys), do: nil
 
   defp truthy?(value), do: value in [true, "true", "yes", "1", 1]
 

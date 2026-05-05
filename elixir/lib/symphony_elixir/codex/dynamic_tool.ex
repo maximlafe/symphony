@@ -1617,9 +1617,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
       {:error, {:review_ready_transition_blocked, details}} ->
         {:error, {:execution_transition_blocked, details}}
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 

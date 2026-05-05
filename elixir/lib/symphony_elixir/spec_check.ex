@@ -520,10 +520,6 @@ defmodule SymphonyElixir.SpecCheck do
     end
   end
 
-  defp missing_contract_items(_spec_contract) do
-    ["spec contract is missing: add `Acceptance Matrix` and/or `Required capabilities` in the issue description"]
-  end
-
   defp summary_for_manifest(true, _missing_items), do: "spec check passed"
   defp summary_for_manifest(false, missing_items), do: "spec check failed (#{length(missing_items)} issue(s))"
 
