@@ -19,6 +19,45 @@ defmodule SymphonyElixir.SpecCheckTest do
   | AM-1 | changed | changed gate | test | mix test | run_executed |
   """
 
+  @risky_description_without_required_sections """
+  ## Acceptance Matrix
+
+  | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+  | --- | --- | --- | --- | --- | --- |
+  | AM-1 | migration | migrate safely | test | mix test | run_executed |
+
+  ## Symphony
+
+  Required capabilities: stateful_db
+  """
+
+  @risky_description_with_required_sections """
+  ## Acceptance Matrix
+
+  | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+  | --- | --- | --- | --- | --- | --- |
+  | AM-1 | migration | migrate safely | test | mix test | run_executed |
+
+  ## Риски
+
+  - migration correctness
+
+  ## План валидации
+
+  - targeted tests on migration path
+  - stateful proof with alembic upgrade and rollback
+  - runtime smoke for rollout safety
+  - repo validation with make symphony-validate
+
+  ## Зависимости
+
+  - LET-901 rollout coordination
+
+  ## Symphony
+
+  Required capabilities: stateful_db
+  """
+
   test "default helpers and state predicates" do
     assert SpecCheck.default_manifest_path() == ".symphony/verification/spec-manifest.json"
     assert SpecCheck.default_contract_lock_path() == ".symphony/verification/spec-contract.lock.json"
@@ -70,6 +109,21 @@ defmodule SymphonyElixir.SpecCheckTest do
 
     assert {:ok, manifest} = SpecCheck.evaluate(@base_description, labels: :invalid)
     assert manifest["issue"]["labels"] == []
+  end
+
+  test "evaluate enforces risky required sections and validation families" do
+    assert {:error, manifest} = SpecCheck.evaluate(@risky_description_without_required_sections)
+
+    assert manifest["risk_classifier"]["risk_class"] == "risky"
+    assert "persistence_migration_or_identifier" in manifest["risk_classifier"]["risk_signals"]
+    assert Enum.any?(manifest["missing_items"], &String.contains?(&1, "required section: Risks"))
+    assert Enum.any?(manifest["missing_items"], &String.contains?(&1, "required section: Validation Plan"))
+    assert Enum.any?(manifest["missing_items"], &String.contains?(&1, "required family: stateful_proof"))
+    assert Enum.any?(manifest["missing_items"], &String.contains?(&1, "required family: repo_validation"))
+
+    assert {:ok, manifest} = SpecCheck.evaluate(@risky_description_with_required_sections)
+    assert manifest["risk_classifier"]["risk_class"] == "risky"
+    assert manifest["missing_items"] == []
   end
 
   test "execution transition guard returns issue_id error for invalid arity input" do
@@ -321,6 +375,24 @@ defmodule SymphonyElixir.SpecCheckTest do
                contract_lock_path: lock_path
              )
 
+    write_manifest!(
+      manifest_path,
+      base_manifest(revision, "LET-4", %{
+        "risk_classifier" => %{"risk_class" => "risky", "risk_signals" => ["persistence_migration_or_identifier"]}
+      })
+    )
+
+    assert {:error, :spec_manifest_stale, %{"reason" => "risky task requires explicit `Spec Review` before entering execution"}} =
+             SpecCheck.execution_transition_allowed?(
+               manifest_path,
+               "LET-4",
+               "In Progress",
+               issue_description: @base_description,
+               issue_state: "Todo",
+               require_contract_lock: true,
+               contract_lock_path: lock_path
+             )
+
     assert :ok =
              SpecCheck.execution_transition_allowed?(
                manifest_path,
@@ -398,7 +470,7 @@ defmodule SymphonyElixir.SpecCheckTest do
       "passed" => true,
       "target_state" => "In Progress",
       "contract_revision" => revision,
-      "risk_classifier" => %{"risky_task" => false},
+      "risk_classifier" => %{"risk_class" => "standard", "risk_signals" => [], "risky_task" => false},
       "issue" => %{"id" => issue_id},
       "dependency_graph_guard" => %{"blocking_dependencies" => []}
     }

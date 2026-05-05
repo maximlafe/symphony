@@ -104,6 +104,7 @@ defmodule SymphonyElixir.SpecCheck do
       })
 
     dependency_conflicts = dependency_conflicts(risk_classifier, blocked_by)
+    risky_spec_contract_gaps = risky_spec_contract_gaps(issue_description, spec_contract, risk_classifier)
 
     missing_items =
       []
@@ -111,6 +112,7 @@ defmodule SymphonyElixir.SpecCheck do
       |> Kernel.++(acceptance_matrix_errors)
       |> Kernel.++(capability_parse_errors)
       |> Kernel.++(dependency_conflicts)
+      |> Kernel.++(risky_spec_contract_gaps)
       |> Enum.uniq()
 
     passed = missing_items == []
@@ -518,6 +520,88 @@ defmodule SymphonyElixir.SpecCheck do
     else
       []
     end
+  end
+
+  defp risky_spec_contract_gaps(issue_description, spec_contract, risk_classifier)
+       when is_binary(issue_description) and is_map(spec_contract) and is_map(risk_classifier) do
+    if RiskyTaskClassifier.risky_task?(risk_classifier) do
+      required_sections = risk_classifier["required_spec_sections"] || []
+      required_families = risk_classifier["required_validation_families"] || []
+      matrix_items = get_in(spec_contract, ["payload", "acceptance_matrix"]) || []
+      validation_plan = validation_plan_body(issue_description)
+
+      section_gaps = missing_required_sections(issue_description, required_sections, matrix_items)
+      family_gaps = missing_validation_families(validation_plan, required_families)
+
+      section_gaps ++ family_gaps
+    else
+      []
+    end
+  end
+
+  defp missing_required_sections(issue_description, required_sections, matrix_items)
+       when is_binary(issue_description) and is_list(required_sections) and is_list(matrix_items) do
+    required_sections
+    |> Enum.reject(&required_section_present?(issue_description, &1, matrix_items))
+    |> Enum.map(&"risky task is missing required section: #{&1}")
+  end
+
+  defp missing_validation_families(validation_plan, required_families)
+       when is_binary(validation_plan) and is_list(required_families) do
+    required_families
+    |> Enum.reject(&validation_family_covered?(validation_plan, &1))
+    |> Enum.map(&"risky task validation plan is missing required family: #{&1}")
+  end
+
+  defp required_section_present?(issue_description, "Acceptance Matrix", matrix_items)
+       when is_binary(issue_description) and is_list(matrix_items) do
+    matrix_items != [] or section_present?(issue_description, ["Acceptance Matrix"])
+  end
+
+  defp required_section_present?(issue_description, "Risks", _matrix_items) when is_binary(issue_description) do
+    section_present?(issue_description, ["Риски", "Risks"])
+  end
+
+  defp required_section_present?(issue_description, "Validation Plan", _matrix_items) when is_binary(issue_description) do
+    section_present?(issue_description, ["План валидации", "Validation", "Test Plan", "Testing"])
+  end
+
+  defp required_section_present?(issue_description, "Dependencies", _matrix_items) when is_binary(issue_description) do
+    section_present?(issue_description, ["Зависимости", "Dependencies"])
+  end
+
+  defp section_present?(issue_description, section_names)
+       when is_binary(issue_description) and is_list(section_names) do
+    Enum.any?(section_names, fn section_name ->
+      escaped = Regex.escape(section_name)
+      Regex.match?(~r/(?:^|\n)##\s+#{escaped}(?:\s*\n|$)/m, issue_description)
+    end)
+  end
+
+  defp validation_plan_body(issue_description) when is_binary(issue_description) do
+    case Regex.run(
+           ~r/(?:^|\n)##\s+(?:План валидации|Validation|Test Plan|Testing)\s*\n(.*?)(?=\n##\s+|\z)/ms,
+           issue_description
+         ) do
+      [_, body] -> body
+      _ -> ""
+    end
+  end
+
+  defp validation_family_covered?(validation_plan, "targeted_tests") when is_binary(validation_plan) do
+    Regex.match?(~r/\b(?:targeted|целев|mix test|pytest|tests?)\b/i, validation_plan)
+  end
+
+  defp validation_family_covered?(validation_plan, "stateful_proof") when is_binary(validation_plan) do
+    Regex.match?(~r/\b(?:stateful|migration|schema|database|alembic|db)\b/i, validation_plan)
+  end
+
+  defp validation_family_covered?(validation_plan, "runtime_smoke") when is_binary(validation_plan) do
+    Regex.match?(~r/\b(?:runtime\s+smoke|smoke|\/health|\/api)\b/i, validation_plan)
+  end
+
+  defp validation_family_covered?(validation_plan, "repo_validation") when is_binary(validation_plan) do
+    Regex.match?(~r/\b(?:repo\s+validation|symphony-validate)\b/i, validation_plan)
   end
 
   defp summary_for_manifest(true, _missing_items), do: "spec check passed"

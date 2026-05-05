@@ -1697,6 +1697,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     issue = Client.normalize_issue_for_test(raw_issue, "user-1")
 
     assert issue.cost_signals == ["risky_task"]
+    assert issue.risk_classification["risk_class"] == "risky"
+    assert "persistence_migration_or_identifier" in issue.risk_classification["risk_signals"]
     assert issue.risk_classification["risky_task"] == true
     assert issue.risk_classification["stateful_migration"] == true
   end
