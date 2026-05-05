@@ -521,6 +521,7 @@ codex:
       handoff: handoff
     signal_escalations:
       rework: escalated_implementation
+      risky_task: escalated_implementation
       repeated_auto_fix_failure: escalated_implementation
       security_data_risk: escalated_implementation
       unresolvable_ambiguity: escalated_implementation
@@ -687,7 +688,7 @@ Instructions:
 - Выбор Codex launch command резолвится из `codex.cost_profiles` и `codex.cost_policy` через `SymphonyElixir.Config.codex_cost_decision/1`.
 - `planning` по умолчанию использует `cheap_planning` (`gpt-5.4`, `xhigh`); `implementation` использует `cheap_implementation` (`gpt-5.3-codex`, `medium`); `rework` и явные escalation signals используют `escalated_implementation` (`gpt-5.3-codex`, `high`); `handoff` использует `handoff` (`gpt-5.3-codex`, `medium`).
 - `xhigh` — дефолт только для planning. Для non-planning дефолтов профиль остаётся ниже `xhigh`, пока репозиторий явно не поменяет соответствующий profile.
-- Escalation signals: `rework`, `repeated_auto_fix_failure`, `security_data_risk`, `unresolvable_ambiguity`; обычные retry/continuation turns не считаются escalation signal.
+- Escalation signals: `rework`, `risky_task`, `repeated_auto_fix_failure`, `security_data_risk`, `unresolvable_ambiguity`; обычные retry/continuation turns не считаются escalation signal.
 - `mode:research` и `reasoning:implementation-xhigh` не эскалируют без явного label-to-signal mapping в `codex.cost_policy`.
 - Legacy `planning_command`, `implementation_command`, `handoff_command` остаются backward-compatible direct-command override только когда structured profiles не могут собрать команду.
 
