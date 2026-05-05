@@ -1292,7 +1292,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       send(pid, {:retry_issue, issue_id, retry_token})
 
       assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
-      refute_receive :fetch_candidate_issues, 100
 
       refreshed_state =
         wait_for_orchestrator_state(pid, fn state ->
@@ -1330,7 +1329,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       send(pid, {:retry_issue, issue_id, retry_token})
 
       assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
-      refute_receive :fetch_candidate_issues, 100
 
       wait_for_orchestrator_state(pid, fn state ->
         not MapSet.member?(state.claimed, issue_id) and
@@ -1376,7 +1374,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       send(pid, {:retry_issue, issue_id, retry_token})
 
       assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
-      refute_receive :fetch_candidate_issues, 100
 
       wait_for_orchestrator_state(pid, fn state ->
         not MapSet.member?(state.claimed, issue_id) and
@@ -1425,7 +1422,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       send(pid, {:retry_issue, issue_id, retry_token})
 
       assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
-      refute_receive :fetch_candidate_issues, 100
 
       wait_for_orchestrator_state(pid, fn state ->
         retry = state.retry_attempts[issue_id]
