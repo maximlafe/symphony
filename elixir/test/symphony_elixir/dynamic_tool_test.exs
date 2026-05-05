@@ -20,6 +20,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     exec_background_spec = Enum.find(specs, &(&1["name"] == "exec_background"))
     exec_wait_spec = Enum.find(specs, &(&1["name"] == "exec_wait"))
     handoff_spec = Enum.find(specs, &(&1["name"] == "symphony_handoff_check"))
+    spec_check_spec = Enum.find(specs, &(&1["name"] == "symphony_spec_check"))
 
     assert upload_spec["inputSchema"]["required"] == ["issue_id", "file_path"]
     assert upload_spec["description"] =~ "attachment"
@@ -39,6 +40,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert handoff_spec["inputSchema"]["required"] == ["issue_id", "file_path", "repo", "pr_number"]
     assert handoff_spec["description"] =~ "handoff"
     assert get_in(handoff_spec, ["inputSchema", "properties", "phase", "description"]) =~ "handoff phase"
+
+    assert spec_check_spec["inputSchema"]["required"] == ["issue_id"]
+    assert spec_check_spec["description"] =~ "spec gate"
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -64,7 +68,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                  "github_wait_for_checks",
                  "exec_background",
                  "exec_wait",
-                 "symphony_handoff_check"
+                 "symphony_handoff_check",
+                 "symphony_spec_check"
                ]
              }
            }
@@ -1635,6 +1640,441 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert decode_tool_text(cancelled)["status"] == "cancelled"
   end
 
+  test "symphony_spec_check fails closed for underspecified specs and writes artifacts" do
+    workspace = Path.join(System.tmp_dir!(), "spec_check_tool_workspace_#{System.unique_integer([:positive])}")
+
+    response =
+      DynamicTool.execute(
+        "symphony_spec_check",
+        %{"issue_id" => "LET-669"},
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckState" do
+            {:ok,
+             %{
+               "data" => %{
+                 "issue" => %{
+                   "id" => "LET-669",
+                   "identifier" => "LET-669",
+                   "description" => "",
+                   "state" => %{"name" => "Todo"},
+                   "labels" => %{"nodes" => []},
+                   "inverseRelations" => %{"nodes" => []},
+                   "team" => %{
+                     "states" => %{
+                       "nodes" => [
+                         %{"id" => "in-progress-state-id", "name" => "In Progress"},
+                         %{"id" => "spec-review-state-id", "name" => "Spec Review"}
+                       ]
+                     }
+                   }
+                 }
+               }
+             }}
+          else
+            flunk("unexpected GraphQL query in spec check failure test: #{query}")
+          end
+        end
+      )
+
+    assert response["success"] == false
+    payload = decode_tool_text(response)
+    assert payload["error"]["message"] =~ "spec contract failed"
+    assert payload["manifest"]["manifest_path"] =~ ".symphony/verification/spec-manifest.json"
+    assert payload["manifest"]["contract_lock_path"] =~ ".symphony/verification/spec-contract.lock.json"
+    assert File.exists?(payload["manifest"]["manifest_path"])
+    assert File.exists?(payload["manifest"]["contract_lock_path"])
+
+    assert Enum.any?(
+             payload["manifest"]["missing_items"],
+             &String.contains?(&1, "spec contract is missing")
+           )
+  end
+
+  test "linear_graphql blocks execution transitions until symphony_spec_check succeeds" do
+    workspace = Path.join(System.tmp_dir!(), "spec_gate_workspace_#{System.unique_integer([:positive])}")
+
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Execute-ready contract | Transition guard allows execution only after spec check | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    """
+
+    state_context_response = fn ->
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "id" => "LET-670",
+             "identifier" => "LET-670",
+             "description" => issue_description,
+             "state" => %{"name" => "Spec Review"},
+             "labels" => %{"nodes" => []},
+             "inverseRelations" => %{"nodes" => []},
+             "team" => %{
+               "states" => %{
+                 "nodes" => [
+                   %{"id" => "in-progress-state-id", "name" => "In Progress"},
+                   %{"id" => "spec-review-state-id", "name" => "Spec Review"}
+                 ]
+               }
+             }
+           }
+         }
+       }}
+    end
+
+    blocked =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-670", "stateId" => "in-progress-state-id"}
+        },
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckState" do
+            state_context_response.()
+          else
+            flunk("unexpected execution transition mutation without spec manifest guard")
+          end
+        end
+      )
+
+    assert blocked["success"] == false
+    assert decode_tool_text(blocked)["error"]["message"] =~ "execution transitions require"
+
+    assert DynamicTool.execute(
+             "symphony_spec_check",
+             %{"issue_id" => "LET-670"},
+             workspace: workspace,
+             linear_client: fn query, _variables, _opts ->
+               if query =~ "SymphonyHandoffCheckState" do
+                 state_context_response.()
+               else
+                 flunk("unexpected query while building spec manifest: #{query}")
+               end
+             end
+           )["success"] == true
+
+    allowed =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-670", "stateId" => "in-progress-state-id"}
+        },
+        workspace: workspace,
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              state_context_response.()
+
+            query =~ "issueUpdate" ->
+              send(self(), {:execution_transition_issue_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected GraphQL query in execution transition allow test: #{query}")
+          end
+        end
+      )
+
+    assert allowed["success"] == true
+    assert_received {:execution_transition_issue_update, %{"id" => "LET-670", "stateId" => "in-progress-state-id"}}
+  end
+
+  test "symphony_spec_check dependency graph guard fails stateful specs with unresolved blockers" do
+    workspace = Path.join(System.tmp_dir!(), "spec_dependency_workspace_#{System.unique_integer([:positive])}")
+
+    issue_description = """
+    ## Symphony
+
+    Required capabilities: stateful_db
+    """
+
+    response =
+      DynamicTool.execute(
+        "symphony_spec_check",
+        %{"issue_id" => "LET-671"},
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckState" do
+            {:ok,
+             %{
+               "data" => %{
+                 "issue" => %{
+                   "id" => "LET-671",
+                   "identifier" => "LET-671",
+                   "description" => issue_description,
+                   "state" => %{"name" => "Spec Review"},
+                   "labels" => %{"nodes" => [%{"name" => "backend"}]},
+                   "inverseRelations" => %{
+                     "nodes" => [
+                       %{
+                         "type" => "blocks",
+                         "issue" => %{
+                           "id" => "LET-640",
+                           "identifier" => "LET-640",
+                           "state" => %{"name" => "In Progress"}
+                         }
+                       }
+                     ]
+                   },
+                   "team" => %{
+                     "states" => %{
+                       "nodes" => [
+                         %{"id" => "in-progress-state-id", "name" => "In Progress"},
+                         %{"id" => "spec-review-state-id", "name" => "Spec Review"}
+                       ]
+                     }
+                   }
+                 }
+               }
+             }}
+          else
+            flunk("unexpected query in dependency graph guard test: #{query}")
+          end
+        end
+      )
+
+    assert response["success"] == false
+    payload = decode_tool_text(response)
+    assert payload["manifest"]["risk_classifier"]["risky_task"] == true
+    assert payload["manifest"]["dependency_graph_guard"]["stateful_migration"] == true
+
+    assert payload["manifest"]["dependency_graph_guard"]["blocking_dependencies"] == [
+             %{"id" => "LET-640", "identifier" => "LET-640", "state" => "In Progress"}
+           ]
+
+    assert Enum.any?(
+             payload["manifest"]["missing_items"],
+             &String.contains?(&1, "unresolved blocking dependencies")
+           )
+  end
+
+  test "execution guard fails closed on material spec change and requires Spec Review" do
+    workspace = Path.join(System.tmp_dir!(), "spec_material_change_workspace_#{System.unique_integer([:positive])}")
+
+    issue_description_v1 = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Baseline | Baseline revision for execution gate | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    """
+
+    issue_description_v2 = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Changed scope | Changed revision must force Spec Review bounce | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    """
+
+    assert DynamicTool.execute(
+             "symphony_spec_check",
+             %{"issue_id" => "LET-672"},
+             workspace: workspace,
+             linear_client: fn query, _variables, _opts ->
+               if query =~ "SymphonyHandoffCheckState" do
+                 {:ok,
+                  %{
+                    "data" => %{
+                      "issue" => %{
+                        "id" => "LET-672",
+                        "identifier" => "LET-672",
+                        "description" => issue_description_v1,
+                        "state" => %{"name" => "Spec Review"},
+                        "labels" => %{"nodes" => []},
+                        "inverseRelations" => %{"nodes" => []},
+                        "team" => %{
+                          "states" => %{
+                            "nodes" => [
+                              %{"id" => "in-progress-state-id", "name" => "In Progress"},
+                              %{"id" => "spec-review-state-id", "name" => "Spec Review"}
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }}
+               else
+                 flunk("unexpected query in material-change setup: #{query}")
+               end
+             end
+           )["success"] == true
+
+    blocked =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-672", "stateId" => "in-progress-state-id"}
+        },
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => "LET-672",
+                     "identifier" => "LET-672",
+                     "description" => issue_description_v2,
+                     "state" => %{"name" => "Spec Review"},
+                     "labels" => %{"nodes" => []},
+                     "inverseRelations" => %{"nodes" => []},
+                     "team" => %{
+                       "states" => %{
+                         "nodes" => [
+                           %{"id" => "in-progress-state-id", "name" => "In Progress"},
+                           %{"id" => "spec-review-state-id", "name" => "Spec Review"}
+                         ]
+                       }
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              flunk("execution transition must not run when spec revision changed")
+
+            true ->
+              flunk("unexpected query in material-change execution guard test: #{query}")
+          end
+        end
+      )
+
+    assert blocked["success"] == false
+    payload = decode_tool_text(blocked)
+    assert payload["error"]["details"]["reason"] =~ "material spec change detected"
+    assert payload["error"]["details"]["required_state"] == "Spec Review"
+    assert payload["error"]["details"]["reason_code"] == "spec_manifest_stale"
+  end
+
+  test "linear_graphql blocks material issueUpdate(description) changes in In Progress unless transition returns to Spec Review" do
+    old_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Existing scope | Existing acceptance contract | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    """
+
+    new_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Changed scope | Changed acceptance contract | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    """
+
+    blocked =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+          "variables" => %{"id" => "LET-672", "input" => %{"description" => new_description}}
+        },
+        linear_client: fn query, _variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => "LET-672",
+                     "identifier" => "LET-672",
+                     "description" => old_description,
+                     "state" => %{"name" => "In Progress"},
+                     "labels" => %{"nodes" => []},
+                     "inverseRelations" => %{"nodes" => []},
+                     "team" => %{
+                       "states" => %{
+                         "nodes" => [
+                           %{"id" => "in-progress-state-id", "name" => "In Progress"},
+                           %{"id" => "spec-review-state-id", "name" => "Spec Review"}
+                         ]
+                       }
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              flunk("issueUpdate(description) must not run without Spec Review transition")
+
+            true ->
+              flunk("unexpected query in material description block test: #{query}")
+          end
+        end
+      )
+
+    assert blocked["success"] == false
+    blocked_payload = decode_tool_text(blocked)
+    assert blocked_payload["error"]["message"] =~ "material spec change"
+    assert blocked_payload["error"]["details"]["required_state"] == "Spec Review"
+
+    allowed =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!, $description: String!) { issueUpdate(id: $id, input: { stateId: $stateId, description: $description }) { success } }",
+          "variables" => %{
+            "id" => "LET-672",
+            "stateId" => "spec-review-state-id",
+            "description" => new_description
+          }
+        },
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => "LET-672",
+                     "identifier" => "LET-672",
+                     "description" => old_description,
+                     "state" => %{"name" => "In Progress"},
+                     "labels" => %{"nodes" => []},
+                     "inverseRelations" => %{"nodes" => []},
+                     "team" => %{
+                       "states" => %{
+                         "nodes" => [
+                           %{"id" => "in-progress-state-id", "name" => "In Progress"},
+                           %{"id" => "spec-review-state-id", "name" => "Spec Review"}
+                         ]
+                       }
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              send(self(), {:material_spec_review_bounce_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected query in material description allow test: #{query}")
+          end
+        end
+      )
+
+    assert allowed["success"] == true
+
+    assert_received {:material_spec_review_bounce_update,
+                     %{
+                       "id" => "LET-672",
+                       "stateId" => "spec-review-state-id",
+                       "description" => ^new_description
+                     }}
+  end
+
   test "symphony_handoff_check fails closed for an incomplete workpad and writes a manifest" do
     workspace = Path.join(System.tmp_dir!(), "handoff_tool_workspace_#{System.unique_integer([:positive])}")
 
@@ -2250,9 +2690,26 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "variables" => %{"id" => "LET-652", "input" => %{"description" => valid_description}}
         },
         linear_client: fn query, variables, _opts ->
-          assert query =~ "issueUpdate"
-          send(self(), {:description_issue_update, variables})
-          {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "description" => valid_description,
+                     "state" => %{"name" => "Spec Review"},
+                     "team" => %{"states" => %{"nodes" => [%{"id" => "spec-review-state-id", "name" => "Spec Review"}]}}
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              send(self(), {:description_issue_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected GraphQL query in valid description guard test: #{query}")
+          end
         end
       )
 

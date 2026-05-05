@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Config do
   @handoff_issue_states MapSet.new(["merging"])
   @cost_signal_priority [
     :rework,
+    :risky_task,
     :repeated_auto_fix_failure,
     :security_data_risk,
     :unresolvable_ambiguity
@@ -479,6 +480,7 @@ defmodule SymphonyElixir.Config do
     |> String.replace("-", "_")
     |> case do
       "rework" -> :rework
+      "risky_task" -> :risky_task
       "repeated_auto_fix_failure" -> :repeated_auto_fix_failure
       "security_data_risk" -> :security_data_risk
       "unresolvable_ambiguity" -> :unresolvable_ambiguity
