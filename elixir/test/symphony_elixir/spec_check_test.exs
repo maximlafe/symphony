@@ -72,6 +72,58 @@ defmodule SymphonyElixir.SpecCheckTest do
     assert manifest["issue"]["labels"] == []
   end
 
+  test "evaluate fails closed for delivery-sensitive specs without rollout contract" do
+    description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Migration path | Migration execution is covered | test | mix test | run_executed |
+
+    ## Symphony
+
+    Required capabilities: stateful_db
+    """
+
+    assert {:error, manifest} = SpecCheck.evaluate(description, labels: ["backend"])
+    assert get_in(manifest, ["delivery", "classification", "delivery_class"]) == "stateful_schema"
+
+    assert Enum.any?(
+             manifest["missing_items"],
+             &String.contains?(&1, "rollout contract is required for delivery-sensitive class `stateful_schema`")
+           )
+  end
+
+  test "evaluate allows code_only specs without rollout overhead" do
+    assert {:ok, manifest} = SpecCheck.evaluate(@base_description)
+    assert get_in(manifest, ["delivery", "classification", "delivery_class"]) == "code_only"
+    assert get_in(manifest, ["delivery", "contract", "present"]) == false
+  end
+
+  test "evaluate validates rollout obligation capabilities against Required capabilities" do
+    description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Runtime repair | Review proof exists | test | mix test | run_executed |
+
+    ## Rollout Contract
+
+    delivery_class: runtime_repair
+    obligation_type: real_case_canary
+    required_capability: runtime_smoke
+    proof_type: runtime_smoke
+    proof_target: production canary
+    required_before: done
+    unblock_action: Run the canary and attach runtime proof.
+    """
+
+    assert {:error, manifest} = SpecCheck.evaluate(description)
+
+    assert "rollout obligation `RO-1` requires capability `runtime_smoke`, but `Required capabilities` does not declare it" in manifest["missing_items"]
+  end
+
   test "execution transition guard returns issue_id error for invalid arity input" do
     assert {:error, :spec_manifest_invalid, %{"reason" => "issue_id is required"}} =
              SpecCheck.execution_transition_allowed?("/tmp/manifest.json", 123, "In Progress", [])

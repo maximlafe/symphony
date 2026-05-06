@@ -246,6 +246,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         nodes {
           title
           url
+          sourceType
+          metadata
         }
       }
     }
@@ -461,6 +463,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
          :ok <- guard_unsupported_linear_comments_filter(query),
          :ok <- maybe_guard_issue_description_update(query, variables, linear_client, opts),
          :ok <- maybe_guard_review_ready_issue_update(query, variables, linear_client, opts),
+         :ok <- maybe_guard_done_issue_update(query, variables, linear_client, opts),
          :ok <- maybe_guard_execution_issue_update(query, variables, linear_client, opts),
          {:ok, response} <- linear_client.(query, variables, []) do
       graphql_response(response)
@@ -1541,16 +1544,45 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       %{} = attachment ->
         %{
           "title" => get_argument(attachment, "title"),
-          "url" => get_argument(attachment, "url")
+          "url" => get_argument(attachment, "url"),
+          "source_type" => get_argument(attachment, "sourceType") || get_argument(attachment, "source_type"),
+          "metadata" => get_argument(attachment, "metadata")
         }
 
       _ ->
         %{}
     end)
+    |> Enum.reject(&linked_pull_request_attachment?/1)
     |> Enum.filter(fn attachment -> is_binary(attachment["title"]) and attachment["title"] != "" end)
   end
 
   defp normalize_linear_issue_attachments(_attachments), do: []
+
+  defp linked_pull_request_attachment?(%{} = attachment) do
+    metadata = attachment["metadata"] || %{}
+    kind = get_argument(metadata, "kind") |> normalize_optional_string_value()
+    source_type = attachment["source_type"] |> normalize_optional_string_value()
+    url = attachment["url"] |> normalize_optional_string_value()
+
+    kind == "pull_request" or
+      (source_type == "github" and github_pull_request_url?(url))
+  end
+
+  defp linked_pull_request_attachment?(_attachment), do: false
+
+  defp github_pull_request_url?(url) when is_binary(url) do
+    Regex.match?(~r{^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+(?:\b|[/?#])}, url)
+  end
+
+  defp github_pull_request_url?(_url), do: false
+
+  defp normalize_optional_string_value(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_optional_string_value(_value), do: nil
 
   defp maybe_guard_review_ready_issue_update(query, variables, linear_client, opts) do
     case review_ready_issue_update_query?(query) do
@@ -1593,6 +1625,119 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           :enforce_guard ->
             enforce_execution_transition_guard(issue_id, state_id, linear_client, opts)
         end
+    end
+  end
+
+  defp maybe_guard_done_issue_update(query, variables, linear_client, opts) do
+    case review_ready_issue_update_query?(query) do
+      false ->
+        :ok
+
+      true ->
+        state_id = review_ready_state_id(query, variables)
+        issue_id = review_ready_issue_id(query, variables)
+
+        case review_ready_transition_guard_mode(query, variables, state_id, issue_id) do
+          :blocked_missing_identifiers ->
+            unresolved_done_transition_identifier_error()
+
+          :skip_guard ->
+            :ok
+
+          :enforce_guard ->
+            enforce_done_transition_guard(issue_id, state_id, linear_client, opts)
+        end
+    end
+  end
+
+  defp unresolved_done_transition_identifier_error do
+    {:error,
+     {:done_transition_blocked,
+      %{
+        "reason" => "cannot resolve transition identifiers for state-changing issueUpdate mutation",
+        "reason_code" => "unresolved_transition_identifiers",
+        "required_tool" => @symphony_handoff_check_tool,
+        "checkpoint_type" => "human-action"
+      }}}
+  end
+
+  defp enforce_done_transition_guard(issue_id, state_id, linear_client, opts) do
+    with {:ok, state_context} <- resolve_issue_state_context(issue_id, state_id, linear_client),
+         state_name = state_context.state_name,
+         true <- done_state?(state_name),
+         true <- HandoffCheck.done_closure_required?(state_context.issue_description) do
+      run_done_handoff_guard(issue_id, state_name, state_context, linear_client, opts)
+    else
+      false ->
+        :ok
+
+      {:error, {:review_ready_transition_blocked, details}} ->
+        {:error, {:done_transition_blocked, done_transition_blocker_details(details)}}
+    end
+  end
+
+  defp run_done_handoff_guard(issue_id, state_name, state_context, linear_client, opts) do
+    workspace = Keyword.get(opts, :workspace)
+    expected_manifest_path = expand_upload_path(Config.settings!().verification.manifest_path, workspace)
+
+    handoff_opts =
+      [repo_path: workspace, issue_description: state_context.issue_description]
+      |> maybe_put_runner_opt(:git_runner, Keyword.get(opts, :git_runner))
+
+    case HandoffCheck.done_transition_allowed?(
+           expected_manifest_path,
+           issue_id,
+           state_name,
+           nil,
+           handoff_opts
+         ) do
+      :ok ->
+        :ok
+
+      {:error, reason, details} ->
+        blocker_details =
+          details
+          |> done_transition_blocker_details()
+          |> Map.merge(%{
+            "reason_code" => to_string(reason),
+            "required_tool" => @symphony_handoff_check_tool,
+            "manifest_path" => Path.expand(expected_manifest_path)
+          })
+
+        maybe_move_issue_to_blocked(issue_id, state_context.team_states, blocker_details, linear_client)
+
+        {:error, {:done_transition_blocked, blocker_details}}
+    end
+  end
+
+  defp done_state?(state_name), do: String.downcase(String.trim(state_name)) == "done"
+
+  defp done_transition_blocker_details(details) when is_map(details) do
+    Map.merge(details, %{
+      "checkpoint_type" => "human-action",
+      "risk_level" => "medium",
+      "unblock_action" => "Run `symphony_handoff_check` with `phase=done` after completing rollout obligations, then retry the Done transition."
+    })
+  end
+
+  defp maybe_move_issue_to_blocked(issue_id, team_states, details, linear_client) do
+    blocked_state_id =
+      Enum.find_value(team_states || %{}, fn
+        {state_id, "Blocked"} -> state_id
+        {_state_id, _state_name} -> nil
+      end)
+
+    if is_binary(blocked_state_id) and is_binary(issue_id) do
+      _ =
+        linear_client.(
+          "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          %{"id" => issue_id, "stateId" => blocked_state_id},
+          []
+        )
+
+      Map.put(details, "blocked_state_id", blocked_state_id)
+    else
+      details
     end
   end
 
@@ -3362,6 +3507,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{
       "error" => %{
         "message" => "execution transitions require a successful `symphony_spec_check` in the current workspace.",
+        "details" => details
+      }
+    }
+  end
+
+  defp tool_error_payload({:done_transition_blocked, details}) do
+    %{
+      "error" => %{
+        "message" => "Done issue transitions require a successful `symphony_handoff_check` with `phase=done` in the current workspace.",
         "details" => details
       }
     }

@@ -1786,6 +1786,135 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert_received {:execution_transition_issue_update, %{"id" => "LET-670", "stateId" => "in-progress-state-id"}}
   end
 
+  test "linear_graphql blocks Done transitions until done-phase handoff check succeeds" do
+    workspace = Path.join(System.tmp_dir!(), "done_gate_workspace_#{System.unique_integer([:positive])}")
+
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Review proof | Review proof exists | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed | review |
+
+    ## Rollout Contract
+
+    delivery_class: runtime_repair
+    obligation_type: real_case_canary
+    required_capability: runtime_smoke
+    proof_type: runtime_smoke
+    proof_target: production canary
+    required_before: done
+    unblock_action: Run the canary and attach runtime proof.
+
+    ## Symphony
+
+    Required capabilities: runtime_smoke
+    """
+
+    blocked =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-673", "stateId" => "done-state-id"}
+        },
+        workspace: workspace,
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => "LET-673",
+                     "identifier" => "LET-673",
+                     "description" => issue_description,
+                     "state" => %{"name" => "Merging"},
+                     "labels" => %{"nodes" => []},
+                     "inverseRelations" => %{"nodes" => []},
+                     "team" => %{
+                       "states" => %{
+                         "nodes" => [
+                           %{"id" => "done-state-id", "name" => "Done"},
+                           %{"id" => "blocked-state-id", "name" => "Blocked"}
+                         ]
+                       }
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              send(self(), {:blocked_transition_issue_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected query in Done transition guard test: #{query}")
+          end
+        end
+      )
+
+    assert blocked["success"] == false
+    payload = decode_tool_text(blocked)
+    assert payload["error"]["message"] =~ "Done issue transitions require"
+    assert payload["error"]["details"]["required_tool"] == "symphony_handoff_check"
+    assert payload["error"]["details"]["checkpoint_type"] == "human-action"
+    assert payload["error"]["details"]["unblock_action"] =~ "Run `symphony_handoff_check` with `phase=done`"
+    assert_received {:blocked_transition_issue_update, %{"id" => "LET-673", "stateId" => "blocked-state-id"}}
+  end
+
+  test "linear_graphql allows code_only Done transitions without rollout overhead" do
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Review proof | Review proof exists | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    """
+
+    allowed =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-674", "stateId" => "done-state-id"}
+        },
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => "LET-674",
+                     "identifier" => "LET-674",
+                     "description" => issue_description,
+                     "state" => %{"name" => "Merging"},
+                     "labels" => %{"nodes" => []},
+                     "inverseRelations" => %{"nodes" => []},
+                     "team" => %{
+                       "states" => %{
+                         "nodes" => [%{"id" => "done-state-id", "name" => "Done"}]
+                       }
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              send(self(), {:done_transition_issue_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected query in code-only Done transition test: #{query}")
+          end
+        end
+      )
+
+    assert allowed["success"] == true
+    assert_received {:done_transition_issue_update, %{"id" => "LET-674", "stateId" => "done-state-id"}}
+  end
+
   test "symphony_spec_check dependency graph guard fails stateful specs with unresolved blockers" do
     workspace = Path.join(System.tmp_dir!(), "spec_dependency_workspace_#{System.unique_integer([:positive])}")
 
@@ -2160,6 +2289,111 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert payload["manifest"]["manifest_path"] =~ ".symphony/verification/handoff-manifest.json"
     assert File.exists?(payload["manifest"]["manifest_path"])
     assert Enum.any?(payload["manifest"]["missing_items"], &String.contains?(&1, "preflight"))
+  end
+
+  test "symphony_handoff_check keeps linked GitHub PR attachments out of uploaded artifact proof" do
+    workspace = Path.join(System.tmp_dir!(), "handoff_linked_pr_workspace_#{System.unique_integer([:positive])}")
+
+    workpad_path =
+      write_tmp_file(workspace, "workpad.md", """
+      ## Codex Workpad
+
+      ### Validation
+
+      - [x] preflight: `make symphony-preflight`
+      - [x] cheap gate: `same HEAD targeted proof completed`
+      - [x] targeted tests: `mix test test/symphony_elixir/dynamic_tool_test.exs`
+      - [x] repo validation: `make symphony-validate`
+
+      ### Artifacts
+
+      - [x] PR: https://github.com/maximlafe/symphony/pull/180
+
+      ### Checkpoint
+
+      - `checkpoint_type`: `human-verify`
+      - `risk_level`: `low`
+      - `summary`: Linked PR evidence stays in the PR snapshot, not uploaded artifact proof.
+      """)
+
+    response =
+      DynamicTool.execute(
+        "symphony_handoff_check",
+        %{
+          "issue_id" => "LET-673",
+          "file_path" => workpad_path,
+          "repo" => "maximlafe/symphony",
+          "pr_number" => 180
+        },
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckIssue" do
+            {:ok,
+             %{
+               "data" => %{
+                 "issue" => %{
+                   "id" => "LET-673",
+                   "identifier" => "LET-673",
+                   "description" => "",
+                   "state" => %{"name" => "In Progress"},
+                   "labels" => %{"nodes" => []},
+                   "attachments" => %{
+                     "nodes" => [
+                       %{
+                         "title" => "GitHub PR #180",
+                         "url" => "https://github.com/maximlafe/symphony/pull/180",
+                         "sourceType" => "github",
+                         "metadata" => %{"kind" => "pull_request"}
+                       }
+                     ]
+                   }
+                 }
+               }
+             }}
+          else
+            flunk("unexpected GraphQL query: #{query}")
+          end
+        end,
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "180", "-R", "maximlafe/symphony", "--json", _] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://github.com/maximlafe/symphony/pull/180",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "",
+                 "mergeStateStatus" => "CLEAN",
+                 "statusCheckRollup" => [
+                   %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/symphony/issues/180/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/symphony/pulls/180/reviews?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/symphony/pulls/180/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            _ ->
+              flunk("unexpected gh command: #{inspect(args)}")
+          end
+        end
+      )
+
+    assert response["success"] == false
+    payload = decode_tool_text(response)
+    assert get_in(payload, ["manifest", "issue", "attachment_titles"]) == []
+
+    refute Enum.any?(payload["manifest"]["missing_items"], fn item ->
+             String.contains?(
+               item,
+               "pull request evidence must stay in linked PR/github_pr_snapshot, not in uploaded attachment artifacts"
+             )
+           end)
   end
 
   test "symphony_handoff_check enforces acceptance matrix mapping for mode:plan issues" do

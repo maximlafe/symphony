@@ -97,7 +97,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
                  "merge_state_status" => "CLEAN",
                  "url" => "https://example.test/pr/52"
                },
-               change_classes: ["runtime_contract"],
+               change_classes: ["backend_only"],
                git: git_metadata()
              )
 
@@ -755,7 +755,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
                labels: ["verification:runtime"],
                attachments: [],
                pr_snapshot: green_pr_snapshot(),
-               change_classes: ["runtime_contract"],
+               change_classes: ["backend_only"],
                git: git_metadata()
              )
 
@@ -1027,7 +1027,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
                labels: ["verification:runtime"],
                attachments: [%{"title" => "runtime-proof.log"}],
                pr_snapshot: green_pr_snapshot(),
-               change_classes: ["runtime_contract"],
+               change_classes: ["backend_only"],
                git: git_metadata()
              )
 
@@ -1190,7 +1190,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
                labels: ["delivery:tdd", "verification:runtime"],
                attachments: [%{"title" => "runtime-proof.log"}],
                pr_snapshot: green_pr_snapshot(),
-               change_classes: ["runtime_contract"],
+               change_classes: ["backend_only"],
                git: git_metadata()
              )
 
@@ -1242,7 +1242,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
                issue_description: acceptance_matrix_description(),
                attachments: [%{"title" => "runtime-proof.log"}],
                pr_snapshot: green_pr_snapshot(),
-               change_classes: ["runtime_contract"],
+               change_classes: ["backend_only"],
                git: git_metadata()
              )
 
@@ -1288,7 +1288,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
                issue_description: acceptance_matrix_description_run_executed_runtime(),
                attachments: [%{"title" => "runtime-proof.log"}],
                pr_snapshot: green_pr_snapshot(),
-               change_classes: ["runtime_contract"],
+               change_classes: ["backend_only"],
                git: git_metadata()
              )
 
@@ -1386,6 +1386,247 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert manifest["phase"] == "done"
     assert manifest["deferred_proofs"] == []
     assert "acceptance matrix item `AM-2` is missing a checked proof mapping entry" in manifest["missing_items"]
+  end
+
+  test "review phase defers rollout obligations and done phase requires proof mapping" do
+    review_workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:targeted tests`
+
+    ### Artifacts
+
+    - [x] expected but missing artifact: `runtime canary` -> post-merge obligation deferred until done
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Review proof is complete; rollout proof is post-merge.
+    """
+
+    issue_description = rollout_acceptance_description()
+
+    assert {:ok, review_manifest} =
+             HandoffCheck.evaluate(
+               review_workpad,
+               issue_id: "LET-673",
+               phase: "review",
+               labels: ["verification:generic"],
+               issue_description: issue_description,
+               attachments: [],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert [%{"id" => "RO-1", "required_before" => "done"}] =
+             review_manifest["deferred_rollout_obligations"]
+
+    assert {:error, done_manifest} =
+             HandoffCheck.evaluate(
+               review_workpad,
+               issue_id: "LET-673",
+               phase: "done",
+               labels: ["verification:generic"],
+               issue_description: issue_description,
+               attachments: [],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert "rollout obligation `RO-1` is missing a checked proof mapping entry" in done_manifest["missing_items"]
+
+    done_workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `make symphony-runtime-smoke SCENARIO=workflow_contract`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:targeted tests`
+    - [x] `RO-1` -> `validation:runtime smoke`
+
+    ### Artifacts
+
+    - [x] expected but missing artifact: `runtime canary` -> no durable attachment required for runtime_smoke proof
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Done rollout proof is complete.
+    """
+
+    assert {:ok, done_pass_manifest} =
+             HandoffCheck.evaluate(
+               done_workpad,
+               issue_id: "LET-673",
+               phase: "done",
+               labels: ["verification:generic"],
+               issue_description: issue_description,
+               attachments: [],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert done_pass_manifest["deferred_rollout_obligations"] == []
+  end
+
+  test "acceptance contract revision changes when rollout obligations change" do
+    base_revision =
+      HandoffCheck.acceptance_contract_from_issue_description(rollout_acceptance_description())["revision"]
+
+    changed_revision =
+      rollout_acceptance_description()
+      |> String.replace("production canary", "post-merge health smoke")
+      |> HandoffCheck.acceptance_contract_from_issue_description()
+      |> Map.fetch!("revision")
+
+    assert base_revision != changed_revision
+  end
+
+  @tag :tmp_dir
+  test "done closure transition guard validates phase and workpad freshness", %{tmp_dir: tmp_dir} do
+    workpad_path = Path.join(tmp_dir, "workpad.md")
+    manifest_path = Path.join(tmp_dir, "handoff-manifest.json")
+    File.write!(workpad_path, "done proof")
+
+    manifest =
+      %{
+        "passed" => true,
+        "phase" => "done",
+        "issue" => %{"id" => "LET-673"},
+        "workpad" => %{
+          "file_path" => workpad_path,
+          "sha256" => :crypto.hash(:sha256, "done proof") |> Base.encode16(case: :lower)
+        }
+      }
+      |> Map.merge(valid_gate_manifest_fields())
+
+    assert {:ok, _path} = HandoffCheck.write_manifest(manifest, manifest_path)
+
+    assert :ok =
+             HandoffCheck.done_transition_allowed?(
+               manifest_path,
+               "LET-673",
+               "Done",
+               nil,
+               git_runner: git_runner()
+             )
+
+    assert {:error, :handoff_manifest_stale, _} =
+             HandoffCheck.done_transition_allowed?(
+               manifest_path,
+               "LET-673",
+               "Done",
+               nil
+             )
+
+    review_manifest = Map.put(manifest, "phase", "review")
+    assert {:ok, _path} = HandoffCheck.write_manifest(review_manifest, manifest_path)
+
+    assert {:error, :handoff_manifest_stale, phase_details} =
+             HandoffCheck.done_transition_allowed?(
+               manifest_path,
+               "LET-673",
+               "Done",
+               nil,
+               git_runner: git_runner()
+             )
+
+    assert phase_details["reason"] =~ "phase does not match"
+
+    missing_phase_manifest = Map.delete(manifest, "phase")
+    assert {:ok, _path} = HandoffCheck.write_manifest(missing_phase_manifest, manifest_path)
+
+    assert {:error, :handoff_manifest_stale, missing_phase_details} =
+             HandoffCheck.done_transition_allowed?(
+               manifest_path,
+               "LET-673",
+               "Done",
+               nil,
+               git_runner: git_runner()
+             )
+
+    assert missing_phase_details["reason"] =~ "phase is missing"
+
+    assert {:error, :handoff_manifest_invalid, %{"reason" => "issue_id is required"}} =
+             HandoffCheck.done_transition_allowed?(manifest_path, 123, "Done", nil, [])
+  end
+
+  test "done closure required and rollout revision defaults cover non-runtime obligations" do
+    refute HandoffCheck.done_closure_required?(nil)
+    assert HandoffCheck.done_closure_required?(rollout_acceptance_description())
+
+    contract = HandoffCheck.acceptance_contract_from_issue_description(nil)
+    assert get_in(contract, ["payload", "rollout_contract", "present"]) == false
+
+    test_rollout = """
+    ## Rollout Contract
+
+    delivery_class: operator_flow
+    obligation_type: operator_cutover_verified
+    required_capability: none
+    proof_type: test
+    proof_target: mix test test/symphony_elixir/handoff_check_test.exs
+    required_before: done
+    unblock_action: Verify operator cutover in test.
+    """
+
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Proof Mapping
+
+    - [x] `RO-1` -> `validation:targeted tests`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Done test proof exists.
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-673",
+               phase: "done",
+               labels: ["verification:generic"],
+               issue_description: test_rollout,
+               attachments: [],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert get_in(manifest, ["rollout_contract", "obligations", Access.at(0), "proof_semantic"]) ==
+             "run_executed"
   end
 
   test "evaluate fails closed for unsupported handoff phase values" do
@@ -2737,6 +2978,26 @@ defmodule SymphonyElixir.HandoffCheckTest do
     | --- | --- | --- | --- | --- | --- | --- |
     | AM-1 | Review proof | Targeted tests pass | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed | review |
     | AM-2 | Post-merge runtime proof | Runtime smoke is dispatched on main | runtime_smoke | post-merge workflow dispatch | runtime_smoke | done |
+    """
+  end
+
+  defp rollout_acceptance_description do
+    """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Review proof | Targeted tests pass | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed | review |
+
+    ## Rollout Contract
+
+    delivery_class: runtime_repair
+
+    | id | obligation_type | required_capability | proof_type | proof_target | required_before | unblock_action |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | RO-1 | real_case_canary | none | runtime_smoke | production canary | done | Run the canary and attach runtime proof. |
+
+    ## Symphony
     """
   end
 

@@ -45,6 +45,11 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "строки `вложение` используй только для реальных file attachments в Linear"
     assert prompt =~ "evidence по PR (`PR #...`, PR URL, `pull request`, `пулл-реквест`) должно оставаться в linked PR + `github_pr_snapshot`"
     assert prompt =~ "Required capabilities"
+    assert prompt =~ "rollout contract"
+    assert prompt =~ "delivery_class"
+    assert prompt =~ "required_capability"
+    assert prompt =~ "phase=done"
+    assert prompt =~ "checkpoint_type: human-action"
     assert prompt =~ "vps_ssh"
     assert prompt =~ "Use only external prerequisite names: `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`"
     assert prompt =~ "do not include execution-only requirements (`repo_validation`, `pr_publication`, `pr_body_contract`)"
@@ -153,12 +158,30 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert execute_skill =~ "proof_type"
     assert execute_skill =~ "proof_semantic"
     assert execute_skill =~ "required_before=review"
+    assert execute_skill =~ "rollout obligations"
+    assert execute_skill =~ "done-phase"
+    assert execute_skill =~ "phase=done"
+    assert execute_skill =~ "code_only"
     assert execute_skill =~ "exactly one checked `Proof Mapping` entry"
     assert execute_skill =~ "validation:am-<am-id-lowercase>"
     assert execute_skill =~ "Do not use prose references after `validation:`"
     assert execute_skill =~ "validation:runtime smoke"
     assert execute_skill =~ "Update Linear in Russian"
     assert execute_skill =~ "Blocked"
+  end
+
+  test "workflows document delivery rollout closure without code-only overhead" do
+    assert {:ok, %{prompt: let_prompt}} = Workflow.load(@let_workflow_path)
+    assert {:ok, %{prompt: default_prompt}} = Workflow.load(@default_workflow_path)
+
+    for prompt <- [let_prompt, default_prompt] do
+      assert prompt =~ "rollout contract"
+      assert prompt =~ "delivery_class"
+      assert prompt =~ "code_only"
+      assert prompt =~ "phase=done"
+      assert prompt =~ "Blocked"
+      assert prompt =~ "checkpoint_type: human-action"
+    end
   end
 
   defp non_planning_default_profiles_have_xhigh?(profiles) when is_map(profiles) do
