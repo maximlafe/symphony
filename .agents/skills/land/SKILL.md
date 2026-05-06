@@ -41,20 +41,26 @@ description:
    push with the `push` skill, and re-run checks.
 10. When all checks are green and review feedback is addressed, squash-merge and
    delete the branch using the PR title/body for the merge subject/body.
-11. **Context guard:** Before implementing review feedback, confirm it does not
+11. If the issue task-spec contains rollout obligations or `Acceptance Matrix`
+    rows with `required_before=done`, do not move the issue directly to `Done`
+    after merge. Run `symphony_handoff_check` with `phase=done`; if proof or
+    prerequisite capability is missing, move the issue to `Blocked` with
+    `checkpoint_type: human-action` and the exact unblock action from the
+    rollout contract.
+12. **Context guard:** Before implementing review feedback, confirm it does not
     conflict with the user’s stated intent or task context. If it conflicts,
     respond inline with a justification and ask the user before changing code.
-12. **Pushback template:** When disagreeing, reply inline with: acknowledge +
+13. **Pushback template:** When disagreeing, reply inline with: acknowledge +
     rationale + offer alternative.
-13. **Ambiguity gate:** When ambiguity blocks progress, use the clarification
+14. **Ambiguity gate:** When ambiguity blocks progress, use the clarification
     flow (assign PR to current GH user, mention them, wait for response). Do not
     implement until ambiguity is resolved.
     - If you are confident you know better than the reviewer, you may proceed
       without asking the user, but reply inline with your rationale.
-14. **Per-comment mode:** For each review comment, choose one of: accept,
+15. **Per-comment mode:** For each review comment, choose one of: accept,
     clarify, or push back. Reply inline (or in the issue thread for Codex
     reviews) stating the mode before changing code.
-15. **Reply before change:** Always respond with intended action before pushing
+16. **Reply before change:** Always respond with intended action before pushing
     code changes (inline for review comments, issue thread for Codex reviews).
 
 ## Commands

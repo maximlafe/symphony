@@ -1786,6 +1786,135 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert_received {:execution_transition_issue_update, %{"id" => "LET-670", "stateId" => "in-progress-state-id"}}
   end
 
+  test "linear_graphql blocks Done transitions until done-phase handoff check succeeds" do
+    workspace = Path.join(System.tmp_dir!(), "done_gate_workspace_#{System.unique_integer([:positive])}")
+
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Review proof | Review proof exists | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed | review |
+
+    ## Rollout Contract
+
+    delivery_class: runtime_repair
+    obligation_type: real_case_canary
+    required_capability: runtime_smoke
+    proof_type: runtime_smoke
+    proof_target: production canary
+    required_before: done
+    unblock_action: Run the canary and attach runtime proof.
+
+    ## Symphony
+
+    Required capabilities: runtime_smoke
+    """
+
+    blocked =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-673", "stateId" => "done-state-id"}
+        },
+        workspace: workspace,
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => "LET-673",
+                     "identifier" => "LET-673",
+                     "description" => issue_description,
+                     "state" => %{"name" => "Merging"},
+                     "labels" => %{"nodes" => []},
+                     "inverseRelations" => %{"nodes" => []},
+                     "team" => %{
+                       "states" => %{
+                         "nodes" => [
+                           %{"id" => "done-state-id", "name" => "Done"},
+                           %{"id" => "blocked-state-id", "name" => "Blocked"}
+                         ]
+                       }
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              send(self(), {:blocked_transition_issue_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected query in Done transition guard test: #{query}")
+          end
+        end
+      )
+
+    assert blocked["success"] == false
+    payload = decode_tool_text(blocked)
+    assert payload["error"]["message"] =~ "Done issue transitions require"
+    assert payload["error"]["details"]["required_tool"] == "symphony_handoff_check"
+    assert payload["error"]["details"]["checkpoint_type"] == "human-action"
+    assert payload["error"]["details"]["unblock_action"] =~ "Run `symphony_handoff_check` with `phase=done`"
+    assert_received {:blocked_transition_issue_update, %{"id" => "LET-673", "stateId" => "blocked-state-id"}}
+  end
+
+  test "linear_graphql allows code_only Done transitions without rollout overhead" do
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Review proof | Review proof exists | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    """
+
+    allowed =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-674", "stateId" => "done-state-id"}
+        },
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => "LET-674",
+                     "identifier" => "LET-674",
+                     "description" => issue_description,
+                     "state" => %{"name" => "Merging"},
+                     "labels" => %{"nodes" => []},
+                     "inverseRelations" => %{"nodes" => []},
+                     "team" => %{
+                       "states" => %{
+                         "nodes" => [%{"id" => "done-state-id", "name" => "Done"}]
+                       }
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              send(self(), {:done_transition_issue_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected query in code-only Done transition test: #{query}")
+          end
+        end
+      )
+
+    assert allowed["success"] == true
+    assert_received {:done_transition_issue_update, %{"id" => "LET-674", "stateId" => "done-state-id"}}
+  end
+
   test "symphony_spec_check dependency graph guard fails stateful specs with unresolved blockers" do
     workspace = Path.join(System.tmp_dir!(), "spec_dependency_workspace_#{System.unique_integer([:positive])}")
 

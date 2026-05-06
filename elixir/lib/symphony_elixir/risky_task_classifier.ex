@@ -3,6 +3,8 @@ defmodule SymphonyElixir.RiskyTaskClassifier do
   Deterministic, machine-executable risk classifier used by routing and cost policy.
   """
 
+  alias SymphonyElixir.DeliveryContract
+
   @stateful_capability "stateful_db"
   @risky_capabilities MapSet.new([@stateful_capability, "vps_ssh"])
   @stateful_label_fragments ["migration", "stateful", "schema", "database", "db"]
@@ -39,9 +41,19 @@ defmodule SymphonyElixir.RiskyTaskClassifier do
       |> maybe_add_reason(Regex.match?(@risky_description_pattern, description), "high-risk keyword in spec")
       |> Enum.uniq()
 
+    delivery =
+      DeliveryContract.classify(%{
+        description: description,
+        labels: labels,
+        required_capabilities: required_capabilities
+      })
+
     %{
       "risky_task" => risky_task,
       "stateful_migration" => stateful_migration,
+      "delivery_class" => delivery["delivery_class"],
+      "delivery_sensitive" => delivery["delivery_sensitive"],
+      "delivery_ambiguous" => delivery["delivery_ambiguous"],
       "cost_signals" => if(risky_task, do: ["risky_task"], else: []),
       "reasons" => reasons
     }
@@ -51,6 +63,9 @@ defmodule SymphonyElixir.RiskyTaskClassifier do
     %{
       "risky_task" => false,
       "stateful_migration" => false,
+      "delivery_class" => "code_only",
+      "delivery_sensitive" => false,
+      "delivery_ambiguous" => false,
       "cost_signals" => [],
       "reasons" => []
     }

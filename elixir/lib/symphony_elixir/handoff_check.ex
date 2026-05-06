@@ -3,7 +3,7 @@ defmodule SymphonyElixir.HandoffCheck do
   Evaluates the review-ready handoff contract and writes a machine-readable manifest.
   """
 
-  alias SymphonyElixir.{AcceptanceCapability, TelemetrySchema, ValidationGate}
+  alias SymphonyElixir.{AcceptanceCapability, DeliveryContract, TelemetrySchema, ValidationGate}
 
   @allowed_checkpoint_types ["human-verify", "decision", "human-action"]
   @allowed_risk_levels ["low", "medium", "high"]
@@ -85,11 +85,12 @@ defmodule SymphonyElixir.HandoffCheck do
   def acceptance_contract_from_issue_description(issue_description) when is_binary(issue_description) do
     {acceptance_matrix_items, _errors} = parse_acceptance_matrix(issue_description)
     {required_capabilities, _errors} = AcceptanceCapability.required_capabilities(issue_description)
-    acceptance_contract(acceptance_matrix_items, required_capabilities)
+    {delivery_contract, _errors} = DeliveryContract.parse(issue_description)
+    acceptance_contract(acceptance_matrix_items, required_capabilities, delivery_contract)
   end
 
   def acceptance_contract_from_issue_description(_issue_description) do
-    acceptance_contract([], [])
+    acceptance_contract([], [], empty_delivery_contract())
   end
 
   @spec acceptance_matrix_parse_errors(String.t() | nil) :: [String.t()]
@@ -107,6 +108,8 @@ defmodule SymphonyElixir.HandoffCheck do
   def proof_contract_errors(markdown, opts) when is_binary(markdown) and is_list(opts) do
     {acceptance_matrix_items, parse_errors} = parse_acceptance_matrix(markdown)
     {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(markdown)
+    {delivery_contract, delivery_errors} = DeliveryContract.parse(markdown)
+    rollout_items = rollout_obligation_items(delivery_contract)
 
     parsed_workpad =
       markdown
@@ -115,11 +118,17 @@ defmodule SymphonyElixir.HandoffCheck do
 
     effective_attachments = effective_proof_contract_attachments(parsed_workpad, opts)
     checked_mappings = checked_proof_mapping_items(parsed_workpad["proof_mapping"] || [])
-    mapping_errors = proof_contract_mapping_errors(acceptance_matrix_items, parsed_workpad, checked_mappings)
+
+    mapping_errors =
+      proof_contract_mapping_errors(
+        acceptance_matrix_items ++ rollout_items,
+        parsed_workpad,
+        checked_mappings
+      )
 
     {matrix_mapping_errors, proof_signals} =
       proof_contract_matrix_mapping_errors(
-        acceptance_matrix_items,
+        acceptance_matrix_items ++ rollout_items,
         parsed_workpad,
         checked_mappings,
         effective_attachments
@@ -128,6 +137,7 @@ defmodule SymphonyElixir.HandoffCheck do
     []
     |> Kernel.++(capability_parse_errors)
     |> Kernel.++(parse_errors)
+    |> Kernel.++(delivery_errors)
     |> Kernel.++(mapping_errors)
     |> Kernel.++(matrix_mapping_errors)
     |> Kernel.++(
@@ -228,8 +238,9 @@ defmodule SymphonyElixir.HandoffCheck do
     locked_at = Keyword.get(opts, :locked_at, DateTime.utc_now())
     {acceptance_matrix_items, acceptance_matrix_errors} = parse_acceptance_matrix(issue_description)
     {required_capabilities, _capability_errors} = AcceptanceCapability.required_capabilities(issue_description)
+    {delivery_contract, _delivery_errors} = DeliveryContract.parse(issue_description)
 
-    acceptance_contract = acceptance_contract(acceptance_matrix_items, required_capabilities)
+    acceptance_contract = acceptance_contract(acceptance_matrix_items, required_capabilities, delivery_contract)
 
     lock_payload = %{
       "version" => 1,
@@ -291,13 +302,15 @@ defmodule SymphonyElixir.HandoffCheck do
 
     {acceptance_matrix_items, acceptance_matrix_errors} = parse_acceptance_matrix(issue_description)
     {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(issue_description)
+    {delivery_contract, delivery_errors} = DeliveryContract.parse(issue_description)
+    rollout_items = rollout_obligation_items(delivery_contract)
 
     parsed_workpad =
       workpad_body
       |> parse_workpad()
       |> maybe_reconcile_workpad_artifacts(attachments, acceptance_matrix_items, required_capabilities)
 
-    acceptance_contract = acceptance_contract(acceptance_matrix_items, required_capabilities)
+    acceptance_contract = acceptance_contract(acceptance_matrix_items, required_capabilities, delivery_contract)
 
     {validation_gate, git_metadata, validation_gate_errors} =
       resolve_validation_gate(parsed_workpad, opts)
@@ -311,6 +324,7 @@ defmodule SymphonyElixir.HandoffCheck do
     {proof_signals, acceptance_matrix_missing_items, deferred_proofs} =
       acceptance_matrix_missing_items(
         acceptance_matrix_items,
+        rollout_items,
         parsed_workpad,
         issue_labels,
         attachments,
@@ -322,7 +336,7 @@ defmodule SymphonyElixir.HandoffCheck do
       required_capabilities: required_capabilities,
       capability_parse_errors: capability_parse_errors,
       proof_signals: proof_signals,
-      acceptance_matrix_missing_items: phase_errors ++ acceptance_matrix_missing_items
+      acceptance_matrix_missing_items: phase_errors ++ delivery_errors ++ acceptance_matrix_missing_items
     }
 
     missing_items =
@@ -355,6 +369,8 @@ defmodule SymphonyElixir.HandoffCheck do
         "summary" => summary_for_manifest(passed, profile, missing_items),
         "proof_signals" => proof_signals,
         "deferred_proofs" => deferred_proofs,
+        "rollout_contract" => delivery_contract,
+        "deferred_rollout_obligations" => deferred_rollout_obligations(rollout_items, phase),
         "issue" => %{
           "id" => issue_id,
           "identifier" => issue_identifier,
@@ -362,6 +378,7 @@ defmodule SymphonyElixir.HandoffCheck do
           "required_capabilities" => required_capabilities,
           "attachment_titles" => Enum.map(attachments, & &1["title"]),
           "acceptance_matrix" => acceptance_matrix_items,
+          "rollout_obligations" => delivery_contract["obligations"],
           "acceptance_contract_revision" => acceptance_contract["revision"]
         },
         "pull_request" => %{
@@ -412,6 +429,40 @@ defmodule SymphonyElixir.HandoffCheck do
           :ok | {:error, atom(), map()}
   def review_ready_transition_allowed?(manifest_path, issue_id, state_name) do
     review_ready_transition_allowed?(manifest_path, issue_id, state_name, nil)
+  end
+
+  @spec done_closure_required?(String.t() | nil) :: boolean()
+  def done_closure_required?(issue_description) when is_binary(issue_description) do
+    {acceptance_matrix_items, _errors} = parse_acceptance_matrix(issue_description)
+
+    Enum.any?(acceptance_matrix_items, &(&1["required_before"] == "done")) or
+      DeliveryContract.done_closure_required?(issue_description)
+  end
+
+  def done_closure_required?(_issue_description), do: false
+
+  @spec done_transition_allowed?(Path.t(), String.t(), String.t() | nil, String.t() | nil, keyword()) ::
+          :ok | {:error, atom(), map()}
+  @spec done_transition_allowed?(Path.t(), String.t(), String.t() | nil, String.t() | nil) ::
+          :ok | {:error, atom(), map()}
+  def done_transition_allowed?(manifest_path, issue_id, state_name, expected_workpad_path, opts \\ [])
+
+  @spec done_transition_allowed?(Path.t(), String.t(), String.t() | nil, String.t() | nil, keyword()) ::
+          :ok | {:error, atom(), map()}
+  def done_transition_allowed?(manifest_path, issue_id, state_name, expected_workpad_path, opts)
+      when is_binary(manifest_path) and is_binary(issue_id) and is_list(opts) do
+    with {:ok, manifest} <- load_manifest(manifest_path),
+         :ok <- validate_manifest_identity(manifest, issue_id, state_name),
+         :ok <- validate_manifest_phase(manifest, "done"),
+         :ok <- validate_manifest_contract_revision(manifest, opts),
+         :ok <- validate_manifest_contract_lock(manifest, opts),
+         :ok <- validate_manifest_validation_gate(manifest, opts) do
+      validate_manifest_workpad(manifest, expected_workpad_path)
+    end
+  end
+
+  def done_transition_allowed?(_manifest_path, _issue_id, _state_name, _expected_workpad_path, _opts) do
+    {:error, :handoff_manifest_invalid, %{"reason" => "issue_id is required"}}
   end
 
   @spec validate_contract_lock(map(), keyword()) :: :ok | {:error, atom(), map()}
@@ -485,6 +536,29 @@ defmodule SymphonyElixir.HandoffCheck do
 
       true ->
         :ok
+    end
+  end
+
+  defp validate_manifest_phase(manifest, expected_phase) do
+    case manifest["phase"] do
+      ^expected_phase ->
+        :ok
+
+      phase when is_binary(phase) ->
+        {:error, :handoff_manifest_stale,
+         %{
+           "reason" => "handoff manifest phase does not match requested closure phase",
+           "details" => ["expected_phase=#{expected_phase}", "manifest_phase=#{phase}"],
+           "manifest" => manifest
+         }}
+
+      _ ->
+        {:error, :handoff_manifest_stale,
+         %{
+           "reason" => "handoff manifest phase is missing",
+           "details" => ["run symphony_handoff_check with phase=#{expected_phase}"],
+           "manifest" => manifest
+         }}
     end
   end
 
@@ -747,7 +821,8 @@ defmodule SymphonyElixir.HandoffCheck do
     if is_binary(issue_description) do
       {acceptance_matrix_items, _errors} = parse_acceptance_matrix(issue_description)
       {required_capabilities, _errors} = AcceptanceCapability.required_capabilities(issue_description)
-      payload = acceptance_contract_payload(acceptance_matrix_items, required_capabilities)
+      {delivery_contract, _errors} = DeliveryContract.parse(issue_description)
+      payload = acceptance_contract_payload(acceptance_matrix_items, required_capabilities, delivery_contract)
 
       if enforce_contract_revision?(payload) do
         {:ok, acceptance_contract_revision(payload)}
@@ -1287,7 +1362,15 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp acceptance_matrix_missing_items(acceptance_matrix_items, parsed_workpad, issue_labels, attachments, parse_errors, phase) do
+  defp acceptance_matrix_missing_items(
+         acceptance_matrix_items,
+         rollout_items,
+         parsed_workpad,
+         issue_labels,
+         attachments,
+         parse_errors,
+         phase
+       ) do
     validation_items = parsed_workpad["validation"] || []
     proof_mapping_items = parsed_workpad["proof_mapping"] || []
     artifact_items = parsed_workpad["artifacts"] || []
@@ -1298,14 +1381,19 @@ defmodule SymphonyElixir.HandoffCheck do
         {skipped_matrix_proof_signals(runtime_smoke_checked?), [], []}
 
       true ->
+        proof_context = %{
+          validation_items: validation_items,
+          artifact_items: artifact_items,
+          proof_mapping_items: proof_mapping_items,
+          attachments: attachments,
+          parse_errors: parse_errors,
+          runtime_smoke_checked?: runtime_smoke_checked?
+        }
+
         evaluate_acceptance_matrix(
           acceptance_matrix_items,
-          validation_items,
-          artifact_items,
-          proof_mapping_items,
-          attachments,
-          parse_errors,
-          runtime_smoke_checked?,
+          rollout_items,
+          proof_context,
           phase
         )
     end
@@ -1313,19 +1401,24 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp evaluate_acceptance_matrix(
          acceptance_matrix_items,
-         validation_items,
-         artifact_items,
-         proof_mapping_items,
-         attachments,
-         parse_errors,
-         runtime_smoke_checked?,
+         rollout_items,
+         proof_context,
          phase
        ) do
-    required_items = Enum.filter(acceptance_matrix_items, &matrix_item_required_for_phase?(&1, phase))
+    validation_items = proof_context.validation_items
+    artifact_items = proof_context.artifact_items
+    proof_mapping_items = proof_context.proof_mapping_items
+    attachments = proof_context.attachments
+    parse_errors = proof_context.parse_errors
+    runtime_smoke_checked? = proof_context.runtime_smoke_checked?
+
+    required_matrix_items = Enum.filter(acceptance_matrix_items, &matrix_item_required_for_phase?(&1, phase))
+    required_rollout_items = Enum.filter(rollout_items, &matrix_item_required_for_phase?(&1, phase))
+    required_items = required_matrix_items ++ required_rollout_items
     deferred_proofs = deferred_proofs_for_phase(acceptance_matrix_items, phase)
     checked_mappings = checked_proof_mapping_items(proof_mapping_items)
     mapping_groups = Enum.group_by(checked_mappings, & &1["matrix_item_id"])
-    matrix_ids = MapSet.new(Enum.map(acceptance_matrix_items, & &1["id"]))
+    matrix_ids = MapSet.new(Enum.map(acceptance_matrix_items ++ rollout_items, & &1["id"]))
 
     base_errors =
       []
@@ -1335,7 +1428,9 @@ defmodule SymphonyElixir.HandoffCheck do
       |> Kernel.++(unknown_matrix_mapping_errors(checked_mappings, matrix_ids))
       |> Kernel.++(duplicate_reference_errors(checked_mappings))
 
-    {item_errors, signals} =
+    rollout_ids = MapSet.new(Enum.map(rollout_items, & &1["id"]))
+
+    {raw_item_errors, signals} =
       Enum.reduce(required_items, {base_errors, initial_proof_signals(runtime_smoke_checked?)}, fn matrix_item, {errors, signals} ->
         validate_single_matrix_item(
           matrix_item,
@@ -1348,11 +1443,15 @@ defmodule SymphonyElixir.HandoffCheck do
         )
       end)
 
+    item_errors = Enum.map(raw_item_errors, &rollout_error_label(&1, rollout_ids))
+
     finalized_signals =
       signals
       |> Map.put("acceptance_matrix_covered", item_errors == [])
-      |> Map.put("acceptance_matrix_required_items", length(required_items))
+      |> Map.put("acceptance_matrix_required_items", length(required_matrix_items))
       |> Map.put("acceptance_matrix_deferred_items", length(deferred_proofs))
+      |> Map.put("rollout_obligation_required_items", length(required_rollout_items))
+      |> Map.put("rollout_obligation_deferred_items", length(deferred_rollout_obligations(rollout_items, phase)))
 
     {finalized_signals, Enum.uniq(item_errors), deferred_proofs}
   end
@@ -1369,6 +1468,29 @@ defmodule SymphonyElixir.HandoffCheck do
     acceptance_matrix_items
     |> Enum.reject(&matrix_item_required_for_phase?(&1, phase))
     |> Enum.map(&Map.take(&1, ["id", "scenario", "proof_type", "proof_target", "proof_semantic", "required_before"]))
+  end
+
+  defp deferred_rollout_obligations(rollout_items, phase) do
+    rollout_items
+    |> Enum.reject(&matrix_item_required_for_phase?(&1, phase))
+    |> Enum.map(
+      &Map.take(&1, [
+        "id",
+        "obligation_type",
+        "required_capability",
+        "proof_type",
+        "proof_target",
+        "proof_semantic",
+        "required_before",
+        "unblock_action"
+      ])
+    )
+  end
+
+  defp rollout_error_label(error, rollout_ids) do
+    Enum.reduce(rollout_ids, error, fn rollout_id, acc ->
+      String.replace(acc, "acceptance matrix item `#{rollout_id}`", "rollout obligation `#{rollout_id}`")
+    end)
   end
 
   defp validate_single_matrix_item(matrix_item, [], _validation_items, _artifact_items, _attachments, errors, signals) do
@@ -1971,8 +2093,8 @@ defmodule SymphonyElixir.HandoffCheck do
     "verification failed for profile `#{profile}`: #{trimmed}"
   end
 
-  defp acceptance_contract(acceptance_matrix_items, required_capabilities) do
-    payload = acceptance_contract_payload(acceptance_matrix_items, required_capabilities)
+  defp acceptance_contract(acceptance_matrix_items, required_capabilities, delivery_contract) do
+    payload = acceptance_contract_payload(acceptance_matrix_items, required_capabilities, delivery_contract)
 
     %{
       "version" => @acceptance_contract_version,
@@ -1981,12 +2103,39 @@ defmodule SymphonyElixir.HandoffCheck do
     }
   end
 
-  defp acceptance_contract_payload(acceptance_matrix_items, required_capabilities) do
+  defp acceptance_contract_payload(acceptance_matrix_items, required_capabilities, delivery_contract) do
     %{
       "acceptance_matrix" => acceptance_matrix_items,
-      "required_capabilities" => required_capabilities
+      "required_capabilities" => required_capabilities,
+      "rollout_contract" => normalized_delivery_contract_for_revision(delivery_contract)
     }
   end
+
+  defp empty_delivery_contract do
+    %{"present" => false, "delivery_class" => nil, "obligations" => []}
+  end
+
+  defp normalized_delivery_contract_for_revision(delivery_contract) when is_map(delivery_contract) do
+    delivery_contract
+    |> Map.take(["present", "delivery_class", "obligations"])
+    |> Map.put_new("present", false)
+    |> Map.put_new("delivery_class", nil)
+    |> Map.put_new("obligations", [])
+  end
+
+  defp rollout_obligation_items(delivery_contract) when is_map(delivery_contract) do
+    delivery_contract
+    |> Map.get("obligations", [])
+    |> Enum.map(fn obligation ->
+      obligation
+      |> Map.put_new("scenario", obligation["obligation_type"])
+      |> Map.put_new("expected_outcome", obligation["unblock_action"])
+      |> Map.put_new("proof_semantic", rollout_proof_semantic(obligation["proof_type"]))
+    end)
+  end
+
+  defp rollout_proof_semantic("runtime_smoke"), do: "runtime_smoke"
+  defp rollout_proof_semantic(_proof_type), do: "run_executed"
 
   defp acceptance_contract_revision(payload) when is_map(payload) do
     payload

@@ -174,6 +174,10 @@ Instructions:
 - `final gate` is the publish/review gate: run it only on the clean committed `HEAD` that is ready to publish or hand off. It includes a successful cheap proof on the same `HEAD`, `make symphony-validate`, and any class-specific runtime/UI/stateful proof.
 - Default repo-wide validation for the final gate is `make symphony-validate`; run `make symphony-live-e2e` only for explicit smoke or end-to-end tasks that should exercise real Linear and Codex services.
 - The repo-owned review-ready gate is `make symphony-handoff-check`, backed by the `symphony_handoff_check` runtime tool and the workspace manifest at `.symphony/verification/handoff-manifest.json`.
+- Delivery-sensitive tasks use a separate machine-readable rollout contract. `Required capabilities` remain external prerequisites/access only; rollout obligations describe the post-code or post-merge action and proof.
+- Canonical rollout fields are `delivery_class`, `obligation_type`, `required_capability`, `proof_type`, `proof_target`, `required_before`, and `unblock_action`. `delivery_class=code_only` must not add rollout overhead.
+- For `stateful_schema`, `runtime_repair`, and `operator_flow`, missing rollout contract blocks execution readiness; after merge, any rollout obligation or `Acceptance Matrix` row with `required_before=done` requires `symphony_handoff_check` with `phase=done` before `Done`.
+- Failed done-phase closure moves the issue to `Blocked` with `checkpoint_type: human-action` and the exact unblock action instead of treating it as ordinary review-ready handoff.
 - The handoff manifest must fail closed unless it contains fresh final-gate metadata for the current workspace: `validation_gate.gate`, `validation_gate.change_classes`, `validation_gate.required_checks`, `validation_gate.passed_checks`, `git.head_sha`, `git.tree_sha`, and `git.worktree_clean`.
 - `SymphonyElixir.RunPhase` is observability only; `SymphonyElixir.ValidationGate` and `SymphonyElixir.HandoffCheck` own acceptance proof.
 - Comment/workpad/description-only changes without shipped code/config diff do not require local final gate rerun, but workpad edits after `symphony_handoff_check` require rerunning handoff check because the workpad digest is part of the final proof.
@@ -362,7 +366,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - if the latest checkpoint is `decision` or `human-action`, wait for that explicit decision/action instead of treating the state like ordinary PR approval;
 3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
 4. If approved, a human moves the issue to `Merging`.
-5. In `Merging`, use the `land` skill until the PR is merged, then move the issue to `Done`.
+5. In `Merging`, use the `land` skill until the PR is merged. If the task has rollout obligations or `required_before=done` acceptance items, run done-phase closure (`symphony_handoff_check phase=done`) before `Done`; missing proof/capability goes to `Blocked` with `checkpoint_type: human-action`. Code-only tasks move to `Done` without rollout overhead.
 
 ## Step 3: Rework handling
 

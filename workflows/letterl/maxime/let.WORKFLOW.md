@@ -792,6 +792,11 @@ Canonical validation terms:
 - `final gate` is the publish/review gate. Run it only on the clean committed `HEAD` that is ready to publish or hand off. It must include the successful cheap proof for the same `HEAD`, repo validation, and any class-specific runtime/UI/stateful proof required by the matrix.
 - `RunPhase` is observability only. It can describe `targeted tests`, `runtime proof`, `full validate`, `waiting CI`, or `publishing PR`, but it is not acceptance truth.
 - `symphony_handoff_check` remains the final fail-closed review-ready gate. Do not replace it with agent judgment or a prompt-only heuristic.
+- Delivery-sensitive specs must carry a separate machine-readable rollout contract. `Required capabilities` describes only external prerequisites/access; rollout obligations describe the actual post-code/post-merge action and proof.
+- Canonical rollout fields: `delivery_class`, `obligation_type`, `required_capability`, `proof_type`, `proof_target`, `required_before`, `unblock_action`.
+- `delivery_class=code_only` must not add rollout overhead. Sensitive classes (`stateful_schema`, `runtime_repair`, `operator_flow`) without rollout contract fail closed at spec gate.
+- Review-phase `symphony_handoff_check` may defer rollout obligations with `required_before=done`; done-phase closure must run `symphony_handoff_check` with `phase=done` before `Done`.
+- If done-phase proof or prerequisite capability is missing, move the issue to `Blocked` with `checkpoint_type: human-action`, a conservative `risk_level`, and the exact `unblock_action`; do not route this failure back to ordinary `In Review`.
 
 Decision matrix:
 
@@ -886,7 +891,7 @@ Use this only when completion is blocked by missing required tools or missing au
 4. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
 5. If approved, a human moves the issue to `Merging`.
 6. In `Merging`, first create the separate top-level comment `Начал слияние задачи: <DD.MM.YYYY HH:MM MSK>`, then use the `land` skill until the PR is merged.
-7. After merge is complete, move the issue to `Done`.
+7. After merge is complete, move the issue to `Done` only when there are no rollout obligations and no `Acceptance Matrix` rows with `required_before=done`, or after `symphony_handoff_check` with `phase=done` has passed. If done-phase proof/capability is missing, move the issue to `Blocked` with `checkpoint_type: human-action` and the exact unblock action.
 
 ## Step 4: Rework handling
 

@@ -41,6 +41,16 @@ For the LET workflow, "finished" means one of:
   - matching attachment exists in Linear issue attachments (same title).
 - Do not move the issue to `In Review` if matrix/mapping/artifact surface is stale or internally inconsistent.
 
+## Delivery Rollout Contract
+
+- Keep `Required capabilities` limited to external prerequisites/access. Do not add execution-only values such as `migration_apply`, `canary_run`, or `ops_cutover`.
+- When the task-spec declares a rollout contract, treat its rollout obligations as part of the same handoff contract surface as `Acceptance Matrix` and `Proof Mapping`.
+- `delivery_class=code_only` must not add rollout overhead.
+- For delivery-sensitive classes (`stateful_schema`, `runtime_repair`, `operator_flow`), preserve the machine-readable rollout contract fields: `delivery_class`, `obligation_type`, `required_capability`, `proof_type`, `proof_target`, `required_before`, and `unblock_action`.
+- In review handoff, `required_before=done` rollout obligations may be deferred and should remain visible in the manifest.
+- After merge, before any `Done` transition for a task with rollout obligations or `Acceptance Matrix` rows where `required_before=done`, run `symphony_handoff_check` with `phase=done`.
+- If done-phase proof or prerequisite capability is missing, move the issue to `Blocked` with `checkpoint_type: human-action`, a justified `risk_level`, and the exact `unblock_action`; do not route that failure back to ordinary `In Review`.
+
 ## Required Execution Flow
 
 1. Resolve the current issue, state, repo, branch, PR, checks, review state, and recent related work before editing.
@@ -58,7 +68,7 @@ For the LET workflow, "finished" means one of:
 13. Triage CI, PR review feedback, and mergeability until no actionable feedback remains or a real blocker is proven.
 14. Do not move to `In Review` until handoff evidence is complete and true before the state transition.
 15. Do not merge directly unless the workflow explicitly routes the issue into an autonomous merge path; use the repo land flow when merging is allowed.
-16. After merge or deployment, verify the landed/released state before claiming completion.
+16. After merge or deployment, verify the landed/released state before claiming completion; for rollout obligations, use the done-phase closure gate (`phase=done`) before `Done`.
 17. Update Linear in Russian with the final evidence and state.
 
 ## Capability Gate
