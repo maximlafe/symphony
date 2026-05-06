@@ -138,6 +138,9 @@ defmodule SymphonyElixir.LiveE2ETest do
     workspace_root = Path.join(test_root, "workspaces")
     team_key = System.get_env("SYMPHONY_LIVE_LINEAR_TEAM_KEY") || @default_team_key
     codex_command = System.get_env("SYMPHONY_LIVE_CODEX_COMMAND") || "codex app-server"
+    keep_tmp? = System.get_env("SYMPHONY_LIVE_E2E_KEEP_TMP") == "1"
+    debug_updates? = System.get_env("SYMPHONY_LIVE_E2E_DEBUG") == "1"
+    max_turns = env_positive_integer("SYMPHONY_LIVE_E2E_MAX_TURNS", 3)
     original_workflow_path = Workflow.workflow_file_path()
 
     File.mkdir_p!(workflow_root)
@@ -187,10 +190,25 @@ defmodule SymphonyElixir.LiveE2ETest do
         prompt: live_prompt(project["slugId"])
       )
 
-      assert :ok = AgentRunner.run(issue, nil, max_turns: 1)
+      update_recipient = if debug_updates?, do: self(), else: nil
+      assert :ok = AgentRunner.run(issue, update_recipient, max_turns: max_turns)
+
+      if debug_updates? do
+        IO.puts("Live e2e codex updates for #{issue.identifier}:")
+        dump_codex_updates(issue.id)
+      end
 
       result_path = Path.join([workspace_root, issue.identifier, @result_file])
-      assert File.exists?(result_path)
+
+      workspace_listing =
+        case File.ls(Path.join(workspace_root, issue.identifier)) do
+          {:ok, entries} -> entries
+          {:error, reason} -> "workspace listing unavailable: #{inspect(reason)}"
+        end
+
+      assert File.exists?(result_path),
+             "expected live e2e result file at #{result_path}; workspace entries: #{inspect(workspace_listing)} test_root=#{test_root}"
+
       assert File.read!(result_path) == expected_result(issue.identifier, project["slugId"])
 
       issue_snapshot = fetch_issue_details!(issue.id)
@@ -200,7 +218,12 @@ defmodule SymphonyElixir.LiveE2ETest do
       assert :ok = complete_project(project["id"], completed_project_status["id"])
     after
       Workflow.set_workflow_file_path(original_workflow_path)
-      File.rm_rf(test_root)
+
+      if keep_tmp? do
+        IO.puts("Live e2e kept tmp directory: #{test_root}")
+      else
+        File.rm_rf(test_root)
+      end
     end
   end
 
@@ -456,5 +479,33 @@ defmodule SymphonyElixir.LiveE2ETest do
 
   defp expected_comment(issue_identifier, project_slug) do
     "Symphony live e2e comment\nidentifier=#{issue_identifier}\nproject_slug=#{project_slug}"
+  end
+
+  defp env_positive_integer(name, default) when is_binary(name) and is_integer(default) and default > 0 do
+    case System.get_env(name) do
+      nil ->
+        default
+
+      raw ->
+        case Integer.parse(raw) do
+          {value, ""} when value > 0 -> value
+          _ -> default
+        end
+    end
+  end
+
+  defp dump_codex_updates(issue_id) when is_binary(issue_id) do
+    receive do
+      {:codex_worker_update, ^issue_id, message} ->
+        IO.puts("  #{inspect(message)}")
+        dump_codex_updates(issue_id)
+
+      {:worker_phase_update, ^issue_id, payload} ->
+        IO.puts("  phase=#{inspect(payload)}")
+        dump_codex_updates(issue_id)
+    after
+      200 ->
+        :ok
+    end
   end
 end

@@ -8,6 +8,9 @@ description:
 
 # Land
 
+Contract alignment: review-ready and blocker semantics are defined in
+[`docs/policy/project-contract.md`](../../docs/policy/project-contract.md).
+
 ## Goals
 
 - Ensure the PR is conflict-free with the configured base branch.

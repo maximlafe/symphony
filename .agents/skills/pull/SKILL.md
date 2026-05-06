@@ -9,6 +9,10 @@ description:
 
 # Pull
 
+Contract alignment: branch sync is operational, while publish/handoff gates are
+defined in
+[`docs/policy/project-contract.md`](../../docs/policy/project-contract.md).
+
 ## Workflow
 
 1. Verify git status is clean or commit/stash changes before merging.

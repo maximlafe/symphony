@@ -1,0 +1,141 @@
+# Project Contract
+
+This file is the canonical repository contract for delivery, proof, and handoff
+semantics in Symphony LET workflows.
+
+Scope:
+
+- `delivery:tdd` delivery semantics
+- `Acceptance Matrix` and `Proof Mapping`
+- classified `Checkpoint` and `risk_level`
+- `cheap gate` / `final gate`
+- `In Review` / `Blocked` handoff rules
+- workpad and Linear attachment evidence rules
+
+Out of scope:
+
+- tracker state machine routing logic
+- issue intake mode routing (`mode:research`, `mode:plan`)
+- tool invocation syntax details
+
+Workflow files own routing and state machine. This file owns delivery/proof
+semantics used by workflow, stage skills, and ops skills.
+
+## Source Of Truth
+
+When guidance differs:
+
+1. this file (`docs/policy/project-contract.md`)
+2. repo-local stage and ops skills under `.agents/skills/`
+3. workflow prose examples
+
+If a rule must change, update this file first and then align workflows/skills.
+
+## Delivery Label: `delivery:tdd`
+
+- `delivery:tdd` is an opt-in delivery label, not an intake-routing label.
+- Normalize the label during spec-prep:
+  - add when a cheap deterministic failing proof is feasible for the changed
+    core behavior;
+  - remove stale label when that proof style is not justified.
+- For `delivery:tdd` execution:
+  - capture `red proof` before the fix;
+  - implement the smallest behavior change;
+  - capture `green proof` on the same behavior;
+  - keep refactor optional and behavior-preserving.
+- Do not require `delivery:tdd` for docs-only, deploy-only, CI-only, pure visual
+  polish, or flaky runtime-heavy paths.
+
+## Acceptance Matrix
+
+Execution/review-oriented specs must use `Acceptance Matrix` rows with stable
+IDs and canonical fields:
+
+- `id`
+- `scenario`
+- `expected_outcome`
+- `proof_type` (`test`, `artifact`, `runtime_smoke`)
+- `proof_target`
+- `proof_semantic` (`surface_exists`, `run_executed`, `runtime_smoke`)
+- `required_before` (`review`, `done`)
+
+Rules:
+
+- `required_before=review` for proof required before `In Review`.
+- `required_before=done` only for proof that cannot be valid before review.
+- Do not reuse one matrix ID for different scenarios in the same task.
+
+## Proof Mapping
+
+`Proof Mapping` links each required acceptance item to exactly one concrete
+proof source.
+
+Rules:
+
+- Every required matrix item must have exactly one checked mapping entry.
+- Mapping type must match matrix `proof_type`.
+- Required `test` + `run_executed` items should map through deterministic
+  validation entries (for example `validation:am-<id>` in workpad validation).
+- `runtime_smoke` items map with runtime smoke proof entries.
+- `artifact` items require both:
+  - checked workpad artifact entry;
+  - matching Linear attachment with the same title.
+
+## Classified Checkpoint
+
+Execution handoffs to `In Review` or `Blocked` must include classified
+`Checkpoint` in workpad:
+
+- `checkpoint_type`: `human-verify`, `decision`, or `human-action`
+- `risk_level`: justified severity for the handoff
+- `summary`: one-line status summary
+
+Rules:
+
+- `In Review` is for `human-verify` review-ready handoff.
+- `Blocked` is for unresolved `decision` or `human-action` blockers.
+- Do not perform unclassified execution handoff.
+
+## Validation Gates
+
+Canonical local gates:
+
+- `cheap gate`: local stabilization proof for the current change batch
+- `final gate`: publish/review gate on clean committed `HEAD`
+
+Rules:
+
+- `final gate` requires successful cheap proof on the same `HEAD`.
+- Repo-wide validation command for final gate is `make symphony-validate`.
+- Rerun final gate after shipped code/config/workflow-contract changes.
+- Dirty-workspace proof may count for cheap gate only; final gate runs on clean
+  committed `HEAD`.
+
+## In Review And Blocked Rules
+
+- Do not move to `In Review` until review-ready proof is complete and checkpoint
+  is `human-verify`.
+- Use `Blocked` only when autonomous progress is not possible without external
+  action or decision.
+- Blocked handoff must state:
+  - what is missing;
+  - why it blocks acceptance;
+  - exact unblock action.
+
+## Workpad And Linear Evidence
+
+- Keep one persistent live workpad comment per issue.
+- Use local `workpad.md` as source and sync at milestones, not after every edit.
+- Upload durable evidence artifacts to Linear attachments.
+- Do not treat raw transient upload URLs as final evidence.
+- PR references stay in linked PR context; attachments are for durable artifacts.
+
+## Change Control
+
+Any contract change should include:
+
+- updated workflow references
+- updated affected skills
+- updated tests that assert contract text
+- local validation proof (`make symphony-runtime-smoke SCENARIO=all` and
+  `make symphony-validate`)

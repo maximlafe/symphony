@@ -8,6 +8,10 @@ description:
 
 # Debug
 
+Contract alignment: blocker/handoff semantics and proof requirements should be
+interpreted via
+[`docs/policy/project-contract.md`](../../docs/policy/project-contract.md).
+
 ## Goals
 
 - Find why a run is stuck, retrying, or failing.

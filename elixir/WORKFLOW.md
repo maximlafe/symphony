@@ -159,7 +159,9 @@ Instructions:
 - Keep workpad sync cadence aligned to the same milestone transitions.
 - Reproduce or capture the current signal before code changes when it materially improves confidence.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.
-- Treat `delivery:tdd` as an opt-in delivery label, not a routing label or verification profile.
+- Treat `delivery:tdd`, `Acceptance Matrix`, `Proof Mapping`, classified
+  `Checkpoint`, and handoff gate semantics as canonicalized in
+  `docs/policy/project-contract.md`.
 - Do not reread skill bodies in straightforward runs unless the workflow does not cover the needed behavior.
 - Move state only when the matching quality bar is satisfied.
 
@@ -168,10 +170,12 @@ Instructions:
 - This workflow is reserved for the dedicated LetterL project `Symphony` (`symphony-bd5bc5b51675`). Do not retarget it to the shared platform project.
 - Fresh workspace bootstrap is `git clone` of `maximlafe/symphony` followed by `make symphony-bootstrap`.
 - Run `make symphony-preflight` once per run before treating auth or tooling gaps as blockers.
-- The canonical local gates are `cheap gate` and `final gate`.
-- `cheap gate` is the local stabilization gate: it includes preflight once per run, the smallest deterministic proof of the changed behavior, and class-specific targeted checks. It may run on a dirty workspace, but it never permits `git push`, PR create/update, CI wait, `github_pr_snapshot`, `github_wait_for_checks`, or `symphony_handoff_check`.
-- `final gate` is the publish/review gate: run it only on the clean committed `HEAD` that is ready to publish or hand off. It includes a successful cheap proof on the same `HEAD`, `make symphony-validate`, and any class-specific runtime/UI/stateful proof.
-- Default repo-wide validation for the final gate is `make symphony-validate`; run `make symphony-live-e2e` only for explicit smoke or end-to-end tasks that should exercise real Linear and Codex services.
+- Canonical delivery/proof/handoff semantics are defined in
+  `docs/policy/project-contract.md` and consumed by workflow + skills.
+- The canonical local gates are `cheap gate` and `final gate`; default repo-wide
+  final validation command is `make symphony-validate`.
+- Run `make symphony-live-e2e` only for explicit smoke or end-to-end tasks that
+  should exercise real Linear and Codex services.
 - The repo-owned review-ready gate is `make symphony-handoff-check`, backed by the `symphony_handoff_check` runtime tool and the workspace manifest at `.symphony/verification/handoff-manifest.json`.
 - The handoff manifest must fail closed unless it contains fresh final-gate metadata for the current workspace: `validation_gate.gate`, `validation_gate.change_classes`, `validation_gate.required_checks`, `validation_gate.passed_checks`, `git.head_sha`, `git.tree_sha`, and `git.worktree_clean`.
 - `SymphonyElixir.RunPhase` is observability only; `SymphonyElixir.ValidationGate` and `SymphonyElixir.HandoffCheck` own acceptance proof.
@@ -244,8 +248,8 @@ Instructions:
    - If `Confusions` is non-empty, every bullet must be an actionable blocker in three parts: what is still unconfirmed, why it blocks execution or acceptance, and which exact artifact, signal, or human input will resolve it.
    - Prefer concrete terms such as `production bundle bytes`, `deploy manifest`, `literal copy`, or `screenshot baseline`; avoid vague statements that do not name the unblock condition.
    - Shape the plan with `DRY`, `KISS`, and `YAGNI`: reuse existing code paths before inventing new abstractions, choose the smallest coherent change that satisfies the acceptance criteria, and keep speculative cleanup or future-proofing out of scope unless the ticket explicitly requires it.
-   - When the issue has label `delivery:tdd`, capture a failing proof (`red`) for the changed core behavior before the fix, make the smallest change, use the required targeted tests as the `green` proof, and keep any refactor optional and behavior-preserving.
-   - If the ticket mixes testable core logic with a broader runtime or integration shell, keep `delivery:tdd` scoped to the cheapest deterministic core path and validate the rest with the normal matrix.
+   - For `delivery:tdd` behavior and proof rules, follow
+     `docs/policy/project-contract.md`.
    - If the plan still needs a new abstraction, shared helper, or refactor, justify in `Notes` why reuse or a simpler localized change is insufficient.
 4. Before code edits, run the `pull` skill to sync with latest `origin/main`, then record the result in `Notes` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
 5. Implement against the checklist, keep completed items checked, and sync the live workpad only after milestone transitions or before handoff.
@@ -406,7 +410,9 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## Workpad template
 
-Use this exact structure for the persistent workpad comment and keep it updated in place throughout execution:
+Use this compact structure for the persistent workpad comment. Canonical
+validation/proof/checkpoint semantics are defined in
+`docs/policy/project-contract.md`.
 
 ````md
 ## Codex Workpad
@@ -430,19 +436,12 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Validation
 
 - [ ] preflight: `make symphony-preflight`
-- [ ] cheap gate: `<same-HEAD targeted proof>`
-- [ ] red proof: `<command>` (required when `delivery:tdd`; never mark this item as `n/a` when required)
 - [ ] targeted tests: `<command>`
-- [ ] runtime smoke: `<command>` (runtime/infra/workflow-contract/handoff changes; never mark this item as `n/a` when required; if the change also touches an external contract, add separate live proof per `docs/live_proof_runbook.md`)
-- [ ] stateful proof: `<command>` (DB/schema/stateful changes)
-- [ ] ui runtime proof: `<command>` (hosted UI/frontend changes)
-- [ ] visual artifact: `<artifact title>` (hosted UI/frontend changes)
 - [ ] repo validation: `make symphony-validate`
 
 ### Artifacts
 
 - [ ] uploaded attachment: `<title>` -> <what it proves>
-- [ ] `uploaded attachment` rows are only for real Linear file attachments; PR evidence (`PR #...`, PR URL, `pull request`) must stay in linked PR + `github_pr_snapshot`
 - [ ] missing expected artifact: `<name>` -> <why it was not produced>
 
 ### Checkpoint

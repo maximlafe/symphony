@@ -6,13 +6,11 @@ Fork of [openai/symphony](https://github.com/openai/symphony) with better defaul
 
 ## Quick start
 
-If you have an AI coding agent, one command:
-
-```
-npx skills add odysseus0/symphony -s symphony-setup -y
-```
-
-Then ask your agent to set up Symphony for your repo.
+Use the manual setup flow below and keep setup/onboarding logic separate from
+worker runtime skills. Worker bundles should only contain execution-stage
+skills.
+Onboarding/meta setup guidance lives in
+`docs/onboarding/symphony-setup.md`.
 
 ## This Repo As A Target Repo
 
@@ -21,6 +19,10 @@ Then ask your agent to set up Symphony for your repo.
 Fresh worker clones use the contract that lives in this repo:
 
 - `.agents/skills/` contains the worker skills that workspace clones rely on.
+- `docs/policy/project-contract.md` is the canonical source for
+  delivery/proof/handoff semantics (`delivery:tdd`, `Acceptance Matrix`,
+  `Proof Mapping`, classified `Checkpoint`, `cheap gate`/`final gate`,
+  `In Review`/`Blocked`, workpad/attachment evidence).
 - `make symphony-preflight` checks `codex`, `mise`, `gh auth status`, `LINEAR_API_KEY`, and non-interactive git access for the repo remote.
 - `make symphony-acceptance-preflight` checks explicit per-issue `Required capabilities:` entries from the task-spec against the current workspace and environment before execution claims capability blockers.
 - `make symphony-bootstrap` configures GitHub git auth with `gh auth setup-git`, installs the pinned toolchain via `mise`, and runs `mix setup` in `elixir/`.
@@ -50,8 +52,9 @@ The repo now ships a production-oriented CI/CD path:
   `/api/v1/state`, so post-release proof can be closed on the public observability surface.
 - `elixir/deploy/docker/README.md` documents the host env files, rollback flow, and deploy
   prerequisites.
-- In the repo's own LetterL workflow, `Spec Prep` can normalize an orthogonal `delivery:tdd` label
-  so execution and handoff enforce true `red -> green` proof only on tickets that justify it.
+- In the repo's own LetterL workflow, delivery/proof/handoff semantics are
+  centralized in `docs/policy/project-contract.md` and referenced by workflow
+  and stage skills.
 
 ## Per-Ticket Validation Loop
 
@@ -81,12 +84,13 @@ The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatt
 - **Multi-account Codex failover** — Symphony can rotate between multiple pre-authenticated `CODEX_HOME` directories and stop starting new work on an account when its 5-hour or weekly Codex budget is nearly exhausted
 - **Stage-aware Codex cost profiles** — workflows now resolve `model` + `effort` through `codex.cost_profiles` / `codex.cost_policy`, default planning and implementation to cheaper medium-effort profiles, and escalate only from explicit configured signals with structured runtime metadata
 - **Classified workflow handoffs** — the default contract requires `checkpoint_type`/`risk_level`, low-context discipline, and a hard cap on speculative auto-fix loops so agents escalate cleanly instead of spinning
-- **Setup skill** — auto-detects your repo, installs worker skills, creates Linear workflow states, and verifies everything before launch
+- **Worker-skill contract split** — onboarding/setup capability is kept outside
+  worker runtime bundle; worker bundles only carry execution-stage skills
 
 ## Manual setup
 
 1. Build: `git clone https://github.com/odysseus0/symphony && cd symphony && make symphony-bootstrap && cd elixir && mise exec -- mix build`
-2. Install skills: `npx skills add odysseus0/symphony -a codex -s linear land commit push pull debug --copy -y` and copy `elixir/WORKFLOW.md` to your repo
+2. Install worker skills: `npx skills add odysseus0/symphony -a codex -s linear land commit push pull debug zoom-out diagnose tdd --copy -y` and copy `elixir/WORKFLOW.md` to your repo
 3. In `WORKFLOW.md`, set exactly one Linear polling scope: `tracker.project_slug` or `tracker.team_key`, plus `hooks.after_create` (clone your repo + setup commands). Hooks also receive issue metadata in env vars like `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_DESCRIPTION`, `SYMPHONY_ISSUE_BRANCH_NAME`, `SYMPHONY_ISSUE_PROJECT_SLUG`, and `SYMPHONY_ISSUE_LABELS` if you need structured per-issue bootstrap behavior.
 4. Add **Rework**, **In Review**, **Merging** as custom states in Linear (Team Settings → Workflow)
 5. Commit, push, then: `mise exec -- ./bin/symphony /path/to/your-repo/WORKFLOW.md`

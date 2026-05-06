@@ -8,6 +8,10 @@ description:
 
 # Commit
 
+Contract alignment: delivery/proof/handoff semantics that influence commit and
+handoff readiness are defined in
+[`docs/policy/project-contract.md`](../../docs/policy/project-contract.md).
+
 ## Goals
 
 - Produce a commit that reflects the actual code changes and the session
