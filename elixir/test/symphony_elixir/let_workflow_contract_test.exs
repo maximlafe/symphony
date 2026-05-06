@@ -94,13 +94,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     accounts = get_in(config, ["codex", "accounts"])
 
     assert [
-             %{"codex_home" => "/root/.codex"},
              %{"codex_home" => "/root/.codex/.codex-furrow"},
-             %{"codex_home" => "/root/.codex/.codex-rebecca"},
-             %{"codex_home" => "/root/.codex/.codex-deborah"},
-             %{"codex_home" => "/root/.codex/.codex-kjfdn41739"},
-             %{"codex_home" => "/root/.codex/.codex-xvnza54743"},
-             %{"codex_home" => "/root/.codex/.codex-tatonkasperski8844"}
+             %{"codex_home" => "/root/.codex/.codex-deborah"}
            ] = Enum.map(accounts, &Map.take(&1, ["codex_home"]))
   end
 
