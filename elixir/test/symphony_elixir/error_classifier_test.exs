@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.ErrorClassifierTest do
   use ExUnit.Case
 
-  alias SymphonyElixir.{AgentRunner, ErrorClassifier}
+  alias SymphonyElixir.{AgentRunner, ErrorClassifier, ExecutionContract}
 
   test "classifies compile errors as permanent" do
     reason = {:agent_run_failed, {:workspace_hook_failed, "before_run", 1, "CompileError: undefined function"}}
@@ -271,5 +271,131 @@ defmodule SymphonyElixir.ErrorClassifierTest do
 
     assert String.ends_with?(summary, "...")
     assert String.length(summary) == 18
+  end
+
+  test "execution contract maps infra failures and pause policy" do
+    assert ExecutionContract.failure_class("Linear GraphQL request failed with HTTP 429") ==
+             :infra_fail
+
+    assert ExecutionContract.failure_class({:response_timeout}) == :infra_fail
+
+    assert ExecutionContract.remediation_policy(:infra_fail, "HTTP 429 rate limited") ==
+             :pause_infra
+
+    assert ErrorClassifier.classify_execution_failure_class("request timed out") == :infra_fail
+    assert ErrorClassifier.classify_execution_remediation_policy("request timed out") == :pause_infra
+  end
+
+  test "execution contract maps workspace spec handoff failures to policy fail" do
+    assert ExecutionContract.failure_class("Linear GraphQL request failed with HTTP 400 (linear_api_status_400)") ==
+             :policy_fail
+
+    assert ExecutionContract.failure_class("workspace contract violation: invalid workspace cwd") ==
+             :policy_fail
+
+    assert ExecutionContract.failure_class("material spec change requires spec review") ==
+             :policy_fail
+
+    assert ExecutionContract.failure_class("symphony_handoff_check verification contract failed") ==
+             :policy_fail
+
+    assert ExecutionContract.remediation_policy(:policy_fail, "workspace contract violation") ==
+             :operator_required
+  end
+
+  test "retry fingerprint v1 is stable and changes when material fields change" do
+    base = %{
+      issue_id: "LET-673",
+      guard_layer: "execution_admission",
+      reason_code: "linear_api_status_429",
+      artifact_revision: "rev-7"
+    }
+
+    assert ExecutionContract.retry_fingerprint_v1(base) == ExecutionContract.retry_fingerprint_v1(base)
+
+    changed_reason = Map.put(base, :reason_code, "linear_api_status_502")
+    changed_issue = Map.put(base, :issue_id, "LET-698")
+    changed_layer = Map.put(base, :guard_layer, "handoff_guard")
+    changed_revision = Map.put(base, :artifact_revision, "rev-8")
+
+    refute ExecutionContract.retry_fingerprint_v1(base) ==
+             ExecutionContract.retry_fingerprint_v1(changed_reason)
+
+    refute ExecutionContract.retry_fingerprint_v1(base) ==
+             ExecutionContract.retry_fingerprint_v1(changed_issue)
+
+    refute ExecutionContract.retry_fingerprint_v1(base) ==
+             ExecutionContract.retry_fingerprint_v1(changed_layer)
+
+    refute ExecutionContract.retry_fingerprint_v1(base) ==
+             ExecutionContract.retry_fingerprint_v1(changed_revision)
+  end
+
+  test "operator matrix mapping canonical row ids" do
+    assert ExecutionContract.operator_matrix_row_id(:policy_fail, :operator_required, :open) ==
+             "opm_v1_policy_fix"
+
+    assert ExecutionContract.operator_matrix_row_id(:infra_fail, :auto_retry_once, :open) ==
+             "opm_v1_infra_retry_open"
+
+    assert ExecutionContract.operator_matrix_row_id(:infra_fail, :auto_retry_once, :cooldown) ==
+             "opm_v1_infra_retry_cooldown"
+
+    assert ExecutionContract.operator_matrix_row_id(:infra_fail, :pause_infra, :tripped) ==
+             "opm_v1_infra_pause"
+
+    assert ExecutionContract.operator_matrix_row_id(:infra_fail, :pause_infra, :paused_infra) ==
+             "opm_v1_infra_pause"
+
+    assert ExecutionContract.operator_matrix_row_id(:policy_fail, :auto_retry_once, :open) ==
+             "opm_v1_unmapped"
+  end
+
+  test "one-shot retry budget opens once per fingerprint until ttl and records outcome" do
+    fingerprint = "fp-1"
+    ttl_ms = 10_000
+
+    {ledger_after_open, open_meta} =
+      ExecutionContract.open_retry_budget_attempt(%{}, fingerprint, 1_000, ttl_ms)
+
+    assert open_meta.status == :opened
+    assert open_meta.attempt_index == 1
+    assert ExecutionContract.retry_budget_status(ledger_after_open, fingerprint, 1_001, ttl_ms) == :cooldown
+
+    {ledger_during_cooldown, cooldown_meta} =
+      ExecutionContract.open_retry_budget_attempt(ledger_after_open, fingerprint, 2_000, ttl_ms)
+
+    assert cooldown_meta.status == :cooldown
+    assert cooldown_meta.attempt_index == 1
+
+    ledger_after_outcome =
+      ExecutionContract.record_retry_budget_outcome(
+        ledger_during_cooldown,
+        fingerprint,
+        :failed,
+        2_100
+      )
+
+    assert get_in(ledger_after_outcome, [fingerprint, :outcome]) == :failed
+    assert get_in(ledger_after_outcome, [fingerprint, :outcome_at_ms]) == 2_100
+
+    {ledger_after_ttl, reopened_meta} =
+      ExecutionContract.open_retry_budget_attempt(ledger_after_outcome, fingerprint, 11_001, ttl_ms)
+
+    assert reopened_meta.status == :opened
+    assert reopened_meta.attempt_index == 2
+    assert get_in(ledger_after_ttl, [fingerprint, :attempt_index]) == 2
+  end
+
+  test "classifier overlay returns execution contract decision on top of failure details" do
+    result = ErrorClassifier.classify_details_with_execution_contract("HTTP 429 rate limit exhausted")
+
+    assert result.failure_details.failure_class == :transient_worker_failure
+    assert result.execution_failure_class == :infra_fail
+    assert result.remediation_policy == :pause_infra
+    assert result.operator_state == :tripped
+    assert result.operator_matrix_row_id == "opm_v1_infra_pause"
+    assert ErrorClassifier.classify_execution_operator_matrix_row_id("request timed out", :tripped) ==
+             "opm_v1_infra_pause"
   end
 end
