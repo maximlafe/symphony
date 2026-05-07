@@ -179,7 +179,7 @@ defmodule SymphonyElixir.CoreTest do
     makefile = File.read!(makefile_path)
 
     assert makefile =~ ".PHONY:"
-    assert makefile =~ "test: symphony-validate symphony-dashboard-checks symphony-nginx-proxy-contract"
+    assert makefile =~ "test: symphony-validate symphony-nginx-proxy-contract"
     assert makefile =~ "symphony-preflight:"
     assert makefile =~ "symphony-bootstrap:"
     assert makefile =~ "symphony-dashboard-checks:"
@@ -1494,7 +1494,14 @@ defmodule SymphonyElixir.CoreTest do
     previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
     previous_linear_issues = Application.get_env(:symphony_elixir, :escalation_failure_linear_issues)
     issue_id = "issue-compile-escalation-fail-close"
-    issue = %Issue{id: issue_id, identifier: "MT-562-FAIL-CLOSE", state: "In Progress"}
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-562-FAIL-CLOSE",
+      title: "Escalation fail-close fixture",
+      state: "In Progress"
+    }
+
     ref = make_ref()
 
     try do
@@ -1539,14 +1546,17 @@ defmodule SymphonyElixir.CoreTest do
       state =
         wait_for_orchestrator_state(pid, fn state ->
           not Map.has_key?(state.running, issue_id) and
-            not Map.has_key?(state.retry_attempts, issue_id) and
+            Map.has_key?(state.retry_attempts, issue_id) and
             MapSet.member?(state.claimed, issue_id) and
             MapSet.member?(state.completed, issue_id)
         end)
 
-      refute Map.has_key?(state.retry_attempts, issue_id)
+      retry_metadata = state.retry_attempts[issue_id]
+      assert retry_metadata[:escalation_only] == true
+      assert retry_metadata[:escalation_target_state] == "Blocked"
       assert MapSet.member?(state.claimed, issue_id)
       assert MapSet.member?(state.completed, issue_id)
+      cancel_retry_timer(state.retry_attempts[issue_id])
     after
       restore_app_env(:linear_client_module, previous_client_module)
       restore_app_env(:escalation_failure_linear_issues, previous_linear_issues)
@@ -5529,7 +5539,14 @@ defmodule SymphonyElixir.CoreTest do
     previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
     previous_linear_issues = Application.get_env(:symphony_elixir, :escalation_failure_linear_issues)
     issue_id = "issue-verification-fail-close-escalation-failed"
-    issue = %Issue{id: issue_id, identifier: "LET-523-FAIL-CLOSE", state: "In Progress"}
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "LET-523-FAIL-CLOSE",
+      title: "Verification escalation fail-close fixture",
+      state: "In Progress"
+    }
+
     worker_pid = spawn(fn -> Process.sleep(:infinity) end)
 
     try do
@@ -5567,10 +5584,26 @@ defmodule SymphonyElixir.CoreTest do
                Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
 
       refute Map.has_key?(updated_state.running, issue_id)
-      refute Map.has_key?(updated_state.retry_attempts, issue_id)
-      assert MapSet.member?(updated_state.claimed, issue_id)
+      retry_metadata = updated_state.retry_attempts[issue_id]
+      assert retry_metadata[:escalation_only] == true
+      assert retry_metadata[:escalation_target_state] == "Blocked"
+      refute MapSet.member?(updated_state.claimed, issue_id)
       assert MapSet.member?(updated_state.completed, issue_id)
       refute Process.alive?(worker_pid)
+
+      first_retry = updated_state.retry_attempts[issue_id]
+
+      assert {:noreply, retried_state} =
+               Orchestrator.handle_info(
+                 {:retry_issue, issue_id, first_retry.retry_token},
+                 updated_state
+               )
+
+      retry_metadata_after_retry = retried_state.retry_attempts[issue_id]
+      assert retry_metadata_after_retry[:attempt] == 1
+      assert retry_metadata_after_retry[:escalation_only] == true
+      assert retry_metadata_after_retry[:escalation_target_state] == "Blocked"
+      cancel_retry_timer(retried_state.retry_attempts[issue_id])
     after
       restore_app_env(:linear_client_module, previous_client_module)
       restore_app_env(:escalation_failure_linear_issues, previous_linear_issues)
