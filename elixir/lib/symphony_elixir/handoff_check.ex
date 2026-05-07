@@ -1008,6 +1008,11 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp reconcile_artifact_items_with_attachments(artifact_items, attachments, _artifact_proof_required?)
        when is_list(artifact_items) and is_list(attachments) do
+    linked_pr_titles = linked_pull_request_attachment_titles(attachments)
+
+    artifact_items =
+      Enum.reject(artifact_items, &auto_synced_linked_pr_uploaded_attachment?(&1, linked_pr_titles))
+
     has_checked_uploaded_entry? =
       Enum.any?(artifact_items, fn item ->
         item["checked"] == true and item["kind"] == "uploaded_attachment" and
@@ -1045,6 +1050,7 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp attachment_titles(attachments) when is_list(attachments) do
     attachments
+    |> Enum.reject(&linked_pull_request_attachment?/1)
     |> Enum.map(fn %{} = attachment ->
       attachment["title"]
       |> to_string_or_nil()
@@ -2003,10 +2009,13 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp artifact_manifest_missing_items(artifact_items, attachments, artifact_proof_required?) do
+    linked_pr_titles = linked_pull_request_attachment_titles(attachments)
+
     uploaded =
       Enum.filter(artifact_items, fn item ->
         item["checked"] == true and item["kind"] == "uploaded_attachment"
       end)
+      |> Enum.reject(&auto_synced_linked_pr_uploaded_attachment?(&1, linked_pr_titles))
 
     case uploaded do
       [] when artifact_proof_required? ->
@@ -2194,6 +2203,96 @@ defmodule SymphonyElixir.HandoffCheck do
       Enum.any?(@pull_request_evidence_patterns, &Regex.match?(&1, title))
     else
       false
+    end
+  end
+
+  defp auto_synced_linked_pr_uploaded_attachment?(item, linked_pr_titles)
+       when is_map(item) and is_struct(linked_pr_titles, MapSet) do
+    title =
+      item
+      |> Map.get("title")
+      |> to_string_or_nil()
+      |> normalize_attachment_title()
+
+    claim =
+      item
+      |> Map.get("claim")
+      |> normalize_attachment_token()
+
+    item["checked"] == true and
+      item["kind"] == "uploaded_attachment" and
+      is_binary(title) and
+      MapSet.member?(linked_pr_titles, title) and
+      claim == "auto-synced from linear attachment" and
+      pull_request_evidence_attachment_title?(%{"title" => title})
+  end
+
+  defp auto_synced_linked_pr_uploaded_attachment?(_item, _linked_pr_titles), do: false
+
+  defp linked_pull_request_attachment_titles(attachments) when is_list(attachments) do
+    attachments
+    |> Enum.filter(&linked_pull_request_attachment?/1)
+    |> Enum.map(fn %{} = attachment ->
+      attachment["title"]
+      |> to_string_or_nil()
+      |> normalize_attachment_title()
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> MapSet.new()
+  end
+
+  defp linked_pull_request_attachment_titles(_attachments), do: MapSet.new()
+
+  defp linked_pull_request_attachment?(%{} = attachment) do
+    source_type =
+      attachment
+      |> Map.get("source_type")
+      |> normalize_attachment_token()
+
+    metadata = Map.get(attachment, "metadata")
+
+    metadata_kind =
+      case metadata do
+        %{} ->
+          metadata
+          |> Map.get("kind")
+          |> normalize_attachment_token()
+
+        _ ->
+          nil
+      end
+
+    title =
+      attachment
+      |> Map.get("title")
+      |> to_string_or_nil()
+      |> normalize_attachment_title()
+
+    url =
+      attachment
+      |> Map.get("url")
+      |> to_string_or_nil()
+      |> normalize_attachment_title()
+
+    metadata_kind == "pull_request" or
+      (source_type == "github" and (github_pull_request_url?(url) or pull_request_evidence_attachment_title?(%{"title" => title})))
+  end
+
+  defp linked_pull_request_attachment?(_attachment), do: false
+
+  defp github_pull_request_url?(url) when is_binary(url) do
+    Regex.match?(~r{^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+(?:\b|[/?#])}, url)
+  end
+
+  defp github_pull_request_url?(_url), do: false
+
+  defp normalize_attachment_token(value) do
+    value
+    |> to_string_or_nil()
+    |> normalize_attachment_title()
+    |> case do
+      normalized when is_binary(normalized) -> String.downcase(normalized)
+      _ -> nil
     end
   end
 
@@ -2385,7 +2484,13 @@ defmodule SymphonyElixir.HandoffCheck do
       %{} = attachment ->
         %{
           "title" => attachment["title"] || attachment[:title],
-          "url" => attachment["url"] || attachment[:url]
+          "url" => attachment["url"] || attachment[:url],
+          "source_type" =>
+            attachment["source_type"] ||
+              attachment[:source_type] ||
+              attachment["sourceType"] ||
+              attachment[:sourceType],
+          "metadata" => attachment["metadata"] || attachment[:metadata]
         }
 
       _ ->

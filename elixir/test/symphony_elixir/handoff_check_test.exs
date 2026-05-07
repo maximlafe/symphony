@@ -1127,6 +1127,104 @@ defmodule SymphonyElixir.HandoffCheckTest do
            end)
   end
 
+  test "evaluate ignores stale auto-synced uploaded artifact rows for linked PR attachments" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `GitHub PR #180` -> auto-synced from Linear attachment
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Linked PR evidence should not be validated as uploaded artifact evidence.
+    """
+
+    attachments = [
+      %{
+        "title" => "GitHub PR #180",
+        "url" => "https://github.com/maximlafe/symphony/pull/180",
+        "source_type" => "github",
+        "metadata" => %{"kind" => "pull_request"}
+      }
+    ]
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-673",
+               attachments: attachments,
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    refute Enum.any?(manifest["missing_items"], fn item ->
+             String.contains?(
+               item,
+               "pull request evidence must stay in linked PR/github_pr_snapshot, not in uploaded attachment artifacts"
+             )
+           end)
+  end
+
+  test "evaluate still fails when PR evidence is manually encoded as uploaded artifact" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `GitHub PR #180` -> manual note from operator
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Manual PR-as-attachment entries must still fail closed.
+    """
+
+    attachments = [
+      %{
+        "title" => "GitHub PR #180",
+        "url" => "https://github.com/maximlafe/symphony/pull/180",
+        "source_type" => "github",
+        "metadata" => %{"kind" => "pull_request"}
+      }
+    ]
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-673",
+               attachments: attachments,
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert Enum.any?(manifest["missing_items"], fn item ->
+             String.contains?(
+               item,
+               "pull request evidence must stay in linked PR/github_pr_snapshot, not in uploaded attachment artifacts"
+             )
+           end)
+  end
+
   test "evaluate requires explicit red proof when delivery:tdd is enabled" do
     workpad_without_tdd_evidence = """
     ## Codex Workpad

@@ -1,6 +1,28 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  defmodule EscalationFailureLinearClient do
+    alias SymphonyElixir.Linear.Issue
+
+    def fetch_candidate_issues, do: {:ok, configured_issues()}
+    def fetch_issues_by_states(_state_names), do: {:ok, configured_issues()}
+
+    def fetch_issue_states_by_ids(issue_ids) when is_list(issue_ids) do
+      wanted_ids = MapSet.new(issue_ids)
+
+      {:ok,
+       Enum.filter(configured_issues(), fn %Issue{id: id} ->
+         MapSet.member?(wanted_ids, id)
+       end)}
+    end
+
+    def graphql(_query, _variables), do: {:error, :simulated_linear_mutation_failure}
+
+    defp configured_issues do
+      Application.get_env(:symphony_elixir, :escalation_failure_linear_issues, [])
+    end
+  end
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -1465,6 +1487,69 @@ defmodule SymphonyElixir.CoreTest do
       refute MapSet.member?(state.claimed, issue_id)
     after
       restore_app_env(:memory_tracker_recipient, previous_recipient)
+    end
+  end
+
+  test "permanent worker failure fail-closes locally when Blocked escalation mutation fails" do
+    previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    previous_linear_issues = Application.get_env(:symphony_elixir, :escalation_failure_linear_issues)
+    issue_id = "issue-compile-escalation-fail-close"
+    issue = %Issue{id: issue_id, identifier: "MT-562-FAIL-CLOSE", state: "In Progress"}
+    ref = make_ref()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
+      Application.put_env(:symphony_elixir, :linear_client_module, EscalationFailureLinearClient)
+      Application.put_env(:symphony_elixir, :escalation_failure_linear_issues, [issue])
+
+      orchestrator_name = Module.concat(__MODULE__, :PermanentFailureEscalationFailCloseOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:linear_client_module, previous_client_module)
+        restore_app_env(:escalation_failure_linear_issues, previous_linear_issues)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: ref,
+        identifier: issue.identifier,
+        issue: issue,
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(
+        pid,
+        {:DOWN, ref, :process, self(), {:agent_run_failed, {:workspace_hook_failed, "before_run", 1, "CompileError: undefined function"}}}
+      )
+
+      state =
+        wait_for_orchestrator_state(pid, fn state ->
+          not Map.has_key?(state.running, issue_id) and
+            not Map.has_key?(state.retry_attempts, issue_id) and
+            MapSet.member?(state.claimed, issue_id) and
+            MapSet.member?(state.completed, issue_id)
+        end)
+
+      refute Map.has_key?(state.retry_attempts, issue_id)
+      assert MapSet.member?(state.claimed, issue_id)
+      assert MapSet.member?(state.completed, issue_id)
+    after
+      restore_app_env(:linear_client_module, previous_client_module)
+      restore_app_env(:escalation_failure_linear_issues, previous_linear_issues)
     end
   end
 
@@ -5433,6 +5518,62 @@ defmodule SymphonyElixir.CoreTest do
       refute Process.alive?(worker_pid)
     after
       restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end
+  end
+
+  test "failed symphony_handoff_check fail-closes locally when Blocked escalation mutation fails" do
+    previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    previous_linear_issues = Application.get_env(:symphony_elixir, :escalation_failure_linear_issues)
+    issue_id = "issue-verification-fail-close-escalation-failed"
+    issue = %Issue{id: issue_id, identifier: "LET-523-FAIL-CLOSE", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
+      Application.put_env(:symphony_elixir, :linear_client_module, EscalationFailureLinearClient)
+      Application.put_env(:symphony_elixir, :escalation_failure_linear_issues, [issue])
+
+      state =
+        base_dispatch_state("primary")
+        |> Map.put(:running, %{
+          issue_id => %{
+            pid: worker_pid,
+            ref: make_ref(),
+            identifier: issue.identifier,
+            issue: issue,
+            trace_id: "trace-verification-failed-escalation",
+            session_id: "thread-verification-failed-escalation",
+            codex_account_id: "primary",
+            run_phase: :editing,
+            started_at: DateTime.utc_now()
+          }
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+
+      update =
+        handoff_check_tool_update(%{
+          "profile" => "runtime",
+          "passed" => false,
+          "summary" => "proof mapping reference 'validation:targeted tests' is reused by multiple acceptance matrix items",
+          "missing_items" => ["validation:targeted tests"],
+          "checked_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        })
+
+      assert {:noreply, updated_state} =
+               Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+      refute Map.has_key?(updated_state.running, issue_id)
+      refute Map.has_key?(updated_state.retry_attempts, issue_id)
+      assert MapSet.member?(updated_state.claimed, issue_id)
+      assert MapSet.member?(updated_state.completed, issue_id)
+      refute Process.alive?(worker_pid)
+    after
+      restore_app_env(:linear_client_module, previous_client_module)
+      restore_app_env(:escalation_failure_linear_issues, previous_linear_issues)
 
       if Process.alive?(worker_pid) do
         Process.exit(worker_pid, :kill)
