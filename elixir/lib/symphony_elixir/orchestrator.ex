@@ -938,6 +938,23 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
+  @doc false
+  @spec execution_rollout_snapshot_defaults_for_test() :: map()
+  def execution_rollout_snapshot_defaults_for_test, do: execution_rollout_snapshot_defaults()
+
+  @doc false
+  @spec execution_rollout_snapshot_transition_for_test(map(), map(), integer(), integer()) :: map()
+  def execution_rollout_snapshot_transition_for_test(snapshot, gate_payload, started_at_ms, now_ms)
+      when is_map(snapshot) and is_map(gate_payload) and is_integer(started_at_ms) and
+             is_integer(now_ms) do
+    next_execution_rollout_snapshot(
+      snapshot,
+      gate_payload,
+      %{execution_rollout_started_at_ms: started_at_ms},
+      now_ms
+    )
+  end
+
   defp execution_rollout_mode_from_env do
     Application.get_env(:symphony_elixir, :execution_rollout_mode, :enforce)
     |> normalize_execution_rollout_mode()
@@ -986,6 +1003,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp execution_rollout_snapshot_defaults do
     %{
       events_total: 0,
+      attempted_transitions_total: 0,
+      rejected_transitions_total: 0,
       infra_fail_total: 0,
       policy_fail_total: 0,
       dedupe_hits_total: 0,
@@ -3761,6 +3780,14 @@ defmodule SymphonyElixir.Orchestrator do
 
       state
       |> tracker_infra_breaker_record_success_if_applicable(context)
+      |> apply_execution_rollout_gate(%{
+        transition_attempted: true,
+        transition_rejected: false,
+        failure_class: nil,
+        dedupe_hit: false,
+        retry_budget_status: :open,
+        retry_budget_outcome: :n_a
+      })
       |> complete_issue(context.issue_id)
       |> release_issue_claim(context.issue_id)
     else
@@ -3849,6 +3876,14 @@ defmodule SymphonyElixir.Orchestrator do
 
       state
       |> tracker_infra_breaker_record_success_if_applicable(context)
+      |> apply_execution_rollout_gate(%{
+        transition_attempted: true,
+        transition_rejected: false,
+        failure_class: nil,
+        dedupe_hit: false,
+        retry_budget_status: :open,
+        retry_budget_outcome: :n_a
+      })
       |> complete_issue(context.issue_id)
       |> release_issue_claim(context.issue_id)
     else
@@ -3997,6 +4032,8 @@ defmodule SymphonyElixir.Orchestrator do
           apply_execution_rollout_gate(
             state,
             %{
+              transition_attempted: true,
+              transition_rejected: true,
               failure_class: :infra_fail,
               dedupe_hit: dedupe_status == :dedupe_hit,
               retry_budget_status: budget_attempt.status,
@@ -4020,6 +4057,8 @@ defmodule SymphonyElixir.Orchestrator do
           apply_execution_rollout_gate(
             state,
             %{
+              transition_attempted: true,
+              transition_rejected: true,
               failure_class: :policy_fail,
               dedupe_hit: false,
               retry_budget_status: :open,
@@ -5136,7 +5175,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp next_execution_rollout_snapshot(snapshot, gate_payload, state, now_ms)
        when is_map(snapshot) and is_map(gate_payload) and is_integer(now_ms) do
     started_at_ms = state.execution_rollout_started_at_ms || now_ms
-    total = Map.get(snapshot, :events_total, 0) + 1
+    attempted_increment = if Map.get(gate_payload, :transition_attempted, true), do: 1, else: 0
+    rejected_increment = if Map.get(gate_payload, :transition_rejected, false), do: 1, else: 0
+    attempted_total = Map.get(snapshot, :attempted_transitions_total, Map.get(snapshot, :events_total, 0)) + attempted_increment
+    rejected_total = Map.get(snapshot, :rejected_transitions_total, 0) + rejected_increment
+    total = Map.get(snapshot, :events_total, 0) + attempted_increment
     infra_total = Map.get(snapshot, :infra_fail_total, 0) + if(gate_payload.failure_class == :infra_fail, do: 1, else: 0)
     policy_total = Map.get(snapshot, :policy_fail_total, 0) + if(gate_payload.failure_class == :policy_fail, do: 1, else: 0)
     dedupe_hits = Map.get(snapshot, :dedupe_hits_total, 0) + if(gate_payload.dedupe_hit, do: 1, else: 0)
@@ -5147,7 +5190,7 @@ defmodule SymphonyElixir.Orchestrator do
       Map.get(snapshot, :auto_remediation_success_total, 0) +
         if(gate_payload.retry_budget_outcome in [:retry_scheduled, :shadow_only], do: 1, else: 0)
 
-    per_gate_rejection_rate = if(total > 0, do: (infra_total + policy_total) / total, else: 0.0)
+    per_gate_rejection_rate = if(attempted_total > 0, do: rejected_total / attempted_total, else: 0.0)
     false_blocked_valid_run_rate = 0.0
     repeated_failure_rate = if(auto_attempts > 0, do: repeated / auto_attempts, else: 0.0)
     auto_success_rate = if(auto_attempts > 0, do: auto_successes / auto_attempts, else: 1.0)
@@ -5155,6 +5198,8 @@ defmodule SymphonyElixir.Orchestrator do
 
     snapshot
     |> Map.put(:events_total, total)
+    |> Map.put(:attempted_transitions_total, attempted_total)
+    |> Map.put(:rejected_transitions_total, rejected_total)
     |> Map.put(:infra_fail_total, infra_total)
     |> Map.put(:policy_fail_total, policy_total)
     |> Map.put(:dedupe_hits_total, dedupe_hits)
