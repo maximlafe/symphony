@@ -2342,8 +2342,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                        %{
                          "title" => "GitHub PR #180",
                          "url" => "https://github.com/maximlafe/symphony/pull/180",
-                         "sourceType" => "github",
-                         "metadata" => %{"kind" => "pull_request"}
+                         "source" => %{"type" => "github"}
                        }
                      ]
                    }

@@ -376,7 +376,7 @@ defmodule SymphonyElixir.HandoffCheck do
           "identifier" => issue_identifier,
           "labels" => issue_labels,
           "required_capabilities" => required_capabilities,
-          "attachment_titles" => Enum.map(attachments, & &1["title"]),
+          "attachment_titles" => attachment_titles(attachments),
           "acceptance_matrix" => acceptance_matrix_items,
           "rollout_obligations" => delivery_contract["obligations"],
           "acceptance_contract_revision" => acceptance_contract["revision"]
@@ -2227,8 +2227,6 @@ defmodule SymphonyElixir.HandoffCheck do
       pull_request_evidence_attachment_title?(%{"title" => title})
   end
 
-  defp auto_synced_linked_pr_uploaded_attachment?(_item, _linked_pr_titles), do: false
-
   defp linked_pull_request_attachment_titles(attachments) when is_list(attachments) do
     attachments
     |> Enum.filter(&linked_pull_request_attachment?/1)
@@ -2240,8 +2238,6 @@ defmodule SymphonyElixir.HandoffCheck do
     |> Enum.reject(&is_nil/1)
     |> MapSet.new()
   end
-
-  defp linked_pull_request_attachment_titles(_attachments), do: MapSet.new()
 
   defp linked_pull_request_attachment?(%{} = attachment) do
     source_type =
@@ -2277,8 +2273,6 @@ defmodule SymphonyElixir.HandoffCheck do
     metadata_kind == "pull_request" or
       (source_type == "github" and (github_pull_request_url?(url) or pull_request_evidence_attachment_title?(%{"title" => title})))
   end
-
-  defp linked_pull_request_attachment?(_attachment), do: false
 
   defp github_pull_request_url?(url) when is_binary(url) do
     Regex.match?(~r{^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+(?:\b|[/?#])}, url)
@@ -2489,7 +2483,8 @@ defmodule SymphonyElixir.HandoffCheck do
             attachment["source_type"] ||
               attachment[:source_type] ||
               attachment["sourceType"] ||
-              attachment[:sourceType],
+              attachment[:sourceType] ||
+              nested_attachment_source_type(attachment["source"] || attachment[:source]),
           "metadata" => attachment["metadata"] || attachment[:metadata]
         }
 
@@ -2499,6 +2494,9 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp normalize_attachments(_attachments), do: []
+
+  defp nested_attachment_source_type(%{} = source), do: source["type"] || source[:type]
+  defp nested_attachment_source_type(_source), do: nil
 
   defp normalize_pr_snapshot(%{} = pr_snapshot), do: pr_snapshot
   defp normalize_pr_snapshot(_pr_snapshot), do: %{}

@@ -1152,9 +1152,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     attachments = [
       %{
         "title" => "GitHub PR #180",
-        "url" => "https://github.com/maximlafe/symphony/pull/180",
-        "source_type" => "github",
-        "metadata" => %{"kind" => "pull_request"}
+        "source" => %{"type" => "github"}
       }
     ]
 
@@ -1202,8 +1200,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
       %{
         "title" => "GitHub PR #180",
         "url" => "https://github.com/maximlafe/symphony/pull/180",
-        "source_type" => "github",
-        "metadata" => %{"kind" => "pull_request"}
+        "source" => %{"type" => "github"}
       }
     ]
 

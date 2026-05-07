@@ -246,6 +246,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         nodes {
           title
           url
+          source
           sourceType
           metadata
         }
@@ -1545,44 +1546,23 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         %{
           "title" => get_argument(attachment, "title"),
           "url" => get_argument(attachment, "url"),
-          "source_type" => get_argument(attachment, "sourceType") || get_argument(attachment, "source_type"),
+          "source_type" =>
+            get_argument(attachment, "sourceType") ||
+              get_argument(attachment, "source_type") ||
+              nested_attachment_source_type(get_argument(attachment, "source")),
           "metadata" => get_argument(attachment, "metadata")
         }
 
       _ ->
         %{}
     end)
-    |> Enum.reject(&linked_pull_request_attachment?/1)
     |> Enum.filter(fn attachment -> is_binary(attachment["title"]) and attachment["title"] != "" end)
   end
 
   defp normalize_linear_issue_attachments(_attachments), do: []
 
-  defp linked_pull_request_attachment?(%{} = attachment) do
-    metadata = attachment["metadata"] || %{}
-    kind = get_argument(metadata, "kind") |> normalize_optional_string_value()
-    source_type = attachment["source_type"] |> normalize_optional_string_value()
-    url = attachment["url"] |> normalize_optional_string_value()
-
-    kind == "pull_request" or
-      (source_type == "github" and github_pull_request_url?(url))
-  end
-
-  defp linked_pull_request_attachment?(_attachment), do: false
-
-  defp github_pull_request_url?(url) when is_binary(url) do
-    Regex.match?(~r{^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+(?:\b|[/?#])}, url)
-  end
-
-  defp github_pull_request_url?(_url), do: false
-
-  defp normalize_optional_string_value(value) when is_binary(value) do
-    value
-    |> String.trim()
-    |> String.downcase()
-  end
-
-  defp normalize_optional_string_value(_value), do: nil
+  defp nested_attachment_source_type(%{} = source), do: get_argument(source, "type")
+  defp nested_attachment_source_type(_source), do: nil
 
   defp maybe_guard_review_ready_issue_update(query, variables, linear_client, opts) do
     case review_ready_issue_update_query?(query) do

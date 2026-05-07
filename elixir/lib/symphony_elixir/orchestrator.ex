@@ -37,7 +37,6 @@ defmodule SymphonyElixir.Orchestrator do
   @github_pr_snapshot_tool "github_pr_snapshot"
   @github_wait_for_checks_tool "github_wait_for_checks"
   @symphony_handoff_check_tool "symphony_handoff_check"
-  @escalation_fail_close_max_retry_attempts 0
   @verification_recoverable_drift_max_attempts 1
   @stale_workspace_auto_remediation_max_attempts 1
   @verification_recoverable_drift_patterns [
@@ -3658,56 +3657,25 @@ defmodule SymphonyElixir.Orchestrator do
          context,
          intervention_state,
          tracker_reason,
-         extra_retry_metadata \\ %{}
+         _extra_retry_metadata \\ %{}
        )
        when is_integer(failure_attempt) and failure_attempt > 0 and is_map(context) and
-              is_binary(intervention_state) and is_map(extra_retry_metadata) do
+              is_binary(intervention_state) do
     issue_id = context[:issue_id]
     identifier = context[:identifier] || issue_id
     trace_id = context[:trace_id]
-    fail_close? = escalation_fail_close?(failure_attempt)
 
     with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
-      if fail_close? do
-        Logger.error(
-          "Failed to escalate issue_id=#{issue_id} issue_identifier=#{identifier} to #{intervention_state}: #{inspect(tracker_reason)}; fail-closing locally without worker retry (attempt #{failure_attempt})"
-        )
-      else
-        Logger.error(
-          "Failed to escalate issue_id=#{issue_id} issue_identifier=#{identifier} to #{intervention_state}: #{inspect(tracker_reason)}; scheduling bounded retry (attempt #{failure_attempt})"
-        )
-      end
+      Logger.error(
+        "Failed to escalate issue_id=#{issue_id} issue_identifier=#{identifier} to #{intervention_state}: #{inspect(tracker_reason)}; fail-closing locally without worker retry (attempt #{failure_attempt})"
+      )
     end)
 
-    if fail_close? do
-      state
-      |> complete_issue(issue_id)
-      |> Map.update!(:claimed, &MapSet.put(&1, issue_id))
-      |> Map.update!(:retry_attempts, &Map.delete(&1, issue_id))
-    else
-      schedule_issue_retry(
-        state,
-        issue_id,
-        failure_attempt,
-        %{
-          identifier: identifier,
-          trace_id: trace_id,
-          error: "failed to escalate #{identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
-          error_class: ErrorClassifier.to_string(:transient),
-          resume_checkpoint: context[:resume_checkpoint]
-        }
-        |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
-        |> Map.merge(extra_retry_metadata)
-      )
-    end
+    state
+    |> complete_issue(issue_id)
+    |> Map.update!(:claimed, &MapSet.put(&1, issue_id))
+    |> Map.update!(:retry_attempts, &Map.delete(&1, issue_id))
   end
-
-  defp escalation_fail_close?(failure_attempt)
-       when is_integer(failure_attempt) and failure_attempt > 0 do
-    failure_attempt > @escalation_fail_close_max_retry_attempts
-  end
-
-  defp escalation_fail_close?(_failure_attempt), do: true
 
   defp blocker_comment_body(
          identifier,
