@@ -546,6 +546,8 @@ codex:
       codex_home: /root/.codex/.codex-tatonkasperski8844
   minimum_remaining_percent: 5
   monitored_windows_mins: [300, 10080]
+planning:
+  swarm_assist_enabled: false
 server:
   host: "0.0.0.0"
 ---
@@ -645,6 +647,16 @@ Instructions:
   - `mode:research` -> `research-mode` obligations (`R0`, `R3`, `R4`, `R5`, `R11`, `R13`).
   - `mode:plan` -> `plan-mode` obligations (`R0`, `R5`, `R10`, `R14`, `R15`).
   - execute-ready implementation path -> `execute-mode` obligations (`R0`, `R1`, `R2`, `R5`, `R6`, `R7`, `R8`, `R9`, `R12`, `R13`).
+- Plan swarm gate contract:
+  - workflow gate: `planning.swarm_assist_enabled` (default `false`);
+  - when gate is `false`, keep legacy `plan-mode` path unchanged (compatibility
+    path);
+  - when gate is `true`, keep `plan-mode` as entrypoint and additionally run
+    repo-local `.agents/skills/plan-swarm-mode/SKILL.md` as bounded
+    drafting/critique helper;
+  - swarm helper is never allowed to redefine routing/state transitions or
+    canonical delivery/proof/handoff semantics from
+    `docs/policy/project-contract.md`.
 - Execute readiness rule from `Todo`:
   - minimum execute-ready contract: explicit problem/scope/acceptance criteria, valid final `## Symphony` routing block, and no unresolved blocker that requires `decision`/`human-action` checkpoint first;
   - if `mode:*` label exists, route through `Spec Prep`;
@@ -742,6 +754,9 @@ Instructions:
    - determine the intake mode from labels before broad investigation:
    - `mode:research` -> load and follow repo-local `.agents/skills/research-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/research-mode/SKILL.md`;
    - `mode:plan` -> load and follow repo-local `.agents/skills/plan-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/plan-mode/SKILL.md`;
+     - if workflow gate `planning.swarm_assist_enabled` is `true`, additionally load and run repo-local `.agents/skills/plan-swarm-mode/SKILL.md`;
+     - if the gate is `true` but `.agents/skills/plan-swarm-mode/SKILL.md` is absent, fallback to legacy `plan-mode` path, note this fallback in `Заметки`, and continue without blocking;
+     - if the gate is `false`, keep legacy `plan-mode` path unchanged as compatibility baseline;
      - if both labels exist, `mode:research` wins;
      - if neither label exists, treat the ticket as the legacy `plan-mode` path;
    - before finalizing the spec, decide whether execution should carry `delivery:tdd` and нормализовать `delivery:tdd` через `linear_graphql`;

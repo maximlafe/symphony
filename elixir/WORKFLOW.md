@@ -76,6 +76,8 @@ codex:
       codex_home: ~/.codex-primary
     - id: backup
       codex_home: ~/.codex-backup
+planning:
+  swarm_assist_enabled: false
 verification:
   profile_labels:
     ui: "verification:ui"
@@ -188,6 +190,9 @@ Instructions:
 - Shared runtime areas such as `.codex-runtime/homes/*/.tmp` stay outside this per-task cleanup contract and are excluded from workspace-root usage accounting.
 - Managed runtime-home reuse opportunistically prunes stale `.tmp/plugins-clone-*` directories inside the prepared shared runtime home via TTL-based cleanup.
 - Repo-local worker skills live in `.agents/skills/` and are part of the required target-repo contract.
+- If a repository enables `mode:plan` spec-prep routing, keep swarm-assisted
+  planning behind workflow gate `planning.swarm_assist_enabled` (default
+  `false`) and keep legacy `plan-mode` as compatibility path when disabled.
 - When a fresh working branch is needed, use the exact `Working branch:` value from the issue description's final `## Symphony` section when it is present. Otherwise, do not reuse tracker-generated `branchName` values and create the branch yourself as `Symphony/<lowercase issue identifier>-<short-kebab-summary>`.
 - Keep the fallback summary slug ASCII, brief, and outcome-oriented. Prefer 2-6 meaningful English words, for example `Symphony/let-267-safe-task-cleanup`.
 - Never put usernames, worker ids, or full-title transliterations into the branch name. Names like `cycloid-yips0i/...` are invalid for this workflow.

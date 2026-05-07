@@ -31,6 +31,30 @@ When guidance differs:
 
 If a rule must change, update this file first and then align workflows/skills.
 
+## Spec Prep Planning Quality Loop (Swarm-Assisted)
+
+- This applies only to `mode:plan` and only when workflow gate
+  `planning.swarm_assist_enabled` is enabled.
+- Default contract is disabled (`false`): legacy `plan-mode` remains the
+  compatibility path.
+- When enabled, swarm loop is a drafting/critique helper only; it does not own
+  routing, labels, state transitions, delivery semantics, or handoff semantics.
+- Minimum loop for enabled `mode:plan` path:
+  1. `swarm-mode`: expand request into document spec and first draft
+     implementation contour.
+  2. `swarm-red-team`: critique dependency impact, rollback safety, and proof
+     readiness.
+  3. `swarm-mode`: apply findings sequentially and normalize final plan output.
+- Compatibility proof (gate disabled): `plan-mode` output still satisfies
+  current task-spec requirements and canonical `Acceptance Matrix` / `Proof
+  Mapping` semantics.
+- Existence proof (gate enabled): planning output still maps to canonical
+  contract fields and does not introduce parallel proof vocabulary.
+- High-risk planning tasks may run extra critique/repair rounds; low-risk tasks
+  may use a single critique/repair pass.
+- During `Spec Prep`, swarm planning loop must stay read-only for tracker state
+  and execution handoff semantics.
+
 ## Delivery Label: `delivery:tdd`
 
 - `delivery:tdd` is an opt-in delivery label, not an intake-routing label.
