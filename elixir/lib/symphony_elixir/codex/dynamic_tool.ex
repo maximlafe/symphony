@@ -246,6 +246,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         nodes {
           title
           url
+          sourceType
+          metadata
         }
       }
     }
@@ -1541,7 +1543,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       %{} = attachment ->
         %{
           "title" => get_argument(attachment, "title"),
-          "url" => get_argument(attachment, "url")
+          "url" => get_argument(attachment, "url"),
+          "source_type" => get_argument(attachment, "sourceType") || get_argument(attachment, "source_type"),
+          "metadata" => get_argument(attachment, "metadata")
         }
 
       _ ->
