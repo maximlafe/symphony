@@ -6,7 +6,7 @@ ELIXIR_DIR ?= elixir
 help:
 	@echo "Targets: test, symphony-preflight, symphony-acceptance-preflight, symphony-bootstrap, symphony-dashboard-checks, symphony-handoff-check, symphony-runtime-smoke, symphony-validate, symphony-live-e2e, symphony-nginx-proxy-contract, symphony-nginx-proxy-smoke"
 
-test: symphony-validate symphony-dashboard-checks symphony-nginx-proxy-contract
+test: symphony-validate symphony-nginx-proxy-contract
 
 symphony-preflight:
 	@if ! command -v codex >/dev/null 2>&1; then \

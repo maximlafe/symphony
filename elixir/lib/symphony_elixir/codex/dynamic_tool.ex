@@ -163,7 +163,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       },
       "poll_interval_ms" => %{
         "type" => ["integer", "null"],
-        "description" => "Polling interval in milliseconds. Defaults to 10000."
+        "description" => "Polling interval in milliseconds. Defaults to 30000."
       }
     }
   }
@@ -246,7 +246,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         nodes {
           title
           url
-          source
           sourceType
           metadata
         }
@@ -347,7 +346,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   }
 
   @default_github_wait_timeout_ms 3_600_000
-  @default_github_wait_poll_interval_ms 10_000
+  @default_github_wait_poll_interval_ms 30_000
   @default_exec_background_timeout_ms 3_600_000
   @default_exec_wait_timeout_ms 90_000
   @default_exec_wait_poll_interval_ms 1_000

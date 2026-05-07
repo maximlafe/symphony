@@ -12,7 +12,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
   @workpad_file "workpad.md"
   @workpad_ref_file ".workpad-id"
   @default_wait_timeout_ms 3_600_000
-  @default_wait_poll_interval_ms 10_000
+  @default_wait_poll_interval_ms 30_000
   @default_review_ready_state "In Review"
 
   @type checkpoint :: map()

@@ -264,7 +264,7 @@ Instructions:
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, include a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
    - if the task produces export/report files or machine-readable validation artifacts that support the handoff, attach those files to the issue instead of leaving them only in the workpad or local runtime.
-7. Before every `git push`, rerun the required validation and confirm it passes.
+7. Before `git push`, rerun the required validation only when the current `HEAD^{tree}` changed since the latest final-gate proof checkpoint; otherwise reuse the existing final-gate proof on the same tree.
 8. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
 9. Merge latest `origin/main` into the branch before final handoff, resolve conflicts, and rerun required validation.
 
@@ -289,7 +289,7 @@ Invalidation and rerun rules:
 
 - Final proof is valid only when `head_sha` and `tree_sha` match current `HEAD` and shipped paths are clean.
 - Dirty-workspace proof can count as cheap proof only; after commit, repeat final gate on the clean committed `HEAD`.
-- Code/config/workflow-contract changes after an existing PR require a fresh final gate before the next push.
+- Code/config/workflow-contract changes after an existing PR require a fresh final gate before the next push because they change `HEAD^{tree}`.
 - CI failure or review feedback starts with cheap gate for the concrete failing signal. If the fix changes shipped code/config/workflow contract, final gate is required before re-push.
 - Blind reruns are not proof and do not reset the auto-fix counter.
 
@@ -302,7 +302,7 @@ Invalidation and rerun rules:
    - treat every actionable item as blocking until code/docs/tests are updated or an explicit justified pushback reply is posted;
    - update the workpad checklist with the feedback items and their resolution status;
    - rerun required validation after feedback-driven changes.
-4. Use `github_wait_for_checks` to wait for CI outside the model loop.
+4. Use `github_wait_for_checks` to wait for CI outside the model loop with `poll_interval_ms: 30000`.
 5. When checks complete, run `github_pr_snapshot` again.
 6. If checks are not green or actionable feedback remains, continue the fix/validate loop.
 7. If checks are green and no actionable feedback remains:

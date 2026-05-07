@@ -1152,7 +1152,9 @@ defmodule SymphonyElixir.HandoffCheckTest do
     attachments = [
       %{
         "title" => "GitHub PR #180",
-        "source" => %{"type" => "github"}
+        "url" => "https://github.com/maximlafe/symphony/pull/180",
+        "source_type" => "github",
+        "metadata" => %{"kind" => "pull_request"}
       }
     ]
 
@@ -1200,7 +1202,8 @@ defmodule SymphonyElixir.HandoffCheckTest do
       %{
         "title" => "GitHub PR #180",
         "url" => "https://github.com/maximlafe/symphony/pull/180",
-        "source" => %{"type" => "github"}
+        "source_type" => "github",
+        "metadata" => %{"kind" => "pull_request"}
       }
     ]
 
@@ -1220,6 +1223,123 @@ defmodule SymphonyElixir.HandoffCheckTest do
                "pull request evidence must stay in linked PR/github_pr_snapshot, not in uploaded attachment artifacts"
              )
            end)
+  end
+
+  test "evaluate recognizes linked PR attachments by github pull URL without metadata" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `Feature sync` -> auto-synced from Linear attachment
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: URL-based linked PR attachment should be separated from uploaded artifacts.
+    """
+
+    attachments = [
+      "unexpected attachment shape",
+      %{
+        "title" => "Feature sync",
+        "url" => "https://github.com/maximlafe/symphony/pull/180",
+        "source_type" => "github"
+      }
+    ]
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-673",
+               attachments: attachments,
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    refute Enum.any?(manifest["missing_items"], fn item ->
+             String.contains?(
+               item,
+               "pull request evidence must stay in linked PR/github_pr_snapshot, not in uploaded attachment artifacts"
+             )
+           end)
+  end
+
+  test "evaluate recognizes linked PR attachments by github title fallback when URL is not a PR link" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `PR #180` -> auto-synced from Linear attachment
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Title fallback should classify linked PR evidence even with non-PR URL.
+    """
+
+    attachments = [
+      %{
+        "title" => "PR #180",
+        "url" => "https://github.com/maximlafe/symphony/issues/180",
+        "source_type" => "github"
+      }
+    ]
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-673",
+               attachments: attachments,
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    refute Enum.any?(manifest["missing_items"], fn item ->
+             String.contains?(
+               item,
+               "pull request evidence must stay in linked PR/github_pr_snapshot, not in uploaded attachment artifacts"
+             )
+           end)
+  end
+
+  test "proof_contract_errors tolerates non-list attachments option values" do
+    markdown = """
+    ## Acceptance Matrix
+
+    | id | capability | proof_type | requirement |
+    | --- | --- | --- | --- |
+    | AC-1 | artifact_upload | artifact | Upload runtime proof artifact |
+
+    ## Codex Workpad
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime log
+    """
+
+    errors = HandoffCheck.proof_contract_errors(markdown, attachments: :invalid_shape)
+
+    assert "uploaded attachment `runtime-proof.log` is missing from the Linear issue attachments" in errors
   end
 
   test "evaluate requires explicit red proof when delivery:tdd is enabled" do

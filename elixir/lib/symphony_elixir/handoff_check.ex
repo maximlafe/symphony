@@ -162,7 +162,9 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp effective_proof_contract_attachments(parsed_workpad, opts) do
     if Keyword.has_key?(opts, :attachments) do
-      Keyword.get(opts, :attachments, [])
+      opts
+      |> Keyword.get(:attachments, [])
+      |> normalize_attachments()
     else
       parsed_workpad["artifacts"]
       |> Enum.filter(fn item ->
@@ -2206,25 +2208,28 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp auto_synced_linked_pr_uploaded_attachment?(item, linked_pr_titles)
-       when is_map(item) and is_struct(linked_pr_titles, MapSet) do
-    title =
-      item
-      |> Map.get("title")
-      |> to_string_or_nil()
-      |> normalize_attachment_title()
+  defp auto_synced_linked_pr_uploaded_attachment?(item, linked_pr_titles) do
+    if is_map(item) and is_struct(linked_pr_titles, MapSet) do
+      title =
+        item
+        |> Map.get("title")
+        |> to_string_or_nil()
+        |> normalize_attachment_title()
 
-    claim =
-      item
-      |> Map.get("claim")
-      |> normalize_attachment_token()
+      claim =
+        item
+        |> Map.get("claim")
+        |> normalize_attachment_token()
 
-    item["checked"] == true and
-      item["kind"] == "uploaded_attachment" and
-      is_binary(title) and
-      MapSet.member?(linked_pr_titles, title) and
-      claim == "auto-synced from linear attachment" and
-      pull_request_evidence_attachment_title?(%{"title" => title})
+      item["checked"] == true and
+        item["kind"] == "uploaded_attachment" and
+        is_binary(title) and
+        MapSet.member?(linked_pr_titles, title) and
+        claim == "auto-synced from linear attachment" and
+        pull_request_evidence_attachment_title?(%{"title" => title})
+    else
+      false
+    end
   end
 
   defp linked_pull_request_attachment_titles(attachments) when is_list(attachments) do
@@ -2239,46 +2244,51 @@ defmodule SymphonyElixir.HandoffCheck do
     |> MapSet.new()
   end
 
-  defp linked_pull_request_attachment?(%{} = attachment) do
-    source_type =
-      attachment
-      |> Map.get("source_type")
-      |> normalize_attachment_token()
+  defp linked_pull_request_attachment?(attachment) do
+    if is_map(attachment) do
+      source_type =
+        attachment
+        |> Map.get("source_type")
+        |> normalize_attachment_token()
 
-    metadata = Map.get(attachment, "metadata")
+      metadata = Map.get(attachment, "metadata")
 
-    metadata_kind =
-      case metadata do
-        %{} ->
-          metadata
-          |> Map.get("kind")
-          |> normalize_attachment_token()
+      metadata_kind =
+        case metadata do
+          %{} ->
+            metadata
+            |> Map.get("kind")
+            |> normalize_attachment_token()
 
-        _ ->
-          nil
-      end
+          _ ->
+            nil
+        end
 
-    title =
-      attachment
-      |> Map.get("title")
-      |> to_string_or_nil()
-      |> normalize_attachment_title()
+      title =
+        attachment
+        |> Map.get("title")
+        |> to_string_or_nil()
+        |> normalize_attachment_title()
 
-    url =
-      attachment
-      |> Map.get("url")
-      |> to_string_or_nil()
-      |> normalize_attachment_title()
+      url =
+        attachment
+        |> Map.get("url")
+        |> to_string_or_nil()
+        |> normalize_attachment_title()
 
-    metadata_kind == "pull_request" or
-      (source_type == "github" and (github_pull_request_url?(url) or pull_request_evidence_attachment_title?(%{"title" => title})))
+      metadata_kind == "pull_request" or
+        (source_type == "github" and
+           (github_pull_request_url?(url) or
+              pull_request_evidence_attachment_title?(%{"title" => title})))
+    else
+      false
+    end
   end
 
-  defp github_pull_request_url?(url) when is_binary(url) do
-    Regex.match?(~r{^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+(?:\b|[/?#])}, url)
+  defp github_pull_request_url?(url) do
+    is_binary(url) and
+      Regex.match?(~r{^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+(?:\b|[/?#])}, url)
   end
-
-  defp github_pull_request_url?(_url), do: false
 
   defp normalize_attachment_token(value) do
     value

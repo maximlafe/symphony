@@ -1377,6 +1377,83 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Agent.get(agent, & &1.call_count) == 2
   end
 
+  test "github_wait_for_checks uses default poll interval when poll_interval_ms is omitted" do
+    {:ok, agent} =
+      Agent.start_link(fn ->
+        %{call_count: 0, now_ms: 0}
+      end)
+
+    gh_runner = fn args, _opts ->
+      Agent.get_and_update(agent, fn %{call_count: call_count} = state ->
+        next_count = call_count + 1
+
+        payload =
+          if next_count == 1 do
+            %{
+              "state" => "OPEN",
+              "url" => "https://example.test/pr/63",
+              "labels" => [],
+              "reviewDecision" => "",
+              "mergeStateStatus" => "UNSTABLE",
+              "statusCheckRollup" => [
+                %{"name" => "test", "status" => "IN_PROGRESS", "conclusion" => "", "workflowName" => "CI"}
+              ]
+            }
+          else
+            %{
+              "state" => "OPEN",
+              "url" => "https://example.test/pr/63",
+              "labels" => [],
+              "reviewDecision" => "",
+              "mergeStateStatus" => "CLEAN",
+              "statusCheckRollup" => [
+                %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+              ]
+            }
+          end
+
+        result =
+          case args do
+            ["pr", "view", "63", "-R", "maximlafe/lead_status", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+              {:ok, Jason.encode!(payload)}
+          end
+
+        {result, %{state | call_count: next_count}}
+      end)
+    end
+
+    sleep_fn = fn duration_ms ->
+      Agent.update(agent, fn state -> %{state | now_ms: state.now_ms + duration_ms} end)
+    end
+
+    monotonic_time_ms = fn ->
+      Agent.get(agent, & &1.now_ms)
+    end
+
+    response =
+      DynamicTool.execute(
+        "github_wait_for_checks",
+        %{
+          "repo" => "maximlafe/lead_status",
+          "pr_number" => 63,
+          "timeout_ms" => 90_000
+        },
+        gh_runner: gh_runner,
+        sleep_fn: sleep_fn,
+        monotonic_time_ms: monotonic_time_ms
+      )
+
+    on_exit(fn ->
+      if Process.alive?(agent), do: Agent.stop(agent)
+    end)
+
+    assert response["success"] == true
+    payload = decode_tool_text(response)
+    assert payload["all_green"] == true
+    assert payload["duration_ms"] == 30_000
+    assert Agent.get(agent, & &1.call_count) == 2
+  end
+
   test "github_wait_for_checks reports a timeout with compact pending check details" do
     {:ok, agent} =
       Agent.start_link(fn ->

@@ -213,6 +213,65 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert_receive {:tracker_state_update, "issue-success", "In Review"}
   end
 
+  test "run/3 uses default github_wait_for_checks poll interval when workflow omits override" do
+    issue = %Issue{id: "issue-default-wait-poll", identifier: "LET-462-DEFAULT-WAIT", state: "In Progress"}
+    workspace = create_workspace!(issue.identifier)
+    test_pid = self()
+
+    checkpoint = %{
+      "head" => "head-default-wait",
+      "open_pr" => %{"number" => 42, "url" => "https://github.com/acme/symphony/pull/42"}
+    }
+
+    executor = fn
+      "sync_workpad", _args, _opts ->
+        tool_success(%{"comment_id" => "workpad-comment"})
+
+      "github_wait_for_checks", args, _opts ->
+        send(test_pid, {:wait_for_checks_args, args})
+
+        tool_success(%{
+          "all_green" => true,
+          "pending_checks" => [],
+          "failed_checks" => [],
+          "checks" => []
+        })
+
+      "github_pr_snapshot", _args, _opts ->
+        tool_success(%{
+          "url" => "https://github.com/acme/symphony/pull/42",
+          "state" => "OPEN",
+          "has_pending_checks" => false,
+          "has_actionable_feedback" => false
+        })
+
+      "symphony_handoff_check", _args, _opts ->
+        maybe_write_contract_lock(workspace, issue.id, "test-contract-revision")
+
+        tool_success(%{
+          "manifest" => %{
+            "passed" => true,
+            "summary" => "final gate is fresh",
+            "contract_revision" => "test-contract-revision",
+            "issue" => %{"id" => issue.id},
+            "manifest_path" => ".symphony/verification/handoff-manifest.json"
+          }
+        })
+    end
+
+    assert {:ok, _payload} =
+             ControllerFinalizer.run(
+               issue,
+               checkpoint,
+               repo: "acme/symphony",
+               tracker_module: TrackerStub,
+               tool_executor: executor
+             )
+
+    assert_receive {:wait_for_checks_args, wait_args}
+    assert wait_args["poll_interval_ms"] == 30_000
+  end
+
   test "run/3 preserves issue description across struct/map issues and accepts git runner override" do
     checkpoint = %{
       "head" => "head-description-coverage",

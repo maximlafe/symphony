@@ -822,7 +822,7 @@ Invalidation and rerun policy:
 - Final proof is valid only when `proof.head_sha == git rev-parse HEAD`, `proof.tree_sha == git rev-parse HEAD^{tree}`, and shipped paths are clean.
 - Tests that passed on a dirty workspace remain cheap/development proof after commit; final gate must rerun on clean committed `HEAD`.
 - Description/comment/workpad-only edits without shipped diff do not require local full gate rerun. If the workpad changes after `symphony_handoff_check`, rerun only handoff check so the digest is fresh.
-- After CI failure or review feedback, start local rework with cheap gate for the concrete failing signal. If the fix changes code/config/workflow contract, run final gate again before the next push.
+- After CI failure or review feedback, start local rework with cheap gate for the concrete failing signal. If the fix changes code/config/workflow contract (and therefore `HEAD^{tree}`), run final gate again before the next push.
 - Blind remote reruns do not count as proof and do not reset the auto-fix counter. Remote-only or external blockers should use the classified blocked/decision path instead of speculative full validation loops.
 
 ## PR feedback and checks protocol (required before In Review)
@@ -834,7 +834,7 @@ Invalidation and rerun policy:
    - treat every actionable item as blocking until code/docs/tests are updated or an explicit justified pushback reply is posted;
    - reflect each feedback item and its resolution status in the workpad;
    - rerun the required validation after feedback-driven changes.
-4. Use `github_wait_for_checks` to wait for CI outside the model loop.
+4. Use `github_wait_for_checks` to wait for CI outside the model loop with `poll_interval_ms: 30000`.
 5. When checks complete, run `github_pr_snapshot` again.
 6. If checks are not green or actionable feedback remains, continue the fix/validate loop.
 7. Do not fetch full GitHub feedback payloads when the summary snapshot shows no review activity.
@@ -874,7 +874,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, attach a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
    - if the task produced review-relevant export/report files or machine-readable validation artifacts, attach them to the issue instead of leaving them only in the workpad, logs, or local runtime.
-10. Before every `git push`, rerun the required validation and confirm it passes.
+10. Before `git push`, rerun the required validation only when the current `HEAD^{tree}` changed since the latest final-gate proof checkpoint; otherwise reuse the existing final-gate proof on the same tree.
 11. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
 12. Merge latest `origin/<configured base branch>` into the branch before final handoff, resolve conflicts, and rerun required validation.
 13. Before moving to `In Review`, use the compact PR/check flow:
