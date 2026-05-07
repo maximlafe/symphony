@@ -673,6 +673,18 @@ Instructions:
 - Нормализовать `delivery:tdd` через `linear_graphql`: добавить label, когда TDD оправдан, и remove stale `delivery:tdd`, когда он не нужен.
 - После входа в `In Progress` `delivery:tdd` больше не влияет на routing; он меняет только delivery/handoff contract.
 
+## Delivery closure contract
+
+- `Rollout Contract` — отдельная machine-readable поверхность для delivery obligations поверх `Acceptance Matrix` и `Required capabilities`.
+- Canonical `delivery_class`: `code_only`, `stateful_schema`, `runtime_repair`, `operator_flow`.
+- `delivery_class=code_only` не добавляет обязательный rollout overhead.
+- Для `stateful_schema`, `runtime_repair` и `operator_flow` spec gate должен fail-closed требовать явный `Rollout Contract`, когда classifier видит schema/state lifecycle/runtime repair/operator flow surface.
+- Rollout obligation fields: `delivery_class`, `obligation_type`, `required_capability`, `proof_type`, `proof_target`, `required_before`, `unblock_action`.
+- Canonical `obligation_type`: `migration_applied`, `real_case_canary`, `post_merge_runtime_smoke`, `operator_cutover_verified`.
+- `Required capabilities` остаётся только prerequisite/access surface. `required_capability` в rollout obligation может ссылаться только на `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, `artifact_upload` или `none`; execution-only values for migrations/canaries/cutovers запрещены.
+- Review-phase `symphony_handoff_check` может defer rollout obligations и `Acceptance Matrix` rows с `required_before=done`.
+- Done closure требует `symphony_handoff_check phase=done`; если proof/capability отсутствует, issue переводится в `Blocked` с `checkpoint_type: human-action` и точным unblock action вместо ложного `Done`.
+
 ## Cost Profile Contract
 
 - Выбор Codex launch command резолвится из `codex.cost_profiles` и `codex.cost_policy` через `SymphonyElixir.Config.codex_cost_decision/1`.
@@ -886,7 +898,7 @@ Use this only when completion is blocked by missing required tools or missing au
 4. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
 5. If approved, a human moves the issue to `Merging`.
 6. In `Merging`, first create the separate top-level comment `Начал слияние задачи: <DD.MM.YYYY HH:MM MSK>`, then use the `land` skill until the PR is merged.
-7. After merge is complete, move the issue to `Done`.
+7. After merge is complete, do not move directly to `Done` when the task-spec contains rollout obligations or `Acceptance Matrix` rows with `required_before=done`; first run/require `symphony_handoff_check` with `phase=done`. If proof/capability is missing, move the issue to `Blocked` with `checkpoint_type: human-action` and exact unblock action; otherwise move the issue to `Done`.
 
 ## Step 4: Rework handling
 

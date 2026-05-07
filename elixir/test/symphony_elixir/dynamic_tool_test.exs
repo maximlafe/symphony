@@ -2744,6 +2744,189 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert_received {:issue_update_non_state, %{"id" => "LET-416", "title" => "keep metadata path"}}
   end
 
+  test "linear_graphql blocks Done transitions with rollout obligations until phase done handoff succeeds" do
+    workspace = Path.join(System.tmp_dir!(), "done_guard_workspace_#{System.unique_integer([:positive])}")
+
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | Review proof | Review proof passes | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+
+    ## Rollout Contract
+
+    | delivery_class | obligation_type | required_capability | proof_type | proof_target | required_before | unblock_action |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | runtime_repair | real_case_canary | none | artifact | canary-proof.log | done | Attach canary proof. |
+    """
+
+    workpad_path =
+      write_tmp_file(workspace, "workpad.md", """
+      ## Codex Workpad
+
+      ### Validation
+
+      - [x] preflight: `make symphony-preflight`
+      - [x] cheap gate: `same HEAD targeted proof completed`
+      - [x] targeted tests: `mix test test/symphony_elixir/dynamic_tool_test.exs`
+      - [x] runtime smoke: `mix test test/symphony_elixir/dynamic_tool_test.exs`
+      - [x] repo validation: `make symphony-validate`
+
+      ### Artifacts
+
+      - [x] uploaded attachment: `canary-proof.log` -> real-case canary proof after merge
+
+      ### Proof Mapping
+
+      - [x] `AM-1` -> `validation:targeted tests`
+      - [x] `RO-1` -> `artifact:canary-proof.log`
+
+      ### Checkpoint
+
+      - `checkpoint_type`: `human-verify`
+      - `risk_level`: `medium`
+      - `summary`: Done-phase rollout proof is complete.
+      """)
+
+    state_catalog_response = fn ->
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "id" => "LET-698",
+             "identifier" => "LET-698",
+             "description" => issue_description,
+             "state" => %{"name" => "Merging"},
+             "labels" => %{"nodes" => [%{"name" => "mode:plan"}]},
+             "inverseRelations" => %{"nodes" => []},
+             "team" => %{
+               "states" => %{
+                 "nodes" => [
+                   %{"id" => "done-state-id", "name" => "Done"},
+                   %{"id" => "blocked-state-id", "name" => "Blocked"}
+                 ]
+               }
+             }
+           }
+         }
+       }}
+    end
+
+    blocked =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-698", "stateId" => "done-state-id"}
+        },
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckState" do
+            state_catalog_response.()
+          else
+            flunk("Done transition must not run without phase=done manifest")
+          end
+        end
+      )
+
+    assert blocked["success"] == false
+    blocked_payload = decode_tool_text(blocked)
+    assert blocked_payload["error"]["message"] =~ "Done transitions"
+    assert blocked_payload["error"]["details"]["checkpoint_type"] == "human-action"
+    assert blocked_payload["error"]["details"]["required_state"] == "Blocked"
+
+    assert DynamicTool.execute(
+             "symphony_handoff_check",
+             %{
+               "issue_id" => "LET-698",
+               "file_path" => workpad_path,
+               "repo" => "maximlafe/symphony",
+               "pr_number" => 98,
+               "profile" => "runtime",
+               "phase" => "done"
+             },
+             workspace: workspace,
+             linear_client: fn query, _variables, _opts ->
+               if query =~ "SymphonyHandoffCheckIssue" do
+                 {:ok,
+                  %{
+                    "data" => %{
+                      "issue" => %{
+                        "id" => "LET-698",
+                        "identifier" => "LET-698",
+                        "description" => issue_description,
+                        "state" => %{"name" => "Merging"},
+                        "labels" => %{"nodes" => [%{"name" => "verification:runtime"}, %{"name" => "mode:plan"}]},
+                        "attachments" => %{
+                          "nodes" => [%{"title" => "canary-proof.log", "url" => "https://example.test/canary-proof.log"}]
+                        }
+                      }
+                    }
+                  }}
+               else
+                 flunk("unexpected done handoff query: #{query}")
+               end
+             end,
+             git_runner: handoff_git_runner(),
+             gh_runner: fn args, _opts ->
+               case args do
+                 ["pr", "view", "98", "-R", "maximlafe/symphony", "--json", _] ->
+                   {:ok,
+                    Jason.encode!(%{
+                      "state" => "MERGED",
+                      "url" => "https://example.test/pr/98",
+                      "labels" => [%{"name" => "symphony"}],
+                      "reviewDecision" => "",
+                      "mergeStateStatus" => "CLEAN",
+                      "statusCheckRollup" => [
+                        %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                      ]
+                    })}
+
+                 ["api", "repos/maximlafe/symphony/issues/98/comments?per_page=100"] ->
+                   {:ok, "[]"}
+
+                 ["api", "repos/maximlafe/symphony/pulls/98/reviews?per_page=100"] ->
+                   {:ok, "[]"}
+
+                 ["api", "repos/maximlafe/symphony/pulls/98/comments?per_page=100"] ->
+                   {:ok, "[]"}
+
+                 _ ->
+                   flunk("unexpected gh command: #{inspect(args)}")
+               end
+             end
+           )["success"] == true
+
+    allowed =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }",
+          "variables" => %{"id" => "LET-698", "stateId" => "done-state-id"}
+        },
+        workspace: workspace,
+        git_runner: handoff_git_runner(),
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              state_catalog_response.()
+
+            query =~ "issueUpdate" ->
+              send(self(), {:done_issue_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected GraphQL query: #{query}")
+          end
+        end
+      )
+
+    assert allowed["success"] == true
+    assert_received {:done_issue_update, %{"id" => "LET-698", "stateId" => "done-state-id"}}
+  end
+
   test "linear_graphql blocks issueUpdate(description) when acceptance matrix rows are malformed" do
     malformed_description = """
     ## Проблема

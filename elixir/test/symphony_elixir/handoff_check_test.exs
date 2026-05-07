@@ -178,6 +178,237 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert get_in(manifest, ["handoff_failure", "kind"]) == "none"
   end
 
+  test "acceptance contract revision includes rollout contract" do
+    base_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test | run_executed |
+
+    ## Rollout Contract
+
+    | delivery_class | obligation_type | required_capability | proof_type | proof_target | required_before | unblock_action |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | runtime_repair | real_case_canary | none | artifact | canary-proof.log | done | Attach canary proof. |
+    """
+
+    changed_description = String.replace(base_description, "canary-proof.log", "changed-canary-proof.log")
+
+    assert HandoffCheck.acceptance_contract_from_issue_description(base_description)["revision"] !=
+             HandoffCheck.acceptance_contract_from_issue_description(changed_description)["revision"]
+  end
+
+  test "review phase defers rollout obligations and done phase requires rollout proof mapping" do
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | Review proof | Review proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+
+    ## Rollout Contract
+
+    | delivery_class | obligation_type | required_capability | proof_type | proof_target | required_before | unblock_action |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | runtime_repair | real_case_canary | none | artifact | canary-proof.log | done | Attach canary proof. |
+    """
+
+    review_workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:targeted tests`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Review proof is complete.
+    """
+
+    assert {:ok, review_manifest} =
+             HandoffCheck.evaluate(
+               review_workpad,
+               issue_id: "LET-698",
+               issue_description: issue_description,
+               labels: ["mode:plan"],
+               attachments: [],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata(),
+               phase: "review"
+             )
+
+    assert review_manifest["phase"] == "review"
+    assert [%{"id" => "RO-1"}] = review_manifest["deferred_rollout_obligations"]
+
+    assert {:error, done_manifest} =
+             HandoffCheck.evaluate(
+               review_workpad,
+               issue_id: "LET-698",
+               issue_description: issue_description,
+               labels: ["mode:plan"],
+               attachments: [],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata(),
+               phase: "done"
+             )
+
+    assert "rollout obligation `RO-1` is missing a checked proof mapping entry" in done_manifest["missing_items"]
+
+    done_workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `canary-proof.log` -> real-case canary proof after merge
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:targeted tests`
+    - [x] `RO-1` -> `artifact:canary-proof.log`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Done-phase rollout proof is complete.
+    """
+
+    assert {:ok, final_manifest} =
+             HandoffCheck.evaluate(
+               done_workpad,
+               issue_id: "LET-698",
+               issue_description: issue_description,
+               labels: ["mode:plan"],
+               attachments: [%{"title" => "canary-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata(),
+               phase: "done"
+             )
+
+    assert final_manifest["phase"] == "done"
+    assert final_manifest["deferred_rollout_obligations"] == []
+  end
+
+  @tag :tmp_dir
+  test "done transition guard requires phase done manifest", %{tmp_dir: tmp_dir} do
+    manifest_path = Path.join(tmp_dir, "handoff-manifest.json")
+
+    File.write!(
+      manifest_path,
+      Jason.encode!(%{
+        "passed" => true,
+        "issue" => %{"id" => "LET-DONE"},
+        "phase" => "review",
+        "target_state" => nil
+      })
+    )
+
+    assert {:error, :handoff_manifest_stale, %{"reason" => "handoff manifest phase does not satisfy closure gate"}} =
+             HandoffCheck.done_transition_allowed?(manifest_path, "LET-DONE", "Done", nil, [])
+
+    assert {:error, :handoff_manifest_invalid, %{"reason" => "issue_id is required"}} =
+             HandoffCheck.done_transition_allowed?(manifest_path, 123, "Done", nil, [])
+  end
+
+  @tag :tmp_dir
+  test "rollout-only contract revision is enforced for transition guards", %{tmp_dir: tmp_dir} do
+    issue_description = """
+    ## Rollout Contract
+
+    | delivery_class | obligation_type | required_capability | proof_type | proof_target | required_before | unblock_action |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | runtime_repair | real_case_canary | none | artifact | canary-proof.log | done | Attach canary proof. |
+    """
+
+    contract = HandoffCheck.acceptance_contract_from_issue_description(issue_description)
+    manifest_path = Path.join(tmp_dir, "handoff-manifest.json")
+
+    File.write!(
+      manifest_path,
+      Jason.encode!(%{
+        "passed" => true,
+        "issue" => %{"id" => "LET-ROLLOUT"},
+        "contract_revision" => contract["revision"],
+        "phase" => "review",
+        "target_state" => "In Review"
+      })
+    )
+
+    assert {:error, _reason, details} =
+             HandoffCheck.review_ready_transition_allowed?(
+               manifest_path,
+               "LET-ROLLOUT",
+               "In Review",
+               nil,
+               issue_description: issue_description,
+               git: git_metadata()
+             )
+
+    refute details["reason"] =~ "acceptance contract revision is stale"
+  end
+
+  test "review handoff does not re-enforce spec-level sensitive rollout absence" do
+    issue_description = """
+    ## Rollout Contract
+
+    delivery_class: runtime_repair
+    """
+
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Review proof is complete.
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-REVIEW",
+               issue_description: issue_description,
+               labels: [],
+               attachments: [],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata(),
+               phase: "review"
+             )
+
+    assert manifest["delivery"]["missing_items"] == [
+             "delivery_class=runtime_repair requires at least one rollout obligation"
+           ]
+  end
+
   test "write_acceptance_contract_lock writes a machine-readable lock file" do
     workspace_root =
       Path.join(

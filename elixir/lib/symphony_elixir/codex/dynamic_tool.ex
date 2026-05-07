@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.{Config, HandoffCheck, Linear.Client, PathSafety, SpecCheck, ValidationGate}
+  alias SymphonyElixir.{Config, DeliveryContract, HandoffCheck, Linear.Client, PathSafety, SpecCheck, ValidationGate}
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
@@ -462,6 +462,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
          :ok <- guard_unsupported_linear_comments_filter(query),
          :ok <- maybe_guard_issue_description_update(query, variables, linear_client, opts),
+         :ok <- maybe_guard_done_issue_update(query, variables, linear_client, opts),
          :ok <- maybe_guard_review_ready_issue_update(query, variables, linear_client, opts),
          :ok <- maybe_guard_execution_issue_update(query, variables, linear_client, opts),
          {:ok, response} <- linear_client.(query, variables, []) do
@@ -1597,6 +1598,95 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           :enforce_guard ->
             enforce_execution_transition_guard(issue_id, state_id, linear_client, opts)
         end
+    end
+  end
+
+  defp maybe_guard_done_issue_update(query, variables, linear_client, opts) do
+    case review_ready_issue_update_query?(query) do
+      false ->
+        :ok
+
+      true ->
+        state_id = review_ready_state_id(query, variables)
+        issue_id = review_ready_issue_id(query, variables)
+
+        case review_ready_transition_guard_mode(query, variables, state_id, issue_id) do
+          :blocked_missing_identifiers ->
+            :ok
+
+          :skip_guard ->
+            :ok
+
+          :enforce_guard ->
+            enforce_done_transition_guard(issue_id, state_id, linear_client, opts)
+        end
+    end
+  end
+
+  defp enforce_done_transition_guard(issue_id, state_id, linear_client, opts) do
+    with {:ok, state_context} <- resolve_issue_state_context(issue_id, state_id, linear_client),
+         state_name = state_context.state_name,
+         true <- done_state?(state_name),
+         true <- done_closure_required?(state_context.issue_description) do
+      run_done_handoff_guard(issue_id, state_name, state_context.issue_description, opts)
+    else
+      false ->
+        :ok
+
+      {:error, {:review_ready_transition_blocked, details}} ->
+        {:error, {:done_transition_blocked, details}}
+    end
+  end
+
+  defp done_state?(state_name) when is_binary(state_name) do
+    state_name
+    |> String.trim()
+    |> String.downcase()
+    |> Kernel.==("done")
+  end
+
+  defp done_closure_required?(issue_description) when is_binary(issue_description) do
+    contract = HandoffCheck.acceptance_contract_from_issue_description(issue_description)
+    acceptance_matrix = get_in(contract, ["payload", "acceptance_matrix"]) || []
+    rollout_contract = get_in(contract, ["payload", "rollout_contract"]) || %{}
+
+    Enum.any?(acceptance_matrix, &(Map.get(&1, "required_before") == "done")) or
+      DeliveryContract.has_done_obligations?(rollout_contract)
+  end
+
+  defp done_closure_required?(_issue_description), do: false
+
+  defp run_done_handoff_guard(issue_id, state_name, issue_description, opts) do
+    manifest_path = Config.settings!().verification.manifest_path
+    workspace = Keyword.get(opts, :workspace)
+    expected_manifest_path = expand_upload_path(manifest_path, workspace)
+
+    handoff_opts =
+      [repo_path: workspace, issue_description: issue_description]
+      |> maybe_put_runner_opt(:git_runner, Keyword.get(opts, :git_runner))
+
+    case HandoffCheck.done_transition_allowed?(
+           expected_manifest_path,
+           issue_id,
+           state_name,
+           nil,
+           handoff_opts
+         ) do
+      :ok ->
+        :ok
+
+      {:error, reason, details} ->
+        {:error,
+         {:done_transition_blocked,
+          Map.merge(details, %{
+            "reason_code" => to_string(reason),
+            "required_tool" => @symphony_handoff_check_tool,
+            "required_phase" => "done",
+            "required_state" => "Blocked",
+            "checkpoint_type" => "human-action",
+            "unblock_action" => "run `symphony_handoff_check` with `phase=done` after completing the required rollout proof, then retry the Done transition",
+            "manifest_path" => Path.expand(expected_manifest_path)
+          })}}
     end
   end
 
@@ -3366,6 +3456,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{
       "error" => %{
         "message" => "execution transitions require a successful `symphony_spec_check` in the current workspace.",
+        "details" => details
+      }
+    }
+  end
+
+  defp tool_error_payload({:done_transition_blocked, details}) do
+    %{
+      "error" => %{
+        "message" => "Done transitions with rollout obligations require a successful `symphony_handoff_check` using `phase=done` in the current workspace.",
         "details" => details
       }
     }

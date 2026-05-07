@@ -13,6 +13,8 @@ defmodule SymphonyElixir.RiskyTaskClassifierTest do
 
     assert classification["risky_task"] == true
     assert classification["stateful_migration"] == true
+    assert classification["delivery_class"] == "stateful_schema"
+    assert classification["delivery_sensitive"] == true
     assert classification["cost_signals"] == ["risky_task"]
     assert Enum.any?(classification["reasons"], &String.contains?(&1, "stateful"))
     assert Enum.any?(classification["reasons"], &String.contains?(&1, "high-risk"))
@@ -20,7 +22,12 @@ defmodule SymphonyElixir.RiskyTaskClassifierTest do
 
   test "classify handles non-map input via fail-closed defaults" do
     classification = RiskyTaskClassifier.classify(:invalid)
-    assert classification == %{"risky_task" => false, "stateful_migration" => false, "cost_signals" => [], "reasons" => []}
+    assert classification["risky_task"] == false
+    assert classification["stateful_migration"] == false
+    assert classification["delivery_class"] == "code_only"
+    assert classification["delivery_sensitive"] == false
+    assert classification["cost_signals"] == []
+    assert classification["reasons"] == []
   end
 
   test "classify handles plain low-risk input" do
@@ -33,8 +40,19 @@ defmodule SymphonyElixir.RiskyTaskClassifierTest do
 
     assert classification["risky_task"] == false
     assert classification["stateful_migration"] == false
+    assert classification["delivery_class"] == "code_only"
     assert classification["cost_signals"] == []
     assert classification["reasons"] == []
+  end
+
+  test "classify resolves runtime repair and operator flow delivery classes" do
+    runtime = RiskyTaskClassifier.classify(%{"description" => "Run a real-case canary for runtime repair after merge"})
+    operator = RiskyTaskClassifier.classify(%{"labels" => ["team", "operator-flow"]})
+
+    assert runtime["delivery_class"] == "runtime_repair"
+    assert runtime["delivery_sensitive"] == true
+    assert operator["delivery_class"] == "operator_flow"
+    assert operator["delivery_sensitive"] == true
   end
 
   test "risky_task? and stateful_migration? cover map and non-map branches" do

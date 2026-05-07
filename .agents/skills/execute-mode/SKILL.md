@@ -26,6 +26,9 @@ For the LET workflow, "finished" means one of:
 ## Acceptance Contract Discipline
 
 - When the issue contains `Acceptance Matrix`, treat `Acceptance Matrix` + workpad `Proof Mapping` + Linear attachments as one handoff contract surface.
+- When the issue contains a `Rollout Contract`, treat rollout obligations as a separate delivery closure surface on top of `Acceptance Matrix`.
+- Keep `Required capabilities` limited to external prerequisites/access. Rollout obligations describe actions/proofs such as migration applied, real-case canary, post-merge runtime smoke, or operator cutover; do not add execution-only capability names.
+- `delivery_class=code_only` has no mandatory rollout overhead.
 - Keep matrix item IDs stable during execution; do not rename or reuse IDs for different scenarios.
 - Use canonical matrix values in execution artifacts:
   - `proof_type` in (`test`, `artifact`, `runtime_smoke`);
@@ -33,6 +36,7 @@ For the LET workflow, "finished" means one of:
   - `required_before=review` for proof required before `In Review`, `required_before=done` only for post-merge/runtime proof.
 - Legacy proof semantics (`negative proof`, `regression guard`, `side-effect guard`) are backward-compatibility only; do not introduce them in new or rewritten specs/workpads.
 - Before handoff, ensure every required matrix item has exactly one checked `Proof Mapping` entry and that mapping type matches matrix `proof_type`.
+- For review handoff, defer rollout obligations and `Acceptance Matrix` rows with `required_before=done`; for done closure, require their checked `Proof Mapping` entries and evidence.
 - For required `test` + `run_executed` items, use canonical AM labels in `Validation`: add checked `am-<am-id-lowercase>: <command>` and map with `validation:am-<am-id-lowercase>`.
 - Do not use prose references after `validation:` (for example `validation:... @let_... ...`) because verifier cannot resolve them deterministically.
 - For `runtime_smoke` items, use `validation:runtime smoke` in `Proof Mapping`.
@@ -58,7 +62,7 @@ For the LET workflow, "finished" means one of:
 13. Triage CI, PR review feedback, and mergeability until no actionable feedback remains or a real blocker is proven.
 14. Do not move to `In Review` until handoff evidence is complete and true before the state transition.
 15. Do not merge directly unless the workflow explicitly routes the issue into an autonomous merge path; use the repo land flow when merging is allowed.
-16. After merge or deployment, verify the landed/released state before claiming completion.
+16. After merge or deployment, verify the landed/released state before claiming completion. If the task has rollout obligations or `required_before=done` acceptance rows, run `symphony_handoff_check` with `phase=done` before `Done`; if proof or capability is missing, move to `Blocked` with `checkpoint_type: human-action` and an exact unblock action.
 17. Update Linear in Russian with the final evidence and state.
 
 ## Capability Gate

@@ -45,6 +45,10 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "строки `вложение` используй только для реальных file attachments в Linear"
     assert prompt =~ "evidence по PR (`PR #...`, PR URL, `pull request`, `пулл-реквест`) должно оставаться в linked PR + `github_pr_snapshot`"
     assert prompt =~ "Required capabilities"
+    assert prompt =~ "Rollout Contract"
+    assert prompt =~ "delivery_class=code_only"
+    assert prompt =~ "symphony_handoff_check` with `phase=done`"
+    assert prompt =~ "`Blocked` with `checkpoint_type: human-action`"
     assert prompt =~ "vps_ssh"
     assert prompt =~ "Use only external prerequisite names: `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`"
     assert prompt =~ "do not include execution-only requirements (`repo_validation`, `pr_publication`, `pr_body_contract`)"
@@ -86,6 +90,9 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert prompt =~ "`codex.cost_policy`"
     assert prompt =~ "never mark this item as `n/a`"
+    assert prompt =~ "Rollout Contract"
+    assert prompt =~ "delivery_class=code_only"
+    assert prompt =~ "phase=done"
   end
 
   test "LET workflow keeps secondary codex homes under the mounted primary CODEX_HOME" do
@@ -153,6 +160,9 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert execute_skill =~ "proof_type"
     assert execute_skill =~ "proof_semantic"
     assert execute_skill =~ "required_before=review"
+    assert execute_skill =~ "Rollout Contract"
+    assert execute_skill =~ "delivery_class=code_only"
+    assert execute_skill =~ "phase=done"
     assert execute_skill =~ "exactly one checked `Proof Mapping` entry"
     assert execute_skill =~ "validation:am-<am-id-lowercase>"
     assert execute_skill =~ "Do not use prose references after `validation:`"

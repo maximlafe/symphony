@@ -72,6 +72,73 @@ defmodule SymphonyElixir.SpecCheckTest do
     assert manifest["issue"]["labels"] == []
   end
 
+  test "evaluate requires rollout contract for delivery-sensitive specs" do
+    sensitive_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | migration path | spec gate blocks without rollout contract | test | mix test | run_executed |
+
+    ## Symphony
+
+    Required capabilities: stateful_db
+    """
+
+    assert {:error, manifest} = SpecCheck.evaluate(sensitive_description)
+    assert get_in(manifest, ["delivery", "classification", "delivery_class"]) == "stateful_schema"
+
+    assert "delivery-sensitive task requires a `Rollout Contract` section with explicit obligations" in manifest["missing_items"]
+  end
+
+  test "evaluate accepts valid rollout contract and preserves code-only negative path" do
+    valid_rollout_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | migration path | spec gate sees rollout contract | test | mix test | run_executed |
+
+    ## Rollout Contract
+
+    | delivery_class | obligation_type | required_capability | proof_type | proof_target | required_before | unblock_action |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | stateful_schema | migration_applied | stateful_db | artifact | migration-proof.log | done | Apply the migration and attach the migration proof. |
+
+    ## Symphony
+
+    Required capabilities: stateful_db
+    """
+
+    assert {:ok, manifest} = SpecCheck.evaluate(valid_rollout_description)
+    assert get_in(manifest, ["delivery", "contract", "obligations"]) |> length() == 1
+    assert get_in(manifest, ["spec_contract", "payload", "rollout_contract", "delivery_class"]) == "stateful_schema"
+
+    assert {:ok, code_only_manifest} = SpecCheck.evaluate(@base_description)
+    assert get_in(code_only_manifest, ["delivery", "classification", "delivery_class"]) == "code_only"
+    assert get_in(code_only_manifest, ["delivery", "missing_items"]) == []
+  end
+
+  test "evaluate fails when rollout capability is not declared as required capability" do
+    description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | runtime canary | spec gate sees capability mismatch | test | mix test | run_executed |
+
+    ## Rollout Contract
+
+    | delivery_class | obligation_type | required_capability | proof_type | proof_target | required_before | unblock_action |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | runtime_repair | real_case_canary | runtime_smoke | runtime_smoke | runtime-smoke.log | done | Run canary and attach runtime smoke proof. |
+    """
+
+    assert {:error, manifest} = SpecCheck.evaluate(description)
+
+    assert "rollout obligation `RO-1` requires capability `runtime_smoke` but `Required capabilities` does not declare it" in manifest["missing_items"]
+  end
+
   test "execution transition guard returns issue_id error for invalid arity input" do
     assert {:error, :spec_manifest_invalid, %{"reason" => "issue_id is required"}} =
              SpecCheck.execution_transition_allowed?("/tmp/manifest.json", 123, "In Progress", [])

@@ -3,7 +3,7 @@ defmodule SymphonyElixir.SpecCheck do
   Fail-closed spec gate used before execution transitions.
   """
 
-  alias SymphonyElixir.{AcceptanceCapability, HandoffCheck, RiskyTaskClassifier}
+  alias SymphonyElixir.{AcceptanceCapability, DeliveryContract, HandoffCheck, RiskyTaskClassifier}
 
   @default_manifest_path ".symphony/verification/spec-manifest.json"
   @default_contract_lock_path ".symphony/verification/spec-contract.lock.json"
@@ -103,6 +103,12 @@ defmodule SymphonyElixir.SpecCheck do
         blocked_by: blocked_by
       })
 
+    delivery_diagnostic =
+      DeliveryContract.evaluate(issue_description,
+        labels: issue_labels,
+        required_capabilities: required_capabilities
+      )
+
     dependency_conflicts = dependency_conflicts(risk_classifier, blocked_by)
 
     missing_items =
@@ -110,6 +116,7 @@ defmodule SymphonyElixir.SpecCheck do
       |> Kernel.++(missing_contract_items(spec_contract))
       |> Kernel.++(acceptance_matrix_errors)
       |> Kernel.++(capability_parse_errors)
+      |> Kernel.++(delivery_diagnostic["missing_items"])
       |> Kernel.++(dependency_conflicts)
       |> Enum.uniq()
 
@@ -124,6 +131,7 @@ defmodule SymphonyElixir.SpecCheck do
       "contract_revision" => spec_contract["revision"],
       "spec_contract" => spec_contract,
       "risk_classifier" => risk_classifier,
+      "delivery" => delivery_diagnostic,
       "dependency_graph_guard" => %{
         "stateful_migration" => RiskyTaskClassifier.stateful_migration?(risk_classifier),
         "blocked_by" => blocked_by,

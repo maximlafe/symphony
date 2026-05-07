@@ -144,7 +144,7 @@ Instructions:
    - Under `approval_policy: never`, treat repo-wide validation/test/lint/build/e2e foreground approvals as fail-closed: if the runtime flags them as `background_required`, do not retry the same command in foreground and switch to `exec_background` + `exec_wait`.
    - `github_pr_snapshot` for compact PR status/feedback summaries.
    - `github_wait_for_checks` for CI waits outside the model loop.
-   - `symphony_handoff_check` for the repo-owned, fail-closed review-ready contract.
+   - `symphony_handoff_check` for the repo-owned, fail-closed review-ready and done-phase closure contracts.
 
 ## Operating rules
 
@@ -174,7 +174,10 @@ Instructions:
 - `final gate` is the publish/review gate: run it only on the clean committed `HEAD` that is ready to publish or hand off. It includes a successful cheap proof on the same `HEAD`, `make symphony-validate`, and any class-specific runtime/UI/stateful proof.
 - Default repo-wide validation for the final gate is `make symphony-validate`; run `make symphony-live-e2e` only for explicit smoke or end-to-end tasks that should exercise real Linear and Codex services.
 - The repo-owned review-ready gate is `make symphony-handoff-check`, backed by the `symphony_handoff_check` runtime tool and the workspace manifest at `.symphony/verification/handoff-manifest.json`.
+- Delivery-sensitive specs use a machine-readable `Rollout Contract` section with `delivery_class`, `obligation_type`, `required_capability`, `proof_type`, `proof_target`, `required_before`, and `unblock_action`. `delivery_class=code_only` has no mandatory rollout overhead.
+- `Required capabilities` stays limited to external prerequisites/access; rollout obligations describe the actual post-code/post-merge action and proof. Do not add execution-only capability names for migrations, canaries, or cutovers.
 - The handoff manifest must fail closed unless it contains fresh final-gate metadata for the current workspace: `validation_gate.gate`, `validation_gate.change_classes`, `validation_gate.required_checks`, `validation_gate.passed_checks`, `git.head_sha`, `git.tree_sha`, and `git.worktree_clean`.
+- Before moving to `Done`, issues with rollout obligations or `Acceptance Matrix` rows marked `required_before=done` must pass `symphony_handoff_check` with `phase=done`; missing proof or external capability is a `Blocked`/`human-action` closure blocker with an exact unblock action.
 - `SymphonyElixir.RunPhase` is observability only; `SymphonyElixir.ValidationGate` and `SymphonyElixir.HandoffCheck` own acceptance proof.
 - Comment/workpad/description-only changes without shipped code/config diff do not require local final gate rerun, but workpad edits after `symphony_handoff_check` require rerunning handoff check because the workpad digest is part of the final proof.
 - Terminal-state per-task cleanup always removes issue-prefixed task artifacts such as `/tmp/symphony-<ISSUE>-*` and `/var/tmp/symphony-<ISSUE>-*`; exact issue workspaces inside `workspace.root` are deleted only when they fall outside the retained `workspace.cleanup_keep_recent` window.
@@ -362,7 +365,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - if the latest checkpoint is `decision` or `human-action`, wait for that explicit decision/action instead of treating the state like ordinary PR approval;
 3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
 4. If approved, a human moves the issue to `Merging`.
-5. In `Merging`, use the `land` skill until the PR is merged, then move the issue to `Done`.
+5. In `Merging`, use the `land` skill until the PR is merged. After merge, do not move directly to `Done` when the task-spec has rollout obligations or `required_before=done` acceptance rows; first run done-phase verification (`symphony_handoff_check phase=done`). If proof/capability is missing, move the issue to `Blocked` with `checkpoint_type: human-action` and the exact unblock action; otherwise move to `Done`.
 
 ## Step 3: Rework handling
 
