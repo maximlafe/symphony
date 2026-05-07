@@ -1377,6 +1377,83 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Agent.get(agent, & &1.call_count) == 2
   end
 
+  test "github_wait_for_checks uses default poll interval when poll_interval_ms is omitted" do
+    {:ok, agent} =
+      Agent.start_link(fn ->
+        %{call_count: 0, now_ms: 0}
+      end)
+
+    gh_runner = fn args, _opts ->
+      Agent.get_and_update(agent, fn %{call_count: call_count} = state ->
+        next_count = call_count + 1
+
+        payload =
+          if next_count == 1 do
+            %{
+              "state" => "OPEN",
+              "url" => "https://example.test/pr/63",
+              "labels" => [],
+              "reviewDecision" => "",
+              "mergeStateStatus" => "UNSTABLE",
+              "statusCheckRollup" => [
+                %{"name" => "test", "status" => "IN_PROGRESS", "conclusion" => "", "workflowName" => "CI"}
+              ]
+            }
+          else
+            %{
+              "state" => "OPEN",
+              "url" => "https://example.test/pr/63",
+              "labels" => [],
+              "reviewDecision" => "",
+              "mergeStateStatus" => "CLEAN",
+              "statusCheckRollup" => [
+                %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+              ]
+            }
+          end
+
+        result =
+          case args do
+            ["pr", "view", "63", "-R", "maximlafe/lead_status", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+              {:ok, Jason.encode!(payload)}
+          end
+
+        {result, %{state | call_count: next_count}}
+      end)
+    end
+
+    sleep_fn = fn duration_ms ->
+      Agent.update(agent, fn state -> %{state | now_ms: state.now_ms + duration_ms} end)
+    end
+
+    monotonic_time_ms = fn ->
+      Agent.get(agent, & &1.now_ms)
+    end
+
+    response =
+      DynamicTool.execute(
+        "github_wait_for_checks",
+        %{
+          "repo" => "maximlafe/lead_status",
+          "pr_number" => 63,
+          "timeout_ms" => 90_000
+        },
+        gh_runner: gh_runner,
+        sleep_fn: sleep_fn,
+        monotonic_time_ms: monotonic_time_ms
+      )
+
+    on_exit(fn ->
+      if Process.alive?(agent), do: Agent.stop(agent)
+    end)
+
+    assert response["success"] == true
+    payload = decode_tool_text(response)
+    assert payload["all_green"] == true
+    assert payload["duration_ms"] == 30_000
+    assert Agent.get(agent, & &1.call_count) == 2
+  end
+
   test "github_wait_for_checks reports a timeout with compact pending check details" do
     {:ok, agent} =
       Agent.start_link(fn ->
@@ -2267,6 +2344,113 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert payload["passed"] == true
     assert payload["phase"] == "review"
     assert payload["missing_items"] == []
+  end
+
+  test "symphony_handoff_check ignores stale auto-synced uploaded rows for linked PR attachments" do
+    workspace = Path.join(System.tmp_dir!(), "handoff_linked_pr_workspace_#{System.unique_integer([:positive])}")
+
+    workpad_path =
+      write_tmp_file(workspace, "workpad.md", """
+      ## Codex Workpad
+
+      ### Validation
+
+      - [x] preflight: `make symphony-preflight`
+      - [x] cheap gate: `same HEAD targeted proof completed`
+      - [x] targeted tests: `mix test test/symphony_elixir/dynamic_tool_test.exs`
+      - [x] runtime smoke: `make symphony-runtime-smoke`
+      - [x] repo validation: `make symphony-validate`
+
+      ### Artifacts
+
+      - [x] uploaded attachment: `GitHub PR #180` -> auto-synced from Linear attachment
+
+      ### Checkpoint
+
+      - `checkpoint_type`: `human-verify`
+      - `risk_level`: `low`
+      - `summary`: Linked PR evidence should stay in PR snapshot and not fail uploaded-artifact validation.
+      """)
+
+    response =
+      DynamicTool.execute(
+        "symphony_handoff_check",
+        %{
+          "issue_id" => "LET-673",
+          "file_path" => workpad_path,
+          "repo" => "maximlafe/symphony",
+          "pr_number" => 180
+        },
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckIssue" do
+            {:ok,
+             %{
+               "data" => %{
+                 "issue" => %{
+                   "id" => "LET-673",
+                   "identifier" => "LET-673",
+                   "description" => "",
+                   "state" => %{"name" => "In Progress"},
+                   "labels" => %{"nodes" => []},
+                   "attachments" => %{
+                     "nodes" => [
+                       %{
+                         "title" => "GitHub PR #180",
+                         "url" => "https://github.com/maximlafe/symphony/pull/180",
+                         "sourceType" => "github",
+                         "metadata" => %{"kind" => "pull_request"}
+                       }
+                     ]
+                   }
+                 }
+               }
+             }}
+          else
+            flunk("unexpected GraphQL query: #{query}")
+          end
+        end,
+        git_runner: handoff_git_runner(),
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "180", "-R", "maximlafe/symphony", "--json", _] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://github.com/maximlafe/symphony/pull/180",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "",
+                 "mergeStateStatus" => "CLEAN",
+                 "statusCheckRollup" => [
+                   %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/symphony/issues/180/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/symphony/pulls/180/reviews?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/symphony/pulls/180/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            _ ->
+              flunk("unexpected gh command: #{inspect(args)}")
+          end
+        end
+      )
+
+    assert response["success"] == true
+    payload = decode_tool_text(response)
+    assert payload["passed"] == true
+
+    refute Enum.any?(payload["missing_items"], fn item ->
+             String.contains?(
+               item,
+               "pull request evidence must stay in linked PR/github_pr_snapshot, not in uploaded attachment artifacts"
+             )
+           end)
   end
 
   test "linear_graphql blocks review-ready issue transitions until symphony_handoff_check succeeds" do
