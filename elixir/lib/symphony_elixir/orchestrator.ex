@@ -692,9 +692,9 @@ defmodule SymphonyElixir.Orchestrator do
     state = reconcile_running_issues(state)
 
     with :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0,
-         true <- active_codex_account_available?(state) do
+         true <- active_codex_account_available?(state),
+         {:ok, issues} <- Tracker.fetch_candidate_issues() do
       choose_issues(issues, state)
     else
       {:error, :missing_linear_api_token} ->
@@ -1512,6 +1512,8 @@ defmodule SymphonyElixir.Orchestrator do
       pick_retry_workspace_diff_fingerprint(previous_retry, metadata)
 
     retry_failover_decision = pick_retry_failover_decision(previous_retry, metadata)
+    escalation_only = pick_retry_flag(previous_retry, metadata, :escalation_only)
+    escalation_target_state = pick_retry_optional_string(previous_retry, metadata, :escalation_target_state)
     session_id = pick_retry_session_id(previous_retry, metadata)
     thread_id = pick_retry_optional_string(previous_retry, metadata, :thread_id)
     turn_id = pick_retry_optional_string(previous_retry, metadata, :turn_id)
@@ -1578,7 +1580,9 @@ defmodule SymphonyElixir.Orchestrator do
             failure_class: failure_class,
             validation_bundle_fingerprint: validation_bundle_fingerprint,
             workspace_diff_fingerprint: workspace_diff_fingerprint,
-            retry_failover_decision: retry_failover_decision
+            retry_failover_decision: retry_failover_decision,
+            escalation_only: escalation_only,
+            escalation_target_state: escalation_target_state
           })
     }
   end
@@ -1622,7 +1626,9 @@ defmodule SymphonyElixir.Orchestrator do
           failure_class: Map.get(retry_entry, :failure_class),
           validation_bundle_fingerprint: Map.get(retry_entry, :validation_bundle_fingerprint),
           workspace_diff_fingerprint: Map.get(retry_entry, :workspace_diff_fingerprint),
-          retry_failover_decision: Map.get(retry_entry, :retry_failover_decision)
+          retry_failover_decision: Map.get(retry_entry, :retry_failover_decision),
+          escalation_only: Map.get(retry_entry, :escalation_only),
+          escalation_target_state: Map.get(retry_entry, :escalation_target_state)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1686,6 +1692,9 @@ defmodule SymphonyElixir.Orchestrator do
          |> release_issue_claim(issue_id)
          |> maybe_schedule_terminal_workspace_cleanup(:retry_terminal)}
 
+      escalation_retry_metadata?(metadata) and retry_candidate_issue?(issue, terminal_states) ->
+        handle_escalation_only_retry(state, issue, issue_id, attempt, metadata)
+
       retry_candidate_issue?(issue, terminal_states) ->
         handle_active_retry(state, issue, attempt, metadata)
 
@@ -1720,6 +1729,58 @@ defmodule SymphonyElixir.Orchestrator do
     )
 
     {:noreply, release_issue_claim(state, issue_id)}
+  end
+
+  defp handle_escalation_only_retry(
+         state,
+         %Issue{id: tracker_issue_id, identifier: identifier},
+         issue_id,
+         attempt,
+         metadata
+       )
+       when is_binary(tracker_issue_id) and is_integer(attempt) and attempt > 0 and is_map(metadata) do
+    trace_id = metadata[:trace_id]
+    target_state = escalation_retry_target_state(metadata)
+
+    case Tracker.update_issue_state(tracker_issue_id, target_state) do
+      :ok ->
+        with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
+          Logger.warning("Escalation-only retry succeeded issue_id=#{issue_id} issue_identifier=#{identifier} target_state=#{target_state} attempt=#{attempt}; releasing claim")
+        end)
+
+        {:noreply, state |> complete_issue(issue_id) |> release_issue_claim(issue_id)}
+
+      {:error, tracker_reason} ->
+        with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
+          Logger.error("Escalation-only retry failed issue_id=#{issue_id} issue_identifier=#{identifier} target_state=#{target_state} attempt=#{attempt}: #{inspect(tracker_reason)}")
+        end)
+
+        next_attempt = next_failure_retry_attempt(attempt, metadata[:delay_type])
+
+        retry_metadata =
+          metadata
+          |> Map.put(:error, "failed to escalate #{identifier} to #{target_state}: #{inspect(tracker_reason)}")
+          |> Map.put(:error_class, ErrorClassifier.to_string(:transient))
+
+        {:noreply, schedule_issue_retry(state, issue_id, next_attempt, retry_metadata)}
+    end
+  end
+
+  defp handle_escalation_only_retry(state, issue, issue_id, attempt, metadata) do
+    with_log_metadata(
+      issue_log_metadata(
+        issue_id,
+        metadata[:identifier] || issue_id,
+        retry_metadata_session_id(metadata),
+        metadata[:trace_id]
+      ),
+      fn ->
+        Logger.error("Escalation-only retry skipped due to malformed issue payload #{inspect(issue)}; scheduling another escalation-only retry")
+      end
+    )
+
+    next_attempt = next_failure_retry_attempt(attempt, metadata[:delay_type])
+    {:noreply, schedule_issue_retry(state, issue_id, next_attempt, metadata)}
   end
 
   defp cleanup_issue_artifacts(identifier) when is_binary(identifier) do
@@ -3567,25 +3628,12 @@ defmodule SymphonyElixir.Orchestrator do
       |> release_issue_claim(context.issue_id)
     else
       {:error, tracker_reason} ->
-        with_log_metadata(
-          issue_log_metadata(context.issue_id, context.identifier, nil, context.trace_id),
-          fn ->
-            Logger.error("Failed to escalate issue_id=#{context.issue_id} issue_identifier=#{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}")
-          end
-        )
-
-        schedule_issue_retry(
+        handle_escalation_failure(
           state,
-          context.issue_id,
           failure_attempt,
-          %{
-            identifier: context.identifier,
-            trace_id: context.trace_id,
-            error: "failed to escalate #{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
-            error_class: ErrorClassifier.to_string(:transient),
-            resume_checkpoint: context[:resume_checkpoint]
-          }
-          |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
+          context,
+          intervention_state,
+          tracker_reason
         )
     end
   end
@@ -3604,18 +3652,12 @@ defmodule SymphonyElixir.Orchestrator do
       end
     )
 
-    schedule_issue_retry(
+    handle_escalation_failure(
       state,
-      context.issue_id,
       failure_attempt,
-      %{
-        identifier: context.identifier,
-        trace_id: context.trace_id,
-        error: "failed to escalate #{context.identifier} to #{manual_intervention_state()}: missing issue id",
-        error_class: ErrorClassifier.to_string(:transient),
-        resume_checkpoint: context[:resume_checkpoint]
-      }
-      |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
+      context,
+      manual_intervention_state(),
+      :missing_issue_id
     )
   end
 
@@ -3659,28 +3701,63 @@ defmodule SymphonyElixir.Orchestrator do
       |> release_issue_claim(context.issue_id)
     else
       {:error, tracker_reason} ->
-        with_log_metadata(
-          issue_log_metadata(context.issue_id, context.identifier, nil, context.trace_id),
-          fn ->
-            Logger.error("Failed to escalate issue_id=#{context.issue_id} issue_identifier=#{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}")
-          end
-        )
-
-        schedule_issue_retry(
+        handle_escalation_failure(
           state,
-          context.issue_id,
           failure_attempt,
-          %{
-            identifier: context.identifier,
-            trace_id: context.trace_id,
-            error: "failed to escalate #{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
-            error_class: ErrorClassifier.to_string(:transient),
-            resume_checkpoint: context[:resume_checkpoint]
-          }
-          |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
-          |> Map.merge(retry_failover_metadata(decision))
+          context,
+          intervention_state,
+          tracker_reason,
+          retry_failover_metadata(decision)
         )
     end
+  end
+
+  defp handle_escalation_failure(
+         %State{} = state,
+         failure_attempt,
+         context,
+         intervention_state,
+         tracker_reason,
+         extra_retry_metadata \\ %{}
+       )
+       when is_integer(failure_attempt) and failure_attempt > 0 and is_map(context) and
+              is_binary(intervention_state) and is_map(extra_retry_metadata) do
+    issue_id = context[:issue_id]
+    identifier = context[:identifier] || issue_id
+    trace_id = context[:trace_id]
+
+    with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
+      Logger.error(
+        "Failed to escalate issue_id=#{issue_id} issue_identifier=#{identifier} to #{intervention_state}: #{inspect(tracker_reason)}; fail-closing locally without worker retry (attempt #{failure_attempt})"
+      )
+    end)
+
+    retry_metadata =
+      %{
+        identifier: identifier,
+        trace_id: trace_id,
+        error: "failed to escalate #{identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
+        error_class: ErrorClassifier.to_string(:transient),
+        resume_checkpoint: context[:resume_checkpoint],
+        delay_type: :continuation,
+        escalation_only: true,
+        escalation_target_state: intervention_state
+      }
+      |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
+      |> Map.merge(extra_retry_metadata)
+
+    state
+    |> complete_issue(issue_id)
+    |> schedule_issue_retry(issue_id, failure_attempt, retry_metadata)
+  end
+
+  defp escalation_retry_metadata?(metadata) when is_map(metadata) do
+    metadata[:escalation_only] == true || metadata["escalation_only"] == true
+  end
+
+  defp escalation_retry_target_state(metadata) when is_map(metadata) do
+    normalize_optional_string(metadata[:escalation_target_state] || metadata["escalation_target_state"]) ||
+      manual_intervention_state()
   end
 
   defp blocker_comment_body(
@@ -4076,6 +4153,26 @@ defmodule SymphonyElixir.Orchestrator do
     case metadata[:retry_failover_decision] || Map.get(previous_retry, :retry_failover_decision) do
       value when is_map(value) -> value
       _ -> nil
+    end
+  end
+
+  defp pick_retry_flag(previous_retry, metadata, key)
+       when is_map(previous_retry) and is_map(metadata) and is_atom(key) do
+    metadata_value =
+      case metadata do
+        %{^key => value} when is_boolean(value) -> value
+        _ -> nil
+      end
+
+    case metadata_value do
+      value when is_boolean(value) ->
+        value
+
+      _ ->
+        case Map.get(previous_retry, key) do
+          value when is_boolean(value) -> value
+          _ -> nil
+        end
     end
   end
 
