@@ -8,6 +8,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
   @project_contract_path Path.expand("../../../docs/policy/project-contract.md", __DIR__)
   @research_skill_path Path.expand("../../../.agents/skills/research-mode/SKILL.md", __DIR__)
   @plan_skill_path Path.expand("../../../.agents/skills/plan-mode/SKILL.md", __DIR__)
+  @plan_swarm_skill_path Path.expand("../../../.agents/skills/plan-swarm-mode/SKILL.md", __DIR__)
   @execute_skill_path Path.expand("../../../.agents/skills/execute-mode/SKILL.md", __DIR__)
   @zoom_out_skill_path Path.expand("../../../.agents/skills/zoom-out/SKILL.md", __DIR__)
   @diagnose_skill_path Path.expand("../../../.agents/skills/diagnose/SKILL.md", __DIR__)
@@ -58,11 +59,17 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4"
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "xhigh"
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
+    assert get_in(config, ["planning", "swarm_assist_enabled"]) == false
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert get_in(config, ["codex", "cost_policy", "signal_escalations", "rework"]) == "escalated_implementation"
     assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
     assert prompt =~ "`mode:research` и `reasoning:implementation-xhigh` не эскалируют"
     assert prompt =~ "fail closed into `Spec Prep` and treat it as the legacy `plan-mode` path."
+    assert prompt =~ "Plan swarm gate contract:"
+    assert prompt =~ "`planning.swarm_assist_enabled` (default `false`)"
+    assert prompt =~ "when gate is `false`, keep legacy `plan-mode` path unchanged"
+    assert prompt =~ ".agents/skills/plan-swarm-mode/SKILL.md"
+    assert prompt =~ "if workflow gate `planning.swarm_assist_enabled` is `true`, additionally load and run repo-local `.agents/skills/plan-swarm-mode/SKILL.md`"
     refute prompt =~ "make test-unit"
   end
 
@@ -83,6 +90,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4"
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "xhigh"
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
+    assert get_in(config, ["planning", "swarm_assist_enabled"]) == false
     assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert prompt =~ "`codex.cost_policy`"
@@ -130,6 +138,9 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert plan_skill =~ "Proof Mapping"
     assert plan_skill =~ "Update Linear in Russian"
     assert plan_skill =~ "choose one explicit MVP"
+    assert plan_skill =~ "`planning.swarm_assist_enabled`"
+    assert plan_skill =~ "[`plan-swarm-mode`](../plan-swarm-mode/SKILL.md)"
+    assert plan_skill =~ "Optional swarm-assisted loop (guarded)"
 
     assert execute_skill =~ "name: execute-mode"
     assert execute_skill =~ "Entry-point skill for `In Progress` execution passes."
@@ -146,6 +157,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     zoom_out_skill = File.read!(@zoom_out_skill_path)
     diagnose_skill = File.read!(@diagnose_skill_path)
     tdd_skill = File.read!(@tdd_skill_path)
+    plan_swarm_skill = File.read!(@plan_swarm_skill_path)
     project_contract = File.read!(@project_contract_path)
     onboarding_doc = File.read!(@onboarding_setup_doc_path)
 
@@ -160,8 +172,17 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert tdd_skill =~ "red -> green"
     assert tdd_skill =~ "`delivery:tdd`"
 
+    assert plan_swarm_skill =~ "name: plan-swarm-mode"
+    assert plan_swarm_skill =~ "plan-mode"
+    assert plan_swarm_skill =~ "swarm"
+    assert plan_swarm_skill =~ "docs/policy/project-contract.md"
+    assert plan_swarm_skill =~ "Run only when workflow gate `planning.swarm_assist_enabled` is true."
+
     assert project_contract =~ "# Project Contract"
     assert project_contract =~ "Acceptance Matrix"
+    assert project_contract =~ "Spec Prep Planning Quality Loop (Swarm-Assisted)"
+    assert project_contract =~ "`planning.swarm_assist_enabled`"
+    assert project_contract =~ "Compatibility proof (gate disabled)"
 
     refute File.exists?(@worker_setup_skill_path)
     assert onboarding_doc =~ "Symphony Setup (Onboarding)"
