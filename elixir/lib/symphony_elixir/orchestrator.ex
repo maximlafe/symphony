@@ -98,6 +98,8 @@ defmodule SymphonyElixir.Orchestrator do
     defstruct [
       :poll_interval_ms,
       :max_concurrent_agents,
+      :monotonic_time_ms,
+      :send_after,
       :next_poll_due_at_ms,
       :poll_check_in_progress,
       :tick_timer_ref,
@@ -143,7 +145,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def init(opts) do
-    now_ms = System.monotonic_time(:millisecond)
+    monotonic_time_ms = Keyword.get(opts, :monotonic_time_ms, &default_monotonic_time_ms/0)
+    send_after = Keyword.get(opts, :send_after, &Process.send_after/3)
+    now_ms = monotonic_time_ms.()
     config = Config.settings!()
     start_immediately? = Keyword.get(opts, :start_immediately?, true)
     run_startup_housekeeping? = Keyword.get(opts, :run_startup_housekeeping?, true)
@@ -151,6 +155,8 @@ defmodule SymphonyElixir.Orchestrator do
     state = %State{
       poll_interval_ms: config.polling.interval_ms,
       max_concurrent_agents: config.agent.max_concurrent_agents,
+      monotonic_time_ms: monotonic_time_ms,
+      send_after: send_after,
       next_poll_due_at_ms: now_ms,
       poll_check_in_progress: false,
       tick_timer_ref: nil,
@@ -1691,7 +1697,7 @@ defmodule SymphonyElixir.Orchestrator do
     delay_ms = retry_delay(attempt, metadata)
     old_timer = Map.get(previous_retry, :timer_ref)
     retry_token = make_ref()
-    due_at_ms = System.monotonic_time(:millisecond) + delay_ms
+    due_at_ms = monotonic_time_ms(state) + delay_ms
     identifier = pick_retry_identifier(issue_id, previous_retry, metadata)
     trace_id = pick_retry_trace_id(previous_retry, metadata)
     error = pick_retry_error(previous_retry, metadata)
@@ -1758,7 +1764,7 @@ defmodule SymphonyElixir.Orchestrator do
       Process.cancel_timer(old_timer)
     end
 
-    timer_ref = Process.send_after(self(), {:retry_issue, issue_id, retry_token}, delay_ms)
+    timer_ref = send_after(state, self(), {:retry_issue, issue_id, retry_token}, delay_ms)
 
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
     error_class_suffix = if is_binary(error_class), do: " error_class=#{error_class}", else: ""
@@ -7049,15 +7055,27 @@ defmodule SymphonyElixir.Orchestrator do
     end
 
     tick_token = make_ref()
-    timer_ref = Process.send_after(self(), {:tick, tick_token}, delay_ms)
+    timer_ref = send_after(state, self(), {:tick, tick_token}, delay_ms)
 
     %{
       state
       | tick_timer_ref: timer_ref,
         tick_token: tick_token,
-        next_poll_due_at_ms: System.monotonic_time(:millisecond) + delay_ms
+        next_poll_due_at_ms: monotonic_time_ms(state) + delay_ms
     }
   end
+
+  defp monotonic_time_ms(%State{monotonic_time_ms: now_fun}) when is_function(now_fun, 0), do: now_fun.()
+  defp monotonic_time_ms(_state), do: default_monotonic_time_ms()
+
+  defp send_after(%State{send_after: send_after_fun}, destination, message, delay_ms)
+       when is_function(send_after_fun, 3) do
+    send_after_fun.(destination, message, delay_ms)
+  end
+
+  defp send_after(_state, destination, message, delay_ms), do: Process.send_after(destination, message, delay_ms)
+
+  defp default_monotonic_time_ms, do: System.monotonic_time(:millisecond)
 
   defp schedule_poll_cycle_start do
     :timer.send_after(@poll_transition_render_delay_ms, self(), :run_poll_cycle)

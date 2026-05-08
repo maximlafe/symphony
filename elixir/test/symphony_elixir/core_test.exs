@@ -724,7 +724,7 @@ defmodule SymphonyElixir.CoreTest do
       Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
       orchestrator_name = Module.concat(__MODULE__, :ContinuationCeilingNormalOrchestrator)
-      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+      {:ok, pid} = Orchestrator.start_link(controlled_orchestrator_opts(orchestrator_name))
 
       on_exit(fn ->
         restore_app_env(:memory_tracker_recipient, previous_recipient)
@@ -792,7 +792,7 @@ defmodule SymphonyElixir.CoreTest do
       Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
       orchestrator_name = Module.concat(__MODULE__, :ContinuationDedupeBlockOrchestrator)
-      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+      {:ok, pid} = Orchestrator.start_link(controlled_orchestrator_opts(orchestrator_name))
 
       on_exit(fn ->
         restore_app_env(:memory_tracker_recipient, previous_recipient)
@@ -909,7 +909,7 @@ defmodule SymphonyElixir.CoreTest do
       Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
       orchestrator_name = Module.concat(__MODULE__, :ContinuationDedupeProgressOrchestrator)
-      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+      {:ok, pid} = Orchestrator.start_link(controlled_orchestrator_opts(orchestrator_name))
 
       on_exit(fn ->
         restore_app_env(:memory_tracker_recipient, previous_recipient)
@@ -2056,7 +2056,7 @@ defmodule SymphonyElixir.CoreTest do
       Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
 
       orchestrator_name = Module.concat(__MODULE__, :FeedbackDedupeBlockOrchestrator)
-      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+      {:ok, pid} = Orchestrator.start_link(controlled_orchestrator_opts(orchestrator_name))
 
       on_exit(fn ->
         restore_app_env(:memory_tracker_issues, previous_memory_issues)
@@ -6841,9 +6841,12 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      started_at = System.monotonic_time(:millisecond)
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
-      elapsed_ms = System.monotonic_time(:millisecond) - started_at
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: state_fetcher,
+                 monotonic_time_ms: fn -> 1_000 end,
+                 sleep_fn: fn backoff_ms -> send(parent, {:empty_turn_backoff, backoff_ms}) end
+               )
 
       assert_receive {:issue_state_fetch_empty, 1}
       assert_receive {:issue_state_fetch_empty, 2}
@@ -6851,8 +6854,8 @@ defmodule SymphonyElixir.CoreTest do
 
       trace = File.read!(trace_file)
       assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 3
-      assert elapsed_ms >= 5_500
-      assert elapsed_ms < 15_000
+      assert_receive {:empty_turn_backoff, 2_000}
+      assert_receive {:empty_turn_backoff, 4_000}
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
@@ -7404,6 +7407,15 @@ defmodule SymphonyElixir.CoreTest do
   defp replace_orchestrator_state!(pid, fun, timeout \\ 30_000)
        when is_pid(pid) and is_function(fun, 1) and is_integer(timeout) and timeout > 0 do
     :sys.replace_state(pid, fun, timeout)
+  end
+
+  defp controlled_orchestrator_opts(name) do
+    [
+      name: name,
+      start_immediately?: false,
+      monotonic_time_ms: fn -> 1_000 end,
+      send_after: fn _destination, _message, _delay_ms -> make_ref() end
+    ]
   end
 
   defp cancel_retry_timer(%{timer_ref: timer_ref}) when is_reference(timer_ref) do
