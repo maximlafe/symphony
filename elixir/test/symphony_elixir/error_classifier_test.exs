@@ -383,8 +383,11 @@ defmodule SymphonyElixir.ErrorClassifierTest do
       ExecutionContract.open_retry_budget_attempt(ledger_after_outcome, fingerprint, 11_001, ttl_ms)
 
     assert reopened_meta.status == :opened
-    assert reopened_meta.attempt_index == 2
-    assert get_in(ledger_after_ttl, [fingerprint, :attempt_index]) == 2
+    assert reopened_meta.attempt_index == 1
+    assert reopened_meta.attempt_count == 1
+    assert get_in(ledger_after_ttl, [fingerprint, :attempt_index]) == 1
+    assert get_in(ledger_after_ttl, [fingerprint, :first_seen_at_ms]) == 11_001
+    assert get_in(ledger_after_ttl, [fingerprint, :fingerprint_version]) == "retry_fingerprint_v1"
   end
 
   test "classifier overlay returns execution contract decision on top of failure details" do

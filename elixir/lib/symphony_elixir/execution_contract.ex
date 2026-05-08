@@ -8,6 +8,7 @@ defmodule SymphonyElixir.ExecutionContract do
   @type remediation_policy :: :operator_required | :auto_retry_once | :pause_infra
   @type operator_state :: :open | :cooldown | :tripped | :paused_infra | :unknown
   @type one_shot_outcome :: :started | :succeeded | :failed | :skipped
+  @retry_fingerprint_version "retry_fingerprint_v1"
 
   @infra_patterns [
     "rate limit",
@@ -56,15 +57,6 @@ defmodule SymphonyElixir.ExecutionContract do
     "response_timeout"
   ]
 
-  @auto_retry_policy_patterns [
-    "stale lock",
-    "stale_lock",
-    "stale manifest",
-    "stale_manifest",
-    "missing proof metadata",
-    "missing_proof_metadata"
-  ]
-
   @spec failure_class(term()) :: failure_class()
   def failure_class(reason_or_reason_code) do
     reason_code = normalize_reason_code(reason_or_reason_code)
@@ -99,15 +91,7 @@ defmodule SymphonyElixir.ExecutionContract do
     end
   end
 
-  def remediation_policy(:policy_fail, reason_or_reason_code) do
-    reason_code = normalize_reason_code(reason_or_reason_code)
-
-    if matches_any_pattern?(reason_code, @auto_retry_policy_patterns) do
-      :auto_retry_once
-    else
-      :operator_required
-    end
-  end
+  def remediation_policy(:policy_fail, _reason_or_reason_code), do: :operator_required
 
   @spec retry_fingerprint_v1(map()) :: String.t()
   def retry_fingerprint_v1(context) when is_map(context) do
@@ -223,7 +207,13 @@ defmodule SymphonyElixir.ExecutionContract do
   end
 
   @spec open_retry_budget_attempt(map(), String.t(), integer(), pos_integer()) ::
-          {map(), %{status: :opened | :cooldown, attempt_index: non_neg_integer(), expires_at_ms: integer()}}
+          {map(),
+           %{
+             status: :opened | :cooldown,
+             attempt_index: non_neg_integer(),
+             attempt_count: non_neg_integer(),
+             expires_at_ms: integer()
+           }}
   def open_retry_budget_attempt(ledger, fingerprint, now_ms, ttl_ms)
       when is_map(ledger) and is_binary(fingerprint) and is_integer(now_ms) and is_integer(ttl_ms) and ttl_ms > 0 do
     existing = Map.get(ledger, fingerprint)
@@ -231,22 +221,34 @@ defmodule SymphonyElixir.ExecutionContract do
     case retry_budget_status(ledger, fingerprint, now_ms, ttl_ms) do
       :cooldown ->
         attempt_index = entry_value(existing, :attempt_index, 0)
+        attempt_count = entry_value(existing, :attempt_count, attempt_index)
         expires_at_ms = entry_value(existing, :expires_at_ms, now_ms + ttl_ms)
-        {ledger, %{status: :cooldown, attempt_index: attempt_index, expires_at_ms: expires_at_ms}}
+        {ledger, %{status: :cooldown, attempt_index: attempt_index, attempt_count: attempt_count, expires_at_ms: expires_at_ms}}
 
       :open ->
-        next_attempt_index = entry_value(existing, :attempt_index, 0) + 1
+        next_attempt_index = 1
         expires_at_ms = now_ms + ttl_ms
 
         next_entry = %{
           attempt_index: next_attempt_index,
+          attempt_count: next_attempt_index,
+          fingerprint_version: @retry_fingerprint_version,
+          fingerprint_ttl_sec: div(ttl_ms, 1_000),
+          first_seen_at_ms: now_ms,
+          last_seen_at_ms: now_ms,
           opened_at_ms: now_ms,
           expires_at_ms: expires_at_ms,
           outcome: :started,
           outcome_at_ms: now_ms
         }
 
-        {Map.put(ledger, fingerprint, next_entry), %{status: :opened, attempt_index: next_attempt_index, expires_at_ms: expires_at_ms}}
+        {Map.put(ledger, fingerprint, next_entry),
+         %{
+           status: :opened,
+           attempt_index: next_attempt_index,
+           attempt_count: next_attempt_index,
+           expires_at_ms: expires_at_ms
+         }}
     end
   end
 
@@ -267,6 +269,7 @@ defmodule SymphonyElixir.ExecutionContract do
           |> Map.new()
           |> Map.put(:outcome, normalized_outcome)
           |> Map.put(:outcome_at_ms, now_ms)
+          |> Map.put(:last_seen_at_ms, now_ms)
         )
     end
   end

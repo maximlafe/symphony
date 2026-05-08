@@ -16,7 +16,7 @@ defmodule SymphonyElixir.ExecutionContractTest do
   test "remediation_policy follows pause and operator rules by class" do
     assert ExecutionContract.remediation_policy(:infra_fail, "graphql timeout 429") == :pause_infra
     assert ExecutionContract.remediation_policy(:infra_fail, "socket hiccup") == :auto_retry_once
-    assert ExecutionContract.remediation_policy(:policy_fail, "missing proof metadata in handoff") == :auto_retry_once
+    assert ExecutionContract.remediation_policy(:policy_fail, "missing proof metadata in handoff") == :operator_required
     assert ExecutionContract.remediation_policy(:policy_fail, "missing make target") == :operator_required
   end
 
@@ -123,10 +123,17 @@ defmodule SymphonyElixir.ExecutionContractTest do
     {ledger, opened} = ExecutionContract.open_retry_budget_attempt(%{}, fingerprint, 10, ttl_ms)
     assert opened.status == :opened
     assert opened.attempt_index == 1
+    assert opened.attempt_count == 1
     assert ExecutionContract.retry_budget_status(ledger, fingerprint, 100, ttl_ms) == :cooldown
+    assert get_in(ledger, [fingerprint, :fingerprint_version]) == "retry_fingerprint_v1"
+    assert get_in(ledger, [fingerprint, :fingerprint_ttl_sec]) == 1
+    assert get_in(ledger, [fingerprint, :first_seen_at_ms]) == 10
+    assert get_in(ledger, [fingerprint, :last_seen_at_ms]) == 10
+    assert get_in(ledger, [fingerprint, :attempt_count]) == 1
 
     {same_ledger, cooldown} = ExecutionContract.open_retry_budget_attempt(ledger, fingerprint, 100, ttl_ms)
     assert cooldown.status == :cooldown
+    assert cooldown.attempt_count == 1
     assert same_ledger == ledger
 
     outcome_missing =
@@ -144,6 +151,7 @@ defmodule SymphonyElixir.ExecutionContractTest do
 
     assert get_in(with_outcome, [fingerprint, :outcome]) == :succeeded
     assert get_in(with_outcome, [fingerprint, :outcome_at_ms]) == 150
+    assert get_in(with_outcome, [fingerprint, :last_seen_at_ms]) == 150
 
     with_fallback =
       ExecutionContract.record_retry_budget_outcome(
@@ -168,7 +176,10 @@ defmodule SymphonyElixir.ExecutionContractTest do
       ExecutionContract.open_retry_budget_attempt(with_skipped, fingerprint, 2_000, ttl_ms)
 
     assert reopened.status == :opened
-    assert reopened.attempt_index == 2
+    assert reopened.attempt_index == 1
+    assert reopened.attempt_count == 1
+    assert get_in(reopened_ledger, [fingerprint, :first_seen_at_ms]) == 2_000
+    assert get_in(reopened_ledger, [fingerprint, :last_seen_at_ms]) == 2_000
     assert ExecutionContract.retry_budget_status(reopened_ledger, fingerprint, 2_001, ttl_ms) == :cooldown
   end
 
