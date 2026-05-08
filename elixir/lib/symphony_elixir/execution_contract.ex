@@ -394,8 +394,6 @@ defmodule SymphonyElixir.ExecutionContract do
     end
   end
 
-  defp linear_api_status_code(_reason_code), do: nil
-
   defp matches_any_pattern?(text, patterns) when is_binary(text) do
     Enum.any?(patterns, &String.contains?(text, &1))
   end

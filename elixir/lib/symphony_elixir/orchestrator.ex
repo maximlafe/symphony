@@ -5177,8 +5177,6 @@ defmodule SymphonyElixir.Orchestrator do
       "workspace:unknown"
   end
 
-  defp tracker_workspace_key(_context), do: "workspace:unknown"
-
   defp tracker_infra_breaker_normalize(nil, _now_ms), do: tracker_infra_breaker_open_state()
 
   defp tracker_infra_breaker_normalize(breaker, now_ms) when is_map(breaker) and is_integer(now_ms) do
