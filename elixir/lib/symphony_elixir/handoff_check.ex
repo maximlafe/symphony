@@ -152,7 +152,9 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp effective_proof_contract_attachments(parsed_workpad, opts) do
     if Keyword.has_key?(opts, :attachments) do
-      Keyword.get(opts, :attachments, [])
+      opts
+      |> Keyword.get(:attachments, [])
+      |> normalize_attachments()
     else
       parsed_workpad["artifacts"]
       |> Enum.filter(fn item ->
@@ -1257,6 +1259,11 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp reconcile_artifact_items_with_attachments(artifact_items, attachments, _artifact_proof_required?)
        when is_list(artifact_items) and is_list(attachments) do
+    linked_pr_titles = linked_pull_request_attachment_titles(attachments)
+
+    artifact_items =
+      Enum.reject(artifact_items, &auto_synced_linked_pr_uploaded_attachment?(&1, linked_pr_titles))
+
     has_checked_uploaded_entry? =
       Enum.any?(artifact_items, fn item ->
         item["checked"] == true and item["kind"] == "uploaded_attachment" and
@@ -1294,6 +1301,7 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp attachment_titles(attachments) when is_list(attachments) do
     attachments
+    |> Enum.reject(&linked_pull_request_attachment?/1)
     |> Enum.map(fn %{} = attachment ->
       attachment["title"]
       |> to_string_or_nil()
@@ -2101,18 +2109,28 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp validation_missing_items(validation_items, issue_labels, validation_gate) do
     checked_checks = ValidationGate.checked_validation_checks(validation_items)
+    change_classes = validation_gate_change_classes(validation_gate)
 
-    required_core_checks =
-      ["preflight", "targeted tests", "repo validation"]
-      |> ValidationGate.normalize_checks()
-      |> Enum.reject(&(&1 in checked_checks))
-      |> Enum.map(&"validation checklist is missing a checked `#{human_check_label(&1)}` item")
+    required_gate_checks =
+      case ValidationGate.requirements(change_classes, "final") do
+        {:ok, %{"required_checks" => checks}} ->
+          checks
+          |> ValidationGate.normalize_checks()
+          |> Enum.reject(&(&1 in checked_checks))
+          |> Enum.map(&"validation checklist is missing a checked `#{human_check_label(&1)}` item")
+
+        _other ->
+          ["preflight", "targeted tests", "repo validation"]
+          |> ValidationGate.normalize_checks()
+          |> Enum.reject(&(&1 in checked_checks))
+          |> Enum.map(&"validation checklist is missing a checked `#{human_check_label(&1)}` item")
+      end
 
     proof_check_diagnostic =
       ValidationGate.missing_required_proof_checks(
         validation_items,
         issue_labels,
-        validation_gate_change_classes(validation_gate)
+        change_classes
       )
 
     required_proof_checks =
@@ -2121,7 +2139,7 @@ defmodule SymphonyElixir.HandoffCheck do
         "validation checklist is missing a checked `#{requirement["label"]}` item"
       end)
 
-    required_core_checks ++ required_proof_checks
+    (required_gate_checks ++ required_proof_checks) |> Enum.uniq()
   end
 
   defp validation_gate_missing_items(validation_gate, git_metadata) do
@@ -2205,10 +2223,13 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp artifact_manifest_missing_items(artifact_items, attachments, artifact_proof_required?) do
+    linked_pr_titles = linked_pull_request_attachment_titles(attachments)
+
     uploaded =
       Enum.filter(artifact_items, fn item ->
         item["checked"] == true and item["kind"] == "uploaded_attachment"
       end)
+      |> Enum.reject(&auto_synced_linked_pr_uploaded_attachment?(&1, linked_pr_titles))
 
     case uploaded do
       [] when artifact_proof_required? ->
@@ -2369,6 +2390,98 @@ defmodule SymphonyElixir.HandoffCheck do
       Enum.any?(@pull_request_evidence_patterns, &Regex.match?(&1, title))
     else
       false
+    end
+  end
+
+  defp auto_synced_linked_pr_uploaded_attachment?(item, linked_pr_titles) do
+    if is_map(item) and is_struct(linked_pr_titles, MapSet) do
+      title =
+        item
+        |> Map.get("title")
+        |> to_string_or_nil()
+        |> normalize_attachment_title()
+
+      claim =
+        item
+        |> Map.get("claim")
+        |> normalize_attachment_token()
+
+      item["checked"] == true and
+        item["kind"] == "uploaded_attachment" and
+        is_binary(title) and
+        MapSet.member?(linked_pr_titles, title) and
+        claim == "auto-synced from linear attachment" and
+        pull_request_evidence_attachment_title?(%{"title" => title})
+    else
+      false
+    end
+  end
+
+  defp linked_pull_request_attachment_titles(attachments) when is_list(attachments) do
+    attachments
+    |> Enum.filter(&linked_pull_request_attachment?/1)
+    |> Enum.map(fn %{} = attachment ->
+      attachment["title"]
+      |> to_string_or_nil()
+      |> normalize_attachment_title()
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> MapSet.new()
+  end
+
+  defp linked_pull_request_attachment?(attachment) do
+    if is_map(attachment) do
+      source_type =
+        attachment
+        |> Map.get("source_type")
+        |> normalize_attachment_token()
+
+      metadata = Map.get(attachment, "metadata")
+
+      metadata_kind =
+        case metadata do
+          %{} ->
+            metadata
+            |> Map.get("kind")
+            |> normalize_attachment_token()
+
+          _ ->
+            nil
+        end
+
+      title =
+        attachment
+        |> Map.get("title")
+        |> to_string_or_nil()
+        |> normalize_attachment_title()
+
+      url =
+        attachment
+        |> Map.get("url")
+        |> to_string_or_nil()
+        |> normalize_attachment_title()
+
+      metadata_kind == "pull_request" or
+        (source_type == "github" and
+           (github_pull_request_url?(url) or
+              pull_request_evidence_attachment_title?(%{"title" => title})))
+    else
+      false
+    end
+  end
+
+  defp github_pull_request_url?(url) do
+    is_binary(url) and
+      Regex.match?(~r{^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+(?:\b|[/?#])}, url)
+  end
+
+  defp normalize_attachment_token(value) do
+    value
+    |> to_string_or_nil()
+    |> normalize_attachment_title()
+    |> case do
+      normalized when is_binary(normalized) -> String.downcase(normalized)
+      _ -> nil
     end
   end
 
@@ -2560,7 +2673,13 @@ defmodule SymphonyElixir.HandoffCheck do
       %{} = attachment ->
         %{
           "title" => attachment["title"] || attachment[:title],
-          "url" => attachment["url"] || attachment[:url]
+          "url" => attachment["url"] || attachment[:url],
+          "source_type" =>
+            attachment["source_type"] ||
+              attachment[:source_type] ||
+              attachment["sourceType"] ||
+              attachment[:sourceType],
+          "metadata" => attachment["metadata"] || attachment[:metadata]
         }
 
       _ ->

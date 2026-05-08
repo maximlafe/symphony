@@ -1678,6 +1678,29 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.assigned_to_worker
   end
 
+  test "linear client classifies risky stateful specs into executable cost signals" do
+    raw_issue = %{
+      "id" => "issue-risk-1",
+      "identifier" => "LET-670",
+      "title" => "Stateful migration",
+      "description" => """
+      ## Symphony
+
+      Required capabilities: stateful_db
+      """,
+      "state" => %{"name" => "Spec Review"},
+      "assignee" => %{"id" => "user-1"},
+      "labels" => %{"nodes" => [%{"name" => "backend"}]},
+      "inverseRelations" => %{"nodes" => []}
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue, "user-1")
+
+    assert issue.cost_signals == ["risky_task"]
+    assert issue.risk_classification["risky_task"] == true
+    assert issue.risk_classification["stateful_migration"] == true
+  end
+
   test "linear client matches configured assignee email" do
     raw_issue = %{
       "id" => "issue-email-1",
@@ -2263,6 +2286,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         },
         signal_escalations: %{
           rework: "escalated_implementation",
+          risky_task: "escalated_implementation",
           repeated_auto_fix_failure: "escalated_implementation",
           security_data_risk: "escalated_implementation",
           unresolvable_ambiguity: "escalated_implementation"
@@ -2294,7 +2318,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert rework_decision.profile_key == "escalated_implementation"
     assert rework_decision.reason == "signal:rework"
 
-    for signal <- [:repeated_auto_fix_failure, :security_data_risk, :unresolvable_ambiguity] do
+    for signal <- [:risky_task, :repeated_auto_fix_failure, :security_data_risk, :unresolvable_ambiguity] do
       decision = Config.codex_cost_decision(%{state: "In Progress", cost_signals: [signal]})
       assert decision.signals == [signal]
       assert decision.profile_key == "escalated_implementation"

@@ -176,6 +176,8 @@ defmodule SymphonyElixir.AgentRunner do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
     codex_account = Keyword.get(opts, :codex_account)
+    monotonic_time_ms = Keyword.get(opts, :monotonic_time_ms, &default_monotonic_time_ms/0)
+    sleep_fn = Keyword.get(opts, :sleep_fn, &Process.sleep/1)
     trace_id = trace_id(issue, opts)
 
     session_opts =
@@ -193,6 +195,8 @@ defmodule SymphonyElixir.AgentRunner do
         opts: opts,
         issue_state_fetcher: issue_state_fetcher,
         max_turns: max_turns,
+        monotonic_time_ms: monotonic_time_ms,
+        sleep_fn: sleep_fn,
         trace_id: trace_id
       }
 
@@ -205,7 +209,7 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp do_run_codex_turns(session_context, issue, turn_number, consecutive_empty) do
-    turn_start_ms = System.monotonic_time(:millisecond)
+    turn_start_ms = monotonic_time_ms(session_context)
     prompt = build_turn_prompt(issue, session_context.opts, turn_number, session_context.max_turns)
 
     with {:ok, turn_session} <-
@@ -240,7 +244,7 @@ defmodule SymphonyElixir.AgentRunner do
          turn_start_ms,
          consecutive_empty
        ) do
-    turn_elapsed_ms = System.monotonic_time(:millisecond) - turn_start_ms
+    turn_elapsed_ms = monotonic_time_ms(session_context) - turn_start_ms
     empty_turn? = turn_elapsed_ms < @empty_turn_threshold_ms
 
     Logger.info(
@@ -293,7 +297,8 @@ defmodule SymphonyElixir.AgentRunner do
         turn_number,
         session_context.max_turns,
         empty_turn?,
-        next_consecutive_empty
+        next_consecutive_empty,
+        session_context.sleep_fn
       )
 
       Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{session_context.max_turns}")
@@ -305,15 +310,20 @@ defmodule SymphonyElixir.AgentRunner do
   defp next_consecutive_empty_turns(consecutive_empty, true), do: consecutive_empty + 1
   defp next_consecutive_empty_turns(_consecutive_empty, false), do: 0
 
-  defp maybe_backoff_empty_turn(_issue, _turn_number, _max_turns, false, _consecutive_empty), do: :ok
+  defp maybe_backoff_empty_turn(_issue, _turn_number, _max_turns, false, _consecutive_empty, _sleep_fn), do: :ok
 
-  defp maybe_backoff_empty_turn(issue, turn_number, max_turns, true, consecutive_empty) do
+  defp maybe_backoff_empty_turn(issue, turn_number, max_turns, true, consecutive_empty, sleep_fn) do
     backoff_ms = @empty_turn_backoff_base_ms * (1 <<< min(consecutive_empty - 1, 4))
 
     Logger.info("Empty turn detected for #{issue_context(issue)} turn=#{turn_number}/#{max_turns}; backing off #{backoff_ms}ms")
 
-    Process.sleep(backoff_ms)
+    sleep_fn.(backoff_ms)
   end
+
+  defp monotonic_time_ms(%{monotonic_time_ms: now_fun}) when is_function(now_fun, 0), do: now_fun.()
+  defp monotonic_time_ms(_session_context), do: default_monotonic_time_ms()
+
+  defp default_monotonic_time_ms, do: System.monotonic_time(:millisecond)
 
   defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
 

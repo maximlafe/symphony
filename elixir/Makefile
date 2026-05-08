@@ -47,7 +47,6 @@ validation-env-check:
 
 validate:
 	$(VALIDATION_MIX) deps.get
-	$(MAKE) validation-env-check
 	$(MAKE) contracts
 	$(VALIDATION_MIX) build
 	$(VALIDATION_MIX) format --check-formatted

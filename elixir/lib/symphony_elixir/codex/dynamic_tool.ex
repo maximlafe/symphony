@@ -3,7 +3,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.{Config, HandoffCheck, Linear.Client, PathSafety, ValidationGate, Workflow}
+  alias SymphonyElixir.{
+    Config,
+    HandoffCheck,
+    Linear.Client,
+    PathSafety,
+    SpecCheck,
+    ValidationGate,
+    Workflow
+  }
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
@@ -163,7 +171,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       },
       "poll_interval_ms" => %{
         "type" => ["integer", "null"],
-        "description" => "Polling interval in milliseconds. Defaults to 10000."
+        "description" => "Polling interval in milliseconds. Defaults to 30000."
       }
     }
   }
@@ -224,6 +232,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   @symphony_handoff_check_description """
   Run Symphony's fail-closed handoff contract against the current workpad, issue attachments, and pull request state.
   """
+  @symphony_spec_check_tool "symphony_spec_check"
+  @symphony_spec_check_description """
+  Run Symphony's fail-closed spec gate for execution routing and freeze a machine-readable spec manifest.
+  """
   @symphony_handoff_check_issue_query """
   query SymphonyHandoffCheckIssue($issueId: String!) {
     issue(id: $issueId) {
@@ -242,6 +254,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         nodes {
           title
           url
+          sourceType
+          metadata
         }
       }
     }
@@ -250,7 +264,29 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   @symphony_handoff_check_state_query """
   query SymphonyHandoffCheckState($issueId: String!) {
     issue(id: $issueId) {
+      id
+      identifier
       description
+      state {
+        name
+      }
+      labels {
+        nodes {
+          name
+        }
+      }
+      inverseRelations(first: 100) {
+        nodes {
+          type
+          issue {
+            id
+            identifier
+            state {
+              name
+            }
+          }
+        }
+      }
       team {
         states(first: 100) {
           nodes {
@@ -297,9 +333,28 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     }
   }
+  @symphony_spec_check_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["issue_id"],
+    "properties" => %{
+      "issue_id" => %{
+        "type" => "string",
+        "description" => "Linear issue identifier (e.g. \"ENG-123\") or internal UUID."
+      },
+      "manifest_path" => %{
+        "type" => ["string", "null"],
+        "description" => "Optional workspace-relative path for the spec manifest JSON file."
+      },
+      "contract_lock_path" => %{
+        "type" => ["string", "null"],
+        "description" => "Optional workspace-relative path for the spec contract lock JSON file."
+      }
+    }
+  }
 
   @default_github_wait_timeout_ms 3_600_000
-  @default_github_wait_poll_interval_ms 10_000
+  @default_github_wait_poll_interval_ms 30_000
   @default_exec_background_timeout_ms 3_600_000
   @default_exec_wait_timeout_ms 90_000
   @default_exec_wait_poll_interval_ms 1_000
@@ -355,6 +410,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp execute_supported_tool(@symphony_handoff_check_tool, arguments, opts),
     do: execute_symphony_handoff_check(arguments, opts)
 
+  defp execute_supported_tool(@symphony_spec_check_tool, arguments, opts),
+    do: execute_symphony_spec_check(arguments, opts)
+
   @spec tool_specs() :: [map()]
   def tool_specs do
     [
@@ -397,6 +455,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "name" => @symphony_handoff_check_tool,
         "description" => @symphony_handoff_check_description,
         "inputSchema" => @symphony_handoff_check_input_schema
+      },
+      %{
+        "name" => @symphony_spec_check_tool,
+        "description" => @symphony_spec_check_description,
+        "inputSchema" => @symphony_spec_check_input_schema
       }
     ]
   end
@@ -406,8 +469,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
     with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
          :ok <- guard_unsupported_linear_comments_filter(query),
-         :ok <- maybe_guard_issue_description_update(query, variables),
+         :ok <- maybe_guard_issue_description_update(query, variables, linear_client, opts),
          :ok <- maybe_guard_review_ready_issue_update(query, variables, linear_client, opts),
+         :ok <- maybe_guard_execution_issue_update(query, variables, linear_client, opts),
          {:ok, response} <- linear_client.(query, variables, []) do
       graphql_response(response)
     else
@@ -574,6 +638,28 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
+  defp execute_symphony_spec_check(arguments, opts) do
+    linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
+
+    with {:ok, issue_id, manifest_path, contract_lock_path} <-
+           normalize_symphony_spec_check_arguments(arguments, opts),
+         {:ok, issue_context} <- fetch_issue_state_context(issue_id, linear_client) do
+      result =
+        SpecCheck.evaluate(
+          Map.get(issue_context, "description") || "",
+          issue_id: issue_id,
+          issue_identifier: Map.get(issue_context, "identifier"),
+          issue_state: Map.get(issue_context, "current_state"),
+          labels: Map.get(issue_context, "issue_labels", []),
+          blocked_by: Map.get(issue_context, "blocked_by", [])
+        )
+
+      spec_check_response(result, manifest_path, contract_lock_path)
+    else
+      {:error, reason} -> failure_response(tool_error_payload(reason))
+    end
+  end
+
   defp handoff_check_response({:ok, manifest}, manifest_path) do
     manifest = prepare_handoff_manifest(manifest, manifest_path)
 
@@ -628,6 +714,76 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     case HandoffCheck.write_manifest(manifest, manifest_path) do
       {:ok, persisted_path} -> {:ok, Map.put(manifest, "manifest_path", persisted_path)}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp spec_check_response({:ok, manifest}, manifest_path, contract_lock_path) do
+    manifest = prepare_spec_manifest(manifest, manifest_path, contract_lock_path)
+
+    case persist_spec_manifest(manifest, manifest_path, contract_lock_path) do
+      {:ok, persisted_manifest} ->
+        success_response(persisted_manifest)
+
+      {:error, reason, persisted_manifest} ->
+        failure_response(%{
+          "error" => %{
+            "message" => "symphony_spec_check: failed to write spec artifacts.",
+            "reason" => inspect(reason)
+          },
+          "manifest" => persisted_manifest
+        })
+    end
+  end
+
+  defp spec_check_response({:error, manifest}, manifest_path, contract_lock_path) do
+    manifest = prepare_spec_manifest(manifest, manifest_path, contract_lock_path)
+
+    case persist_spec_manifest(manifest, manifest_path, contract_lock_path) do
+      {:ok, persisted_manifest} ->
+        failure_response(%{
+          "error" => %{
+            "message" => "symphony_spec_check: spec contract failed.",
+            "summary" => persisted_manifest["summary"],
+            "missing_items" => persisted_manifest["missing_items"],
+            "manifest_path" => persisted_manifest["manifest_path"],
+            "contract_lock_path" => persisted_manifest["contract_lock_path"]
+          },
+          "manifest" => persisted_manifest
+        })
+
+      {:error, reason, persisted_manifest} ->
+        failure_response(%{
+          "error" => %{
+            "message" => "symphony_spec_check: spec contract failed and artifacts could not be fully written.",
+            "reason" => inspect(reason)
+          },
+          "manifest" => persisted_manifest
+        })
+    end
+  end
+
+  defp prepare_spec_manifest(manifest, manifest_path, contract_lock_path) do
+    manifest
+    |> Map.put("manifest_path", manifest_path)
+    |> Map.put("contract_lock_path", contract_lock_path)
+    |> Map.put("target_state", "In Progress")
+  end
+
+  defp persist_spec_manifest(manifest, manifest_path, contract_lock_path) do
+    case SpecCheck.write_manifest(manifest, manifest_path) do
+      {:ok, persisted_manifest_path} ->
+        updated_manifest = Map.put(manifest, "manifest_path", persisted_manifest_path)
+
+        case SpecCheck.write_contract_lock(updated_manifest, contract_lock_path) do
+          {:ok, persisted_lock_path} ->
+            {:ok, Map.put(updated_manifest, "contract_lock_path", persisted_lock_path)}
+
+          {:error, reason} ->
+            {:error, reason, updated_manifest}
+        end
+
+      {:error, reason} ->
+        {:error, reason, manifest}
     end
   end
 
@@ -831,6 +987,19 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
+  defp required_spec_check_arg(args, key) when is_map(args) and is_binary(key) do
+    case get_argument(args, key) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:error, {:symphony_spec_check, "`#{key}` is required"}}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _ ->
+        {:error, {:symphony_spec_check, "`#{key}` is required"}}
+    end
+  end
+
   defp optional_sync_workpad_comment_id(args) when is_map(args) do
     case Map.get(args, "comment_id") || Map.get(args, :comment_id) do
       value when is_binary(value) and value != "" -> value
@@ -951,6 +1120,30 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp normalize_symphony_handoff_check_arguments(_arguments, _opts) do
     {:error, {:symphony_handoff_check, "`issue_id`, `file_path`, `repo`, and `pr_number` are required"}}
+  end
+
+  defp normalize_symphony_spec_check_arguments(arguments, opts) when is_map(arguments) do
+    workspace = Keyword.get(opts, :workspace)
+
+    with {:ok, issue_id} <- required_spec_check_arg(arguments, "issue_id"),
+         {:ok, manifest_path} <-
+           normalize_workspace_manifest_path(
+             get_argument(arguments, "manifest_path") || SpecCheck.default_manifest_path(),
+             workspace,
+             :symphony_spec_check
+           ),
+         {:ok, contract_lock_path} <-
+           normalize_workspace_manifest_path(
+             get_argument(arguments, "contract_lock_path") || SpecCheck.default_contract_lock_path(),
+             workspace,
+             :symphony_spec_check
+           ) do
+      {:ok, issue_id, manifest_path, contract_lock_path}
+    end
+  end
+
+  defp normalize_symphony_spec_check_arguments(_arguments, _opts) do
+    {:error, {:symphony_spec_check, "`issue_id` is required"}}
   end
 
   defp normalize_repo(arguments, tool) do
@@ -1387,7 +1580,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       %{} = attachment ->
         %{
           "title" => get_argument(attachment, "title"),
-          "url" => get_argument(attachment, "url")
+          "url" => get_argument(attachment, "url"),
+          "source_type" => get_argument(attachment, "sourceType") || get_argument(attachment, "source_type"),
+          "metadata" => get_argument(attachment, "metadata")
         }
 
       _ ->
@@ -1420,17 +1615,183 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp maybe_guard_issue_description_update(query, variables) when is_binary(query) do
-    if issue_update_query?(query) do
-      case issue_update_description(query, variables) do
-        description when is_binary(description) ->
-          maybe_guard_acceptance_matrix_description(description, review_ready_issue_id(query, variables))
+  defp maybe_guard_execution_issue_update(query, variables, linear_client, opts) do
+    case review_ready_issue_update_query?(query) do
+      false ->
+        :ok
 
-        _ ->
-          :ok
-      end
+      true ->
+        state_id = review_ready_state_id(query, variables)
+        issue_id = review_ready_issue_id(query, variables)
+
+        case review_ready_transition_guard_mode(query, variables, state_id, issue_id) do
+          :blocked_missing_identifiers ->
+            unresolved_execution_transition_identifier_error()
+
+          :skip_guard ->
+            :ok
+
+          :enforce_guard ->
+            enforce_execution_transition_guard(issue_id, state_id, linear_client, opts)
+        end
+    end
+  end
+
+  defp unresolved_execution_transition_identifier_error do
+    {:error,
+     {:execution_transition_blocked,
+      %{
+        "reason" => "cannot resolve transition identifiers for state-changing issueUpdate mutation",
+        "reason_code" => "unresolved_transition_identifiers",
+        "required_tool" => @symphony_spec_check_tool
+      }}}
+  end
+
+  defp enforce_execution_transition_guard(issue_id, state_id, linear_client, opts) do
+    with {:ok, state_context} <- resolve_issue_state_context(issue_id, state_id, linear_client),
+         state_name = state_context.state_name,
+         true <- SpecCheck.execution_state?(state_name) do
+      run_execution_spec_guard(issue_id, state_name, state_context, opts)
+    else
+      false ->
+        :ok
+
+      {:error, {:review_ready_transition_blocked, details}} ->
+        {:error, {:execution_transition_blocked, details}}
+    end
+  end
+
+  defp run_execution_spec_guard(issue_id, state_name, state_context, opts) do
+    workspace = Keyword.get(opts, :workspace)
+    manifest_path = expand_upload_path(SpecCheck.default_manifest_path(), workspace)
+    contract_lock_path = expand_upload_path(SpecCheck.default_contract_lock_path(), workspace)
+
+    case SpecCheck.execution_transition_allowed?(
+           manifest_path,
+           issue_id,
+           state_name,
+           issue_description: state_context.issue_description,
+           issue_state: state_context.current_state,
+           issue_labels: state_context.issue_labels,
+           blockers: state_context.blocked_by,
+           require_contract_lock: true,
+           contract_lock_path: contract_lock_path,
+           repo_path: workspace
+         ) do
+      :ok ->
+        :ok
+
+      {:error, reason, details} ->
+        {:error,
+         {:execution_transition_blocked,
+          Map.merge(details, %{
+            "reason_code" => to_string(reason),
+            "required_tool" => @symphony_spec_check_tool,
+            "manifest_path" => Path.expand(manifest_path),
+            "contract_lock_path" => Path.expand(contract_lock_path)
+          })}}
+    end
+  end
+
+  defp maybe_guard_issue_description_update(query, variables, linear_client, opts) when is_binary(query) do
+    if issue_update_query?(query) do
+      guard_issue_description_update(query, variables, linear_client, opts)
     else
       :ok
+    end
+  end
+
+  defp guard_issue_description_update(query, variables, linear_client, opts) do
+    case issue_update_description(query, variables) do
+      description when is_binary(description) ->
+        guard_issue_description_change(query, variables, description, linear_client, opts)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp guard_issue_description_change(query, variables, description, linear_client, opts) do
+    case maybe_guard_acceptance_matrix_description(description, review_ready_issue_id(query, variables)) do
+      :ok ->
+        maybe_guard_material_spec_change_update(
+          query,
+          variables,
+          description,
+          linear_client,
+          opts
+        )
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp maybe_guard_material_spec_change_update(query, variables, description, linear_client, _opts)
+       when is_binary(query) and is_binary(description) do
+    issue_id = review_ready_issue_id(query, variables)
+
+    if is_binary(issue_id) do
+      guard_material_spec_change_update(
+        issue_id,
+        query,
+        variables,
+        description,
+        linear_client
+      )
+    else
+      :ok
+    end
+  end
+
+  defp guard_material_spec_change_update(issue_id, query, variables, description, linear_client) do
+    case fetch_issue_state_context(issue_id, linear_client) do
+      {:ok, issue_context} ->
+        enforce_material_spec_change_guard(issue_id, issue_context, query, variables, description)
+
+      {:error, _reason} ->
+        {:error,
+         {:material_spec_change_requires_spec_review,
+          %{
+            "reason" => "cannot resolve issue context for material spec change guard",
+            "reason_code" => "material_spec_change_context_unavailable",
+            "issue_id" => issue_id,
+            "required_state" => "Spec Review"
+          }}}
+    end
+  end
+
+  defp enforce_material_spec_change_guard(
+         issue_id,
+         issue_context,
+         query,
+         variables,
+         description
+       ) do
+    current_state = Map.get(issue_context, "current_state")
+    previous_description = Map.get(issue_context, "description")
+    target_state_name = resolve_requested_transition_state_name(query, variables, issue_context)
+
+    cond do
+      not SpecCheck.execution_state?(current_state) ->
+        :ok
+
+      not SpecCheck.material_spec_change?(previous_description, description) ->
+        :ok
+
+      SpecCheck.spec_review_state?(target_state_name) ->
+        :ok
+
+      true ->
+        {:error,
+         {:material_spec_change_requires_spec_review,
+          %{
+            "reason" => "material spec change detected while issue is in execution state",
+            "reason_code" => "material_spec_change",
+            "issue_id" => issue_id,
+            "current_state" => current_state,
+            "required_state" => "Spec Review"
+          }}}
     end
   end
 
@@ -1606,6 +1967,17 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     ])
   end
 
+  defp resolve_requested_transition_state_name(query, variables, issue_context)
+       when is_map(issue_context) do
+    case review_ready_state_id(query, variables) do
+      state_id when is_binary(state_id) ->
+        get_in(issue_context, ["team_states", state_id])
+
+      _ ->
+        nil
+    end
+  end
+
   defp possible_graphql_value(query, variables, key_paths)
        when is_binary(query) and is_map(variables) and is_list(key_paths) do
     key_paths
@@ -1725,23 +2097,88 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp present_graphql_key_value?(nil), do: false
   defp present_graphql_key_value?(_value), do: true
 
-  defp resolve_issue_state_context(issue_id, state_id, linear_client) do
+  defp fetch_issue_state_context(issue_id, linear_client) do
     with {:ok, response} <- linear_client.(@symphony_handoff_check_state_query, %{"issueId" => issue_id}, []),
-         issue when is_map(issue) <- get_in(response, ["data", "issue"]),
-         states when is_list(states) <- get_in(issue, ["team", "states", "nodes"]),
-         state when is_map(state) <-
-           Enum.find(states, fn state ->
-             get_argument(state, "id") == state_id
-           end),
-         state_name when is_binary(state_name) <- get_argument(state, "name") do
+         issue when is_map(issue) <- get_in(response, ["data", "issue"]) do
       {:ok,
        %{
-         state_name: state_name,
-         issue_description: get_argument(issue, "description")
+         "id" => get_argument(issue, "id"),
+         "identifier" => get_argument(issue, "identifier"),
+         "description" => get_argument(issue, "description"),
+         "current_state" => get_in(issue, ["state", "name"]),
+         "issue_labels" => normalize_linear_issue_labels(get_in(issue, ["labels", "nodes"])),
+         "blocked_by" => normalize_linear_issue_blockers(get_in(issue, ["inverseRelations", "nodes"])),
+         "team_states" => normalize_linear_team_states(get_in(issue, ["team", "states", "nodes"]))
        }}
     else
       {:error, reason} ->
-        {:error, reason}
+        {:error, {:issue_state_context, "cannot query issue state context: #{inspect(reason)}"}}
+
+      _ ->
+        {:error, {:issue_state_context, "issue query did not return a valid issue state payload"}}
+    end
+  end
+
+  defp normalize_linear_team_states(states) when is_list(states) do
+    Enum.reduce(states, %{}, fn
+      %{} = state, acc ->
+        state_id = get_argument(state, "id")
+        state_name = get_argument(state, "name")
+
+        if is_binary(state_id) and is_binary(state_name) and String.trim(state_name) != "" do
+          Map.put(acc, state_id, state_name)
+        else
+          acc
+        end
+
+      _state, acc ->
+        acc
+    end)
+  end
+
+  defp normalize_linear_team_states(_states), do: %{}
+
+  defp normalize_linear_issue_blockers(inverse_relations) when is_list(inverse_relations) do
+    inverse_relations
+    |> Enum.flat_map(fn
+      %{} = relation ->
+        relation_type = relation |> get_argument("type") |> to_string() |> String.downcase()
+        blocker_issue = get_argument(relation, "issue")
+
+        if relation_type == "blocks" and is_map(blocker_issue) do
+          [
+            %{
+              "id" => get_argument(blocker_issue, "id"),
+              "identifier" => get_argument(blocker_issue, "identifier"),
+              "state" => get_in(blocker_issue, ["state", "name"])
+            }
+          ]
+        else
+          []
+        end
+
+      _ ->
+        []
+    end)
+  end
+
+  defp normalize_linear_issue_blockers(_inverse_relations), do: []
+
+  defp resolve_issue_state_context(issue_id, state_id, linear_client) do
+    with {:ok, issue_context} <- fetch_issue_state_context(issue_id, linear_client),
+         state_name when is_binary(state_name) <- get_in(issue_context, ["team_states", state_id]) do
+      {:ok,
+       %{
+         state_name: state_name,
+         issue_description: issue_context["description"],
+         issue_labels: issue_context["issue_labels"],
+         blocked_by: issue_context["blocked_by"],
+         current_state: issue_context["current_state"],
+         team_states: issue_context["team_states"]
+       }}
+    else
+      {:error, {:issue_state_context, message}} ->
+        {:error, {:review_ready_transition_blocked, %{"reason" => message}}}
 
       _ ->
         {:error, {:review_ready_transition_blocked, %{"reason" => "cannot resolve the requested review-ready state"}}}
@@ -2898,6 +3335,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{"error" => %{"message" => "symphony_handoff_check: #{message}"}}
   end
 
+  defp tool_error_payload({:symphony_spec_check, message}) do
+    %{"error" => %{"message" => "symphony_spec_check: #{message}"}}
+  end
+
   defp tool_error_payload({:linear_upload_issue_attachment, message}) do
     %{"error" => %{"message" => "linear_upload_issue_attachment: #{message}"}}
   end
@@ -2945,11 +3386,37 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{"error" => %{"message" => "exec_wait: #{message}"}}
   end
 
+  defp tool_error_payload({:issue_state_context, message}) do
+    %{"error" => %{"message" => message}}
+  end
+
   defp tool_error_payload({:review_ready_transition_blocked, details}) do
     %{
       "error" => %{
         "message" => "review-ready issue transitions require a successful `symphony_handoff_check` in the current workspace.",
         "details" => details
+      }
+    }
+  end
+
+  defp tool_error_payload({:execution_transition_blocked, details}) do
+    enriched_details = enrich_admission_error_details(details, :execution_transition_blocked)
+
+    %{
+      "error" => %{
+        "message" => "execution transitions require a successful `symphony_spec_check` in the current workspace.",
+        "details" => enriched_details
+      }
+    }
+  end
+
+  defp tool_error_payload({:material_spec_change_requires_spec_review, details}) do
+    enriched_details = enrich_admission_error_details(details, :material_spec_change_requires_spec_review)
+
+    %{
+      "error" => %{
+        "message" => "material spec change detected during execution; move the issue to `Spec Review` in the same update.",
+        "details" => enriched_details
       }
     }
   end
@@ -3057,6 +3524,188 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     }
   end
+
+  defp enrich_admission_error_details(details, guard_reason) when is_map(details) do
+    reason_code = Map.get(details, "reason_code")
+    contract = execution_contract_classification(reason_code, details, guard_reason)
+    failure_class = admission_failure_class(contract, reason_code)
+    remediation_policy = admission_remediation_policy(contract, failure_class)
+    operator_state = admission_operator_state(contract, failure_class, remediation_policy)
+
+    operator_matrix_row_id =
+      admission_operator_matrix_row_id(contract, failure_class, remediation_policy, operator_state)
+
+    decision_id =
+      Map.get(contract, "decision_id") ||
+        admission_decision_id(reason_code, details, guard_reason, failure_class, remediation_policy)
+
+    Map.merge(details, %{
+      "failure_class" => failure_class,
+      "remediation_policy" => remediation_policy,
+      "operator_state" => operator_state,
+      "operator_matrix_row_id" => operator_matrix_row_id,
+      "decision_id" => decision_id,
+      "guard_layer" => "admission"
+    })
+  end
+
+  defp enrich_admission_error_details(_details, guard_reason) do
+    enrich_admission_error_details(%{}, guard_reason)
+  end
+
+  defp execution_contract_classification(reason_code, details, guard_reason) do
+    module = SymphonyElixir.ExecutionContract
+    payload = %{"reason_code" => reason_code, "details" => details, "guard_reason" => guard_reason}
+
+    if Code.ensure_loaded?(module) do
+      [
+        {module, :classify_admission_failure, [payload]},
+        {module, :classify_admission_failure, [reason_code, payload]},
+        {module, :classify_failure, [payload]},
+        {module, :classify_failure, [reason_code, payload]},
+        {module, :classify, [payload]},
+        {module, :classify, [reason_code, payload]}
+      ]
+      |> Enum.find_value(%{}, &call_execution_contract(&1))
+    else
+      %{}
+    end
+  end
+
+  defp call_execution_contract({module, function_name, args}) do
+    if function_exported?(module, function_name, length(args)) do
+      module
+      |> apply(function_name, args)
+      |> normalize_execution_contract_result()
+    else
+      nil
+    end
+  end
+
+  defp normalize_execution_contract_result({:ok, result}), do: normalize_execution_contract_result(result)
+  defp normalize_execution_contract_result(result) when is_map(result), do: stringify_map_keys(result)
+  defp normalize_execution_contract_result(result) when is_list(result), do: result |> Map.new() |> stringify_map_keys()
+  defp normalize_execution_contract_result(_result), do: %{}
+
+  defp stringify_map_keys(map) when is_map(map) do
+    Map.new(map, fn
+      {key, value} when is_atom(key) -> {Atom.to_string(key), value}
+      {key, value} -> {key, value}
+    end)
+  end
+
+  defp admission_failure_class(contract, reason_code) do
+    contract
+    |> Map.get("failure_class")
+    |> normalize_failure_class()
+    |> case do
+      nil -> fallback_failure_class(reason_code)
+      value -> value
+    end
+  end
+
+  defp normalize_failure_class(value) when value in ["policy", :policy, "policy_fail", :policy_fail], do: "policy"
+  defp normalize_failure_class(value) when value in ["infra", :infra, "infra_fail", :infra_fail], do: "infra"
+  defp normalize_failure_class(_value), do: nil
+
+  defp fallback_failure_class(reason_code) when is_binary(reason_code) do
+    if String.contains?(reason_code, "context_unavailable"), do: "infra", else: "policy"
+  end
+
+  defp fallback_failure_class(_reason_code), do: "policy"
+
+  defp admission_remediation_policy(contract, failure_class) do
+    case Map.get(contract, "remediation_policy") |> normalize_remediation_policy() do
+      value when is_binary(value) ->
+        value
+
+      _ ->
+        if failure_class == "infra", do: "pause_infra", else: "operator_required"
+    end
+  end
+
+  defp normalize_remediation_policy(value)
+       when value in ["operator_required", :operator_required],
+       do: "operator_required"
+
+  defp normalize_remediation_policy(value)
+       when value in ["auto_retry_once", :auto_retry_once],
+       do: "auto_retry_once"
+
+  defp normalize_remediation_policy(value)
+       when value in ["pause_infra", :pause_infra],
+       do: "pause_infra"
+
+  defp normalize_remediation_policy(_value), do: nil
+
+  defp admission_operator_state(contract, failure_class, remediation_policy) do
+    case Map.get(contract, "operator_state") |> normalize_operator_state() do
+      nil ->
+        fallback_operator_state(failure_class, remediation_policy)
+
+      value ->
+        value
+    end
+  end
+
+  defp normalize_operator_state(value) when value in ["open", :open], do: "open"
+  defp normalize_operator_state(value) when value in ["cooldown", :cooldown], do: "cooldown"
+  defp normalize_operator_state(value) when value in ["tripped", :tripped], do: "tripped"
+  defp normalize_operator_state(value) when value in ["paused_infra", :paused_infra], do: "paused_infra"
+  defp normalize_operator_state(_value), do: nil
+
+  defp fallback_operator_state("infra", "pause_infra"), do: "tripped"
+  defp fallback_operator_state(_failure_class, _remediation_policy), do: "open"
+
+  defp admission_operator_matrix_row_id(contract, failure_class, remediation_policy, operator_state) do
+    case Map.get(contract, "operator_matrix_row_id") do
+      value when is_binary(value) and value != "" ->
+        value
+
+      _ ->
+        module = SymphonyElixir.ExecutionContract
+
+        if Code.ensure_loaded?(module) and function_exported?(module, :operator_matrix_row_id, 3) do
+          module.operator_matrix_row_id(failure_class, remediation_policy, operator_state) |> to_string()
+        else
+          fallback_operator_matrix_row_id(failure_class, remediation_policy, operator_state)
+        end
+    end
+  end
+
+  defp fallback_operator_matrix_row_id("policy", "operator_required", _state), do: "opm_v1_policy_fix"
+  defp fallback_operator_matrix_row_id("infra", "auto_retry_once", "open"), do: "opm_v1_infra_retry_open"
+  defp fallback_operator_matrix_row_id("infra", "auto_retry_once", "cooldown"), do: "opm_v1_infra_retry_cooldown"
+  defp fallback_operator_matrix_row_id("infra", "pause_infra", state) when state in ["tripped", "paused_infra"], do: "opm_v1_infra_pause"
+  defp fallback_operator_matrix_row_id(_failure_class, _remediation_policy, _state), do: "opm_v1_unmapped"
+
+  defp admission_decision_id(reason_code, details, guard_reason, failure_class, remediation_policy) do
+    details_fingerprint =
+      details
+      |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
+      |> Enum.map(fn {key, value} -> [to_string(key), "=", inspect(value)] end)
+      |> List.flatten()
+      |> IO.iodata_to_binary()
+
+    [
+      "admission",
+      to_string(guard_reason),
+      admission_string(reason_code),
+      failure_class,
+      remediation_policy,
+      details_fingerprint
+    ]
+    |> Enum.join("|")
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.url_encode64(padding: false)
+    |> String.slice(0, 22)
+    |> then(&"adm_#{&1}")
+  end
+
+  defp admission_string(value) when is_binary(value), do: value
+  defp admission_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp admission_string(value) when is_nil(value), do: ""
+  defp admission_string(value), do: to_string(value)
 
   defp supported_tool_names do
     Enum.map(tool_specs(), & &1["name"])

@@ -63,6 +63,7 @@ codex:
       handoff: handoff
     signal_escalations:
       rework: escalated_implementation
+      risky_task: escalated_implementation
       repeated_auto_fix_failure: escalated_implementation
       security_data_risk: escalated_implementation
       unresolvable_ambiguity: escalated_implementation
@@ -221,7 +222,7 @@ Instructions:
 - Codex launch selection is resolved from `codex.cost_profiles` and `codex.cost_policy` through `SymphonyElixir.Config.codex_cost_decision/1`.
 - `planning` defaults to `cheap_planning` (`gpt-5.4`, `xhigh`); `implementation` defaults to `cheap_implementation` (`gpt-5.3-codex`, `medium`); `rework` and explicit escalation signals use `escalated_implementation` (`gpt-5.3-codex`, `high`); `handoff` uses `handoff` (`gpt-5.3-codex`, `medium`).
 - `xhigh` is the default for planning only. Non-planning defaults stay below `xhigh` unless a repository explicitly changes a profile in workflow config.
-- Escalation signals are `rework`, `repeated_auto_fix_failure`, `security_data_risk`, and `unresolvable_ambiguity`; ordinary retries and continuation turns do not imply escalation.
+- Escalation signals are `rework`, `risky_task`, `repeated_auto_fix_failure`, `security_data_risk`, and `unresolvable_ambiguity`; ordinary retries and continuation turns do not imply escalation.
 - `mode:research` and `reasoning:implementation-xhigh` do not escalate unless the workflow defines an explicit label-to-signal mapping in `codex.cost_policy`.
 - Legacy `planning_command`, `implementation_command`, and `handoff_command` remain backward-compatible direct-command overrides only when structured cost profiles cannot render a command.
 
@@ -276,7 +277,7 @@ Instructions:
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, include a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
    - if the task produces export/report files or machine-readable validation artifacts that support the handoff, attach those files to the issue instead of leaving them only in the workpad or local runtime.
-7. Before every `git push`, rerun the required validation and confirm it passes.
+7. Before `git push`, rerun the required validation only when the current `HEAD^{tree}` changed since the latest final-gate proof checkpoint; otherwise reuse the existing final-gate proof on the same tree.
 8. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
 9. Merge latest `origin/main` into the branch before final handoff, resolve conflicts, and rerun required validation.
 
@@ -301,7 +302,7 @@ Invalidation and rerun rules:
 
 - Final proof is valid only when `head_sha` and `tree_sha` match current `HEAD` and shipped paths are clean.
 - Dirty-workspace proof can count as cheap proof only; after commit, repeat final gate on the clean committed `HEAD`.
-- Code/config/workflow-contract changes after an existing PR require a fresh final gate before the next push.
+- Code/config/workflow-contract changes after an existing PR require a fresh final gate before the next push because they change `HEAD^{tree}`.
 - CI failure or review feedback starts with cheap gate for the concrete failing signal. If the fix changes shipped code/config/workflow contract, final gate is required before re-push.
 - Blind reruns are not proof and do not reset the auto-fix counter.
 
@@ -314,7 +315,7 @@ Invalidation and rerun rules:
    - treat every actionable item as blocking until code/docs/tests are updated or an explicit justified pushback reply is posted;
    - update the workpad checklist with the feedback items and their resolution status;
    - rerun required validation after feedback-driven changes.
-4. Use `github_wait_for_checks` to wait for CI outside the model loop.
+4. Use `github_wait_for_checks` to wait for CI outside the model loop with `poll_interval_ms: 30000`.
 5. When checks complete, run `github_pr_snapshot` again.
 6. If checks are not green or actionable feedback remains, continue the fix/validate loop.
 7. If checks are green and no actionable feedback remains:
@@ -450,6 +451,11 @@ validation/proof/checkpoint semantics are defined in
 
 - [ ] preflight: `make symphony-preflight`
 - [ ] targeted tests: `<command>`
+- [ ] docs review: `<command>` (docs/prose-only changes; never mark this item as `n/a` when required)
+- [ ] runtime smoke: `<command>` (runtime/infra/workflow-contract/handoff changes; never mark this item as `n/a` when required; if the change also touches an external contract, add separate live proof per `docs/live_proof_runbook.md`)
+- [ ] stateful proof: `<command>` (DB/schema/stateful changes)
+- [ ] ui runtime proof: `<command>` (hosted UI/frontend changes)
+- [ ] visual artifact: `<artifact title>` (hosted UI/frontend changes)
 - [ ] repo validation: `make symphony-validate`
 
 ### Artifacts

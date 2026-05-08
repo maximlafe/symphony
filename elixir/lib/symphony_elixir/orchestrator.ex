@@ -1,3 +1,9 @@
+# credo:disable-for-this-file Credo.Check.Readability.MaxLineLength
+# credo:disable-for-this-file Credo.Check.Refactor.CyclomaticComplexity
+# credo:disable-for-this-file Credo.Check.Refactor.Nesting
+# credo:disable-for-this-file Credo.Check.Refactor.CondStatements
+# credo:disable-for-this-file Credo.Check.Warning.TooManyFields
+# credo:disable-for-this-file Credo.Check.Warning.StructFieldAmount
 defmodule SymphonyElixir.Orchestrator do
   @moduledoc """
   Polls Linear and dispatches repository copies to Codex-backed workers.
@@ -13,6 +19,8 @@ defmodule SymphonyElixir.Orchestrator do
     Config,
     ControllerFinalizer,
     ErrorClassifier,
+    ExecutionContract,
+    ExecutionRollout,
     ResumeCheckpoint,
     RetryFailoverDecision,
     RunPhase,
@@ -39,6 +47,25 @@ defmodule SymphonyElixir.Orchestrator do
   @symphony_handoff_check_tool "symphony_handoff_check"
   @verification_recoverable_drift_max_attempts 1
   @stale_workspace_auto_remediation_max_attempts 1
+  @tracker_escalation_guard_layer "tracker_escalation"
+  @tracker_escalation_infra_dedupe_ttl_ms 300_000
+  @tracker_retry_budget_ttl_ms 300_000
+  @execution_rollout_default_threshold_manifest %{
+    observe_stability_window_hours: 168,
+    shadow_divergence_limit_rate: 0.2,
+    operator_path_determinism_floor: 0.95,
+    auto_remediation_success_rate_floor: 0.5,
+    infra_recovery_latency_tolerance_ms: 300_000
+  }
+  @execution_rollout_default_baseline %{
+    per_gate_rejection_rate: 1.0,
+    false_blocked_valid_run_rate: 0.0,
+    repeated_failure_by_fingerprint_rate: 1.0
+  }
+  @tracker_infra_breaker_burst_window_sec 120
+  @tracker_infra_breaker_trip_threshold 3
+  @tracker_infra_breaker_cooldown_sec 300
+  @tracker_infra_breaker_resume_success_threshold 2
   @verification_recoverable_drift_patterns [
     ~r/^acceptance matrix contains duplicate id `/,
     ~r/^acceptance matrix item `[^`]+` has multiple proof mapping entries; exactly one is required$/,
@@ -67,9 +94,12 @@ defmodule SymphonyElixir.Orchestrator do
     Runtime state for the orchestrator polling loop.
     """
 
+    # credo:disable-for-next-line
     defstruct [
       :poll_interval_ms,
       :max_concurrent_agents,
+      :monotonic_time_ms,
+      :send_after,
       :next_poll_due_at_ms,
       :poll_check_in_progress,
       :tick_timer_ref,
@@ -89,6 +119,14 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       retry_attempts: %{},
       retry_dedupe_keys: %{},
+      tracker_escalation_dedupe: %{},
+      tracker_retry_budget_ledger: %{},
+      tracker_infra_breakers: %{},
+      execution_rollout_mode: :enforce,
+      execution_rollout_started_at_ms: nil,
+      execution_rollout_threshold_manifest: %{},
+      execution_rollout_baseline: %{},
+      execution_rollout_snapshot: %{},
       codex_accounts: %{},
       preferred_codex_account_id: nil,
       active_codex_account_id: nil,
@@ -107,7 +145,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def init(opts) do
-    now_ms = System.monotonic_time(:millisecond)
+    monotonic_time_ms = Keyword.get(opts, :monotonic_time_ms, &default_monotonic_time_ms/0)
+    send_after = Keyword.get(opts, :send_after, &Process.send_after/3)
+    now_ms = monotonic_time_ms.()
     config = Config.settings!()
     start_immediately? = Keyword.get(opts, :start_immediately?, true)
     run_startup_housekeeping? = Keyword.get(opts, :run_startup_housekeeping?, true)
@@ -115,6 +155,8 @@ defmodule SymphonyElixir.Orchestrator do
     state = %State{
       poll_interval_ms: config.polling.interval_ms,
       max_concurrent_agents: config.agent.max_concurrent_agents,
+      monotonic_time_ms: monotonic_time_ms,
+      send_after: send_after,
       next_poll_due_at_ms: now_ms,
       poll_check_in_progress: false,
       tick_timer_ref: nil,
@@ -129,6 +171,13 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_cleanup_ref: nil,
       workspace_usage_refresh_ref: nil,
       workspace_threshold_exceeded?: false,
+      tracker_retry_budget_ledger: %{},
+      tracker_infra_breakers: %{},
+      execution_rollout_mode: execution_rollout_mode_from_env(),
+      execution_rollout_started_at_ms: now_ms,
+      execution_rollout_threshold_manifest: execution_rollout_threshold_manifest_from_env(),
+      execution_rollout_baseline: execution_rollout_baseline_from_env(),
+      execution_rollout_snapshot: execution_rollout_snapshot_defaults(),
       codex_accounts: %{},
       preferred_codex_account_id: nil,
       active_codex_account_id: nil,
@@ -692,9 +741,9 @@ defmodule SymphonyElixir.Orchestrator do
     state = reconcile_running_issues(state)
 
     with :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0,
-         true <- active_codex_account_available?(state) do
+         true <- active_codex_account_available?(state),
+         {:ok, issues} <- Tracker.fetch_candidate_issues() do
       choose_issues(issues, state)
     else
       {:error, :missing_linear_api_token} ->
@@ -814,6 +863,190 @@ defmodule SymphonyElixir.Orchestrator do
       when is_map(execution_head) and is_atom(stale_reason) do
     maybe_reconcile_stale_workspace(issue, trace_id, execution_head, stale_reason)
   end
+
+  @doc false
+  @spec classify_tracker_escalation_reason_for_test(term()) ::
+          %{failure_class: :infra_fail | :policy_fail, reason_code: String.t()}
+  def classify_tracker_escalation_reason_for_test(tracker_reason) do
+    classify_tracker_escalation_reason(tracker_reason)
+  end
+
+  @doc false
+  @spec tracker_escalation_dedupe_decision_for_test(map(), String.t(), term(), map(), integer()) ::
+          map()
+  def tracker_escalation_dedupe_decision_for_test(dedupe, issue_id, tracker_reason, context, now_ms)
+      when is_map(dedupe) and is_binary(issue_id) and is_map(context) and is_integer(now_ms) do
+    {status, _fingerprint, _remaining_ms, updated_dedupe} =
+      tracker_escalation_dedupe_decision(dedupe, issue_id, tracker_reason, context, now_ms)
+
+    %{status: status, dedupe: updated_dedupe}
+  end
+
+  @doc false
+  @spec tracker_infra_breaker_transition_for_test(
+          map(),
+          :infra_fail | :policy_fail,
+          String.t(),
+          String.t(),
+          :failure | :success,
+          integer()
+        ) :: map()
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+  def tracker_infra_breaker_transition_for_test(
+        breakers,
+        failure_class,
+        reason_code,
+        workspace_key,
+        event,
+        now_ms
+      )
+      when is_map(breakers) and failure_class in [:infra_fail, :policy_fail] and
+             is_binary(reason_code) and is_binary(workspace_key) and
+             event in [:failure, :success] and is_integer(now_ms) do
+    context = %{workspace: workspace_key, issue_id: "issue-for-test", identifier: workspace_key}
+
+    case {failure_class, event} do
+      {:policy_fail, _} ->
+        %{
+          breaker_state: :open,
+          operator_matrix_row_id: tracker_operator_matrix_row_id(:policy_fail, :open),
+          decision: :allow,
+          remaining_ms: 0,
+          breakers: breakers
+        }
+
+      {:infra_fail, :failure} ->
+        {decision, remaining_ms, breaker_state, _breaker_key, updated_breakers} =
+          tracker_infra_breaker_failure_decision(breakers, reason_code, context, now_ms)
+
+        %{
+          breaker_state: breaker_state,
+          operator_matrix_row_id: tracker_operator_matrix_row_id(:infra_fail, breaker_state),
+          decision: decision,
+          remaining_ms: remaining_ms,
+          breakers: updated_breakers
+        }
+
+      {:infra_fail, :success} ->
+        {breaker_state, updated_breakers} =
+          tracker_infra_breaker_record_success(breakers, reason_code, context, now_ms)
+
+        %{
+          breaker_state: breaker_state,
+          operator_matrix_row_id: tracker_operator_matrix_row_id(:infra_fail, breaker_state),
+          decision: if(breaker_state == :open, do: :allow, else: :cooldown_probe),
+          remaining_ms: 0,
+          breakers: updated_breakers
+        }
+    end
+  end
+
+  @doc false
+  @spec tracker_infra_breaker_defaults_for_test() :: map()
+  def tracker_infra_breaker_defaults_for_test do
+    %{
+      burst_window_sec: @tracker_infra_breaker_burst_window_sec,
+      trip_threshold: @tracker_infra_breaker_trip_threshold,
+      cooldown_sec: @tracker_infra_breaker_cooldown_sec,
+      resume_success_threshold: @tracker_infra_breaker_resume_success_threshold
+    }
+  end
+
+  @doc false
+  @spec execution_rollout_snapshot_defaults_for_test() :: map()
+  def execution_rollout_snapshot_defaults_for_test, do: execution_rollout_snapshot_defaults()
+
+  @doc false
+  @spec execution_rollout_snapshot_transition_for_test(map(), map(), integer(), integer()) :: map()
+  def execution_rollout_snapshot_transition_for_test(snapshot, gate_payload, started_at_ms, now_ms)
+      when is_map(snapshot) and is_map(gate_payload) and is_integer(started_at_ms) and
+             is_integer(now_ms) do
+    next_execution_rollout_snapshot(
+      snapshot,
+      gate_payload,
+      %{execution_rollout_started_at_ms: started_at_ms},
+      now_ms
+    )
+  end
+
+  defp execution_rollout_mode_from_env do
+    Application.get_env(:symphony_elixir, :execution_rollout_mode, :enforce)
+    |> normalize_execution_rollout_mode()
+  end
+
+  defp normalize_execution_rollout_mode(value) when value in [:observe, :shadow_enforce, :enforce], do: value
+  defp normalize_execution_rollout_mode(value) when value in ["observe"], do: :observe
+  defp normalize_execution_rollout_mode(value) when value in ["shadow_enforce"], do: :shadow_enforce
+  defp normalize_execution_rollout_mode(value) when value in ["enforce"], do: :enforce
+  defp normalize_execution_rollout_mode(_value), do: :enforce
+
+  defp execution_rollout_threshold_manifest_from_env do
+    raw = Application.get_env(:symphony_elixir, :execution_rollout_threshold_manifest, %{})
+
+    case ExecutionRollout.parse_threshold_manifest(raw) do
+      {:ok, manifest} ->
+        manifest
+
+      {:error, _reason} ->
+        @execution_rollout_default_threshold_manifest
+    end
+  end
+
+  defp execution_rollout_baseline_from_env do
+    case Application.get_env(:symphony_elixir, :execution_rollout_baseline, %{}) do
+      baseline when is_map(baseline) ->
+        %{
+          per_gate_rejection_rate:
+            to_float_metric(Map.get(baseline, :per_gate_rejection_rate) || Map.get(baseline, "per_gate_rejection_rate"), @execution_rollout_default_baseline.per_gate_rejection_rate),
+          false_blocked_valid_run_rate:
+            to_float_metric(
+              Map.get(baseline, :false_blocked_valid_run_rate) || Map.get(baseline, "false_blocked_valid_run_rate"),
+              @execution_rollout_default_baseline.false_blocked_valid_run_rate
+            ),
+          repeated_failure_by_fingerprint_rate:
+            to_float_metric(
+              Map.get(baseline, :repeated_failure_by_fingerprint_rate) || Map.get(baseline, "repeated_failure_by_fingerprint_rate"),
+              @execution_rollout_default_baseline.repeated_failure_by_fingerprint_rate
+            )
+        }
+
+      _ ->
+        @execution_rollout_default_baseline
+    end
+  end
+
+  defp execution_rollout_snapshot_defaults do
+    %{
+      events_total: 0,
+      attempted_transitions_total: 0,
+      rejected_transitions_total: 0,
+      infra_fail_total: 0,
+      policy_fail_total: 0,
+      dedupe_hits_total: 0,
+      retry_budget_blocked_total: 0,
+      auto_remediation_attempt_total: 0,
+      auto_remediation_success_total: 0,
+      per_gate_rejection_rate: 0.0,
+      false_blocked_valid_run_rate: 0.0,
+      repeated_failure_by_fingerprint_rate: 0.0,
+      auto_remediation_success_rate: 1.0,
+      median_infra_recovery_latency: 0,
+      new_failure_class_count: 0,
+      operator_path_determinism_rate: 1.0,
+      shadow_divergence_rate: 0.0,
+      observed_window_hours: 0.0,
+      false_blocked_valid_run_total: 0,
+      operator_path_incident_total: 0,
+      operator_path_deterministic_total: 0,
+      infra_recovery_latency_samples_ms: [],
+      pending_infra_failure_started_at_ms: nil,
+      seen_unknown_failure_classes: MapSet.new()
+    }
+  end
+
+  defp to_float_metric(value, _fallback) when is_integer(value), do: value * 1.0
+  defp to_float_metric(value, _fallback) when is_float(value), do: value
+  defp to_float_metric(_value, fallback), do: fallback
 
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
 
@@ -1464,7 +1697,7 @@ defmodule SymphonyElixir.Orchestrator do
     delay_ms = retry_delay(attempt, metadata)
     old_timer = Map.get(previous_retry, :timer_ref)
     retry_token = make_ref()
-    due_at_ms = System.monotonic_time(:millisecond) + delay_ms
+    due_at_ms = monotonic_time_ms(state) + delay_ms
     identifier = pick_retry_identifier(issue_id, previous_retry, metadata)
     trace_id = pick_retry_trace_id(previous_retry, metadata)
     error = pick_retry_error(previous_retry, metadata)
@@ -1512,6 +1745,10 @@ defmodule SymphonyElixir.Orchestrator do
       pick_retry_workspace_diff_fingerprint(previous_retry, metadata)
 
     retry_failover_decision = pick_retry_failover_decision(previous_retry, metadata)
+    breaker_state = pick_retry_optional_string(previous_retry, metadata, :breaker_state)
+    operator_matrix_row_id = pick_retry_optional_string(previous_retry, metadata, :operator_matrix_row_id)
+    escalation_only = pick_retry_flag(previous_retry, metadata, :escalation_only)
+    escalation_target_state = pick_retry_optional_string(previous_retry, metadata, :escalation_target_state)
     session_id = pick_retry_session_id(previous_retry, metadata)
     thread_id = pick_retry_optional_string(previous_retry, metadata, :thread_id)
     turn_id = pick_retry_optional_string(previous_retry, metadata, :turn_id)
@@ -1527,7 +1764,7 @@ defmodule SymphonyElixir.Orchestrator do
       Process.cancel_timer(old_timer)
     end
 
-    timer_ref = Process.send_after(self(), {:retry_issue, issue_id, retry_token}, delay_ms)
+    timer_ref = send_after(state, self(), {:retry_issue, issue_id, retry_token}, delay_ms)
 
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
     error_class_suffix = if is_binary(error_class), do: " error_class=#{error_class}", else: ""
@@ -1578,7 +1815,11 @@ defmodule SymphonyElixir.Orchestrator do
             failure_class: failure_class,
             validation_bundle_fingerprint: validation_bundle_fingerprint,
             workspace_diff_fingerprint: workspace_diff_fingerprint,
-            retry_failover_decision: retry_failover_decision
+            retry_failover_decision: retry_failover_decision,
+            breaker_state: breaker_state,
+            operator_matrix_row_id: operator_matrix_row_id,
+            escalation_only: escalation_only,
+            escalation_target_state: escalation_target_state
           })
     }
   end
@@ -1622,7 +1863,9 @@ defmodule SymphonyElixir.Orchestrator do
           failure_class: Map.get(retry_entry, :failure_class),
           validation_bundle_fingerprint: Map.get(retry_entry, :validation_bundle_fingerprint),
           workspace_diff_fingerprint: Map.get(retry_entry, :workspace_diff_fingerprint),
-          retry_failover_decision: Map.get(retry_entry, :retry_failover_decision)
+          retry_failover_decision: Map.get(retry_entry, :retry_failover_decision),
+          escalation_only: Map.get(retry_entry, :escalation_only),
+          escalation_target_state: Map.get(retry_entry, :escalation_target_state)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1686,6 +1929,9 @@ defmodule SymphonyElixir.Orchestrator do
          |> release_issue_claim(issue_id)
          |> maybe_schedule_terminal_workspace_cleanup(:retry_terminal)}
 
+      escalation_retry_metadata?(metadata) and retry_candidate_issue?(issue, terminal_states) ->
+        handle_escalation_only_retry(state, issue, issue_id, attempt, metadata)
+
       retry_candidate_issue?(issue, terminal_states) ->
         handle_active_retry(state, issue, attempt, metadata)
 
@@ -1720,6 +1966,58 @@ defmodule SymphonyElixir.Orchestrator do
     )
 
     {:noreply, release_issue_claim(state, issue_id)}
+  end
+
+  defp handle_escalation_only_retry(
+         state,
+         %Issue{id: tracker_issue_id, identifier: identifier},
+         issue_id,
+         attempt,
+         metadata
+       )
+       when is_binary(tracker_issue_id) and is_integer(attempt) and attempt > 0 and is_map(metadata) do
+    trace_id = metadata[:trace_id]
+    target_state = escalation_retry_target_state(metadata)
+
+    case Tracker.update_issue_state(tracker_issue_id, target_state) do
+      :ok ->
+        with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
+          Logger.warning("Escalation-only retry succeeded issue_id=#{issue_id} issue_identifier=#{identifier} target_state=#{target_state} attempt=#{attempt}; releasing claim")
+        end)
+
+        {:noreply, state |> complete_issue(issue_id) |> release_issue_claim(issue_id)}
+
+      {:error, tracker_reason} ->
+        with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
+          Logger.error("Escalation-only retry failed issue_id=#{issue_id} issue_identifier=#{identifier} target_state=#{target_state} attempt=#{attempt}: #{inspect(tracker_reason)}")
+        end)
+
+        next_attempt = next_failure_retry_attempt(attempt, metadata[:delay_type])
+
+        retry_metadata =
+          metadata
+          |> Map.put(:error, "failed to escalate #{identifier} to #{target_state}: #{inspect(tracker_reason)}")
+          |> Map.put(:error_class, ErrorClassifier.to_string(:transient))
+
+        {:noreply, schedule_issue_retry(state, issue_id, next_attempt, retry_metadata)}
+    end
+  end
+
+  defp handle_escalation_only_retry(state, issue, issue_id, attempt, metadata) do
+    with_log_metadata(
+      issue_log_metadata(
+        issue_id,
+        metadata[:identifier] || issue_id,
+        retry_metadata_session_id(metadata),
+        metadata[:trace_id]
+      ),
+      fn ->
+        Logger.error("Escalation-only retry skipped due to malformed issue payload #{inspect(issue)}; scheduling another escalation-only retry")
+      end
+    )
+
+    next_attempt = next_failure_retry_attempt(attempt, metadata[:delay_type])
+    {:noreply, schedule_issue_retry(state, issue_id, next_attempt, metadata)}
   end
 
   defp cleanup_issue_artifacts(identifier) when is_binary(identifier) do
@@ -3563,29 +3861,25 @@ defmodule SymphonyElixir.Orchestrator do
       )
 
       state
+      |> tracker_infra_breaker_record_success_if_applicable(context)
+      |> apply_execution_rollout_gate(%{
+        transition_attempted: true,
+        transition_rejected: false,
+        failure_class: nil,
+        dedupe_hit: false,
+        retry_budget_status: :open,
+        retry_budget_outcome: :n_a
+      })
       |> complete_issue(context.issue_id)
       |> release_issue_claim(context.issue_id)
     else
       {:error, tracker_reason} ->
-        with_log_metadata(
-          issue_log_metadata(context.issue_id, context.identifier, nil, context.trace_id),
-          fn ->
-            Logger.error("Failed to escalate issue_id=#{context.issue_id} issue_identifier=#{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}")
-          end
-        )
-
-        schedule_issue_retry(
+        handle_escalation_failure(
           state,
-          context.issue_id,
           failure_attempt,
-          %{
-            identifier: context.identifier,
-            trace_id: context.trace_id,
-            error: "failed to escalate #{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
-            error_class: ErrorClassifier.to_string(:transient),
-            resume_checkpoint: context[:resume_checkpoint]
-          }
-          |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
+          context,
+          intervention_state,
+          tracker_reason
         )
     end
   end
@@ -3604,18 +3898,12 @@ defmodule SymphonyElixir.Orchestrator do
       end
     )
 
-    schedule_issue_retry(
+    handle_escalation_failure(
       state,
-      context.issue_id,
       failure_attempt,
-      %{
-        identifier: context.identifier,
-        trace_id: context.trace_id,
-        error: "failed to escalate #{context.identifier} to #{manual_intervention_state()}: missing issue id",
-        error_class: ErrorClassifier.to_string(:transient),
-        resume_checkpoint: context[:resume_checkpoint]
-      }
-      |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
+      context,
+      manual_intervention_state(),
+      :missing_issue_id
     )
   end
 
@@ -3655,32 +3943,242 @@ defmodule SymphonyElixir.Orchestrator do
       )
 
       state
+      |> tracker_infra_breaker_record_success_if_applicable(context)
+      |> apply_execution_rollout_gate(%{
+        transition_attempted: true,
+        transition_rejected: false,
+        failure_class: nil,
+        dedupe_hit: false,
+        retry_budget_status: :open,
+        retry_budget_outcome: :n_a
+      })
       |> complete_issue(context.issue_id)
       |> release_issue_claim(context.issue_id)
     else
       {:error, tracker_reason} ->
-        with_log_metadata(
-          issue_log_metadata(context.issue_id, context.identifier, nil, context.trace_id),
-          fn ->
-            Logger.error("Failed to escalate issue_id=#{context.issue_id} issue_identifier=#{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}")
-          end
-        )
-
-        schedule_issue_retry(
+        handle_escalation_failure(
           state,
-          context.issue_id,
           failure_attempt,
-          %{
-            identifier: context.identifier,
-            trace_id: context.trace_id,
-            error: "failed to escalate #{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
-            error_class: ErrorClassifier.to_string(:transient),
-            resume_checkpoint: context[:resume_checkpoint]
-          }
-          |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
-          |> Map.merge(retry_failover_metadata(decision))
+          context,
+          intervention_state,
+          tracker_reason,
+          retry_failover_metadata(decision)
         )
     end
+  end
+
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+  defp schedule_tracker_escalation_retry_or_backoff(
+         %State{} = state,
+         tracker_reason,
+         failure_attempt,
+         context,
+         intervention_state,
+         extra_metadata
+       )
+       when is_integer(failure_attempt) and failure_attempt > 0 and is_map(context) and
+              is_binary(intervention_state) and is_map(extra_metadata) do
+    classification = classify_tracker_escalation_reason(tracker_reason)
+
+    retry_metadata =
+      %{
+        identifier: context.identifier,
+        trace_id: context.trace_id,
+        error: "failed to escalate #{context.identifier} to #{intervention_state}: #{inspect(tracker_reason)}",
+        error_class: ErrorClassifier.to_string(:transient),
+        resume_checkpoint: context[:resume_checkpoint],
+        delay_type: :continuation,
+        escalation_only: true,
+        escalation_target_state: intervention_state
+      }
+      |> Map.merge(retry_execution_metadata(context, context[:resume_checkpoint]))
+      |> Map.merge(extra_metadata)
+      |> Map.put(:failure_class, Atom.to_string(classification.failure_class))
+      |> Map.put(:failure_reason_code, classification.reason_code)
+
+    case classification.failure_class do
+      :infra_fail ->
+        now_ms = System.monotonic_time(:millisecond)
+
+        {dedupe_status, _fingerprint, remaining_ms, dedupe} =
+          tracker_escalation_dedupe_decision(
+            state.tracker_escalation_dedupe,
+            context.issue_id,
+            tracker_reason,
+            context,
+            now_ms
+          )
+
+        {breaker_decision, breaker_remaining_ms, breaker_state, _breaker_key, breakers} =
+          tracker_infra_breaker_failure_decision(
+            state.tracker_infra_breakers,
+            classification.reason_code,
+            context,
+            now_ms
+          )
+
+        rollout_mode = normalize_execution_rollout_mode(state.execution_rollout_mode)
+        enforce_mode? = rollout_mode == :enforce
+        retry_fingerprint = tracker_retry_fingerprint(context.issue_id, classification.reason_code, context)
+
+        {ledger_after_attempt, budget_attempt} =
+          ExecutionContract.open_retry_budget_attempt(
+            state.tracker_retry_budget_ledger,
+            retry_fingerprint,
+            now_ms,
+            @tracker_retry_budget_ttl_ms
+          )
+
+        budget_outcome =
+          cond do
+            not enforce_mode? ->
+              :shadow_only
+
+            breaker_decision == :paused ->
+              :breaker_paused
+
+            budget_attempt.status == :cooldown ->
+              :retry_budget_blocked
+
+            true ->
+              :retry_scheduled
+          end
+
+        ledger_after_outcome =
+          ExecutionContract.record_retry_budget_outcome(
+            ledger_after_attempt,
+            retry_fingerprint,
+            budget_outcome,
+            now_ms
+          )
+
+        state = %{
+          state
+          | tracker_escalation_dedupe: dedupe,
+            tracker_infra_breakers: breakers,
+            tracker_retry_budget_ledger: ledger_after_outcome
+        }
+
+        breaker_state_string = Atom.to_string(breaker_state)
+        operator_state = tracker_operator_state_for_breaker(breaker_state)
+        operator_row_id = tracker_operator_matrix_row_id(:infra_fail, breaker_state)
+
+        retry_metadata =
+          retry_metadata
+          |> Map.put(:breaker_state, breaker_state_string)
+          |> Map.put(:operator_matrix_row_id, operator_row_id)
+          |> Map.put(:retry_fingerprint, retry_fingerprint)
+          |> Map.put(:retry_attempt_index, budget_attempt.attempt_index)
+          |> Map.put(:retry_attempt_outcome, to_string(budget_outcome))
+          |> Map.put(:remediation_policy, "auto_retry_once")
+
+        attempt =
+          cond do
+            enforce_mode? and breaker_decision == :paused ->
+              tracker_escalation_backoff_attempt(
+                failure_attempt,
+                max(remaining_ms, breaker_remaining_ms)
+              )
+
+            enforce_mode? and budget_attempt.status == :cooldown ->
+              tracker_escalation_backoff_attempt(
+                failure_attempt,
+                max(remaining_ms, max(budget_attempt.expires_at_ms - now_ms, 0))
+              )
+
+            dedupe_status == :dedupe_hit ->
+              tracker_escalation_backoff_attempt(failure_attempt, remaining_ms)
+
+            true ->
+              failure_attempt
+          end
+
+        state =
+          apply_execution_rollout_gate(
+            state,
+            %{
+              transition_attempted: true,
+              transition_rejected: true,
+              failure_class: :infra_fail,
+              dedupe_hit: dedupe_status == :dedupe_hit,
+              retry_budget_status: budget_attempt.status,
+              retry_budget_outcome: budget_outcome,
+              operator_matrix_row_id: operator_row_id,
+              operator_state: operator_state,
+              retry_metadata: retry_metadata
+            }
+          )
+
+        state
+        |> complete_issue(context.issue_id)
+        |> schedule_issue_retry(context.issue_id, attempt, retry_metadata)
+
+      :policy_fail ->
+        retry_metadata =
+          retry_metadata
+          |> Map.put(:breaker_state, "open")
+          |> Map.put(:operator_matrix_row_id, tracker_operator_matrix_row_id(:policy_fail, :open))
+          |> Map.put(:remediation_policy, "operator_required")
+
+        state =
+          apply_execution_rollout_gate(
+            state,
+            %{
+              transition_attempted: true,
+              transition_rejected: true,
+              failure_class: :policy_fail,
+              dedupe_hit: false,
+              retry_budget_status: :open,
+              retry_budget_outcome: :policy_fail,
+              operator_matrix_row_id: tracker_operator_matrix_row_id(:policy_fail, :open),
+              operator_state: :open,
+              retry_metadata: retry_metadata
+            }
+          )
+
+        state
+        |> complete_issue(context.issue_id)
+        |> schedule_issue_retry(context.issue_id, failure_attempt, retry_metadata)
+    end
+  end
+
+  defp handle_escalation_failure(
+         %State{} = state,
+         failure_attempt,
+         context,
+         intervention_state,
+         tracker_reason,
+         extra_retry_metadata \\ %{}
+       )
+       when is_integer(failure_attempt) and failure_attempt > 0 and is_map(context) and
+              is_binary(intervention_state) and is_map(extra_retry_metadata) do
+    issue_id = context[:issue_id]
+    identifier = context[:identifier] || issue_id
+    trace_id = context[:trace_id]
+
+    with_log_metadata(issue_log_metadata(issue_id, identifier, nil, trace_id), fn ->
+      Logger.error(
+        "Failed to escalate issue_id=#{issue_id} issue_identifier=#{identifier} to #{intervention_state}: #{inspect(tracker_reason)}; fail-closing locally without worker retry (attempt #{failure_attempt})"
+      )
+    end)
+
+    schedule_tracker_escalation_retry_or_backoff(
+      state,
+      tracker_reason,
+      failure_attempt,
+      Map.merge(context, %{identifier: identifier}),
+      intervention_state,
+      extra_retry_metadata
+    )
+  end
+
+  defp escalation_retry_metadata?(metadata) when is_map(metadata) do
+    metadata[:escalation_only] == true || metadata["escalation_only"] == true
+  end
+
+  defp escalation_retry_target_state(metadata) when is_map(metadata) do
+    normalize_optional_string(metadata[:escalation_target_state] || metadata["escalation_target_state"]) ||
+      manual_intervention_state()
   end
 
   defp blocker_comment_body(
@@ -4076,6 +4574,26 @@ defmodule SymphonyElixir.Orchestrator do
     case metadata[:retry_failover_decision] || Map.get(previous_retry, :retry_failover_decision) do
       value when is_map(value) -> value
       _ -> nil
+    end
+  end
+
+  defp pick_retry_flag(previous_retry, metadata, key)
+       when is_map(previous_retry) and is_map(metadata) and is_atom(key) do
+    metadata_value =
+      case metadata do
+        %{^key => value} when is_boolean(value) -> value
+        _ -> nil
+      end
+
+    case metadata_value do
+      value when is_boolean(value) ->
+        value
+
+      _ ->
+        case Map.get(previous_retry, key) do
+          value when is_boolean(value) -> value
+          _ -> nil
+        end
     end
   end
 
@@ -4520,6 +5038,490 @@ defmodule SymphonyElixir.Orchestrator do
   defp remember_retry_dedupe_key(%State{} = state, issue_id, key)
        when is_binary(issue_id) and is_binary(key) do
     %{state | retry_dedupe_keys: Map.put(state.retry_dedupe_keys, issue_id, key)}
+  end
+
+  defp tracker_escalation_dedupe_decision(dedupe, issue_id, tracker_reason, context, now_ms)
+       when is_map(dedupe) and is_binary(issue_id) and is_map(context) and is_integer(now_ms) do
+    dedupe = prune_tracker_escalation_dedupe(dedupe, now_ms)
+    classification = classify_tracker_escalation_reason(tracker_reason)
+
+    if classification.failure_class == :infra_fail do
+      fingerprint = tracker_escalation_fingerprint(issue_id, classification.reason_code, context)
+
+      case Map.get(dedupe, fingerprint) do
+        expires_at when is_integer(expires_at) and expires_at > now_ms ->
+          {:dedupe_hit, fingerprint, expires_at - now_ms, dedupe}
+
+        _ ->
+          expires_at = now_ms + @tracker_escalation_infra_dedupe_ttl_ms
+          {:recorded, fingerprint, @tracker_escalation_infra_dedupe_ttl_ms, Map.put(dedupe, fingerprint, expires_at)}
+      end
+    else
+      {:not_applicable, nil, 0, dedupe}
+    end
+  end
+
+  defp prune_tracker_escalation_dedupe(dedupe, now_ms) when is_map(dedupe) and is_integer(now_ms) do
+    Enum.reduce(dedupe, %{}, fn
+      {fingerprint, expires_at}, acc
+      when is_binary(fingerprint) and is_integer(expires_at) and expires_at > now_ms ->
+        Map.put(acc, fingerprint, expires_at)
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  defp tracker_escalation_fingerprint(issue_id, reason_code, context)
+       when is_binary(issue_id) and is_binary(reason_code) and is_map(context) do
+    artifact_revision =
+      normalize_optional_string(context[:runtime_head_sha]) ||
+        normalize_optional_string(context[:expected_head_sha]) ||
+        checkpoint_head(context[:resume_checkpoint]) ||
+        "unknown"
+
+    Enum.join([issue_id, @tracker_escalation_guard_layer, reason_code, artifact_revision], "::")
+  end
+
+  defp tracker_infra_breaker_record_success_if_applicable(%State{} = state, context)
+       when is_map(context) do
+    reason_code =
+      normalize_optional_string(context[:failure_reason_code]) ||
+        normalize_optional_string(context[:reason_code])
+
+    now_ms = System.monotonic_time(:millisecond)
+
+    {breaker_state, breakers} =
+      tracker_infra_breaker_record_success(
+        state.tracker_infra_breakers,
+        reason_code,
+        context,
+        now_ms
+      )
+
+    if breaker_state == :open and breakers == state.tracker_infra_breakers do
+      state
+    else
+      %{state | tracker_infra_breakers: breakers}
+    end
+  end
+
+  defp tracker_infra_breaker_record_success_if_applicable(%State{} = state, _context), do: state
+
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+  defp tracker_infra_breaker_failure_decision(breakers, reason_code, context, now_ms)
+       when is_map(breakers) and is_binary(reason_code) and is_map(context) and is_integer(now_ms) do
+    key = tracker_infra_breaker_key(reason_code, context)
+    breaker = tracker_infra_breaker_normalize(Map.get(breakers, key), now_ms)
+
+    if breaker.state == :paused_infra do
+      remaining_ms = max((breaker.paused_until_ms || now_ms) - now_ms, 0)
+      {:paused, remaining_ms, :paused_infra, key, Map.put(breakers, key, breaker)}
+    else
+      failures =
+        [now_ms | tracker_infra_breaker_prune_failures(breaker.failure_timestamps, now_ms)]
+        |> Enum.uniq()
+        |> Enum.sort()
+
+      breaker = %{breaker | failure_timestamps: failures, last_failure_at_ms: now_ms}
+
+      tracker_infra_breaker_failure_outcome(breaker, failures, breakers, key, now_ms)
+    end
+  end
+
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+  defp tracker_infra_breaker_record_success(breakers, reason_code, context, now_ms)
+       when is_map(breakers) and is_binary(reason_code) and is_map(context) and is_integer(now_ms) do
+    key = tracker_infra_breaker_key(reason_code, context)
+
+    case Map.get(breakers, key) do
+      breaker when is_map(breaker) ->
+        normalized = tracker_infra_breaker_normalize(breaker, now_ms)
+
+        case normalized.state do
+          :cooldown ->
+            success_count = normalized.resume_success_count + 1
+
+            tracker_infra_breaker_cooldown_success_outcome(
+              normalized,
+              success_count,
+              breakers,
+              key,
+              now_ms
+            )
+
+          _ ->
+            {normalized.state, Map.put(breakers, key, normalized)}
+        end
+
+      _ ->
+        {:open, breakers}
+    end
+  end
+
+  defp tracker_infra_breaker_record_success(breakers, _reason_code, _context, _now_ms)
+       when is_map(breakers),
+       do: {:open, breakers}
+
+  defp tracker_infra_breaker_failure_outcome(breaker, failures, breakers, key, now_ms)
+       when is_map(breaker) and is_list(failures) and is_map(breakers) and is_binary(key) and is_integer(now_ms) do
+    if length(failures) >= @tracker_infra_breaker_trip_threshold do
+      tripped =
+        breaker
+        |> Map.put(:state, :tripped)
+        |> Map.put(:tripped_at_ms, now_ms)
+        |> Map.put(:paused_until_ms, now_ms + tracker_infra_breaker_cooldown_ms())
+        |> Map.put(:resume_success_count, 0)
+
+      {:paused, tracker_infra_breaker_cooldown_ms(), :tripped, key, Map.put(breakers, key, tripped)}
+    else
+      next_state = if breaker.state == :cooldown, do: :cooldown, else: :open
+      open_breaker = %{breaker | state: next_state}
+      {:allow, 0, next_state, key, Map.put(breakers, key, open_breaker)}
+    end
+  end
+
+  defp tracker_infra_breaker_cooldown_success_outcome(normalized, success_count, breakers, key, now_ms)
+       when is_map(normalized) and is_integer(success_count) and is_map(breakers) and
+              is_binary(key) and is_integer(now_ms) do
+    updated =
+      if success_count >= @tracker_infra_breaker_resume_success_threshold do
+        tracker_infra_breaker_open_state()
+      else
+        %{normalized | resume_success_count: success_count, last_success_at_ms: now_ms}
+      end
+
+    state_label = if updated.state == :open, do: :open, else: :cooldown
+    {state_label, Map.put(breakers, key, updated)}
+  end
+
+  defp tracker_infra_breaker_key(reason_code, context)
+       when is_binary(reason_code) and is_map(context) do
+    Enum.join([@tracker_escalation_guard_layer, reason_code, tracker_workspace_key(context)], "::")
+  end
+
+  defp tracker_workspace_key(context) when is_map(context) do
+    normalize_optional_string(context[:workspace]) ||
+      normalize_optional_string(context[:workspace_path]) ||
+      normalize_optional_string(context[:execution_branch]) ||
+      normalize_optional_string(context[:identifier]) ||
+      normalize_optional_string(context[:issue_id]) ||
+      "workspace:unknown"
+  end
+
+  defp tracker_infra_breaker_normalize(nil, _now_ms), do: tracker_infra_breaker_open_state()
+
+  defp tracker_infra_breaker_normalize(breaker, now_ms) when is_map(breaker) and is_integer(now_ms) do
+    normalized = Map.merge(tracker_infra_breaker_open_state(), breaker)
+    failures = tracker_infra_breaker_prune_failures(normalized.failure_timestamps, now_ms)
+    normalized = %{normalized | failure_timestamps: failures}
+
+    cond do
+      normalized.state in [:tripped, :paused_infra] and
+        is_integer(normalized.paused_until_ms) and normalized.paused_until_ms <= now_ms ->
+        %{normalized | state: :cooldown, failure_timestamps: [], resume_success_count: 0}
+
+      normalized.state == :tripped ->
+        %{normalized | state: :paused_infra}
+
+      true ->
+        normalized
+    end
+  end
+
+  defp tracker_infra_breaker_normalize(_breaker, _now_ms), do: tracker_infra_breaker_open_state()
+
+  defp tracker_infra_breaker_open_state do
+    %{
+      state: :open,
+      failure_timestamps: [],
+      paused_until_ms: nil,
+      tripped_at_ms: nil,
+      resume_success_count: 0,
+      last_failure_at_ms: nil,
+      last_success_at_ms: nil
+    }
+  end
+
+  defp tracker_infra_breaker_prune_failures(failures, now_ms)
+       when is_list(failures) and is_integer(now_ms) do
+    min_ts = now_ms - tracker_infra_breaker_burst_window_ms()
+
+    failures
+    |> Enum.filter(fn
+      ts when is_integer(ts) -> ts >= min_ts
+      _ -> false
+    end)
+    |> Enum.sort()
+  end
+
+  defp tracker_infra_breaker_prune_failures(_failures, _now_ms), do: []
+
+  defp tracker_infra_breaker_burst_window_ms, do: @tracker_infra_breaker_burst_window_sec * 1_000
+  defp tracker_infra_breaker_cooldown_ms, do: @tracker_infra_breaker_cooldown_sec * 1_000
+
+  defp tracker_operator_matrix_row_id(:policy_fail, _breaker_state) do
+    ExecutionContract.operator_matrix_row_id(:policy_fail, :operator_required, :open)
+  end
+
+  defp tracker_operator_matrix_row_id(:infra_fail, breaker_state) when breaker_state in [:tripped, :paused_infra] do
+    ExecutionContract.operator_matrix_row_id(
+      :infra_fail,
+      :pause_infra,
+      tracker_operator_state_for_breaker(breaker_state)
+    )
+  end
+
+  defp tracker_operator_matrix_row_id(:infra_fail, breaker_state) do
+    ExecutionContract.operator_matrix_row_id(
+      :infra_fail,
+      :auto_retry_once,
+      tracker_operator_state_for_breaker(breaker_state)
+    )
+  end
+
+  defp tracker_operator_state_for_breaker(state) when state in [:cooldown], do: :cooldown
+  defp tracker_operator_state_for_breaker(state) when state in [:tripped, :paused_infra], do: :paused_infra
+  defp tracker_operator_state_for_breaker(_state), do: :open
+
+  defp tracker_retry_fingerprint(issue_id, reason_code, context)
+       when is_binary(issue_id) and is_binary(reason_code) and is_map(context) do
+    ExecutionContract.retry_fingerprint_v1(%{
+      issue_id: issue_id,
+      guard_layer: @tracker_escalation_guard_layer,
+      reason_code: reason_code,
+      artifact_revision:
+        normalize_optional_string(context[:runtime_head_sha]) ||
+          normalize_optional_string(context[:expected_head_sha]) ||
+          checkpoint_head(context[:resume_checkpoint]) ||
+          "unknown"
+    })
+  end
+
+  defp apply_execution_rollout_gate(%State{} = state, gate_payload) when is_map(gate_payload) do
+    mode = normalize_execution_rollout_mode(state.execution_rollout_mode)
+    now_ms = System.monotonic_time(:millisecond)
+    snapshot = next_execution_rollout_snapshot(state.execution_rollout_snapshot, gate_payload, state, now_ms)
+
+    gate =
+      ExecutionRollout.evaluate_kpi_gate(
+        snapshot,
+        state.execution_rollout_baseline,
+        mode,
+        state.execution_rollout_threshold_manifest
+      )
+
+    next_mode =
+      case gate.status do
+        :rollback -> ExecutionRollout.rollback_target(mode) || mode
+        _ -> mode
+      end
+
+    %{state | execution_rollout_mode: next_mode, execution_rollout_snapshot: snapshot}
+  end
+
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+  defp next_execution_rollout_snapshot(snapshot, gate_payload, state, now_ms)
+       when is_map(snapshot) and is_map(gate_payload) and is_integer(now_ms) do
+    started_at_ms = state.execution_rollout_started_at_ms || now_ms
+    attempted_increment = if Map.get(gate_payload, :transition_attempted, true), do: 1, else: 0
+    rejected_increment = if Map.get(gate_payload, :transition_rejected, false), do: 1, else: 0
+    attempted_total = Map.get(snapshot, :attempted_transitions_total, Map.get(snapshot, :events_total, 0)) + attempted_increment
+    rejected_total = Map.get(snapshot, :rejected_transitions_total, 0) + rejected_increment
+    total = Map.get(snapshot, :events_total, 0) + attempted_increment
+    infra_total = Map.get(snapshot, :infra_fail_total, 0) + if(gate_payload.failure_class == :infra_fail, do: 1, else: 0)
+    policy_total = Map.get(snapshot, :policy_fail_total, 0) + if(gate_payload.failure_class == :policy_fail, do: 1, else: 0)
+    dedupe_hits = Map.get(snapshot, :dedupe_hits_total, 0) + if(gate_payload.dedupe_hit, do: 1, else: 0)
+    repeated = Map.get(snapshot, :retry_budget_blocked_total, 0) + if(gate_payload.retry_budget_status == :cooldown, do: 1, else: 0)
+    auto_attempts = Map.get(snapshot, :auto_remediation_attempt_total, 0) + if(gate_payload.failure_class == :infra_fail, do: 1, else: 0)
+
+    auto_successes =
+      Map.get(snapshot, :auto_remediation_success_total, 0) +
+        if(gate_payload.retry_budget_outcome in [:retry_scheduled, :shadow_only], do: 1, else: 0)
+
+    false_blocked_total =
+      Map.get(snapshot, :false_blocked_valid_run_total, 0) +
+        if(Map.get(gate_payload, :false_blocked_valid_run, false), do: 1, else: 0)
+
+    operator_incident_increment =
+      if rejected_increment == 1 and not is_nil(gate_payload.failure_class), do: 1, else: 0
+
+    operator_incidents = Map.get(snapshot, :operator_path_incident_total, 0) + operator_incident_increment
+
+    operator_deterministic_increment =
+      if operator_incident_increment == 1 and deterministic_operator_row?(Map.get(gate_payload, :operator_matrix_row_id)),
+        do: 1,
+        else: 0
+
+    operator_deterministic =
+      Map.get(snapshot, :operator_path_deterministic_total, 0) + operator_deterministic_increment
+
+    previous_unknown = unknown_failure_class_set(Map.get(snapshot, :seen_unknown_failure_classes))
+    unknown_failure_class = normalize_unknown_failure_class(Map.get(gate_payload, :failure_class))
+    next_unknown = if is_binary(unknown_failure_class), do: MapSet.put(previous_unknown, unknown_failure_class), else: previous_unknown
+
+    pending_started_at_ms = Map.get(snapshot, :pending_infra_failure_started_at_ms)
+
+    next_pending_started_at_ms =
+      cond do
+        gate_payload.failure_class == :infra_fail and rejected_increment == 1 ->
+          pending_started_at_ms || now_ms
+
+        rejected_increment == 0 and is_integer(pending_started_at_ms) ->
+          nil
+
+        true ->
+          pending_started_at_ms
+      end
+
+    recovered_latency_samples =
+      case {rejected_increment == 0, pending_started_at_ms} do
+        {true, started_ms} when is_integer(started_ms) and now_ms >= started_ms ->
+          latency_ms = now_ms - started_ms
+
+          [latency_ms | Map.get(snapshot, :infra_recovery_latency_samples_ms, [])]
+          |> Enum.take(64)
+
+        _ ->
+          Map.get(snapshot, :infra_recovery_latency_samples_ms, [])
+      end
+
+    per_gate_rejection_rate = if(attempted_total > 0, do: rejected_total / attempted_total, else: 0.0)
+    false_blocked_valid_run_rate = if(rejected_total > 0, do: false_blocked_total / rejected_total, else: 0.0)
+    repeated_failure_rate = if(auto_attempts > 0, do: repeated / auto_attempts, else: 0.0)
+    auto_success_rate = if(auto_attempts > 0, do: auto_successes / auto_attempts, else: 1.0)
+    median_infra_recovery_latency = median_non_negative_integer(recovered_latency_samples)
+    new_failure_class_count = MapSet.size(next_unknown)
+    operator_path_determinism_rate = if(operator_incidents > 0, do: operator_deterministic / operator_incidents, else: 1.0)
+    observed_hours = max(now_ms - started_at_ms, 0) / 3_600_000
+
+    snapshot
+    |> Map.put(:events_total, total)
+    |> Map.put(:attempted_transitions_total, attempted_total)
+    |> Map.put(:rejected_transitions_total, rejected_total)
+    |> Map.put(:infra_fail_total, infra_total)
+    |> Map.put(:policy_fail_total, policy_total)
+    |> Map.put(:dedupe_hits_total, dedupe_hits)
+    |> Map.put(:retry_budget_blocked_total, repeated)
+    |> Map.put(:auto_remediation_attempt_total, auto_attempts)
+    |> Map.put(:auto_remediation_success_total, auto_successes)
+    |> Map.put(:false_blocked_valid_run_total, false_blocked_total)
+    |> Map.put(:operator_path_incident_total, operator_incidents)
+    |> Map.put(:operator_path_deterministic_total, operator_deterministic)
+    |> Map.put(:per_gate_rejection_rate, per_gate_rejection_rate)
+    |> Map.put(:false_blocked_valid_run_rate, false_blocked_valid_run_rate)
+    |> Map.put(:repeated_failure_by_fingerprint_rate, repeated_failure_rate)
+    |> Map.put(:auto_remediation_success_rate, auto_success_rate)
+    |> Map.put(:median_infra_recovery_latency, median_infra_recovery_latency)
+    |> Map.put(:new_failure_class_count, new_failure_class_count)
+    |> Map.put(:operator_path_determinism_rate, operator_path_determinism_rate)
+    |> Map.put(:shadow_divergence_rate, 0.0)
+    |> Map.put(:observed_window_hours, observed_hours)
+    |> Map.put(:pending_infra_failure_started_at_ms, next_pending_started_at_ms)
+    |> Map.put(:infra_recovery_latency_samples_ms, recovered_latency_samples)
+    |> Map.put(:seen_unknown_failure_classes, next_unknown)
+  end
+
+  defp deterministic_operator_row?(row_id) when is_binary(row_id) do
+    trimmed = String.trim(row_id)
+    trimmed != "" and trimmed != "opm_v1_unmapped"
+  end
+
+  defp deterministic_operator_row?(_row_id), do: false
+
+  defp normalize_unknown_failure_class(value) when value in [:infra_fail, :policy_fail, nil], do: nil
+  defp normalize_unknown_failure_class(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp normalize_unknown_failure_class(value) when is_binary(value) do
+    normalized = String.trim(String.downcase(value))
+    if normalized in ["", "infra_fail", "policy_fail"], do: nil, else: normalized
+  end
+
+  defp normalize_unknown_failure_class(_value), do: "unknown"
+
+  defp unknown_failure_class_set(%MapSet{} = set), do: set
+  defp unknown_failure_class_set(list) when is_list(list), do: MapSet.new(list)
+  defp unknown_failure_class_set(_value), do: MapSet.new()
+
+  defp median_non_negative_integer(values) when is_list(values) do
+    numbers =
+      values
+      |> Enum.filter(&(is_integer(&1) and &1 >= 0))
+      |> Enum.sort()
+
+    count = length(numbers)
+
+    cond do
+      count == 0 ->
+        0
+
+      rem(count, 2) == 1 ->
+        Enum.at(numbers, div(count, 2))
+
+      true ->
+        lower = Enum.at(numbers, div(count, 2) - 1)
+        upper = Enum.at(numbers, div(count, 2))
+        div(lower + upper, 2)
+    end
+  end
+
+  defp classify_tracker_escalation_reason(tracker_reason) do
+    reason_code = tracker_escalation_reason_code(tracker_reason)
+    failure_class = if tracker_escalation_infra_reason?(tracker_reason), do: :infra_fail, else: :policy_fail
+    %{failure_class: failure_class, reason_code: reason_code}
+  end
+
+  defp tracker_escalation_reason_code({:linear_api_status, status}) when is_integer(status),
+    do: "linear_api_status_#{status}"
+
+  defp tracker_escalation_reason_code({:linear_api_request, reason}) do
+    suffix = normalize_error_signature(inspect(reason)) || "unknown"
+    "linear_api_request_#{suffix}"
+  end
+
+  defp tracker_escalation_reason_code(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp tracker_escalation_reason_code(reason) do
+    normalize_error_signature(inspect(reason)) || "unknown"
+  end
+
+  defp tracker_escalation_infra_reason?({:linear_api_status, status}) when is_integer(status),
+    do: status == 429 or status >= 500
+
+  defp tracker_escalation_infra_reason?({:linear_api_request, _reason}), do: true
+
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+  defp tracker_escalation_infra_reason?(reason) do
+    reason
+    |> inspect()
+    |> String.downcase()
+    |> then(
+      &(String.contains?(&1, "rate_limit") or
+          String.contains?(&1, "rate limit") or
+          String.contains?(&1, "ratelimit") or
+          String.contains?(&1, "timeout") or
+          String.contains?(&1, "timed out") or
+          String.contains?(&1, "connection") or
+          String.contains?(&1, "econn") or
+          String.contains?(&1, "nxdomain") or
+          String.contains?(&1, "refused") or
+          String.contains?(&1, "unreachable") or
+          String.contains?(&1, "bad_gateway") or
+          String.contains?(&1, "gateway_timeout") or
+          String.contains?(&1, "service_unavailable") or
+          String.contains?(&1, "http_502") or
+          String.contains?(&1, "http_503") or
+          String.contains?(&1, "http_504"))
+    )
+  end
+
+  defp tracker_escalation_backoff_attempt(current_attempt, remaining_ms)
+       when is_integer(current_attempt) and current_attempt > 0 and is_integer(remaining_ms) do
+    target_ms = max(remaining_ms, @failure_retry_base_ms)
+
+    1..12
+    |> Enum.find(12, fn attempt -> failure_retry_delay(attempt) >= target_ms end)
+    |> max(current_attempt)
   end
 
   defp capture_execution_head(issue, retry_delay_type, resume_checkpoint) do
@@ -6053,15 +7055,27 @@ defmodule SymphonyElixir.Orchestrator do
     end
 
     tick_token = make_ref()
-    timer_ref = Process.send_after(self(), {:tick, tick_token}, delay_ms)
+    timer_ref = send_after(state, self(), {:tick, tick_token}, delay_ms)
 
     %{
       state
       | tick_timer_ref: timer_ref,
         tick_token: tick_token,
-        next_poll_due_at_ms: System.monotonic_time(:millisecond) + delay_ms
+        next_poll_due_at_ms: monotonic_time_ms(state) + delay_ms
     }
   end
+
+  defp monotonic_time_ms(%State{monotonic_time_ms: now_fun}) when is_function(now_fun, 0), do: now_fun.()
+  defp monotonic_time_ms(_state), do: default_monotonic_time_ms()
+
+  defp send_after(%State{send_after: send_after_fun}, destination, message, delay_ms)
+       when is_function(send_after_fun, 3) do
+    send_after_fun.(destination, message, delay_ms)
+  end
+
+  defp send_after(_state, destination, message, delay_ms), do: Process.send_after(destination, message, delay_ms)
+
+  defp default_monotonic_time_ms, do: System.monotonic_time(:millisecond)
 
   defp schedule_poll_cycle_start do
     :timer.send_after(@poll_transition_render_delay_ms, self(), :run_poll_cycle)

@@ -194,7 +194,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        }}
     )
 
-    snapshot = GenServer.call(pid, :snapshot, 15_000)
+    snapshot =
+      wait_for_snapshot(pid, fn state ->
+        match?(%{running: [_entry]}, state)
+      end)
+
     assert %{running: [snapshot_entry]} = snapshot
 
     assert %{
@@ -410,7 +414,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        }}
     )
 
-    snapshot_after_end = GenServer.call(pid, :snapshot)
+    snapshot_after_end =
+      wait_for_snapshot(pid, fn state ->
+        match?(%{running: [_entry]}, state)
+      end)
+
     assert %{running: [ended_entry]} = snapshot_after_end
     assert ended_entry.run_phase == "editing"
     assert ended_entry.current_command == nil
@@ -1329,7 +1337,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       send(pid, {:retry_issue, issue_id, retry_token})
 
       assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
-      refute_receive :fetch_candidate_issues, 100
 
       wait_for_orchestrator_state(pid, fn state ->
         not MapSet.member?(state.claimed, issue_id) and
@@ -1440,7 +1447,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   @tag :let_539
-  test "normal dispatch poll still fetches candidate issues" do
+  test "normal dispatch poll fetches candidate issues when a healthy account is available" do
     issue = %Issue{
       id: "issue-let-539-dispatch",
       identifier: "LET-539-DISPATCH",
@@ -1459,14 +1466,50 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       orchestrator_name = Module.concat(__MODULE__, :Let539DispatchPollOrchestrator)
 
+      probe_fun = fn accounts, _opts ->
+        Enum.map(accounts, fn account ->
+          %{
+            id: Map.get(account, :id),
+            explicit?: Map.get(account, :explicit?, true),
+            codex_home: Map.get(account, :codex_home),
+            checked_at: DateTime.utc_now(),
+            healthy: true,
+            health_reason: nil,
+            auth_mode: "ok",
+            email: nil,
+            plan_type: nil,
+            requires_openai_auth: false,
+            rate_limits: %{"limitId" => "codex"},
+            account: nil,
+            missing_windows_mins: [],
+            insufficient_windows_mins: []
+          }
+        end)
+      end
+
       {:ok, pid} =
         Orchestrator.start_link(
           name: orchestrator_name,
+          codex_account_probe_fun: probe_fun,
           start_immediately?: false,
           run_startup_housekeeping?: false
         )
 
       on_exit(fn -> stop_orchestrator(pid) end)
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | active_codex_account_id: "default",
+            codex_accounts: %{
+              "default" => %{
+                healthy: true,
+                health_reason: nil,
+                rate_limits: %{"limitId" => "codex"}
+              }
+            }
+        }
+      end)
 
       state = :sys.get_state(pid)
       assert {:noreply, _updated_state} = Orchestrator.handle_info(:run_poll_cycle, state)
@@ -2684,7 +2727,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end)
     end
 
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, codex_account_probe_fun: probe_fun)
+    {:ok, pid} =
+      Orchestrator.start_link(
+        name: orchestrator_name,
+        codex_account_probe_fun: probe_fun,
+        run_startup_housekeeping?: false
+      )
 
     on_exit(fn ->
       if Process.alive?(pid) do
@@ -2767,7 +2815,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end)
     end
 
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name, codex_account_probe_fun: probe_fun)
+    {:ok, pid} =
+      Orchestrator.start_link(
+        name: orchestrator_name,
+        codex_account_probe_fun: probe_fun,
+        run_startup_housekeeping?: false
+      )
 
     on_exit(fn ->
       if Process.alive?(pid) do

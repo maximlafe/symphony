@@ -521,6 +521,7 @@ codex:
       handoff: handoff
     signal_escalations:
       rework: escalated_implementation
+      risky_task: escalated_implementation
       repeated_auto_fix_failure: escalated_implementation
       security_data_risk: escalated_implementation
       unresolvable_ambiguity: escalated_implementation
@@ -530,20 +531,10 @@ codex:
     type: dangerFullAccess
   max_continuation_attempts: 3
   accounts:
-    - id: "charlotte.coulter@hmlservice.com"
-      codex_home: /root/.codex
     - id: "furrow.03-offline@icloud.com"
       codex_home: /root/.codex/.codex-furrow
-    - id: "rebeccakirby3711@outlook.com"
-      codex_home: /root/.codex/.codex-rebecca
     - id: Deborah
       codex_home: /root/.codex/.codex-deborah
-    - id: "kjfdn41739@outlook.com"
-      codex_home: /root/.codex/.codex-kjfdn41739
-    - id: "xvnza54743@outlook.com"
-      codex_home: /root/.codex/.codex-xvnza54743
-    - id: "tatonkasperski8844"
-      codex_home: /root/.codex/.codex-tatonkasperski8844
   minimum_remaining_percent: 5
   monitored_windows_mins: [300, 10080]
 planning:
@@ -711,7 +702,7 @@ Instructions:
 - Выбор Codex launch command резолвится из `codex.cost_profiles` и `codex.cost_policy` через `SymphonyElixir.Config.codex_cost_decision/1`.
 - `planning` по умолчанию использует `cheap_planning` (`gpt-5.4`, `xhigh`); `implementation` использует `cheap_implementation` (`gpt-5.3-codex`, `medium`); `rework` и явные escalation signals используют `escalated_implementation` (`gpt-5.3-codex`, `high`); `handoff` использует `handoff` (`gpt-5.3-codex`, `medium`).
 - `xhigh` — дефолт только для planning. Для non-planning дефолтов профиль остаётся ниже `xhigh`, пока репозиторий явно не поменяет соответствующий profile.
-- Escalation signals: `rework`, `repeated_auto_fix_failure`, `security_data_risk`, `unresolvable_ambiguity`; обычные retry/continuation turns не считаются escalation signal.
+- Escalation signals: `rework`, `risky_task`, `repeated_auto_fix_failure`, `security_data_risk`, `unresolvable_ambiguity`; обычные retry/continuation turns не считаются escalation signal.
 - `mode:research` и `reasoning:implementation-xhigh` не эскалируют без явного label-to-signal mapping в `codex.cost_policy`.
 - Legacy `planning_command`, `implementation_command`, `handoff_command` остаются backward-compatible direct-command override только когда structured profiles не могут собрать команду.
 
@@ -834,10 +825,30 @@ Use `docs/policy/project-contract.md` as the canonical definition for:
 
 Execution requirements in this workflow:
 
-- perform required cheap gate before final gate;
-- run final gate on clean committed `HEAD` before publish/review handoff;
-- keep `symphony_handoff_check` as fail-closed review-ready gate;
-- never replace canonical proof requirements with CI-only status.
+| Change class | Cheap gate | Final gate | When final gate is mandatory |
+| -- | -- | -- | -- |
+| Backend-only / pure logic | targeted unit/integration tests or deterministic reproducer for the touched module | cheap gate on the same `HEAD` + repo validation | before the first push, every code-changing re-push, and review-ready handoff |
+| DB/schema/stateful | targeted tests + stateful or migration proof for the touched path | cheap gate on the same `HEAD` + mandatory stateful/migration proof + repo validation | before any push |
+| Hosted UI / frontend | targeted UI test or local runtime/visual proof for the touched flow | cheap gate on the same `HEAD` + UI runtime proof + repo validation + visual artifact | before publish for human review and after code-changing rework |
+| Runtime / infra / workflow-contract / handoff | parser/unit smoke for the changed contract + focused reproducer for the failure point | cheap gate on the same `HEAD` + repo validation + targeted runtime smoke | before any push |
+| Docs/prose-only without executable workflow/config contract | spell/format/manual review when repo-owned command exists | local full gate is not required when shipped code/config did not change | not required; executable workflow/config changes are runtime/contract changes |
+| Mixed changes | union of all affected cheap gates | union of final requirements with the strictest affected class | use the strictest affected class; never downgrade mixed/runtime-critical changes |
+
+Runtime contract:
+
+- `validation_gate` is the machine-readable gate axis. The runtime owner is `SymphonyElixir.ValidationGate`; the prose owners are this workflow and repo-local `WORKFLOW.md`.
+- `change_classes` is a non-empty list, not a downgraded `mixed` class. Deterministic path-based inference must fail closed to runtime/contract risk for unknown shipped paths.
+- `required_checks` is the union of class requirements; `passed_checks` records the proof kinds actually present in the workpad.
+- The final handoff manifest must include `validation_gate.gate`, `validation_gate.change_classes`, `validation_gate.required_checks`, `validation_gate.passed_checks`, `git.head_sha`, `git.tree_sha`, and `git.worktree_clean`.
+
+Invalidation and rerun policy:
+
+- Any product-code/config/workflow-contract diff invalidates cheap and final proof for the affected `HEAD`.
+- Final proof is valid only when `proof.head_sha == git rev-parse HEAD`, `proof.tree_sha == git rev-parse HEAD^{tree}`, and shipped paths are clean.
+- Tests that passed on a dirty workspace remain cheap/development proof after commit; final gate must rerun on clean committed `HEAD`.
+- Description/comment/workpad-only edits without shipped diff do not require local full gate rerun. If the workpad changes after `symphony_handoff_check`, rerun only handoff check so the digest is fresh.
+- After CI failure or review feedback, start local rework with cheap gate for the concrete failing signal. If the fix changes code/config/workflow contract (and therefore `HEAD^{tree}`), run final gate again before the next push.
+- Blind remote reruns do not count as proof and do not reset the auto-fix counter. Remote-only or external blockers should use the classified blocked/decision path instead of speculative full validation loops.
 
 ## PR feedback and checks protocol (required before In Review)
 
@@ -848,7 +859,7 @@ Execution requirements in this workflow:
    - treat every actionable item as blocking until code/docs/tests are updated or an explicit justified pushback reply is posted;
    - reflect each feedback item and its resolution status in the workpad;
    - rerun the required validation after feedback-driven changes.
-4. Use `github_wait_for_checks` to wait for CI outside the model loop.
+4. Use `github_wait_for_checks` to wait for CI outside the model loop with `poll_interval_ms: 30000`.
 5. When checks complete, run `github_pr_snapshot` again.
 6. If checks are not green or actionable feedback remains, continue the fix/validate loop.
 7. Do not fetch full GitHub feedback payloads when the summary snapshot shows no review activity.
@@ -888,7 +899,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, attach a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
    - if the task produced review-relevant export/report files or machine-readable validation artifacts, attach them to the issue instead of leaving them only in the workpad, logs, or local runtime.
-10. Before every `git push`, rerun the required validation and confirm it passes.
+10. Before `git push`, rerun the required validation only when the current `HEAD^{tree}` changed since the latest final-gate proof checkpoint; otherwise reuse the existing final-gate proof on the same tree.
 11. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
 12. Merge latest `origin/<configured base branch>` into the branch before final handoff, resolve conflicts, and rerun required validation.
 13. Before moving to `In Review`, use the compact PR/check flow:

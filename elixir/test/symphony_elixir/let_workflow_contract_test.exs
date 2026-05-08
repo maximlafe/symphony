@@ -61,6 +61,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["planning", "swarm_assist_enabled"]) == false
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert get_in(config, ["codex", "cost_policy", "signal_escalations", "rework"]) == "escalated_implementation"
+    assert get_in(config, ["codex", "cost_policy", "signal_escalations", "risky_task"]) == "escalated_implementation"
     assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
     assert prompt =~ "`mode:research` и `reasoning:implementation-xhigh` не эскалируют"
     assert prompt =~ "fail closed into `Spec Prep` and treat it as the legacy `plan-mode` path."
@@ -111,13 +112,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     accounts = get_in(config, ["codex", "accounts"])
 
     assert [
-             %{"codex_home" => "/root/.codex"},
              %{"codex_home" => "/root/.codex/.codex-furrow"},
-             %{"codex_home" => "/root/.codex/.codex-rebecca"},
-             %{"codex_home" => "/root/.codex/.codex-deborah"},
-             %{"codex_home" => "/root/.codex/.codex-kjfdn41739"},
-             %{"codex_home" => "/root/.codex/.codex-xvnza54743"},
-             %{"codex_home" => "/root/.codex/.codex-tatonkasperski8844"}
+             %{"codex_home" => "/root/.codex/.codex-deborah"}
            ] = Enum.map(accounts, &Map.take(&1, ["codex_home"]))
   end
 

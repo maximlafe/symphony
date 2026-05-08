@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.{AcceptanceCapability, Config, Linear.Issue, RiskyTaskClassifier}
 
   @issue_page_size 50
   @max_error_body_log_bytes 1_000
@@ -550,12 +550,24 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp normalize_issue(issue, assignee_filter) when is_map(issue) do
     assignee = issue["assignee"]
+    description = issue["description"]
+    labels = extract_labels(issue)
+    blocked_by = extract_blockers(issue)
+    {required_capabilities, _capability_errors} = AcceptanceCapability.required_capabilities(description)
+
+    risk_classification =
+      RiskyTaskClassifier.classify(%{
+        description: description,
+        labels: labels,
+        blocked_by: blocked_by,
+        required_capabilities: required_capabilities
+      })
 
     %Issue{
       id: issue["id"],
       identifier: issue["identifier"],
       title: issue["title"],
-      description: issue["description"],
+      description: description,
       priority: parse_priority(issue["priority"]),
       project_slug: issue |> project_field("slugId"),
       project_name: issue |> project_field("name"),
@@ -563,8 +575,10 @@ defmodule SymphonyElixir.Linear.Client do
       branch_name: issue["branchName"],
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
-      blocked_by: extract_blockers(issue),
-      labels: extract_labels(issue),
+      blocked_by: blocked_by,
+      labels: labels,
+      risk_classification: risk_classification,
+      cost_signals: risk_classification["cost_signals"] || [],
       assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),
       created_at: parse_datetime(issue["createdAt"]),
       updated_at: parse_datetime(issue["updatedAt"])
