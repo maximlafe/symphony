@@ -940,7 +940,9 @@ defmodule SymphonyElixir.AppServerTest do
       assert {:ok, _result} =
                AppServer.run(workspace, "Use background tools after denial", issue,
                  tool_executor: tool_executor,
-                 on_message: on_message
+                 on_message: on_message,
+                 monotonic_time_ms: controlled_monotonic_time_ms(),
+                 sleep_fn: fn _delay_ms -> :ok end
                )
 
       assert approval_trace_decision(trace_json_lines(trace_file)) == "denied"
@@ -1308,7 +1310,11 @@ defmodule SymphonyElixir.AppServerTest do
       end
 
       assert {:ok, _result} =
-               AppServer.run(workspace, "Throttle repeated status checks during quiet wait", issue, tool_executor: tool_executor)
+               AppServer.run(workspace, "Throttle repeated status checks during quiet wait", issue,
+                 tool_executor: tool_executor,
+                 monotonic_time_ms: controlled_monotonic_time_ms(),
+                 sleep_fn: fn _delay_ms -> :ok end
+               )
 
       decisions =
         trace_json_lines(trace_file)
@@ -1435,7 +1441,9 @@ defmodule SymphonyElixir.AppServerTest do
                  "dedupe repeated running validation launch",
                  issue,
                  tool_executor: tool_executor,
-                 tool_probe: &fake_tool_probe/1
+                 tool_probe: &fake_tool_probe/1,
+                 monotonic_time_ms: controlled_monotonic_time_ms(),
+                 sleep_fn: fn _delay_ms -> :ok end
                )
 
       assert_receive :exec_background_called
@@ -1593,7 +1601,9 @@ defmodule SymphonyElixir.AppServerTest do
                  "skip repeated green validation launch",
                  issue,
                  tool_executor: tool_executor,
-                 tool_probe: &fake_tool_probe/1
+                 tool_probe: &fake_tool_probe/1,
+                 monotonic_time_ms: controlled_monotonic_time_ms(),
+                 sleep_fn: fn _delay_ms -> :ok end
                )
 
       assert_receive :exec_background_called
@@ -1779,7 +1789,9 @@ defmodule SymphonyElixir.AppServerTest do
                  "allow invalidated and distinct validation launches",
                  issue,
                  tool_executor: tool_executor,
-                 tool_probe: &fake_tool_probe/1
+                 tool_probe: &fake_tool_probe/1,
+                 monotonic_time_ms: controlled_monotonic_time_ms(),
+                 sleep_fn: fn _delay_ms -> :ok end
                )
 
       assert_receive {:exec_background_validate_called, 1}
@@ -2752,6 +2764,10 @@ defmodule SymphonyElixir.AppServerTest do
 
   defp fake_tool_probe(tool) when is_binary(tool) do
     "/tmp/fake-tools/#{tool}"
+  end
+
+  defp controlled_monotonic_time_ms do
+    fn -> 1_000 end
   end
 
   defp build_command_approval_payload(method, command_key, command, available_decisions) do

@@ -175,10 +175,12 @@ defmodule SymphonyElixir.Codex.AppServer do
         opts \\ []
       ) do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
+    monotonic_time_ms = Keyword.get(opts, :monotonic_time_ms, &default_monotonic_time_ms/0)
+    tool_runtime_opts = Keyword.take(opts, [:monotonic_time_ms, :sleep_fn])
 
     tool_executor =
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
-        DynamicTool.execute(tool, arguments, dynamic_tool_opts(workspace, metadata))
+        DynamicTool.execute(tool, arguments, dynamic_tool_opts(workspace, metadata, tool_runtime_opts))
       end)
 
     with_logger_metadata(metadata, fn ->
@@ -193,7 +195,8 @@ defmodule SymphonyElixir.Codex.AppServer do
               account_id: account_id,
               tool_executor: tool_executor,
               auto_approve_requests: auto_approve_requests,
-              thread_id: thread_id
+              thread_id: thread_id,
+              monotonic_time_ms: monotonic_time_ms
             },
             turn_id
           )
@@ -480,11 +483,12 @@ defmodule SymphonyElixir.Codex.AppServer do
            account_id: account_id,
            tool_executor: tool_executor,
            auto_approve_requests: auto_approve_requests,
-           thread_id: thread_id
+           thread_id: thread_id,
+           monotonic_time_ms: monotonic_time_ms
          },
          turn_id
        ) do
-    reset_wait_guard_state()
+    reset_wait_guard_state(monotonic_time_ms)
     session_id = "#{thread_id}-#{turn_id}"
     Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
 
@@ -1618,8 +1622,9 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp default_wait_guard_state do
+  defp default_wait_guard_state(monotonic_time_ms \\ &default_monotonic_time_ms/0) do
     %{
+      monotonic_time_ms: monotonic_time_ms,
       quiet_wait_active: false,
       active_result_ref: nil,
       last_status_check_command: nil,
@@ -1632,14 +1637,23 @@ defmodule SymphonyElixir.Codex.AppServer do
     }
   end
 
-  defp reset_wait_guard_state do
-    Process.put(@wait_guard_process_key, default_wait_guard_state())
+  defp reset_wait_guard_state(monotonic_time_ms) do
+    Process.put(@wait_guard_process_key, default_wait_guard_state(monotonic_time_ms))
     :ok
   end
 
+  defp wait_guard_now_ms do
+    case Map.get(wait_guard_state(), :monotonic_time_ms) do
+      now_fun when is_function(now_fun, 0) -> now_fun.()
+      _ -> default_monotonic_time_ms()
+    end
+  end
+
+  defp default_monotonic_time_ms, do: System.monotonic_time(:millisecond)
+
   defp deny_repeated_status_check?(command) when is_binary(command) do
     guard = wait_guard_state()
-    now_ms = System.monotonic_time(:millisecond)
+    now_ms = wait_guard_now_ms()
     normalized = normalize_status_check_command(command)
     last_command = Map.get(guard, :last_status_check_command)
     last_at_ms = Map.get(guard, :last_status_check_at_ms)
@@ -1659,7 +1673,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       updated =
         wait_guard_state()
         |> Map.put(:last_status_check_command, normalized)
-        |> Map.put(:last_status_check_at_ms, System.monotonic_time(:millisecond))
+        |> Map.put(:last_status_check_at_ms, wait_guard_now_ms())
 
       Process.put(@wait_guard_process_key, updated)
     end
@@ -1886,7 +1900,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          command when is_binary(command) <- exec_background_command(arguments),
          surface when is_map(surface) <- validation_surface(metadata, command) do
       surface_key = validation_surface_key(surface)
-      now_ms = System.monotonic_time(:millisecond)
+      now_ms = wait_guard_now_ms()
 
       running_entry = %{
         surface: surface,
@@ -1948,7 +1962,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     surface = Map.get(running_entry, :surface, %{})
     surface_key = Map.get(running_entry, :surface_key) || "unknown"
     bundle = Map.get(surface, :validation_bundle_fingerprint)
-    now_ms = System.monotonic_time(:millisecond)
+    now_ms = wait_guard_now_ms()
 
     base_guard =
       guard
@@ -2252,12 +2266,15 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp maybe_set_usage(metadata, _payload), do: metadata
 
-  defp dynamic_tool_opts(workspace, metadata) when is_map(metadata) do
+  defp dynamic_tool_opts(workspace, metadata, runtime_opts) when is_map(metadata) and is_list(runtime_opts) do
     [workspace: workspace]
+    |> Keyword.merge(runtime_opts)
     |> maybe_put_dynamic_tool_opt(:trace_id, Map.get(metadata, :trace_id))
   end
 
-  defp dynamic_tool_opts(workspace, _metadata), do: [workspace: workspace]
+  defp dynamic_tool_opts(workspace, _metadata, runtime_opts) when is_list(runtime_opts) do
+    [workspace: workspace] |> Keyword.merge(runtime_opts)
+  end
 
   defp maybe_put_dynamic_tool_opt(opts, _key, value) when value in [nil, ""], do: opts
   defp maybe_put_dynamic_tool_opt(opts, key, value), do: Keyword.put(opts, key, value)
