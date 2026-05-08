@@ -223,7 +223,14 @@ defmodule SymphonyElixir.ExecutionContract do
         attempt_index = entry_value(existing, :attempt_index, 0)
         attempt_count = entry_value(existing, :attempt_count, attempt_index)
         expires_at_ms = entry_value(existing, :expires_at_ms, now_ms + ttl_ms)
-        {ledger, %{status: :cooldown, attempt_index: attempt_index, attempt_count: attempt_count, expires_at_ms: expires_at_ms}}
+
+        {ledger,
+         %{
+           status: :cooldown,
+           attempt_index: attempt_index,
+           attempt_count: attempt_count,
+           expires_at_ms: expires_at_ms
+         }}
 
       :open ->
         next_attempt_index = 1
