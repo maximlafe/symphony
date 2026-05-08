@@ -246,8 +246,7 @@ defmodule SymphonyElixir.ExecutionContract do
           outcome_at_ms: now_ms
         }
 
-        {Map.put(ledger, fingerprint, next_entry),
-         %{status: :opened, attempt_index: next_attempt_index, expires_at_ms: expires_at_ms}}
+        {Map.put(ledger, fingerprint, next_entry), %{status: :opened, attempt_index: next_attempt_index, expires_at_ms: expires_at_ms}}
     end
   end
 

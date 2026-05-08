@@ -982,7 +982,8 @@ defmodule SymphonyElixir.Orchestrator do
     case Application.get_env(:symphony_elixir, :execution_rollout_baseline, %{}) do
       baseline when is_map(baseline) ->
         %{
-          per_gate_rejection_rate: to_float_metric(Map.get(baseline, :per_gate_rejection_rate) || Map.get(baseline, "per_gate_rejection_rate"), @execution_rollout_default_baseline.per_gate_rejection_rate),
+          per_gate_rejection_rate:
+            to_float_metric(Map.get(baseline, :per_gate_rejection_rate) || Map.get(baseline, "per_gate_rejection_rate"), @execution_rollout_default_baseline.per_gate_rejection_rate),
           false_blocked_valid_run_rate:
             to_float_metric(
               Map.get(baseline, :false_blocked_valid_run_rate) || Map.get(baseline, "false_blocked_valid_run_rate"),
@@ -5068,6 +5069,7 @@ defmodule SymphonyElixir.Orchestrator do
         normalize_optional_string(context[:reason_code])
 
     now_ms = System.monotonic_time(:millisecond)
+
     {breaker_state, breakers} =
       tracker_infra_breaker_record_success(
         state.tracker_infra_breakers,
@@ -5180,7 +5182,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     cond do
       normalized.state in [:tripped, :paused_infra] and
-          is_integer(normalized.paused_until_ms) and normalized.paused_until_ms <= now_ms ->
+        is_integer(normalized.paused_until_ms) and normalized.paused_until_ms <= now_ms ->
         %{normalized | state: :cooldown, failure_timestamps: [], resume_success_count: 0}
 
       normalized.state == :tripped ->
