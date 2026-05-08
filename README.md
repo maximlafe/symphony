@@ -60,11 +60,12 @@ you start from a known-good baseline. During the fix, rerun only the scenario(s)
 surface you touched; the mapping and scenario details live in
 [`elixir/docs/runtime_smoke.md`](./elixir/docs/runtime_smoke.md).
 
-Before finishing the ticket, run `make symphony-validate` and wait for both PR checks to be green:
-`runtime-proof / run` and `infra-pass / run`. If `runtime-proof` fails, open the
-`runtime-proof-diagnostics` artifact in GitHub Actions and reproduce locally with
-`make symphony-runtime-smoke SCENARIO=all` or the matching named scenario. If `infra-pass` fails,
-open `infra-pass-diagnostics` and rerun `make symphony-validate` locally before pushing again.
+Before finishing the ticket, run `make symphony-validate` and wait for the required PR checks to be
+green, including `make-all / run`, `runtime-proof / run`, and `infra-pass / run` when they apply to
+the touched paths. If `runtime-proof` fails, open the `runtime-proof-diagnostics` artifact in GitHub
+Actions and reproduce locally with `make symphony-runtime-smoke SCENARIO=all` or the matching named
+scenario. If `infra-pass` fails, open `infra-pass-diagnostics` and rerun `make symphony-validate`
+locally before pushing again.
 
 ## How it works
 
