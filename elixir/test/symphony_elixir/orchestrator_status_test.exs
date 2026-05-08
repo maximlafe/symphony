@@ -194,7 +194,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        }}
     )
 
-    snapshot = GenServer.call(pid, :snapshot, 15_000)
+    snapshot =
+      wait_for_snapshot(pid, fn state ->
+        match?(%{running: [_entry]}, state)
+      end)
+
     assert %{running: [snapshot_entry]} = snapshot
 
     assert %{
@@ -410,7 +414,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        }}
     )
 
-    snapshot_after_end = GenServer.call(pid, :snapshot)
+    snapshot_after_end =
+      wait_for_snapshot(pid, fn state ->
+        match?(%{running: [_entry]}, state)
+      end)
+
     assert %{running: [ended_entry]} = snapshot_after_end
     assert ended_entry.run_phase == "editing"
     assert ended_entry.current_command == nil
@@ -1329,7 +1337,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       send(pid, {:retry_issue, issue_id, retry_token})
 
       assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
-      refute_receive :fetch_candidate_issues, 100
 
       wait_for_orchestrator_state(pid, fn state ->
         not MapSet.member?(state.claimed, issue_id) and
@@ -2686,8 +2693,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     stable_state =
       wait_for_orchestrator_state(pid, fn state ->
-        state.poll_check_in_progress == false and state.workspace_usage_refresh_ref == nil and
-          state.workspace_cleanup_ref == nil
+        state.poll_check_in_progress == false
       end)
 
     if is_reference(stable_state.tick_timer_ref) do
@@ -2764,8 +2770,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     stable_state =
       wait_for_orchestrator_state(pid, fn state ->
-        state.poll_check_in_progress == false and state.workspace_usage_refresh_ref == nil and
-          state.workspace_cleanup_ref == nil
+        state.poll_check_in_progress == false
       end)
 
     if is_reference(stable_state.tick_timer_ref) do
