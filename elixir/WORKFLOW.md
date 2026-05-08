@@ -434,6 +434,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 - [ ] cheap gate: `<same-HEAD targeted proof>`
 - [ ] red proof: `<command>` (required when `delivery:tdd`; never mark this item as `n/a` when required)
 - [ ] targeted tests: `<command>`
+- [ ] docs review: `<command>` (docs/prose-only changes; never mark this item as `n/a` when required)
 - [ ] runtime smoke: `<command>` (runtime/infra/workflow-contract/handoff changes; never mark this item as `n/a` when required; if the change also touches an external contract, add separate live proof per `docs/live_proof_runbook.md`)
 - [ ] stateful proof: `<command>` (DB/schema/stateful changes)
 - [ ] ui runtime proof: `<command>` (hosted UI/frontend changes)

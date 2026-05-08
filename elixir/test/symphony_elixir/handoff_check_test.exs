@@ -113,6 +113,65 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert manifest["workpad"]["sha256"]
   end
 
+  test "evaluate accepts docs-only handoff with checked docs review evidence" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] docs review: `markdownlint docs/operator-note.md`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Docs-only change reviewed and ready for handoff.
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-DOCS",
+               labels: [],
+               attachments: [],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["docs_only"],
+               git: git_metadata()
+             )
+
+    assert manifest["passed"]
+    assert manifest["missing_items"] == []
+  end
+
+  test "evaluate rejects docs-only handoff when docs review uses placeholder command" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] docs review: `n/a`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Docs-only change reviewed and ready for handoff.
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-DOCS",
+               labels: [],
+               attachments: [],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["docs_only"],
+               git: git_metadata()
+             )
+
+    assert "validation checklist is missing a checked `docs review` item" in manifest["missing_items"]
+  end
+
   test "default accessors expose the verification contract and default evaluate fails closed" do
     assert HandoffCheck.supported_profiles() == ["ui", "data-extraction", "runtime", "generic"]
     assert HandoffCheck.default_profile_labels()["runtime"] == "verification:runtime"

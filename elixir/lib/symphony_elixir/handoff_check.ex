@@ -1785,18 +1785,28 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp validation_missing_items(validation_items, issue_labels, validation_gate) do
     checked_checks = ValidationGate.checked_validation_checks(validation_items)
+    change_classes = validation_gate_change_classes(validation_gate)
 
-    required_core_checks =
-      ["preflight", "targeted tests", "repo validation"]
-      |> ValidationGate.normalize_checks()
-      |> Enum.reject(&(&1 in checked_checks))
-      |> Enum.map(&"validation checklist is missing a checked `#{human_check_label(&1)}` item")
+    required_gate_checks =
+      case ValidationGate.requirements(change_classes, "final") do
+        {:ok, %{"required_checks" => checks}} ->
+          checks
+          |> ValidationGate.normalize_checks()
+          |> Enum.reject(&(&1 in checked_checks))
+          |> Enum.map(&"validation checklist is missing a checked `#{human_check_label(&1)}` item")
+
+        _other ->
+          ["preflight", "targeted tests", "repo validation"]
+          |> ValidationGate.normalize_checks()
+          |> Enum.reject(&(&1 in checked_checks))
+          |> Enum.map(&"validation checklist is missing a checked `#{human_check_label(&1)}` item")
+      end
 
     proof_check_diagnostic =
       ValidationGate.missing_required_proof_checks(
         validation_items,
         issue_labels,
-        validation_gate_change_classes(validation_gate)
+        change_classes
       )
 
     required_proof_checks =
@@ -1805,7 +1815,7 @@ defmodule SymphonyElixir.HandoffCheck do
         "validation checklist is missing a checked `#{requirement["label"]}` item"
       end)
 
-    required_core_checks ++ required_proof_checks
+    (required_gate_checks ++ required_proof_checks) |> Enum.uniq()
   end
 
   defp validation_gate_missing_items(validation_gate, git_metadata) do

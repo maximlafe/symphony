@@ -94,6 +94,7 @@ defmodule SymphonyElixir.Orchestrator do
     Runtime state for the orchestrator polling loop.
     """
 
+    # credo:disable-for-next-line
     defstruct [
       :poll_interval_ms,
       :max_concurrent_agents,
@@ -884,6 +885,7 @@ defmodule SymphonyElixir.Orchestrator do
           :failure | :success,
           integer()
         ) :: map()
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def tracker_infra_breaker_transition_for_test(
         breakers,
         failure_class,
@@ -1026,7 +1028,13 @@ defmodule SymphonyElixir.Orchestrator do
       new_failure_class_count: 0,
       operator_path_determinism_rate: 1.0,
       shadow_divergence_rate: 0.0,
-      observed_window_hours: 0.0
+      observed_window_hours: 0.0,
+      false_blocked_valid_run_total: 0,
+      operator_path_incident_total: 0,
+      operator_path_deterministic_total: 0,
+      infra_recovery_latency_samples_ms: [],
+      pending_infra_failure_started_at_ms: nil,
+      seen_unknown_failure_classes: MapSet.new()
     }
   end
 
@@ -3953,6 +3961,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp schedule_tracker_escalation_retry_or_backoff(
          %State{} = state,
          tracker_reason,
@@ -5093,41 +5102,28 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp tracker_infra_breaker_record_success_if_applicable(%State{} = state, _context), do: state
 
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp tracker_infra_breaker_failure_decision(breakers, reason_code, context, now_ms)
        when is_map(breakers) and is_binary(reason_code) and is_map(context) and is_integer(now_ms) do
     key = tracker_infra_breaker_key(reason_code, context)
     breaker = tracker_infra_breaker_normalize(Map.get(breakers, key), now_ms)
 
-    cond do
-      breaker.state == :paused_infra ->
-        remaining_ms = max((breaker.paused_until_ms || now_ms) - now_ms, 0)
-        {:paused, remaining_ms, :paused_infra, key, Map.put(breakers, key, breaker)}
+    if breaker.state == :paused_infra do
+      remaining_ms = max((breaker.paused_until_ms || now_ms) - now_ms, 0)
+      {:paused, remaining_ms, :paused_infra, key, Map.put(breakers, key, breaker)}
+    else
+      failures =
+        [now_ms | tracker_infra_breaker_prune_failures(breaker.failure_timestamps, now_ms)]
+        |> Enum.uniq()
+        |> Enum.sort()
 
-      true ->
-        failures =
-          [now_ms | tracker_infra_breaker_prune_failures(breaker.failure_timestamps, now_ms)]
-          |> Enum.uniq()
-          |> Enum.sort()
+      breaker = %{breaker | failure_timestamps: failures, last_failure_at_ms: now_ms}
 
-        breaker = %{breaker | failure_timestamps: failures, last_failure_at_ms: now_ms}
-
-        if length(failures) >= @tracker_infra_breaker_trip_threshold do
-          tripped =
-            breaker
-            |> Map.put(:state, :tripped)
-            |> Map.put(:tripped_at_ms, now_ms)
-            |> Map.put(:paused_until_ms, now_ms + tracker_infra_breaker_cooldown_ms())
-            |> Map.put(:resume_success_count, 0)
-
-          {:paused, tracker_infra_breaker_cooldown_ms(), :tripped, key, Map.put(breakers, key, tripped)}
-        else
-          next_state = if breaker.state == :cooldown, do: :cooldown, else: :open
-          open_breaker = %{breaker | state: next_state}
-          {:allow, 0, next_state, key, Map.put(breakers, key, open_breaker)}
-        end
+      tracker_infra_breaker_failure_outcome(breaker, failures, breakers, key, now_ms)
     end
   end
 
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp tracker_infra_breaker_record_success(breakers, reason_code, context, now_ms)
        when is_map(breakers) and is_binary(reason_code) and is_map(context) and is_integer(now_ms) do
     key = tracker_infra_breaker_key(reason_code, context)
@@ -5140,15 +5136,13 @@ defmodule SymphonyElixir.Orchestrator do
           :cooldown ->
             success_count = normalized.resume_success_count + 1
 
-            updated =
-              if success_count >= @tracker_infra_breaker_resume_success_threshold do
-                tracker_infra_breaker_open_state()
-              else
-                %{normalized | resume_success_count: success_count, last_success_at_ms: now_ms}
-              end
-
-            state_label = if updated.state == :open, do: :open, else: :cooldown
-            {state_label, Map.put(breakers, key, updated)}
+            tracker_infra_breaker_cooldown_success_outcome(
+              normalized,
+              success_count,
+              breakers,
+              key,
+              now_ms
+            )
 
           _ ->
             {normalized.state, Map.put(breakers, key, normalized)}
@@ -5162,6 +5156,38 @@ defmodule SymphonyElixir.Orchestrator do
   defp tracker_infra_breaker_record_success(breakers, _reason_code, _context, _now_ms)
        when is_map(breakers),
        do: {:open, breakers}
+
+  defp tracker_infra_breaker_failure_outcome(breaker, failures, breakers, key, now_ms)
+       when is_map(breaker) and is_list(failures) and is_map(breakers) and is_binary(key) and is_integer(now_ms) do
+    if length(failures) >= @tracker_infra_breaker_trip_threshold do
+      tripped =
+        breaker
+        |> Map.put(:state, :tripped)
+        |> Map.put(:tripped_at_ms, now_ms)
+        |> Map.put(:paused_until_ms, now_ms + tracker_infra_breaker_cooldown_ms())
+        |> Map.put(:resume_success_count, 0)
+
+      {:paused, tracker_infra_breaker_cooldown_ms(), :tripped, key, Map.put(breakers, key, tripped)}
+    else
+      next_state = if breaker.state == :cooldown, do: :cooldown, else: :open
+      open_breaker = %{breaker | state: next_state}
+      {:allow, 0, next_state, key, Map.put(breakers, key, open_breaker)}
+    end
+  end
+
+  defp tracker_infra_breaker_cooldown_success_outcome(normalized, success_count, breakers, key, now_ms)
+       when is_map(normalized) and is_integer(success_count) and is_map(breakers) and
+              is_binary(key) and is_integer(now_ms) do
+    updated =
+      if success_count >= @tracker_infra_breaker_resume_success_threshold do
+        tracker_infra_breaker_open_state()
+      else
+        %{normalized | resume_success_count: success_count, last_success_at_ms: now_ms}
+      end
+
+    state_label = if updated.state == :open, do: :open, else: :cooldown
+    {state_label, Map.put(breakers, key, updated)}
+  end
 
   defp tracker_infra_breaker_key(reason_code, context)
        when is_binary(reason_code) and is_map(context) do
@@ -5233,7 +5259,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp tracker_operator_matrix_row_id(:infra_fail, breaker_state) when breaker_state in [:tripped, :paused_infra] do
-    ExecutionContract.operator_matrix_row_id(:infra_fail, :pause_infra, tracker_operator_state_for_breaker(breaker_state))
+    ExecutionContract.operator_matrix_row_id(
+      :infra_fail,
+      :pause_infra,
+      tracker_operator_state_for_breaker(breaker_state)
+    )
   end
 
   defp tracker_operator_matrix_row_id(:infra_fail, breaker_state) do
@@ -5284,6 +5314,7 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | execution_rollout_mode: next_mode, execution_rollout_snapshot: snapshot}
   end
 
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp next_execution_rollout_snapshot(snapshot, gate_payload, state, now_ms)
        when is_map(snapshot) and is_map(gate_payload) and is_integer(now_ms) do
     started_at_ms = state.execution_rollout_started_at_ms || now_ms
@@ -5302,10 +5333,60 @@ defmodule SymphonyElixir.Orchestrator do
       Map.get(snapshot, :auto_remediation_success_total, 0) +
         if(gate_payload.retry_budget_outcome in [:retry_scheduled, :shadow_only], do: 1, else: 0)
 
+    false_blocked_total =
+      Map.get(snapshot, :false_blocked_valid_run_total, 0) +
+        if(Map.get(gate_payload, :false_blocked_valid_run, false), do: 1, else: 0)
+
+    operator_incident_increment =
+      if rejected_increment == 1 and not is_nil(gate_payload.failure_class), do: 1, else: 0
+
+    operator_incidents = Map.get(snapshot, :operator_path_incident_total, 0) + operator_incident_increment
+
+    operator_deterministic_increment =
+      if operator_incident_increment == 1 and deterministic_operator_row?(Map.get(gate_payload, :operator_matrix_row_id)),
+        do: 1,
+        else: 0
+
+    operator_deterministic =
+      Map.get(snapshot, :operator_path_deterministic_total, 0) + operator_deterministic_increment
+
+    previous_unknown = unknown_failure_class_set(Map.get(snapshot, :seen_unknown_failure_classes))
+    unknown_failure_class = normalize_unknown_failure_class(Map.get(gate_payload, :failure_class))
+    next_unknown = if is_binary(unknown_failure_class), do: MapSet.put(previous_unknown, unknown_failure_class), else: previous_unknown
+
+    pending_started_at_ms = Map.get(snapshot, :pending_infra_failure_started_at_ms)
+
+    next_pending_started_at_ms =
+      cond do
+        gate_payload.failure_class == :infra_fail and rejected_increment == 1 ->
+          pending_started_at_ms || now_ms
+
+        rejected_increment == 0 and is_integer(pending_started_at_ms) ->
+          nil
+
+        true ->
+          pending_started_at_ms
+      end
+
+    recovered_latency_samples =
+      case {rejected_increment == 0, pending_started_at_ms} do
+        {true, started_ms} when is_integer(started_ms) and now_ms >= started_ms ->
+          latency_ms = now_ms - started_ms
+
+          [latency_ms | Map.get(snapshot, :infra_recovery_latency_samples_ms, [])]
+          |> Enum.take(64)
+
+        _ ->
+          Map.get(snapshot, :infra_recovery_latency_samples_ms, [])
+      end
+
     per_gate_rejection_rate = if(attempted_total > 0, do: rejected_total / attempted_total, else: 0.0)
-    false_blocked_valid_run_rate = 0.0
+    false_blocked_valid_run_rate = if(rejected_total > 0, do: false_blocked_total / rejected_total, else: 0.0)
     repeated_failure_rate = if(auto_attempts > 0, do: repeated / auto_attempts, else: 0.0)
     auto_success_rate = if(auto_attempts > 0, do: auto_successes / auto_attempts, else: 1.0)
+    median_infra_recovery_latency = median_non_negative_integer(recovered_latency_samples)
+    new_failure_class_count = MapSet.size(next_unknown)
+    operator_path_determinism_rate = if(operator_incidents > 0, do: operator_deterministic / operator_incidents, else: 1.0)
     observed_hours = max(now_ms - started_at_ms, 0) / 3_600_000
 
     snapshot
@@ -5318,15 +5399,64 @@ defmodule SymphonyElixir.Orchestrator do
     |> Map.put(:retry_budget_blocked_total, repeated)
     |> Map.put(:auto_remediation_attempt_total, auto_attempts)
     |> Map.put(:auto_remediation_success_total, auto_successes)
+    |> Map.put(:false_blocked_valid_run_total, false_blocked_total)
+    |> Map.put(:operator_path_incident_total, operator_incidents)
+    |> Map.put(:operator_path_deterministic_total, operator_deterministic)
     |> Map.put(:per_gate_rejection_rate, per_gate_rejection_rate)
     |> Map.put(:false_blocked_valid_run_rate, false_blocked_valid_run_rate)
     |> Map.put(:repeated_failure_by_fingerprint_rate, repeated_failure_rate)
     |> Map.put(:auto_remediation_success_rate, auto_success_rate)
-    |> Map.put(:median_infra_recovery_latency, 0)
-    |> Map.put(:new_failure_class_count, 0)
-    |> Map.put(:operator_path_determinism_rate, 1.0)
+    |> Map.put(:median_infra_recovery_latency, median_infra_recovery_latency)
+    |> Map.put(:new_failure_class_count, new_failure_class_count)
+    |> Map.put(:operator_path_determinism_rate, operator_path_determinism_rate)
     |> Map.put(:shadow_divergence_rate, 0.0)
     |> Map.put(:observed_window_hours, observed_hours)
+    |> Map.put(:pending_infra_failure_started_at_ms, next_pending_started_at_ms)
+    |> Map.put(:infra_recovery_latency_samples_ms, recovered_latency_samples)
+    |> Map.put(:seen_unknown_failure_classes, next_unknown)
+  end
+
+  defp deterministic_operator_row?(row_id) when is_binary(row_id) do
+    trimmed = String.trim(row_id)
+    trimmed != "" and trimmed != "opm_v1_unmapped"
+  end
+
+  defp deterministic_operator_row?(_row_id), do: false
+
+  defp normalize_unknown_failure_class(value) when value in [:infra_fail, :policy_fail, nil], do: nil
+  defp normalize_unknown_failure_class(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp normalize_unknown_failure_class(value) when is_binary(value) do
+    normalized = String.trim(String.downcase(value))
+    if normalized in ["", "infra_fail", "policy_fail"], do: nil, else: normalized
+  end
+
+  defp normalize_unknown_failure_class(_value), do: "unknown"
+
+  defp unknown_failure_class_set(%MapSet{} = set), do: set
+  defp unknown_failure_class_set(list) when is_list(list), do: MapSet.new(list)
+  defp unknown_failure_class_set(_value), do: MapSet.new()
+
+  defp median_non_negative_integer(values) when is_list(values) do
+    numbers =
+      values
+      |> Enum.filter(&(is_integer(&1) and &1 >= 0))
+      |> Enum.sort()
+
+    count = length(numbers)
+
+    cond do
+      count == 0 ->
+        0
+
+      rem(count, 2) == 1 ->
+        Enum.at(numbers, div(count, 2))
+
+      true ->
+        lower = Enum.at(numbers, div(count, 2) - 1)
+        upper = Enum.at(numbers, div(count, 2))
+        div(lower + upper, 2)
+    end
   end
 
   defp classify_tracker_escalation_reason(tracker_reason) do
@@ -5354,6 +5484,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp tracker_escalation_infra_reason?({:linear_api_request, _reason}), do: true
 
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp tracker_escalation_infra_reason?(reason) do
     reason
     |> inspect()
