@@ -1297,6 +1297,464 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "acceptance matrix item `AM-2` requires executed proof; mapped validation command looks surface-only (`--help`)" in manifest["missing_items"]
   end
 
+  test "evaluate enforces two-layer mode:plan metadata when swarm assist gate is enabled" do
+    workspace = Path.join(System.tmp_dir!(), "two-layer-plan-metadata-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    File.mkdir_p!(workspace)
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: acceptance_matrix_description(),
+               workpad_path: workpad_path,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "mode:plan with `planning.swarm_assist_enabled=true` requires machine-readable `plan_revision` in issue description" in manifest["missing_items"]
+
+    assert "mode:plan with `planning.swarm_assist_enabled=true` requires machine-readable `artifact_path` in issue description" in manifest["missing_items"]
+
+    assert "mode:plan with `planning.swarm_assist_enabled=true` requires machine-readable `artifact_revision` in issue description" in manifest["missing_items"]
+  end
+
+  test "evaluate validates linked two-layer plan artifact in enabled mode:plan path" do
+    workspace = Path.join(System.tmp_dir!(), "two-layer-plan-linked-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    artifact_relative_path = "docs/reports/let-504-swarm-artifact.md"
+    artifact_path = Path.join(workspace, artifact_relative_path)
+    revision = "plan-rev-1"
+
+    File.mkdir_p!(Path.dirname(artifact_path))
+
+    File.write!(
+      artifact_path,
+      """
+      # LET-504 Swarm Artifact
+
+      plan_revision: `#{revision}`
+      artifact_revision: `#{revision}`
+      """
+    )
+
+    issue_description =
+      two_layer_acceptance_matrix_description(
+        artifact_relative_path,
+        revision,
+        revision,
+        "review-ready"
+      )
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert manifest["missing_items"] == []
+    assert get_in(manifest, ["issue", "two_layer_plan_contract", "artifact_path"]) == artifact_relative_path
+    assert get_in(manifest, ["issue", "two_layer_plan_contract", "artifact_file_exists"]) == true
+  end
+
+  test "evaluate fails closed for mismatched or provisional two-layer mode:plan metadata" do
+    workspace = Path.join(System.tmp_dir!(), "two-layer-plan-mismatch-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    artifact_relative_path = "docs/reports/let-504-swarm-artifact.md"
+    artifact_path = Path.join(workspace, artifact_relative_path)
+
+    File.mkdir_p!(Path.dirname(artifact_path))
+
+    File.write!(
+      artifact_path,
+      """
+      # LET-504 Swarm Artifact
+
+      plan_revision: `plan-rev-1`
+      artifact_revision: `plan-rev-1`
+      """
+    )
+
+    assert {:error, mismatch_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: two_layer_acceptance_matrix_description(artifact_relative_path, "plan-rev-1", "plan-rev-2", "review-ready"),
+               workpad_path: workpad_path,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "two-layer plan contract mismatch: `artifact_revision` must equal `plan_revision`" in mismatch_manifest["missing_items"]
+
+    assert Enum.any?(
+             mismatch_manifest["missing_items"],
+             &String.contains?(&1, "linked swarm artifact `docs/reports/let-504-swarm-artifact.md` revision mismatch")
+           )
+
+    assert {:error, provisional_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: two_layer_acceptance_matrix_description(artifact_relative_path, "plan-rev-1", "plan-rev-1", "provisional"),
+               workpad_path: workpad_path,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "two-layer mode:plan output is still `provisional` and cannot pass review-ready handoff" in provisional_manifest["missing_items"]
+  end
+
+  test "evaluate covers two-layer mode:plan path and artifact edge cases" do
+    workspace = Path.join(System.tmp_dir!(), "two-layer-plan-edge-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    File.mkdir_p!(workspace)
+
+    missing_file_relative_path = "docs/reports/missing-swarm-artifact.md"
+
+    assert {:error, missing_file_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description:
+                 two_layer_acceptance_matrix_description(
+                   missing_file_relative_path,
+                   "plan-rev-1",
+                   "plan-rev-1",
+                   "review-ready"
+                 ),
+               workpad_path: workpad_path,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "linked swarm artifact `docs/reports/missing-swarm-artifact.md` does not exist in workspace" in missing_file_manifest["missing_items"]
+
+    unreadable_relative_path = "docs/reports/unreadable-swarm-artifact.md"
+    unreadable_artifact_path = Path.join(workspace, unreadable_relative_path)
+    File.mkdir_p!(unreadable_artifact_path)
+
+    assert {:error, unreadable_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description:
+                 two_layer_acceptance_matrix_description(
+                   unreadable_relative_path,
+                   "plan-rev-1",
+                   "plan-rev-1",
+                   "review-ready"
+                 ),
+               workpad_path: workpad_path,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert Enum.any?(
+             unreadable_manifest["missing_items"],
+             &String.contains?(&1, "linked swarm artifact `docs/reports/unreadable-swarm-artifact.md` is unreadable")
+           )
+
+    assert {:error, invalid_state_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description:
+                 two_layer_acceptance_matrix_description(
+                   "docs/reports/missing-swarm-artifact.md",
+                   "plan-rev-1",
+                   "plan-rev-1",
+                   "invalid"
+                 ),
+               workpad_path: workpad_path,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "two-layer mode:plan output is marked `invalid` and cannot pass review-ready handoff" in invalid_state_manifest["missing_items"]
+
+    assert {:error, absolute_path_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description:
+                 two_layer_acceptance_matrix_description(
+                   "/tmp/swarm-artifact.md",
+                   "plan-rev-1",
+                   "plan-rev-1",
+                   "review-ready"
+                 ),
+               workpad_path: workpad_path,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "two-layer plan contract `artifact_path` must be repo-relative under `docs/reports/`" in absolute_path_manifest["missing_items"]
+
+    assert {:error, escaped_path_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description:
+                 two_layer_acceptance_matrix_description(
+                   "../reports/swarm-artifact.md",
+                   "plan-rev-1",
+                   "plan-rev-1",
+                   "review-ready"
+                 ),
+               workpad_path: workpad_path,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "two-layer plan contract `artifact_path` must not escape workspace root" in escaped_path_manifest["missing_items"]
+
+    assert {:error, wrong_root_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description:
+                 two_layer_acceptance_matrix_description(
+                   "reports/swarm-artifact.md",
+                   "plan-rev-1",
+                   "plan-rev-1",
+                   "review-ready"
+                 ),
+               workpad_path: workpad_path,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "two-layer plan contract `artifact_path` must point under `docs/reports/`" in wrong_root_manifest["missing_items"]
+
+    mismatch_relative_path = "docs/reports/mismatch-plan-revision-artifact.md"
+    mismatch_artifact_path = Path.join(workspace, mismatch_relative_path)
+    File.mkdir_p!(Path.dirname(mismatch_artifact_path))
+
+    File.write!(
+      mismatch_artifact_path,
+      """
+      # LET-504 Swarm Artifact
+
+      plan_revision: `different-plan-rev`
+      artifact_revision: `plan-rev-1`
+      """
+    )
+
+    assert {:error, plan_revision_mismatch_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description:
+                 two_layer_acceptance_matrix_description(
+                   mismatch_relative_path,
+                   "plan-rev-1",
+                   "plan-rev-1",
+                   "review-ready"
+                 ),
+               workpad_path: workpad_path,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert Enum.any?(
+             plan_revision_mismatch_manifest["missing_items"],
+             &String.contains?(&1, "plan revision mismatch")
+           )
+
+    missing_revision_relative_path = "docs/reports/missing-revision-artifact.md"
+    missing_revision_artifact_path = Path.join(workspace, missing_revision_relative_path)
+    File.mkdir_p!(Path.dirname(missing_revision_artifact_path))
+
+    File.write!(
+      missing_revision_artifact_path,
+      """
+      # LET-504 Swarm Artifact
+
+      plan_revision: `plan-rev-1`
+      """
+    )
+
+    assert {:error, missing_revision_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description:
+                 two_layer_acceptance_matrix_description(
+                   missing_revision_relative_path,
+                   "plan-rev-1",
+                   "plan-rev-1",
+                   "review-ready"
+                 ),
+               workpad_path: workpad_path,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert Enum.any?(
+             missing_revision_manifest["missing_items"],
+             &String.contains?(&1, "missing machine-readable `artifact_revision`")
+           )
+
+    assert {:error, unknown_workspace_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description:
+                 two_layer_acceptance_matrix_description(
+                   "docs/reports/swarm-artifact.md",
+                   "plan-rev-1",
+                   "plan-rev-1",
+                   "review-ready"
+                 ),
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "cannot validate two-layer artifact path: workspace root is unknown" in unknown_workspace_manifest["missing_items"]
+
+    single_quote_value_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+    | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
+
+    ## Two-Layer Plan Contract
+
+    plan_revision: "
+    artifact_path: `docs/reports/missing-swarm-artifact.md`
+    artifact_revision: `plan-rev-1`
+    plan_state: `review-ready`
+    """
+
+    assert {:error, _single_quote_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: single_quote_value_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+  end
+
+  test "evaluate supports quoted two-layer metadata and plan_status alias" do
+    workspace = Path.join(System.tmp_dir!(), "two-layer-plan-quoted-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    artifact_relative_path = "docs/reports/let-quoted-swarm-artifact.md"
+    artifact_path = Path.join(workspace, artifact_relative_path)
+    File.mkdir_p!(Path.dirname(artifact_path))
+
+    File.write!(
+      artifact_path,
+      """
+      # LET-504 Swarm Artifact
+
+      plan_revision: "plan-rev-quoted"
+      artifact_revision: "plan-rev-quoted"
+      """
+    )
+
+    quoted_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+    | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
+
+    ## Two-Layer Plan Contract
+
+    plan_revision: "plan-rev-quoted"
+    artifact_path: "docs/reports/let-quoted-swarm-artifact.md"
+    artifact_revision: "plan-rev-quoted"
+    plan_status: "review-ready"
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: quoted_description,
+               workpad_path: workpad_path,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert manifest["missing_items"] == []
+    assert get_in(manifest, ["issue", "two_layer_plan_contract", "plan_state"]) == "review-ready"
+  end
+
   test "evaluate defers done-phase acceptance matrix proofs during review handoff" do
     workpad = """
     ## Codex Workpad
@@ -2713,6 +3171,36 @@ defmodule SymphonyElixir.HandoffCheckTest do
     """
   end
 
+  defp mode_plan_runtime_workpad do
+    """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log from the health check
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:targeted tests`
+    - [x] `AM-2` -> `validation:runtime smoke`
+    - [x] `AM-3` -> `artifact:runtime-proof.log`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Acceptance matrix coverage is complete.
+    """
+  end
+
   defp acceptance_matrix_description do
     """
     ## Acceptance Matrix
@@ -2737,6 +3225,25 @@ defmodule SymphonyElixir.HandoffCheckTest do
     | --- | --- | --- | --- | --- | --- | --- |
     | AM-1 | Review proof | Targeted tests pass | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed | review |
     | AM-2 | Post-merge runtime proof | Runtime smoke is dispatched on main | runtime_smoke | post-merge workflow dispatch | runtime_smoke | done |
+    """
+  end
+
+  defp two_layer_acceptance_matrix_description(artifact_path, plan_revision, artifact_revision, plan_state) do
+    """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+    | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
+
+    ## Two-Layer Plan Contract
+
+    plan_revision: `#{plan_revision}`
+    artifact_path: `#{artifact_path}`
+    artifact_revision: `#{artifact_revision}`
+    plan_state: `#{plan_state}`
     """
   end
 

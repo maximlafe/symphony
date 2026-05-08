@@ -297,6 +297,14 @@ defmodule SymphonyElixir.HandoffCheck do
       |> parse_workpad()
       |> maybe_reconcile_workpad_artifacts(attachments, acceptance_matrix_items, required_capabilities)
 
+    {two_layer_plan_missing_items, two_layer_plan_contract} =
+      two_layer_plan_contract_missing_items(
+        issue_labels,
+        issue_description,
+        workpad_path,
+        opts
+      )
+
     acceptance_contract = acceptance_contract(acceptance_matrix_items, required_capabilities)
 
     {validation_gate, git_metadata, validation_gate_errors} =
@@ -336,6 +344,8 @@ defmodule SymphonyElixir.HandoffCheck do
         validation_context,
         capability_context
       )
+      |> Kernel.++(two_layer_plan_missing_items)
+      |> Enum.uniq()
 
     passed = missing_items == []
     handoff_failure = classify_handoff_failure(passed, missing_items)
@@ -360,6 +370,7 @@ defmodule SymphonyElixir.HandoffCheck do
           "identifier" => issue_identifier,
           "labels" => issue_labels,
           "required_capabilities" => required_capabilities,
+          "two_layer_plan_contract" => two_layer_plan_contract,
           "attachment_titles" => Enum.map(attachments, & &1["title"]),
           "acceptance_matrix" => acceptance_matrix_items,
           "acceptance_contract_revision" => acceptance_contract["revision"]
@@ -841,6 +852,304 @@ defmodule SymphonyElixir.HandoffCheck do
       "proof_mapping" => proof_mapping_items,
       "checkpoint" => checkpoint
     }
+  end
+
+  defp two_layer_plan_contract_missing_items(issue_labels, issue_description, workpad_path, opts)
+       when is_list(issue_labels) and is_list(opts) do
+    swarm_assist_enabled? = plan_swarm_assist_enabled?(opts)
+    plan_mode? = @plan_mode_label in issue_labels
+    contract = parse_two_layer_plan_contract_fields(issue_description)
+
+    if swarm_assist_enabled? and plan_mode? do
+      workspace_root = workspace_root_for_plan_artifact(workpad_path, opts)
+
+      {artifact_errors, artifact_details} =
+        validate_two_layer_artifact_link(
+          contract,
+          workspace_root
+        )
+
+      metadata_errors =
+        []
+        |> maybe_require_plan_contract_field(
+          contract["plan_revision"],
+          "mode:plan with `planning.swarm_assist_enabled=true` requires machine-readable `plan_revision` in issue description"
+        )
+        |> maybe_require_plan_contract_field(
+          contract["artifact_path"],
+          "mode:plan with `planning.swarm_assist_enabled=true` requires machine-readable `artifact_path` in issue description"
+        )
+        |> maybe_require_plan_contract_field(
+          contract["artifact_revision"],
+          "mode:plan with `planning.swarm_assist_enabled=true` requires machine-readable `artifact_revision` in issue description"
+        )
+        |> maybe_require_plan_revision_match(contract["plan_revision"], contract["artifact_revision"])
+        |> maybe_require_non_provisional_state(contract["plan_state"])
+
+      {Enum.uniq(metadata_errors ++ artifact_errors),
+       contract
+       |> Map.put("enabled", true)
+       |> Map.put("mode_plan", true)
+       |> Map.put("workspace_root", workspace_root)
+       |> Map.merge(artifact_details)}
+    else
+      {[],
+       contract
+       |> Map.put("enabled", swarm_assist_enabled?)
+       |> Map.put("mode_plan", plan_mode?)}
+    end
+  end
+
+  defp plan_swarm_assist_enabled?(opts) when is_list(opts) do
+    case Keyword.get(opts, :swarm_assist_enabled, Keyword.get(opts, :planning_swarm_assist_enabled, false)) do
+      true -> true
+      _ -> false
+    end
+  end
+
+  defp parse_two_layer_plan_contract_fields(issue_description) when is_binary(issue_description) do
+    %{
+      "plan_revision" => extract_machine_readable_field(issue_description, "plan_revision"),
+      "artifact_path" => extract_machine_readable_field(issue_description, "artifact_path"),
+      "artifact_revision" => extract_machine_readable_field(issue_description, "artifact_revision"),
+      "plan_state" =>
+        extract_machine_readable_field(issue_description, "plan_state") ||
+          extract_machine_readable_field(issue_description, "plan_status")
+    }
+  end
+
+  defp parse_two_layer_plan_contract_fields(_issue_description) do
+    %{
+      "plan_revision" => nil,
+      "artifact_path" => nil,
+      "artifact_revision" => nil,
+      "plan_state" => nil
+    }
+  end
+
+  defp extract_machine_readable_field(markdown, key) when is_binary(markdown) and is_binary(key) do
+    pattern = ~r/^\s*(?:-\s*)?(?:`)?#{Regex.escape(key)}(?:`)?\s*:\s*(.+?)\s*$/mi
+
+    case Regex.run(pattern, markdown, capture: :all_but_first) do
+      [value | _] -> normalize_machine_readable_value(value)
+      _ -> nil
+    end
+  end
+
+  defp normalize_machine_readable_value(value) when is_binary(value) do
+    normalized =
+      value
+      |> String.trim()
+      |> strip_wrapping_backticks()
+      |> strip_wrapping_quotes()
+      |> String.trim()
+
+    if normalized == "", do: nil, else: normalized
+  end
+
+  defp strip_wrapping_quotes(value) when is_binary(value) do
+    if String.length(value) >= 2 do
+      quote = String.first(value)
+      last = String.last(value)
+
+      if quote in ["\"", "'"] and quote == last do
+        String.slice(value, 1, String.length(value) - 2)
+      else
+        value
+      end
+    else
+      value
+    end
+  end
+
+  defp maybe_require_plan_contract_field(errors, value, _message)
+       when is_binary(value) and value != "",
+       do: errors
+
+  defp maybe_require_plan_contract_field(errors, _value, message), do: errors ++ [message]
+
+  defp maybe_require_plan_revision_match(errors, plan_revision, artifact_revision) do
+    if non_empty_binary?(plan_revision) and non_empty_binary?(artifact_revision) and
+         plan_revision != artifact_revision do
+      errors ++ ["two-layer plan contract mismatch: `artifact_revision` must equal `plan_revision`"]
+    else
+      errors
+    end
+  end
+
+  defp maybe_require_non_provisional_state(errors, nil), do: errors
+
+  defp maybe_require_non_provisional_state(errors, state) when is_binary(state) do
+    normalized =
+      state
+      |> String.downcase()
+      |> String.trim()
+
+    cond do
+      normalized == "provisional" ->
+        errors ++ ["two-layer mode:plan output is still `provisional` and cannot pass review-ready handoff"]
+
+      normalized == "invalid" ->
+        errors ++ ["two-layer mode:plan output is marked `invalid` and cannot pass review-ready handoff"]
+
+      true ->
+        errors
+    end
+  end
+
+  defp validate_two_layer_artifact_link(contract, workspace_root) when is_map(contract) do
+    artifact_path = contract["artifact_path"]
+    plan_revision = contract["plan_revision"]
+    artifact_revision = contract["artifact_revision"]
+
+    if placeholder_value?(artifact_path) do
+      {[], unresolved_artifact_details(nil)}
+    else
+      normalized_path = normalize_machine_readable_value(artifact_path)
+
+      validate_two_layer_artifact_file(
+        normalized_path,
+        workspace_root,
+        plan_revision,
+        artifact_revision
+      )
+    end
+  end
+
+  defp validate_two_layer_artifact_file(
+         normalized_path,
+         workspace_root,
+         plan_revision,
+         artifact_revision
+       ) do
+    case validate_two_layer_artifact_path(normalized_path, workspace_root) do
+      {[_ | _] = path_errors, artifact_file_path} ->
+        {path_errors, unresolved_artifact_details(artifact_file_path)}
+
+      {[], artifact_file_path} ->
+        case File.read(artifact_file_path) do
+          {:ok, artifact_body} ->
+            artifact_contract = parse_two_layer_plan_contract_fields(artifact_body)
+
+            artifact_contract_errors =
+              []
+              |> maybe_require_plan_contract_field(
+                artifact_contract["artifact_revision"],
+                "linked swarm artifact `#{normalized_path}` is missing machine-readable `artifact_revision`"
+              )
+              |> maybe_require_artifact_revision_alignment(
+                artifact_contract["artifact_revision"],
+                artifact_revision,
+                normalized_path
+              )
+              |> maybe_require_artifact_plan_revision_alignment(
+                artifact_contract["plan_revision"],
+                plan_revision,
+                normalized_path
+              )
+
+            {artifact_contract_errors,
+             %{
+               "artifact_file_path" => artifact_file_path,
+               "artifact_file_exists" => true,
+               "artifact_file_readable" => true,
+               "artifact_fields" => artifact_contract
+             }}
+
+          {:error, :enoent} ->
+            {["linked swarm artifact `#{normalized_path}` does not exist in workspace"], unresolved_artifact_details(artifact_file_path)}
+
+          {:error, reason} ->
+            {["linked swarm artifact `#{normalized_path}` is unreadable: #{inspect(reason)}"], unresolved_artifact_details(artifact_file_path)}
+        end
+    end
+  end
+
+  defp unresolved_artifact_details(artifact_file_path) do
+    %{
+      "artifact_file_path" => artifact_file_path,
+      "artifact_file_exists" => false,
+      "artifact_file_readable" => false
+    }
+  end
+
+  defp maybe_require_artifact_revision_alignment(
+         errors,
+         artifact_file_revision,
+         expected_artifact_revision,
+         artifact_path
+       ) do
+    if non_empty_binary?(artifact_file_revision) and
+         non_empty_binary?(expected_artifact_revision) and
+         artifact_file_revision != expected_artifact_revision do
+      errors ++
+        [
+          "linked swarm artifact `#{artifact_path}` revision mismatch: artifact file `artifact_revision` must match issue `artifact_revision`"
+        ]
+    else
+      errors
+    end
+  end
+
+  defp maybe_require_artifact_plan_revision_alignment(
+         errors,
+         artifact_file_plan_revision,
+         expected_plan_revision,
+         artifact_path
+       ) do
+    if non_empty_binary?(artifact_file_plan_revision) and
+         non_empty_binary?(expected_plan_revision) and
+         artifact_file_plan_revision != expected_plan_revision do
+      errors ++
+        [
+          "linked swarm artifact `#{artifact_path}` plan revision mismatch: artifact file `plan_revision` must match issue `plan_revision`"
+        ]
+    else
+      errors
+    end
+  end
+
+  defp validate_two_layer_artifact_path(artifact_path, workspace_root) when is_binary(artifact_path) do
+    trimmed_path = String.trim(artifact_path)
+
+    cond do
+      Path.type(trimmed_path) == :absolute ->
+        {["two-layer plan contract `artifact_path` must be repo-relative under `docs/reports/`"], nil}
+
+      String.starts_with?(trimmed_path, "../") or String.contains?(trimmed_path, "/../") ->
+        {["two-layer plan contract `artifact_path` must not escape workspace root"], nil}
+
+      not String.starts_with?(trimmed_path, "docs/reports/") ->
+        {["two-layer plan contract `artifact_path` must point under `docs/reports/`"], nil}
+
+      not is_binary(workspace_root) ->
+        {["cannot validate two-layer artifact path: workspace root is unknown"], nil}
+
+      true ->
+        artifact_file_path = Path.expand(trimmed_path, workspace_root)
+        {[], artifact_file_path}
+    end
+  end
+
+  defp workspace_root_for_plan_artifact(workpad_path, opts) do
+    explicit_workspace =
+      case Keyword.get(opts, :workspace) do
+        workspace when is_binary(workspace) and workspace != "" -> Path.expand(workspace)
+        _ -> nil
+      end
+
+    cond do
+      is_binary(explicit_workspace) ->
+        explicit_workspace
+
+      is_binary(workpad_path) and workpad_path != "" ->
+        workpad_path
+        |> Path.expand()
+        |> Path.dirname()
+
+      true ->
+        nil
+    end
   end
 
   defp section_body(sections, titles) when is_map(sections) and is_list(titles) do
@@ -2276,6 +2585,9 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp normalize_profile_labels(_profile_labels), do: @default_profile_labels
+
+  defp non_empty_binary?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_empty_binary?(_value), do: false
 
   defp placeholder_value?(nil), do: true
 

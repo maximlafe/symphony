@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.{Config, HandoffCheck, Linear.Client, PathSafety, ValidationGate}
+  alias SymphonyElixir.{Config, HandoffCheck, Linear.Client, PathSafety, ValidationGate, Workflow}
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
@@ -537,6 +537,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp execute_symphony_handoff_check(arguments, opts) do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
+    workspace = Keyword.get(opts, :workspace)
 
     with {:ok, issue_id, workpad_path, repo, pr_number, profile, phase, manifest_path} <-
            normalize_symphony_handoff_check_arguments(arguments, opts),
@@ -552,6 +553,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           issue_identifier: Map.get(issue_context, "identifier"),
           issue_description: Map.get(issue_context, "description"),
           workpad_path: workpad_path,
+          workspace: workspace,
           repo: repo,
           pr_number: pr_number,
           phase: phase,
@@ -560,6 +562,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           attachments: Map.get(issue_context, "attachments", []),
           pr_snapshot: pr_snapshot,
           profile_labels: Config.settings!().verification.profile_labels,
+          swarm_assist_enabled: plan_swarm_assist_enabled?(opts),
           change_classes: validation_context.change_classes,
           git: validation_context.git,
           validation_gate_errors: validation_context.errors
@@ -645,6 +648,32 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       change_classes: change_classes,
       errors: Enum.uniq(git_errors ++ path_errors ++ class_errors)
     }
+  end
+
+  defp plan_swarm_assist_enabled?(opts) when is_list(opts) do
+    case Keyword.fetch(opts, :planning_swarm_assist_enabled) do
+      {:ok, true} ->
+        true
+
+      {:ok, _value} ->
+        false
+
+      :error ->
+        workflow_plan_swarm_assist_enabled?()
+    end
+  end
+
+  defp workflow_plan_swarm_assist_enabled? do
+    case Workflow.current() do
+      {:ok, %{config: config}} when is_map(config) ->
+        case get_in(config, ["planning", "swarm_assist_enabled"]) do
+          true -> true
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
   end
 
   defp build_current_git_metadata(workspace, opts) do
