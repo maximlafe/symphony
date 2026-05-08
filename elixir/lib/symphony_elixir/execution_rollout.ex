@@ -409,6 +409,8 @@ defmodule SymphonyElixir.ExecutionRollout do
     is_number(value) and value >= 0.0 and value <= 1.0
   end
 
+  defp valid_threshold_value?(_key, _value), do: false
+
   defp metric_value(metrics, key) when is_map(metrics) do
     Map.get(metrics, key) || Map.get(metrics, Atom.to_string(key))
   end
