@@ -1372,6 +1372,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       retry_token = install_retry_attempt(pid, issue_id, issue.identifier, attempt: 1)
 
+      flush_mailbox_message(:fetch_candidate_issues)
       send(pid, {:retry_issue, issue_id, retry_token})
 
       assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
@@ -1421,6 +1422,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           }
         )
 
+      flush_mailbox_message(:fetch_candidate_issues)
       send(pid, {:retry_issue, issue_id, retry_token})
 
       assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
@@ -2650,12 +2652,18 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   test "idle poll cycle throttles codex account probes while a healthy account is cached" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
-      poll_interval_ms: 50
+      poll_interval_ms: 5_000,
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"}
+      ]
     )
 
     orchestrator_name = Module.concat(__MODULE__, :IdleCodexProbeThrottleOrchestrator)
+    {:ok, probe_counter} = Agent.start_link(fn -> 0 end)
 
     probe_fun = fn accounts, _opts ->
+      Agent.update(probe_counter, &(&1 + 1))
+
       Enum.map(accounts, fn account ->
         %{
           id: Map.get(account, :id),
@@ -2682,12 +2690,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       if Process.alive?(pid) do
         Process.exit(pid, :normal)
       end
+
+      if Process.alive?(probe_counter) do
+        Agent.stop(probe_counter)
+      end
     end)
 
     stable_state =
       wait_for_orchestrator_state(pid, fn state ->
-        state.poll_check_in_progress == false and state.workspace_usage_refresh_ref == nil and
-          state.workspace_cleanup_ref == nil
+        state.poll_check_in_progress == false
       end)
 
     if is_reference(stable_state.tick_timer_ref) do
@@ -2714,26 +2725,28 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     end)
 
+    Process.sleep(50)
+    baseline_probe_count = Agent.get(probe_counter, & &1)
+
     send(pid, :run_poll_cycle)
-
-    throttled_state =
-      wait_for_orchestrator_state(pid, fn state ->
-        state.poll_check_in_progress == false and
-          state.last_codex_account_probe_at_ms == fresh_probe_at_ms
-      end)
-
-    assert throttled_state.last_codex_account_probe_at_ms == fresh_probe_at_ms
+    assert_probe_count_unchanged(probe_counter, baseline_probe_count, 750)
   end
 
   test "idle poll cycle refreshes codex probes when no active account is available" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
-      poll_interval_ms: 50
+      poll_interval_ms: 5_000,
+      codex_accounts: [
+        %{id: "primary", codex_home: "/tmp/codex-primary"}
+      ]
     )
 
     orchestrator_name = Module.concat(__MODULE__, :IdleCodexProbeRecoveryOrchestrator)
+    {:ok, probe_counter} = Agent.start_link(fn -> 0 end)
 
     probe_fun = fn accounts, _opts ->
+      Agent.update(probe_counter, &(&1 + 1))
+
       Enum.map(accounts, fn account ->
         %{
           id: Map.get(account, :id),
@@ -2760,12 +2773,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       if Process.alive?(pid) do
         Process.exit(pid, :normal)
       end
+
+      if Process.alive?(probe_counter) do
+        Agent.stop(probe_counter)
+      end
     end)
 
     stable_state =
       wait_for_orchestrator_state(pid, fn state ->
-        state.poll_check_in_progress == false and state.workspace_usage_refresh_ref == nil and
-          state.workspace_cleanup_ref == nil
+        state.poll_check_in_progress == false
       end)
 
     if is_reference(stable_state.tick_timer_ref) do
@@ -2786,12 +2802,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     end)
 
+    Process.sleep(50)
+    baseline_probe_count = Agent.get(probe_counter, & &1)
+
     send(pid, :run_poll_cycle)
+    wait_for_probe_count_gt(probe_counter, baseline_probe_count, 3_000)
 
     refreshed_state =
       wait_for_orchestrator_state(pid, fn state ->
-        is_integer(state.last_codex_account_probe_at_ms) and
-          state.last_codex_account_probe_at_ms > fresh_probe_at_ms
+        state.poll_check_in_progress == false
       end)
 
     assert refreshed_state.last_codex_account_probe_at_ms > fresh_probe_at_ms
@@ -4168,6 +4187,56 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         Process.sleep(10)
         do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
       end
+    end
+  end
+
+  defp assert_probe_count_unchanged(counter_pid, baseline_count, timeout_ms) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_assert_probe_count_unchanged(counter_pid, baseline_count, deadline_ms)
+  end
+
+  defp do_assert_probe_count_unchanged(counter_pid, baseline_count, deadline_ms) do
+    current_count = Agent.get(counter_pid, & &1)
+
+    cond do
+      current_count != baseline_count ->
+        flunk("expected probe count to remain #{baseline_count}, got #{current_count}")
+
+      System.monotonic_time(:millisecond) >= deadline_ms ->
+        :ok
+
+      true ->
+        Process.sleep(10)
+        do_assert_probe_count_unchanged(counter_pid, baseline_count, deadline_ms)
+    end
+  end
+
+  defp wait_for_probe_count_gt(counter_pid, baseline_count, timeout_ms) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_probe_count_gt(counter_pid, baseline_count, deadline_ms)
+  end
+
+  defp do_wait_for_probe_count_gt(counter_pid, baseline_count, deadline_ms) do
+    current_count = Agent.get(counter_pid, & &1)
+
+    cond do
+      current_count > baseline_count ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline_ms ->
+        flunk("expected probe count to increase above #{baseline_count}, got #{current_count}")
+
+      true ->
+        Process.sleep(10)
+        do_wait_for_probe_count_gt(counter_pid, baseline_count, deadline_ms)
+    end
+  end
+
+  defp flush_mailbox_message(message) do
+    receive do
+      ^message -> flush_mailbox_message(message)
+    after
+      0 -> :ok
     end
   end
 

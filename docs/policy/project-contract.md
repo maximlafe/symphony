@@ -47,17 +47,19 @@ If a rule must change, update this file first and then align workflows/skills.
   - `plan_revision`: short-plan revision token;
   - `artifact_path`: repo-relative artifact path under `docs/reports/`;
   - `artifact_revision`: artifact token that must equal `plan_revision`.
+- Canonical failure vocabulary for enabled mode:
+  - `blocking divergence`: any mismatch or unresolved state that must fail
+    closed before review-ready handoff.
 - Swarm artifact rules:
   - durable repo file, normally `docs/reports/<task-slug>-swarm-artifact.md`;
   - additive/subordinate only; it cannot replace plan claims;
   - if artifact and short plan diverge, short plan is authoritative.
 - Minimum loop for enabled `mode:plan` path:
-  1. `swarm-mode`: expand request into document spec and first draft
-     implementation contour;
-  2. `swarm-red-team`: critique dependency impact, rollback safety, and proof
-     readiness;
-  3. `swarm-mode`: apply findings sequentially and normalize final short plan +
-     linked artifact.
+  1. run `swarm-iterate` as the planning critique/repair orchestrator
+     (default: three critique/repair rounds);
+  2. produce or refresh linked swarm artifact under `docs/reports/`;
+  3. compress the result into the canonical short plan (SSOT) with aligned
+     `plan_revision` / `artifact_revision`.
 - Lifecycle semantics for enabled path:
   - `provisional`: short plan exists but artifact pair is not validated yet;
   - `review-ready`: required compatibility/existence checks passed;
@@ -68,12 +70,13 @@ If a rule must change, update this file first and then align workflows/skills.
 - Existence proof (gate enabled): output still maps to canonical fields and
   linked artifact remains subordinate.
 - Fail-closed checks for enabled mode:
-  - missing `artifact_path` blocks acceptance;
-  - missing artifact file at `artifact_path` blocks acceptance;
-  - `artifact_revision != plan_revision` blocks acceptance until artifact is
-    regenerated or reset;
-  - provisional state is not review-ready;
-  - short-plan/artifact divergence blocks acceptance until artifact is repaired.
+  - missing `artifact_path` is `blocking divergence` and blocks acceptance;
+  - missing artifact file at `artifact_path` is `blocking divergence` and
+    blocks acceptance;
+  - `artifact_revision != plan_revision` is `blocking divergence` and blocks
+    acceptance until artifact is regenerated or reset;
+  - provisional state is `blocking divergence` and is not review-ready;
+  - short-plan/artifact divergence is `blocking divergence` until repaired.
 - High-risk planning tasks may run extra critique/repair rounds; low-risk tasks
   may use a single critique/repair pass.
 - During `Spec Prep`, swarm planning loop must stay read-only for tracker state

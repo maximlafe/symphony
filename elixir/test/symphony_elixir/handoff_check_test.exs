@@ -1321,6 +1321,8 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "mode:plan with `planning.swarm_assist_enabled=true` requires machine-readable `artifact_path` in issue description" in manifest["missing_items"]
 
     assert "mode:plan with `planning.swarm_assist_enabled=true` requires machine-readable `artifact_revision` in issue description" in manifest["missing_items"]
+
+    assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in manifest["missing_items"]
   end
 
   test "evaluate validates linked two-layer plan artifact in enabled mode:plan path" do
@@ -1403,6 +1405,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
              )
 
     assert "two-layer plan contract mismatch: `artifact_revision` must equal `plan_revision`" in mismatch_manifest["missing_items"]
+    assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in mismatch_manifest["missing_items"]
 
     assert Enum.any?(
              mismatch_manifest["missing_items"],
@@ -1424,6 +1427,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
              )
 
     assert "two-layer mode:plan output is still `provisional` and cannot pass review-ready handoff" in provisional_manifest["missing_items"]
+    assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in provisional_manifest["missing_items"]
   end
 
   test "evaluate covers two-layer mode:plan path and artifact edge cases" do

@@ -886,18 +886,33 @@ defmodule SymphonyElixir.HandoffCheck do
         |> maybe_require_plan_revision_match(contract["plan_revision"], contract["artifact_revision"])
         |> maybe_require_non_provisional_state(contract["plan_state"])
 
-      {Enum.uniq(metadata_errors ++ artifact_errors),
-       contract
-       |> Map.put("enabled", true)
-       |> Map.put("mode_plan", true)
-       |> Map.put("workspace_root", workspace_root)
-       |> Map.merge(artifact_details)}
+      {
+        metadata_errors
+        |> Kernel.++(artifact_errors)
+        |> Enum.uniq()
+        |> maybe_require_blocking_divergence(),
+        contract
+        |> Map.put("enabled", true)
+        |> Map.put("mode_plan", true)
+        |> Map.put("workspace_root", workspace_root)
+        |> Map.merge(artifact_details)
+      }
     else
       {[],
        contract
        |> Map.put("enabled", swarm_assist_enabled?)
        |> Map.put("mode_plan", plan_mode?)}
     end
+  end
+
+  defp maybe_require_blocking_divergence([]), do: []
+
+  defp maybe_require_blocking_divergence(errors) when is_list(errors) do
+    [
+      "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation"
+      | errors
+    ]
+    |> Enum.uniq()
   end
 
   defp plan_swarm_assist_enabled?(opts) when is_list(opts) do

@@ -49,6 +49,11 @@ Notes:
   - remove stale `delivery:tdd` during planning/research when the task does not justify true TDD.
 - `Spec Prep` and `Spec Review` remain as the opt-in analysis-only path for `mode:research`, `mode:plan`, and legacy spec-prep tickets; implementation-ready issues should skip them.
 - `research-mode` and `plan-mode` are authored as repo-local Symphony skills and should be loaded from `.agents/skills/...` when present; for workspaces cloned from other LET-managed repos, fallback to the bundled copies under `$CODEX_HOME/skills/...`.
+- For `mode:plan`, `plan-mode` stays the only planning entrypoint. When
+  `planning.swarm_assist_enabled=true`, `plan-mode` runs `swarm-iterate`
+  directly (repo-local path when present, otherwise
+  `$CODEX_HOME/skills/swarm-iterate/SKILL.md`) and keeps the short plan as
+  SSOT with linked artifact as supporting context.
 - When a run creates a fresh working branch, use `Working branch:` exactly when it is set; otherwise name it `Symphony/<lowercase issue identifier>-<short-kebab-summary>` instead of reusing Linear `gitBranchName` values such as `cycloid-yips0i/...`, and record branch lineage as `Новая ветка <branch> создана от origin/<base>`.
 - PR titles for unattended runs should stay short and outcome-oriented in the form `<ISSUE-ID>: <clear shipped outcome>`.
 - PR handoff uses `In Review` instead of `Human Review`.
