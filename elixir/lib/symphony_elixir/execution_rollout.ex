@@ -378,7 +378,9 @@ defmodule SymphonyElixir.ExecutionRollout do
     key
     |> String.trim()
     |> case do
-      "" -> nil
+      "" ->
+        nil
+
       text ->
         try do
           String.to_existing_atom(text)

@@ -246,8 +246,7 @@ defmodule SymphonyElixir.ExecutionContract do
           outcome_at_ms: now_ms
         }
 
-        {Map.put(ledger, fingerprint, next_entry),
-         %{status: :opened, attempt_index: next_attempt_index, expires_at_ms: expires_at_ms}}
+        {Map.put(ledger, fingerprint, next_entry), %{status: :opened, attempt_index: next_attempt_index, expires_at_ms: expires_at_ms}}
     end
   end
 
@@ -394,8 +393,6 @@ defmodule SymphonyElixir.ExecutionContract do
         nil
     end
   end
-
-  defp linear_api_status_code(_reason_code), do: nil
 
   defp matches_any_pattern?(text, patterns) when is_binary(text) do
     Enum.any?(patterns, &String.contains?(text, &1))

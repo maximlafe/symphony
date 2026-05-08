@@ -1,3 +1,4 @@
+# credo:disable-for-this-file Credo.Check.Readability.MaxLineLength
 defmodule SymphonyElixir.ErrorClassifier do
   @moduledoc """
   Classifies agent/runtime failures into retry policy buckets.

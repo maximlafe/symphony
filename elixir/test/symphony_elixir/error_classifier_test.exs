@@ -395,6 +395,7 @@ defmodule SymphonyElixir.ErrorClassifierTest do
     assert result.remediation_policy == :pause_infra
     assert result.operator_state == :tripped
     assert result.operator_matrix_row_id == "opm_v1_infra_pause"
+
     assert ErrorClassifier.classify_execution_operator_matrix_row_id("request timed out", :tripped) ==
              "opm_v1_infra_pause"
   end
