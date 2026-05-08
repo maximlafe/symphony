@@ -3,6 +3,7 @@
 # credo:disable-for-this-file Credo.Check.Refactor.Nesting
 # credo:disable-for-this-file Credo.Check.Refactor.CondStatements
 # credo:disable-for-this-file Credo.Check.Warning.TooManyFields
+# credo:disable-for-this-file Credo.Check.Warning.StructFieldAmount
 defmodule SymphonyElixir.Orchestrator do
   @moduledoc """
   Polls Linear and dispatches repository copies to Codex-backed workers.
