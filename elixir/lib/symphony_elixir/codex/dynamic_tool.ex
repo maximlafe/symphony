@@ -3359,19 +3359,23 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp tool_error_payload({:execution_transition_blocked, details}) do
+    enriched_details = enrich_admission_error_details(details, :execution_transition_blocked)
+
     %{
       "error" => %{
         "message" => "execution transitions require a successful `symphony_spec_check` in the current workspace.",
-        "details" => details
+        "details" => enriched_details
       }
     }
   end
 
   defp tool_error_payload({:material_spec_change_requires_spec_review, details}) do
+    enriched_details = enrich_admission_error_details(details, :material_spec_change_requires_spec_review)
+
     %{
       "error" => %{
         "message" => "material spec change detected during execution; move the issue to `Spec Review` in the same update.",
-        "details" => details
+        "details" => enriched_details
       }
     }
   end
@@ -3479,6 +3483,188 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     }
   end
+
+  defp enrich_admission_error_details(details, guard_reason) when is_map(details) do
+    reason_code = Map.get(details, "reason_code")
+    contract = execution_contract_classification(reason_code, details, guard_reason)
+    failure_class = admission_failure_class(contract, reason_code)
+    remediation_policy = admission_remediation_policy(contract, failure_class)
+    operator_state = admission_operator_state(contract, failure_class, remediation_policy)
+
+    operator_matrix_row_id =
+      admission_operator_matrix_row_id(contract, failure_class, remediation_policy, operator_state)
+
+    decision_id =
+      Map.get(contract, "decision_id") ||
+        admission_decision_id(reason_code, details, guard_reason, failure_class, remediation_policy)
+
+    Map.merge(details, %{
+      "failure_class" => failure_class,
+      "remediation_policy" => remediation_policy,
+      "operator_state" => operator_state,
+      "operator_matrix_row_id" => operator_matrix_row_id,
+      "decision_id" => decision_id,
+      "guard_layer" => "admission"
+    })
+  end
+
+  defp enrich_admission_error_details(_details, guard_reason) do
+    enrich_admission_error_details(%{}, guard_reason)
+  end
+
+  defp execution_contract_classification(reason_code, details, guard_reason) do
+    module = SymphonyElixir.ExecutionContract
+    payload = %{"reason_code" => reason_code, "details" => details, "guard_reason" => guard_reason}
+
+    if Code.ensure_loaded?(module) do
+      [
+        {module, :classify_admission_failure, [payload]},
+        {module, :classify_admission_failure, [reason_code, payload]},
+        {module, :classify_failure, [payload]},
+        {module, :classify_failure, [reason_code, payload]},
+        {module, :classify, [payload]},
+        {module, :classify, [reason_code, payload]}
+      ]
+      |> Enum.find_value(%{}, &call_execution_contract(&1))
+    else
+      %{}
+    end
+  end
+
+  defp call_execution_contract({module, function_name, args}) do
+    if function_exported?(module, function_name, length(args)) do
+      module
+      |> apply(function_name, args)
+      |> normalize_execution_contract_result()
+    else
+      nil
+    end
+  end
+
+  defp normalize_execution_contract_result({:ok, result}), do: normalize_execution_contract_result(result)
+  defp normalize_execution_contract_result(result) when is_map(result), do: stringify_map_keys(result)
+  defp normalize_execution_contract_result(result) when is_list(result), do: result |> Map.new() |> stringify_map_keys()
+  defp normalize_execution_contract_result(_result), do: %{}
+
+  defp stringify_map_keys(map) when is_map(map) do
+    Map.new(map, fn
+      {key, value} when is_atom(key) -> {Atom.to_string(key), value}
+      {key, value} -> {key, value}
+    end)
+  end
+
+  defp admission_failure_class(contract, reason_code) do
+    contract
+    |> Map.get("failure_class")
+    |> normalize_failure_class()
+    |> case do
+      nil -> fallback_failure_class(reason_code)
+      value -> value
+    end
+  end
+
+  defp normalize_failure_class(value) when value in ["policy", :policy, "policy_fail", :policy_fail], do: "policy"
+  defp normalize_failure_class(value) when value in ["infra", :infra, "infra_fail", :infra_fail], do: "infra"
+  defp normalize_failure_class(_value), do: nil
+
+  defp fallback_failure_class(reason_code) when is_binary(reason_code) do
+    if String.contains?(reason_code, "context_unavailable"), do: "infra", else: "policy"
+  end
+
+  defp fallback_failure_class(_reason_code), do: "policy"
+
+  defp admission_remediation_policy(contract, failure_class) do
+    case Map.get(contract, "remediation_policy") |> normalize_remediation_policy() do
+      value when is_binary(value) ->
+        value
+
+      _ ->
+        if failure_class == "infra", do: "pause_infra", else: "operator_required"
+    end
+  end
+
+  defp normalize_remediation_policy(value)
+       when value in ["operator_required", :operator_required],
+       do: "operator_required"
+
+  defp normalize_remediation_policy(value)
+       when value in ["auto_retry_once", :auto_retry_once],
+       do: "auto_retry_once"
+
+  defp normalize_remediation_policy(value)
+       when value in ["pause_infra", :pause_infra],
+       do: "pause_infra"
+
+  defp normalize_remediation_policy(_value), do: nil
+
+  defp admission_operator_state(contract, failure_class, remediation_policy) do
+    case Map.get(contract, "operator_state") |> normalize_operator_state() do
+      nil ->
+        fallback_operator_state(failure_class, remediation_policy)
+
+      value ->
+        value
+    end
+  end
+
+  defp normalize_operator_state(value) when value in ["open", :open], do: "open"
+  defp normalize_operator_state(value) when value in ["cooldown", :cooldown], do: "cooldown"
+  defp normalize_operator_state(value) when value in ["tripped", :tripped], do: "tripped"
+  defp normalize_operator_state(value) when value in ["paused_infra", :paused_infra], do: "paused_infra"
+  defp normalize_operator_state(_value), do: nil
+
+  defp fallback_operator_state("infra", "pause_infra"), do: "tripped"
+  defp fallback_operator_state(_failure_class, _remediation_policy), do: "open"
+
+  defp admission_operator_matrix_row_id(contract, failure_class, remediation_policy, operator_state) do
+    case Map.get(contract, "operator_matrix_row_id") do
+      value when is_binary(value) and value != "" ->
+        value
+
+      _ ->
+        module = SymphonyElixir.ExecutionContract
+
+        if Code.ensure_loaded?(module) and function_exported?(module, :operator_matrix_row_id, 3) do
+          module.operator_matrix_row_id(failure_class, remediation_policy, operator_state) |> to_string()
+        else
+          fallback_operator_matrix_row_id(failure_class, remediation_policy, operator_state)
+        end
+    end
+  end
+
+  defp fallback_operator_matrix_row_id("policy", "operator_required", _state), do: "opm_v1_policy_fix"
+  defp fallback_operator_matrix_row_id("infra", "auto_retry_once", "open"), do: "opm_v1_infra_retry_open"
+  defp fallback_operator_matrix_row_id("infra", "auto_retry_once", "cooldown"), do: "opm_v1_infra_retry_cooldown"
+  defp fallback_operator_matrix_row_id("infra", "pause_infra", state) when state in ["tripped", "paused_infra"], do: "opm_v1_infra_pause"
+  defp fallback_operator_matrix_row_id(_failure_class, _remediation_policy, _state), do: "opm_v1_unmapped"
+
+  defp admission_decision_id(reason_code, details, guard_reason, failure_class, remediation_policy) do
+    details_fingerprint =
+      details
+      |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
+      |> Enum.map(fn {key, value} -> [to_string(key), "=", inspect(value)] end)
+      |> List.flatten()
+      |> IO.iodata_to_binary()
+
+    [
+      "admission",
+      to_string(guard_reason),
+      admission_string(reason_code),
+      failure_class,
+      remediation_policy,
+      details_fingerprint
+    ]
+    |> Enum.join("|")
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.url_encode64(padding: false)
+    |> String.slice(0, 22)
+    |> then(&"adm_#{&1}")
+  end
+
+  defp admission_string(value) when is_binary(value), do: value
+  defp admission_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp admission_string(value) when is_nil(value), do: ""
+  defp admission_string(value), do: to_string(value)
 
   defp supported_tool_names do
     Enum.map(tool_specs(), & &1["name"])

@@ -3,6 +3,8 @@ defmodule SymphonyElixir.ErrorClassifier do
   Classifies agent/runtime failures into retry policy buckets.
   """
 
+  alias SymphonyElixir.ExecutionContract
+
   @typedoc "Retry strategy class for a failed agent attempt."
   @type error_class :: :transient | :permanent | :semi_permanent
 
@@ -23,6 +25,13 @@ defmodule SymphonyElixir.ErrorClassifier do
 
   @typedoc "Runtime health override for the Codex account that produced the failure."
   @type account_state :: :ready | :cooldown | :broken
+
+  @typedoc "Execution contract classification layered on top of FailureDetails."
+  @type execution_failure_class :: ExecutionContract.failure_class()
+
+  @typedoc "Execution contract remediation policy layered on top of FailureDetails."
+  @type execution_remediation_policy :: ExecutionContract.remediation_policy()
+  @type execution_operator_state :: ExecutionContract.operator_state()
 
   defmodule FailureDetails do
     @moduledoc false
@@ -158,6 +167,59 @@ defmodule SymphonyElixir.ErrorClassifier do
 
   @spec classify(term()) :: error_class()
   def classify(reason), do: reason |> classify_details() |> Map.fetch!(:error_class)
+
+  @spec classify_execution_failure_class(term()) :: execution_failure_class()
+  def classify_execution_failure_class(reason_or_reason_code) do
+    ExecutionContract.failure_class(reason_or_reason_code)
+  end
+
+  @spec classify_execution_remediation_policy(term()) :: execution_remediation_policy()
+  def classify_execution_remediation_policy(reason_or_reason_code) do
+    failure_class = classify_execution_failure_class(reason_or_reason_code)
+    ExecutionContract.remediation_policy(failure_class, reason_or_reason_code)
+  end
+
+  @spec classify_execution_operator_matrix_row_id(term(), term() | nil) :: String.t()
+  def classify_execution_operator_matrix_row_id(reason_or_reason_code, operator_state \\ nil) do
+    execution_failure_class = classify_execution_failure_class(reason_or_reason_code)
+    remediation_policy = ExecutionContract.remediation_policy(execution_failure_class, reason_or_reason_code)
+
+    resolved_operator_state =
+      ExecutionContract.operator_state_for(execution_failure_class, remediation_policy, operator_state)
+
+    ExecutionContract.operator_matrix_row_id(execution_failure_class, remediation_policy, resolved_operator_state)
+  end
+
+  @spec classify_details_with_execution_contract(term()) :: %{
+          failure_details: FailureDetails.t(),
+          execution_failure_class: execution_failure_class(),
+          remediation_policy: execution_remediation_policy(),
+          operator_state: execution_operator_state(),
+          operator_matrix_row_id: String.t()
+        }
+  def classify_details_with_execution_contract(reason) do
+    failure_details = classify_details(reason)
+
+    reason_code = %{
+      reason: reason,
+      summary: failure_details.summary
+    }
+
+    execution_failure_class = classify_execution_failure_class(reason_code)
+    remediation_policy = ExecutionContract.remediation_policy(execution_failure_class, reason_code)
+    operator_state = ExecutionContract.operator_state_for(execution_failure_class, remediation_policy, nil)
+
+    operator_matrix_row_id =
+      ExecutionContract.operator_matrix_row_id(execution_failure_class, remediation_policy, operator_state)
+
+    %{
+      failure_details: failure_details,
+      execution_failure_class: execution_failure_class,
+      remediation_policy: remediation_policy,
+      operator_state: operator_state,
+      operator_matrix_row_id: operator_matrix_row_id
+    }
+  end
 
   @spec classify_details(term()) :: FailureDetails.t()
   def classify_details({:agent_run_failed, nested_reason}), do: classify_details(nested_reason)

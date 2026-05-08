@@ -395,7 +395,19 @@ defmodule SymphonyElixir.ErrorClassifierTest do
     assert result.remediation_policy == :pause_infra
     assert result.operator_state == :tripped
     assert result.operator_matrix_row_id == "opm_v1_infra_pause"
+
     assert ErrorClassifier.classify_execution_operator_matrix_row_id("request timed out", :tripped) ==
+             "opm_v1_infra_pause"
+  end
+
+  test "execution operator matrix helper resolves default states when operator state is omitted" do
+    assert ErrorClassifier.classify_execution_operator_matrix_row_id("workspace contract violation") ==
+             "opm_v1_policy_fix"
+
+    assert ErrorClassifier.classify_execution_operator_matrix_row_id("workspace contract violation", nil) ==
+             "opm_v1_policy_fix"
+
+    assert ErrorClassifier.classify_execution_operator_matrix_row_id("request timed out", nil) ==
              "opm_v1_infra_pause"
   end
 end

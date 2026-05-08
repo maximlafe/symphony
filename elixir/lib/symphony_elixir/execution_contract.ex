@@ -246,8 +246,7 @@ defmodule SymphonyElixir.ExecutionContract do
           outcome_at_ms: now_ms
         }
 
-        {Map.put(ledger, fingerprint, next_entry),
-         %{status: :opened, attempt_index: next_attempt_index, expires_at_ms: expires_at_ms}}
+        {Map.put(ledger, fingerprint, next_entry), %{status: :opened, attempt_index: next_attempt_index, expires_at_ms: expires_at_ms}}
     end
   end
 
@@ -303,10 +302,6 @@ defmodule SymphonyElixir.ExecutionContract do
     value
     |> inspect(pretty: false, limit: 30, printable_limit: 2_000)
     |> String.trim()
-    |> case do
-      "" -> nil
-      text -> text
-    end
   end
 
   defp normalize_reason_code(reason_or_reason_code) do
@@ -385,17 +380,12 @@ defmodule SymphonyElixir.ExecutionContract do
   defp linear_api_status_code(reason_code) when is_binary(reason_code) do
     case Regex.run(~r/linear_api_status_(\d{3})/, reason_code) do
       [_, status] ->
-        case Integer.parse(status) do
-          {parsed, ""} -> parsed
-          _ -> nil
-        end
+        String.to_integer(status)
 
       _ ->
         nil
     end
   end
-
-  defp linear_api_status_code(_reason_code), do: nil
 
   defp matches_any_pattern?(text, patterns) when is_binary(text) do
     Enum.any?(patterns, &String.contains?(text, &1))

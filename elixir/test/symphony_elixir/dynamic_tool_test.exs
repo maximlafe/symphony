@@ -1693,6 +1693,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   test "linear_graphql blocks execution transitions until symphony_spec_check succeeds" do
     workspace = Path.join(System.tmp_dir!(), "spec_gate_workspace_#{System.unique_integer([:positive])}")
+    execution_state_name = List.first(SymphonyElixir.SpecCheck.default_execution_states()) || "In Progress"
 
     issue_description = """
     ## Acceptance Matrix
@@ -1716,7 +1717,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "team" => %{
                "states" => %{
                  "nodes" => [
-                   %{"id" => "in-progress-state-id", "name" => "In Progress"},
+                   %{"id" => "in-progress-state-id", "name" => execution_state_name},
                    %{"id" => "spec-review-state-id", "name" => "Spec Review"}
                  ]
                }
@@ -1735,23 +1736,42 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         },
         workspace: workspace,
         linear_client: fn query, _variables, _opts ->
-          if query =~ "SymphonyHandoffCheckState" do
-            state_context_response.()
-          else
-            flunk("unexpected execution transition mutation without spec manifest guard")
+          cond do
+            query =~ "issueUpdate(" ->
+              flunk("unexpected execution transition mutation without spec manifest guard")
+
+            query =~ "issue(" ->
+              state_context_response.()
+
+            true ->
+              flunk("unexpected execution transition query without spec manifest guard: #{query}")
           end
         end
       )
 
     assert blocked["success"] == false
-    assert decode_tool_text(blocked)["error"]["message"] =~ "execution transitions require"
+    blocked_payload = decode_tool_text(blocked)
+    assert blocked_payload["error"]["message"] =~ "execution transitions require"
+
+    blocked_details = blocked_payload["error"]["details"]
+    assert blocked_details["reason_code"] == "spec_manifest_missing"
+    assert blocked_details["required_tool"] == "symphony_spec_check"
+    assert blocked_details["guard_layer"] == "admission"
+    assert blocked_details["failure_class"] in ["policy", "infra"]
+    assert is_binary(blocked_details["remediation_policy"])
+    assert blocked_details["remediation_policy"] != ""
+    assert blocked_details["operator_state"] in ["open", "cooldown", "tripped", "paused_infra"]
+    assert is_binary(blocked_details["operator_matrix_row_id"])
+    assert blocked_details["operator_matrix_row_id"] == "opm_v1_policy_fix"
+    assert is_binary(blocked_details["decision_id"])
+    assert blocked_details["decision_id"] != ""
 
     assert DynamicTool.execute(
              "symphony_spec_check",
              %{"issue_id" => "LET-670"},
              workspace: workspace,
              linear_client: fn query, _variables, _opts ->
-               if query =~ "SymphonyHandoffCheckState" do
+               if query =~ "issue(" do
                  state_context_response.()
                else
                  flunk("unexpected query while building spec manifest: #{query}")
