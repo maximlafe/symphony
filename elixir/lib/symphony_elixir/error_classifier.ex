@@ -182,9 +182,22 @@ defmodule SymphonyElixir.ErrorClassifier do
   @spec classify_execution_operator_matrix_row_id(term(), term() | nil) :: String.t()
   def classify_execution_operator_matrix_row_id(reason_or_reason_code, operator_state \\ nil) do
     execution_failure_class = classify_execution_failure_class(reason_or_reason_code)
-    remediation_policy = ExecutionContract.remediation_policy(execution_failure_class, reason_or_reason_code)
-    resolved_operator_state = ExecutionContract.operator_state_for(execution_failure_class, remediation_policy, operator_state)
-    ExecutionContract.operator_matrix_row_id(execution_failure_class, remediation_policy, resolved_operator_state)
+
+    remediation_policy =
+      ExecutionContract.remediation_policy(execution_failure_class, reason_or_reason_code)
+
+    resolved_operator_state =
+      ExecutionContract.operator_state_for(
+        execution_failure_class,
+        remediation_policy,
+        operator_state
+      )
+
+    ExecutionContract.operator_matrix_row_id(
+      execution_failure_class,
+      remediation_policy,
+      resolved_operator_state
+    )
   end
 
   @spec classify_details_with_execution_contract(term()) :: %{
@@ -203,15 +216,24 @@ defmodule SymphonyElixir.ErrorClassifier do
     }
 
     execution_failure_class = classify_execution_failure_class(reason_code)
-    remediation_policy = ExecutionContract.remediation_policy(execution_failure_class, reason_code)
-    operator_state = ExecutionContract.operator_state_for(execution_failure_class, remediation_policy, nil)
+
+    remediation_policy =
+      ExecutionContract.remediation_policy(execution_failure_class, reason_code)
+
+    operator_state =
+      ExecutionContract.operator_state_for(execution_failure_class, remediation_policy, nil)
 
     %{
       failure_details: failure_details,
       execution_failure_class: execution_failure_class,
       remediation_policy: remediation_policy,
       operator_state: operator_state,
-      operator_matrix_row_id: ExecutionContract.operator_matrix_row_id(execution_failure_class, remediation_policy, operator_state)
+      operator_matrix_row_id:
+        ExecutionContract.operator_matrix_row_id(
+          execution_failure_class,
+          remediation_policy,
+          operator_state
+        )
     }
   end
 

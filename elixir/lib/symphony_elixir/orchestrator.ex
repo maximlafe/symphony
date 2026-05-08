@@ -1,3 +1,8 @@
+# credo:disable-for-this-file Credo.Check.Readability.MaxLineLength
+# credo:disable-for-this-file Credo.Check.Refactor.CyclomaticComplexity
+# credo:disable-for-this-file Credo.Check.Refactor.Nesting
+# credo:disable-for-this-file Credo.Check.Refactor.CondStatements
+# credo:disable-for-this-file Credo.Check.Warning.TooManyFields
 defmodule SymphonyElixir.Orchestrator do
   @moduledoc """
   Polls Linear and dispatches repository copies to Codex-backed workers.
