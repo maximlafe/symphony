@@ -31,25 +31,49 @@ When guidance differs:
 
 If a rule must change, update this file first and then align workflows/skills.
 
-## Spec Prep Planning Quality Loop (Swarm-Assisted)
+## Spec Prep Planning Contract (Two-Layer, Swarm-Assisted)
 
 - This applies only to `mode:plan` and only when workflow gate
   `planning.swarm_assist_enabled` is enabled.
 - Default contract is disabled (`false`): legacy `plan-mode` remains the
   compatibility path.
-- When enabled, swarm loop is a drafting/critique helper only; it does not own
-  routing, labels, state transitions, delivery semantics, or handoff semantics.
+- In enabled mode, plan output has two layers:
+  1. canonical short plan (single source of truth, reviewer-facing);
+  2. linked swarm artifact (supporting analysis only).
+- The short plan must stay standalone and keep canonical task-spec fields:
+  `Document Spec`, `Verification Plan`, `Residual Risks`, and for
+  execution/review-oriented work also `Acceptance Matrix` and `Proof Mapping`.
+- In enabled mode, the short plan must additionally carry:
+  - `plan_revision`: short-plan revision token;
+  - `artifact_path`: repo-relative artifact path under `docs/reports/`;
+  - `artifact_revision`: artifact token that must equal `plan_revision`.
+- Swarm artifact rules:
+  - durable repo file, normally `docs/reports/<task-slug>-swarm-artifact.md`;
+  - additive/subordinate only; it cannot replace plan claims;
+  - if artifact and short plan diverge, short plan is authoritative.
 - Minimum loop for enabled `mode:plan` path:
   1. `swarm-mode`: expand request into document spec and first draft
-     implementation contour.
+     implementation contour;
   2. `swarm-red-team`: critique dependency impact, rollback safety, and proof
-     readiness.
-  3. `swarm-mode`: apply findings sequentially and normalize final plan output.
+     readiness;
+  3. `swarm-mode`: apply findings sequentially and normalize final short plan +
+     linked artifact.
+- Lifecycle semantics for enabled path:
+  - `provisional`: short plan exists but artifact pair is not validated yet;
+  - `review-ready`: required compatibility/existence checks passed;
+  - `invalid`: any required check failed.
 - Compatibility proof (gate disabled): `plan-mode` output still satisfies
-  current task-spec requirements and canonical `Acceptance Matrix` / `Proof
-  Mapping` semantics.
-- Existence proof (gate enabled): planning output still maps to canonical
-  contract fields and does not introduce parallel proof vocabulary.
+  canonical task-spec requirements and canonical `Acceptance Matrix` /
+  `Proof Mapping` semantics.
+- Existence proof (gate enabled): output still maps to canonical fields and
+  linked artifact remains subordinate.
+- Fail-closed checks for enabled mode:
+  - missing `artifact_path` blocks acceptance;
+  - missing artifact file at `artifact_path` blocks acceptance;
+  - `artifact_revision != plan_revision` blocks acceptance until artifact is
+    regenerated or reset;
+  - provisional state is not review-ready;
+  - short-plan/artifact divergence blocks acceptance until artifact is repaired.
 - High-risk planning tasks may run extra critique/repair rounds; low-risk tasks
   may use a single critique/repair pass.
 - During `Spec Prep`, swarm planning loop must stay read-only for tracker state

@@ -32,7 +32,9 @@ contour without shipping product code.
    feasibility.
 7. If workflow gate `planning.swarm_assist_enabled` is true, run the guarded
    swarm planning helper from [`plan-swarm-mode`](../plan-swarm-mode/SKILL.md)
-   and merge its outputs into the same canonical task-spec/workpad contract.
+   and emit a two-layer plan contract:
+   - short plan remains SSOT and fully standalone;
+   - swarm output is linked as supporting artifact only.
 
 ## Optional swarm-assisted loop (guarded)
 
@@ -44,6 +46,14 @@ contour without shipping product code.
   2. `swarm-red-team` for critique of dependency impact, rollback safety, and
      proof readiness.
   3. `swarm-mode` repair pass to resolve findings sequentially.
+- For enabled mode, keep these fields in the short plan:
+  - `plan_revision`
+  - `artifact_path` (repo-relative path under `docs/reports/`)
+  - `artifact_revision` (must equal `plan_revision`)
+- Enabled path stays `provisional` until short plan + linked artifact validate
+  together. `provisional` is never review-ready.
+- If artifact is missing, stale, or contradicts short plan, fail closed and
+  regenerate/reset artifact link before handoff.
 - High-risk tasks may run one extra critique/repair pass; low-risk tasks may
   stop after one pass.
 - Keep swarm outputs inside canonical contract vocabulary; do not invent

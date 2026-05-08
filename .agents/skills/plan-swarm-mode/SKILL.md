@@ -19,7 +19,8 @@ Canonical delivery/proof/handoff semantics live in:
 ## Goal
 
 Improve plan quality with bounded critique/repair while keeping routing and
-handoff semantics unchanged.
+handoff semantics unchanged. The output is always two-layer: canonical short
+plan + linked swarm artifact.
 
 ## Required loop
 
@@ -33,8 +34,14 @@ handoff semantics unchanged.
 3. Run `swarm-mode` repair pass:
    - fix findings sequentially, including low-priority recommendations;
    - explicitly retire any item only with justification.
-4. For high-risk tasks, run one additional critique/repair pass.
-5. Merge final result into canonical task-spec/workpad sections used by LET.
+4. Write or refresh a durable artifact file at
+   `docs/reports/<task-slug>-swarm-artifact.md`.
+5. Ensure short-plan metadata is consistent:
+   - `plan_revision` exists in the short plan;
+   - `artifact_path` points to the artifact file;
+   - `artifact_revision` exists in the artifact and equals `plan_revision`.
+6. For high-risk tasks, run one additional critique/repair pass.
+7. Merge final result into canonical task-spec/workpad sections used by LET.
 
 ## Output contract
 
@@ -42,6 +49,11 @@ handoff semantics unchanged.
   `Критерии приемки`, `Acceptance Matrix`, `Proof Mapping`).
 - Keep matrix IDs stable and mapping semantics canonical.
 - Keep final recommendation implementation-ready without hidden chat context.
+- Keep short plan as SSOT; artifact is supporting evidence only.
+- If artifact write fails, keep short plan valid and mark enabled path as
+  `provisional` (not review-ready) until artifact validation passes.
+- If `artifact_revision` mismatches `plan_revision`, fail closed and regenerate
+  the artifact or reset `artifact_path`.
 
 ## Guardrails
 

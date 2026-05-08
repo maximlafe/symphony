@@ -68,8 +68,12 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "Plan swarm gate contract:"
     assert prompt =~ "`planning.swarm_assist_enabled` (default `false`)"
     assert prompt =~ "when gate is `false`, keep legacy `plan-mode` path unchanged"
+    assert prompt =~ "enabled gate output is two-layer: canonical short plan (SSOT) +"
+    assert prompt =~ "`plan_revision`, `artifact_path`, and `artifact_revision`"
+    assert prompt =~ "`provisional` output is not review-ready"
     assert prompt =~ ".agents/skills/plan-swarm-mode/SKILL.md"
     assert prompt =~ "if workflow gate `planning.swarm_assist_enabled` is `true`, additionally load and run repo-local `.agents/skills/plan-swarm-mode/SKILL.md`"
+    assert prompt =~ "keep machine-readable lines for `plan_revision`, `artifact_path`, and `artifact_revision`"
     refute prompt =~ "make test-unit"
   end
 
@@ -95,6 +99,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert prompt =~ "`codex.cost_policy`"
     assert prompt =~ "docs/policy/project-contract.md"
+    assert prompt =~ "two-layer planning contract"
+    assert prompt =~ "`artifact_revision` must match `plan_revision`"
   end
 
   test "LET workflow keeps secondary codex homes under the mounted primary CODEX_HOME" do
@@ -141,6 +147,11 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert plan_skill =~ "`planning.swarm_assist_enabled`"
     assert plan_skill =~ "[`plan-swarm-mode`](../plan-swarm-mode/SKILL.md)"
     assert plan_skill =~ "Optional swarm-assisted loop (guarded)"
+    assert plan_skill =~ "two-layer plan contract"
+    assert plan_skill =~ "`plan_revision`"
+    assert plan_skill =~ "`artifact_path`"
+    assert plan_skill =~ "`artifact_revision`"
+    assert plan_skill =~ "`provisional`"
 
     assert execute_skill =~ "name: execute-mode"
     assert execute_skill =~ "Entry-point skill for `In Progress` execution passes."
@@ -177,12 +188,20 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert plan_swarm_skill =~ "swarm"
     assert plan_swarm_skill =~ "docs/policy/project-contract.md"
     assert plan_swarm_skill =~ "Run only when workflow gate `planning.swarm_assist_enabled` is true."
+    assert plan_swarm_skill =~ "two-layer: canonical short"
+    assert plan_swarm_skill =~ "`docs/reports/<task-slug>-swarm-artifact.md`"
+    assert plan_swarm_skill =~ "`artifact_revision`"
+    assert plan_swarm_skill =~ "`plan_revision`"
+    assert plan_swarm_skill =~ "`provisional`"
 
     assert project_contract =~ "# Project Contract"
     assert project_contract =~ "Acceptance Matrix"
-    assert project_contract =~ "Spec Prep Planning Quality Loop (Swarm-Assisted)"
+    assert project_contract =~ "Spec Prep Planning Contract (Two-Layer, Swarm-Assisted)"
     assert project_contract =~ "`planning.swarm_assist_enabled`"
     assert project_contract =~ "Compatibility proof (gate disabled)"
+    assert project_contract =~ "`artifact_path`"
+    assert project_contract =~ "`artifact_revision`"
+    assert project_contract =~ "`plan_revision`"
 
     refute File.exists?(@worker_setup_skill_path)
     assert onboarding_doc =~ "Symphony Setup (Onboarding)"

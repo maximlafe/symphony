@@ -654,6 +654,13 @@ Instructions:
   - when gate is `true`, keep `plan-mode` as entrypoint and additionally run
     repo-local `.agents/skills/plan-swarm-mode/SKILL.md` as bounded
     drafting/critique helper;
+  - enabled gate output is two-layer: canonical short plan (SSOT) +
+    linked swarm artifact (supporting only);
+  - enabled short-plan metadata must include `plan_revision`,
+    `artifact_path`, and `artifact_revision`, where `artifact_revision`
+    equals `plan_revision`;
+  - enabled path stays `provisional` until artifact path and revision checks
+    pass; `provisional` output is not review-ready;
   - swarm helper is never allowed to redefine routing/state transitions or
     canonical delivery/proof/handoff semantics from
     `docs/policy/project-contract.md`.
@@ -755,6 +762,7 @@ Instructions:
    - `mode:research` -> load and follow repo-local `.agents/skills/research-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/research-mode/SKILL.md`;
    - `mode:plan` -> load and follow repo-local `.agents/skills/plan-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/plan-mode/SKILL.md`;
      - if workflow gate `planning.swarm_assist_enabled` is `true`, additionally load and run repo-local `.agents/skills/plan-swarm-mode/SKILL.md`;
+     - with gate `true`, keep the short plan as SSOT and require linked artifact metadata (`plan_revision`, `artifact_path`, `artifact_revision`) before finalizing `Spec Prep`;
      - if the gate is `true` but `.agents/skills/plan-swarm-mode/SKILL.md` is absent, fallback to legacy `plan-mode` path, note this fallback in `Заметки`, and continue without blocking;
      - if the gate is `false`, keep legacy `plan-mode` path unchanged as compatibility baseline;
      - if both labels exist, `mode:research` wins;
@@ -774,6 +782,7 @@ Instructions:
      semantics;
    - when an acceptance item requires external infrastructure before execution can complete, add a machine-readable `Required capabilities: ...` line to the final `## Symphony` section. Use only external prerequisite names: `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`; do not include execution-only requirements (`repo_validation`, `pr_publication`, `pr_body_contract`) in this line because they are implicit workflow obligations;
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
+   - for `mode:plan` with gate `planning.swarm_assist_enabled=true`, keep machine-readable lines for `plan_revision`, `artifact_path`, and `artifact_revision` in the normalized plan body so enabled-path checks are auditable;
    - keep `## Symphony` as the last section with `Repo: <resolved owner/name>`, `Base branch: <configured branch>`, and `Working branch: <configured branch name>` when `.symphony-working-branch` exists;
    - if `.symphony-source-repository`, `.symphony-base-branch`, or `.symphony-working-branch` exist, treat them as authoritative when repopulating `Repo:`, `Base branch:`, and `Working branch:` during normalization;
    - preserve all material user facts, constraints, and acceptance intent, but allow full reformatting into the canonical sections;
