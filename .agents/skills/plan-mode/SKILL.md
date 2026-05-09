@@ -51,6 +51,9 @@ contour without shipping product code.
   - `plan_revision`
   - `artifact_path` (repo-relative path under `docs/reports/`)
   - `artifact_revision` (must equal `plan_revision` and is copied from it)
+- Upload the artifact referenced by `artifact_path` as a Linear issue attachment
+  before handing off to `Spec Review` (attachment title should match the artifact
+  filename or full `artifact_path`).
 - Enabled path stays `provisional` until short plan + linked artifact validate
   together. `provisional` is never review-ready.
 - If artifact is missing, stale, or contradicts short plan, classify it as

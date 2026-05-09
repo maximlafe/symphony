@@ -303,6 +303,7 @@ defmodule SymphonyElixir.HandoffCheck do
       two_layer_plan_contract_missing_items(
         issue_labels,
         issue_description,
+        attachments,
         workpad_path,
         opts
       )
@@ -856,7 +857,7 @@ defmodule SymphonyElixir.HandoffCheck do
     }
   end
 
-  defp two_layer_plan_contract_missing_items(issue_labels, issue_description, workpad_path, opts)
+  defp two_layer_plan_contract_missing_items(issue_labels, issue_description, attachments, workpad_path, opts)
        when is_list(issue_labels) and is_list(opts) do
     swarm_assist_enabled? = plan_swarm_assist_enabled?(opts)
     plan_mode? = @plan_mode_label in issue_labels
@@ -869,6 +870,12 @@ defmodule SymphonyElixir.HandoffCheck do
         validate_two_layer_artifact_link(
           contract,
           workspace_root
+        )
+
+      {attachment_errors, attachment_details} =
+        validate_two_layer_artifact_attachment_link(
+          contract,
+          attachments
         )
 
       metadata_errors =
@@ -891,6 +898,7 @@ defmodule SymphonyElixir.HandoffCheck do
       {
         metadata_errors
         |> Kernel.++(artifact_errors)
+        |> Kernel.++(attachment_errors)
         |> Enum.uniq()
         |> maybe_require_blocking_divergence(),
         contract
@@ -898,6 +906,7 @@ defmodule SymphonyElixir.HandoffCheck do
         |> Map.put("mode_plan", true)
         |> Map.put("workspace_root", workspace_root)
         |> Map.merge(artifact_details)
+        |> Map.merge(attachment_details)
       }
     else
       {[],
@@ -906,6 +915,85 @@ defmodule SymphonyElixir.HandoffCheck do
        |> Map.put("mode_plan", plan_mode?)}
     end
   end
+
+  defp validate_two_layer_artifact_attachment_link(contract, attachments)
+       when is_map(contract) and is_list(attachments) do
+    artifact_path = contract["artifact_path"]
+
+    if placeholder_value?(artifact_path) do
+      {[], %{"artifact_attachment_present" => false}}
+    else
+      normalized_path = normalize_machine_readable_value(artifact_path)
+      attachment_result_for_path(normalized_path, attachments)
+    end
+  end
+
+  defp attachment_result_for_path(normalized_path, attachments) do
+    if non_empty_binary?(normalized_path) do
+      case two_layer_artifact_attachment_present?(normalized_path, attachments) do
+        {true, match} ->
+          {[],
+           %{
+             "artifact_attachment_present" => true,
+             "artifact_attachment_match" => match
+           }}
+
+        {false, _nil} ->
+          {["linked swarm artifact `#{normalized_path}` is missing from Linear issue attachments"],
+           %{
+             "artifact_attachment_present" => false,
+             "artifact_attachment_match" => nil
+           }}
+      end
+    else
+      {[], %{"artifact_attachment_present" => false}}
+    end
+  end
+
+  defp two_layer_artifact_attachment_present?(artifact_path, attachments)
+       when is_binary(artifact_path) and is_list(attachments) do
+    artifact_basename = Path.basename(artifact_path)
+    artifact_basename_downcased = String.downcase(artifact_basename)
+    artifact_path_downcased = String.downcase(artifact_path)
+
+    Enum.find_value(
+      attachments,
+      {false, nil},
+      &match_two_layer_artifact_attachment(&1, artifact_path_downcased, artifact_basename_downcased)
+    )
+  end
+
+  defp match_two_layer_artifact_attachment(
+         %{} = attachment,
+         artifact_path_downcased,
+         artifact_basename_downcased
+       ) do
+    title = normalized_attachment_value(attachment, "title")
+    url = normalized_attachment_value(attachment, "url")
+    normalized_title = downcased_or_nil(title)
+    normalized_url = downcased_or_nil(url)
+
+    cond do
+      normalized_title in [artifact_path_downcased, artifact_basename_downcased] ->
+        {true, %{"by" => "title", "value" => title}}
+
+      is_binary(normalized_url) and String.contains?(normalized_url, artifact_basename_downcased) ->
+        {true, %{"by" => "url", "value" => url}}
+
+      true ->
+        false
+    end
+  end
+
+  defp normalized_attachment_value(attachment, key) when is_map(attachment) and is_binary(key) do
+    attachment
+    |> Map.get(key)
+    |> to_string_or_nil()
+    |> normalize_attachment_title()
+  end
+
+  defp downcased_or_nil(value) when is_binary(value), do: String.downcase(value)
+  defp downcased_or_nil(_value), do: nil
 
   defp maybe_require_blocking_divergence([]), do: []
 

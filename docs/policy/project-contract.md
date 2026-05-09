@@ -53,6 +53,9 @@ If a rule must change, update this file first and then align workflows/skills.
 - Swarm artifact rules:
   - durable repo file, normally `docs/reports/<task-slug>-swarm-artifact.md`;
   - additive/subordinate only; it cannot replace plan claims;
+  - must be uploaded to Linear issue attachments before `Spec Review` handoff;
+  - attachment title should match either full `artifact_path` or artifact
+    filename;
   - if artifact and short plan diverge, short plan is authoritative.
 - Minimum loop for enabled `mode:plan` path:
   1. run `swarm-iterate` as the planning critique/repair orchestrator
@@ -72,6 +75,8 @@ If a rule must change, update this file first and then align workflows/skills.
 - Fail-closed checks for enabled mode:
   - missing `artifact_path` is `blocking divergence` and blocks acceptance;
   - missing artifact file at `artifact_path` is `blocking divergence` and
+    blocks acceptance;
+  - missing Linear attachment for `artifact_path` is `blocking divergence` and
     blocks acceptance;
   - `artifact_revision != plan_revision` is `blocking divergence` and blocks
     acceptance until artifact is regenerated or reset;

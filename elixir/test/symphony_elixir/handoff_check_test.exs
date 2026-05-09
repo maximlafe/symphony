@@ -1635,7 +1635,10 @@ defmodule SymphonyElixir.HandoffCheckTest do
                workpad_path: workpad_path,
                workspace: workspace,
                swarm_assist_enabled: true,
-               attachments: [%{"title" => "runtime-proof.log"}],
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "let-504-swarm-artifact.md"}
+               ],
                pr_snapshot: green_pr_snapshot(),
                change_classes: ["runtime_contract"],
                git: git_metadata()
@@ -1644,6 +1647,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert manifest["missing_items"] == []
     assert get_in(manifest, ["issue", "two_layer_plan_contract", "artifact_path"]) == artifact_relative_path
     assert get_in(manifest, ["issue", "two_layer_plan_contract", "artifact_file_exists"]) == true
+    assert get_in(manifest, ["issue", "two_layer_plan_contract", "artifact_attachment_present"]) == true
   end
 
   test "evaluate fails closed for mismatched or provisional two-layer mode:plan metadata" do
@@ -2016,6 +2020,43 @@ defmodule SymphonyElixir.HandoffCheckTest do
                change_classes: ["runtime_contract"],
                git: git_metadata()
              )
+
+    attached_relative_path = "docs/reports/attached-required-swarm-artifact.md"
+    attached_artifact_path = Path.join(workspace, attached_relative_path)
+    File.mkdir_p!(Path.dirname(attached_artifact_path))
+
+    File.write!(
+      attached_artifact_path,
+      """
+      # LET-504 Swarm Artifact
+
+      plan_revision: `plan-rev-2`
+      artifact_revision: `plan-rev-2`
+      """
+    )
+
+    assert {:error, missing_attachment_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description:
+                 two_layer_acceptance_matrix_description(
+                   attached_relative_path,
+                   "plan-rev-2",
+                   "plan-rev-2",
+                   "review-ready"
+                 ),
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "linked swarm artifact `docs/reports/attached-required-swarm-artifact.md` is missing from Linear issue attachments" in missing_attachment_manifest["missing_items"]
   end
 
   test "evaluate supports quoted two-layer metadata and plan_status alias" do
@@ -2060,7 +2101,10 @@ defmodule SymphonyElixir.HandoffCheckTest do
                issue_description: quoted_description,
                workpad_path: workpad_path,
                swarm_assist_enabled: true,
-               attachments: [%{"title" => "runtime-proof.log"}],
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "docs/reports/let-quoted-swarm-artifact.md"}
+               ],
                pr_snapshot: green_pr_snapshot(),
                change_classes: ["runtime_contract"],
                git: git_metadata()
