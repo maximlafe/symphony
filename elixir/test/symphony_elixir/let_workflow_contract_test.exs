@@ -5,9 +5,15 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
 
   @let_workflow_path Path.expand("../../../workflows/letterl/maxime/let.WORKFLOW.md", __DIR__)
   @default_workflow_path Path.expand("../../WORKFLOW.md", __DIR__)
+  @project_contract_path Path.expand("../../../docs/policy/project-contract.md", __DIR__)
   @research_skill_path Path.expand("../../../.agents/skills/research-mode/SKILL.md", __DIR__)
   @plan_skill_path Path.expand("../../../.agents/skills/plan-mode/SKILL.md", __DIR__)
   @execute_skill_path Path.expand("../../../.agents/skills/execute-mode/SKILL.md", __DIR__)
+  @zoom_out_skill_path Path.expand("../../../.agents/skills/zoom-out/SKILL.md", __DIR__)
+  @diagnose_skill_path Path.expand("../../../.agents/skills/diagnose/SKILL.md", __DIR__)
+  @tdd_skill_path Path.expand("../../../.agents/skills/tdd/SKILL.md", __DIR__)
+  @worker_setup_skill_path Path.expand("../../../.agents/skills/symphony-setup/SKILL.md", __DIR__)
+  @onboarding_setup_doc_path Path.expand("../../../docs/onboarding/symphony-setup.md", __DIR__)
 
   test "LET workflow routes todo by mode labels and keeps spec prep optional" do
     assert {:ok, %{config: config, prompt: prompt}} = Workflow.load(@let_workflow_path)
@@ -37,32 +43,42 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "$CODEX_HOME/skills/research-mode/SKILL.md"
     assert prompt =~ "$CODEX_HOME/skills/plan-mode/SKILL.md"
     assert prompt =~ "$CODEX_HOME/skills/execute-mode/SKILL.md"
-    assert prompt =~ "Acceptance Matrix"
-    assert prompt =~ "Proof Mapping"
-    assert prompt =~ "validation:am-<am-id-lowercase>"
-    assert prompt =~ "am-<id>:"
+    assert prompt =~ "docs/policy/project-contract.md"
+    assert prompt =~ "Task-spec issue description"
+    assert prompt =~ "Workpad template"
     assert prompt =~ "repo validation: `make symphony-validate`"
-    assert prompt =~ "строки `вложение` используй только для реальных file attachments в Linear"
-    assert prompt =~ "evidence по PR (`PR #...`, PR URL, `pull request`, `пулл-реквест`) должно оставаться в linked PR + `github_pr_snapshot`"
     assert prompt =~ "Required capabilities"
     assert prompt =~ "vps_ssh"
     assert prompt =~ "Use only external prerequisite names: `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`"
     assert prompt =~ "do not include execution-only requirements (`repo_validation`, `pr_publication`, `pr_body_contract`)"
     refute prompt =~ "Use the canonical capability names `repo_validation`, `pr_publication`, `pr_body_contract`, `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`"
-    assert prompt =~ "red proof"
-    assert prompt =~ "не помечай `n/a`"
     assert prompt =~ "`codex.cost_profiles`"
     assert get_in(config, ["codex", "command_template"]) =~ "{{effort}}"
     assert get_in(config, ["codex", "command_template"]) =~ "{{model}}"
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4"
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "xhigh"
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
+    assert get_in(config, ["planning", "swarm_assist_enabled"]) == true
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert get_in(config, ["codex", "cost_policy", "signal_escalations", "rework"]) == "escalated_implementation"
     assert get_in(config, ["codex", "cost_policy", "signal_escalations", "risky_task"]) == "escalated_implementation"
     assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
     assert prompt =~ "`mode:research` и `reasoning:implementation-xhigh` не эскалируют"
     assert prompt =~ "fail closed into `Spec Prep` and treat it as the legacy `plan-mode` path."
+    assert prompt =~ "Plan swarm gate contract:"
+    assert prompt =~ "`planning.swarm_assist_enabled` (default `true`)"
+    assert prompt =~ "when gate is `false`, keep legacy `plan-mode` path unchanged"
+    assert prompt =~ "enabled gate output is two-layer: canonical short plan (SSOT) +"
+    assert prompt =~ "`plan_revision`, `artifact_path`, and `artifact_revision`"
+    assert prompt =~ "`provisional` output is not review-ready"
+    assert prompt =~ ".agents/skills/swarm-iterate/SKILL.md"
+    assert prompt =~ "$CODEX_HOME/skills/swarm-iterate/SKILL.md"
+    assert prompt =~ "if workflow gate `planning.swarm_assist_enabled` is `true`, additionally run `swarm-iterate`"
+    assert prompt =~ "if the gate is `true` but `swarm-iterate` is unavailable, fail closed"
+    assert prompt =~ "blocking divergence"
+    assert prompt =~ "keep machine-readable lines for `plan_revision`, `artifact_path`, and `artifact_revision`"
+    refute prompt =~ "continue without blocking"
+    refute prompt =~ ".agents/skills/plan-swarm-mode/SKILL.md"
     refute prompt =~ "make test-unit"
   end
 
@@ -71,6 +87,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
 
     assert prompt =~ "Backend-only changes: run targeted tests for the touched modules and at least `make symphony-validate`."
     assert prompt =~ "- [ ] repo validation: `make symphony-validate`"
+    assert prompt =~ "Use `docs/policy/project-contract.md` as the canonical definition for:"
     refute prompt =~ "make test-unit"
     refute prompt =~ "<repo-owned final validation command>"
   end
@@ -82,10 +99,13 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4"
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "xhigh"
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
+    assert get_in(config, ["planning", "swarm_assist_enabled"]) == true
     assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert prompt =~ "`codex.cost_policy`"
-    assert prompt =~ "never mark this item as `n/a`"
+    assert prompt =~ "docs/policy/project-contract.md"
+    assert prompt =~ "two-layer planning contract"
+    assert prompt =~ "`artifact_revision` must match `plan_revision`"
   end
 
   test "LET workflow keeps secondary codex homes under the mounted primary CODEX_HOME" do
@@ -99,66 +119,86 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
            ] = Enum.map(accounts, &Map.take(&1, ["codex_home"]))
   end
 
-  test "research, plan, and execute mode skills exist with the expected guardrails" do
+  test "research, plan, and execute mode skills are thin entrypoints and use canonical contract" do
     research_skill = File.read!(@research_skill_path)
     plan_skill = File.read!(@plan_skill_path)
     execute_skill = File.read!(@execute_skill_path)
 
     assert research_skill =~ "name: research-mode"
     assert research_skill =~ "Do not edit product code as a shipped fix."
-    assert research_skill =~ "root cause"
-    assert research_skill =~ "Separate symptoms from causes."
-    assert research_skill =~ "top hypotheses ranked by confidence"
+    assert research_skill =~ "Entry-point skill for `Spec Prep` research passes."
+    assert research_skill =~ "docs/policy/project-contract.md"
+    assert research_skill =~ "[`diagnose`](../diagnose/SKILL.md)"
+    assert research_skill =~ "[`zoom-out`](../zoom-out/SKILL.md)"
     assert research_skill =~ "Update Linear in Russian"
     assert research_skill =~ "`delivery:tdd`"
-    assert research_skill =~ "cheap deterministic"
-    assert research_skill =~ "remove stale `delivery:tdd`"
-    assert research_skill =~ "branch, PR, checks, and review context"
-    assert research_skill =~ "Apply `DRY`, `KISS`, and `YAGNI`"
-    assert research_skill =~ "The final research output should be ordered as follows"
-    assert research_skill =~ "exact problem location in code, data, and/or runtime"
-    assert research_skill =~ "risks, unknowns, and what still needs checking"
-    assert research_skill =~ "../../design-policy.md"
-    assert research_skill =~ "Choose one explicit MVP"
-    assert research_skill =~ "critique pass 1"
-    assert research_skill =~ "critique pass 2"
-    assert research_skill =~ "positive and negative proof cases"
+    assert research_skill =~ "deterministic proof feasibility"
 
     assert plan_skill =~ "name: plan-mode"
     assert plan_skill =~ "Do not edit product code as a shipped fix."
+    assert plan_skill =~ "Entry-point skill for `Spec Prep` planning passes."
+    assert plan_skill =~ "docs/policy/project-contract.md"
     assert plan_skill =~ "implementation-ready"
-    assert plan_skill =~ "Apply `DRY`, `KISS`, and `YAGNI`"
     assert plan_skill =~ "`delivery:tdd`"
-    assert plan_skill =~ "cheap deterministic"
-    assert plan_skill =~ "remove stale `delivery:tdd`"
-    assert plan_skill =~ "Ограничения и инварианты"
-    assert plan_skill =~ "План валидации"
     assert plan_skill =~ "Acceptance Matrix"
-    assert plan_skill =~ "proof"
+    assert plan_skill =~ "Proof Mapping"
     assert plan_skill =~ "Update Linear in Russian"
-    assert plan_skill =~ "The final planning output should be ordered as follows"
-    assert plan_skill =~ "../../design-policy.md"
-    assert plan_skill =~ "Choose one explicit MVP"
-    assert plan_skill =~ "critique pass 1"
-    assert plan_skill =~ "critique pass 2"
-    assert plan_skill =~ "positive and negative proof cases"
+    assert plan_skill =~ "choose one explicit MVP"
+    assert plan_skill =~ "`planning.swarm_assist_enabled`"
+    assert plan_skill =~ "`swarm-iterate`"
+    assert plan_skill =~ "owned by this stage"
+    assert plan_skill =~ "Guarded swarm-assisted path"
+    assert plan_skill =~ "emit a two-layer plan"
+    assert plan_skill =~ "`plan_revision`"
+    assert plan_skill =~ "`artifact_path`"
+    assert plan_skill =~ "`artifact_revision`"
+    assert plan_skill =~ "`provisional`"
+    assert plan_skill =~ "`blocking divergence`"
+    refute plan_skill =~ "plan-swarm-mode"
 
     assert execute_skill =~ "name: execute-mode"
-    assert execute_skill =~ "Finish an execution-ready task"
-    assert execute_skill =~ "Run `make symphony-preflight`"
-    assert execute_skill =~ "repo/task acceptance preflight"
-    assert execute_skill =~ "Do not use CI green as a substitute"
+    assert execute_skill =~ "Entry-point skill for `In Progress` execution passes."
+    assert execute_skill =~ "docs/policy/project-contract.md"
     assert execute_skill =~ "Acceptance Matrix"
     assert execute_skill =~ "Proof Mapping"
-    assert execute_skill =~ "proof_type"
-    assert execute_skill =~ "proof_semantic"
-    assert execute_skill =~ "required_before=review"
-    assert execute_skill =~ "exactly one checked `Proof Mapping` entry"
-    assert execute_skill =~ "validation:am-<am-id-lowercase>"
-    assert execute_skill =~ "Do not use prose references after `validation:`"
-    assert execute_skill =~ "validation:runtime smoke"
+    assert execute_skill =~ "[`tdd`](../tdd/SKILL.md)"
+    assert execute_skill =~ "[`diagnose`](../diagnose/SKILL.md)"
     assert execute_skill =~ "Update Linear in Russian"
     assert execute_skill =~ "Blocked"
+  end
+
+  test "worker method skills exist and setup lives outside worker bundle" do
+    zoom_out_skill = File.read!(@zoom_out_skill_path)
+    diagnose_skill = File.read!(@diagnose_skill_path)
+    tdd_skill = File.read!(@tdd_skill_path)
+    project_contract = File.read!(@project_contract_path)
+    onboarding_doc = File.read!(@onboarding_setup_doc_path)
+
+    assert zoom_out_skill =~ "name: zoom-out"
+    assert zoom_out_skill =~ "Do not edit product code in this mode."
+
+    assert diagnose_skill =~ "name: diagnose"
+    assert diagnose_skill =~ "reproduce -> minimize -> hypothesize -> instrument ->"
+    assert diagnose_skill =~ "In `Spec Prep`, this skill is analysis-only"
+
+    assert tdd_skill =~ "name: tdd"
+    assert tdd_skill =~ "red -> green"
+    assert tdd_skill =~ "`delivery:tdd`"
+
+    assert project_contract =~ "# Project Contract"
+    assert project_contract =~ "Acceptance Matrix"
+    assert project_contract =~ "Spec Prep Planning Contract (Two-Layer, Swarm-Assisted)"
+    assert project_contract =~ "`planning.swarm_assist_enabled`"
+    assert project_contract =~ "Compatibility proof (gate disabled)"
+    assert project_contract =~ "`artifact_path`"
+    assert project_contract =~ "`artifact_revision`"
+    assert project_contract =~ "`plan_revision`"
+    assert project_contract =~ "`blocking divergence`"
+
+    refute File.exists?(Path.expand("../../../.agents/skills/plan-swarm-mode/SKILL.md", __DIR__))
+    refute File.exists?(@worker_setup_skill_path)
+    assert onboarding_doc =~ "Symphony Setup (Onboarding)"
+    assert onboarding_doc =~ "intentionally not a worker runtime skill"
   end
 
   defp non_planning_default_profiles_have_xhigh?(profiles) when is_map(profiles) do

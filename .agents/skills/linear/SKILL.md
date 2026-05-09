@@ -8,6 +8,9 @@ description: |
 
 # Linear GraphQL
 
+Canonical delivery/proof/handoff semantics are defined in:
+[`docs/policy/project-contract.md`](../../docs/policy/project-contract.md)
+
 All Linear operations go through the `linear_graphql` client tool exposed by
 Symphony's app server. It handles auth automatically.
 

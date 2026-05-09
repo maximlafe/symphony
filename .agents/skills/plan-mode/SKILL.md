@@ -5,119 +5,71 @@ description: Use when the LET workflow routes a `Todo` issue with label `mode:pl
 
 # Plan Mode
 
+Entry-point skill for `Spec Prep` planning passes.
+
+Canonical delivery/proof/handoff semantics live in:
+[`docs/policy/project-contract.md`](../../docs/policy/project-contract.md)
+
 ## Goal
 
-Turn a high-level issue into an implementation-ready engineering spec with a concrete execution contour.
+Turn a high-level request into an implementation-ready task spec and execution
+contour without shipping product code.
 
-## Engineering frame
+## Required flow
 
-- Do not widen scope beyond what is required for an implementation-ready task contract.
-- Prefer the smallest coherent spec that makes execution safe and deterministic.
-- Apply `DRY`, `KISS`, and `YAGNI` throughout the planning pass.
+1. Start from confirmed context and unresolved assumptions from prior research
+   (if any).
+2. Keep clarification/spec shaping inside this stage:
+   - define precise terms and scope boundaries;
+   - choose one explicit MVP;
+   - reject/defer alternatives with rationale.
+3. Build execution-ready decomposition using vertical slices, not horizontal
+   layer splits.
+4. Produce or normalize required spec sections, including `Acceptance Matrix`
+   when execution/review handoff is expected.
+5. Define minimum validation plan and evidence mapping expectations.
+6. Decide `delivery:tdd` add/remove based on deterministic failing proof
+   feasibility.
+7. If workflow gate `planning.swarm_assist_enabled` is true, run the guarded
+   swarm planning loop through `swarm-iterate` (prefer repo-local
+   `.agents/skills/swarm-iterate/SKILL.md` when present; otherwise use
+   `$CODEX_HOME/skills/swarm-iterate/SKILL.md`) and emit a two-layer plan
+   contract:
+   - short plan remains SSOT and fully standalone;
+   - swarm output is linked as supporting artifact only;
+   - `plan_revision` is owned by this stage and must be copied into
+     `artifact_revision` for the linked artifact.
 
-## Design policy (required)
+## Guarded swarm-assisted path
 
-Apply [design policy](../../design-policy.md) to every planning pass.
+- This loop is controlled by workflow gate `planning.swarm_assist_enabled`
+  (default-on in this repository).
+- If the gate is disabled, keep legacy `plan-mode` path unchanged.
+- If the gate is enabled, run `swarm-iterate` with default three
+  critique/repair rounds unless task risk requires additional rounds.
+- For enabled mode, keep these fields in the short plan:
+  - `plan_revision`
+  - `artifact_path` (repo-relative path under `docs/reports/`)
+  - `artifact_revision` (must equal `plan_revision` and is copied from it)
+- Enabled path stays `provisional` until short plan + linked artifact validate
+  together. `provisional` is never review-ready.
+- If artifact is missing, stale, or contradicts short plan, classify it as
+  `blocking divergence`, fail closed, and regenerate/reset artifact link before
+  handoff.
+- High-risk tasks may run one extra critique/repair pass; low-risk tasks may
+  stop after one pass.
+- Keep swarm outputs inside canonical contract vocabulary; do not invent
+  parallel proof or handoff terms.
 
-Minimum enforcement:
+## Contract hooks
 
-- Choose one explicit MVP.
-- Run critique pass 1 and critique pass 2 on every spec before handoff.
-- For risky tasks, ground the spec in the real code before finalizing it and run critique pass 3 if material risk remains.
-- If the task introduces a new semantic axis, define where it lives, which layers read it, which layers write it, and which existing contract fields it replaces or complements.
-- If the task claims systemic improvement, define positive and negative proof cases before treating the plan as ready.
+- `Acceptance Matrix` and `Proof Mapping` semantics: see project contract.
+- `delivery:tdd` normalization semantics: see project contract.
+- `In Review`/`Blocked` handoff semantics are consumed by execution stage from
+  the same contract.
 
-## Required planning flow
-
-- Start from the relevant repo instructions plus the current issue, branch, PR, and related context when that context materially affects the spec.
-- Briefly record what is already confirmed by prior investigation and what still remains a hypothesis.
-- If the root cause is already known, state it clearly.
-- If the evidence is still incomplete, describe the most likely cause and the current confidence boundary without pretending certainty.
-- Convert the current issue into a stable engineering contract instead of leaving planning details implicit in chat context.
-- Choose one explicit MVP. If more than one credible path exists, include `Alternatives considered`, recommend one path, and explain briefly why it is the minimum sufficient route.
-- Run critique pass 1 against the current spec, revise it, then run critique pass 2 and revise it again.
-- For risky tasks, ground the spec in the real code before finalizing it: verify DTOs, call sites, persistence keys, existing invariants, dependencies, and whether each claimed routing or state signal is real in the current checkout.
-- If code grounding or critique reveals that the issue body and recent comments point to different solutions, rewrite the description so the canonical body reflects the current recommendation.
-- If the planned change simultaneously alters semantics, storage, runtime policy, diagnostics, or proof contracts, either justify why this is still one smallest coherent change or split the rest into follow-up tickets.
-- Decide whether execution should be opt-in TDD. Use `delivery:tdd` only when a cheap deterministic failing test or reproducer should be part of the fix contract; avoid it for docs, deploy, CI, visual-only UI work, and flaky integration/runtime-heavy tasks.
-- For execution/review-oriented tasks, include a machine-readable `Acceptance Matrix` section with atomic proof items (`id`, `scenario`, `expected_outcome`, `proof_type`, `proof_target`, `proof_semantic`, `required_before`) and define expected `Proof Mapping` behavior for handoff.
-
-## Allowed
-
-- Read the relevant code, comments, and PR context.
-- Run lightweight fact checks that remove critical ambiguity.
-- Capture a reproducer only when it materially improves the plan.
-
-## Forbidden
+## Guardrails
 
 - Do not edit product code as a shipped fix.
 - Do not commit, push, or publish a PR.
-- Do not add speculative cleanup or future-proofing that is not required for the stated task.
-- Do not present open questions as settled facts.
-
-## Description contract
-
-Rewrite or normalize the issue description into a Russian task-spec that lets the next execution pass start without hidden chat context.
-
-Include, when relevant:
-
-- `Проблема`
-- `Цель`
-- `Скоуп`
-- `Вне скоупа`
-- `Критерии приемки`
-- `Ограничения и инварианты`
-- `Риски`
-- `Зависимости`
-- `План валидации`
-- `Acceptance Matrix` (обязательно для execution/review task-spec)
-- `Alternatives considered`
-- `Заметки`
-- final `## Symphony` section
-
-Preserve all material user facts, capture the observed behavior and expected behavior inside the task-spec where they belong, and always keep the final `## Symphony` block intact.
-
-For tasks about coverage, routing, classification, merge behavior, or quality changes, `План валидации` must name the regression dataset or case set, the baseline, the target delta or threshold, and the false-positive ceiling.
-When `Acceptance Matrix` is present, require that every matrix item is mappable to concrete proof (`test` / `artifact` / `runtime`) and that `surface exists` and `run executed` semantics are not collapsed. Use canonical values: `proof_type` in (`test`, `artifact`, `runtime_smoke`) and `proof_semantic` in (`surface_exists`, `run_executed`, `runtime_smoke`). Use `required_before=review` for proof that must exist before `In Review`; use `required_before=done` only for post-merge/runtime proof that cannot be valid before review.
-
-## Workpad expectations
-
-- Produce a concrete implementation contour, not a vague brainstorming note.
-- Make the minimum validation plan explicit.
-- Record what was confirmed by prior research, what remains hypothetical, and which unknowns still affect execution or acceptance.
-- Call out only the uncertainties that still change execution or acceptance.
-- If several implementation options exist, recommend one and explain briefly why it is the minimal sufficient path.
-- If important edge cases or minimum required tests exist, list them explicitly.
-- Record which MVP was chosen and why the alternatives were rejected or deferred.
-- If named runs, chats, IDs, or case pairs are referenced, map them to authoritative runtime artifacts or mark the mapping as inconclusive.
-- Do not claim a systemic fix unless the proof plan includes positive and negative proof cases.
-- For tasks with new proof contracts, explicitly describe the required `Proof Mapping` section expected in execution handoff workpads.
-
-## Linear expectations
-
-- Update Linear in Russian with the planning worklog and note that the description/spec was brought to the current engineering state.
-- If the current issue description is stale, replace it with the updated task contract.
-- Normalize `delivery:tdd` through `linear_graphql`: add it when the planning result requires TDD, otherwise remove stale `delivery:tdd`.
-- If the original issue is closed or clearly no longer matches the real scope, reopen it or create a follow-up issue according to repo rules before treating the planning result as final.
-
-## Final result format
-
-The final planning output should be ordered as follows:
-
-1. what was confirmed by prior research;
-2. chosen MVP and why;
-3. ready engineering spec in Markdown;
-4. ready Linear description text in Russian;
-5. what exactly was updated in Linear;
-6. remaining risks and unknowns.
-
-## Exit bar
-
-Before handing off to `Spec Review`:
-
-- The issue description is implementation-ready.
-- One explicit MVP is chosen and reflected in the issue description.
-- The issue body and recent planning recommendation do not contradict each other.
-- The workpad contains a concrete execution plan, explicit validation outline, and any remaining uncertainties that still affect execution.
-- For quality or coverage tasks, the proof plan is operational and names positive and negative proof cases plus concrete datasets, cases, or thresholds.
-- No shipped product code changes remain in the workspace.
+- Update Linear in Russian with the planning result and current task-spec state.

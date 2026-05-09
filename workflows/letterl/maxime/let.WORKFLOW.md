@@ -537,6 +537,8 @@ codex:
       codex_home: /root/.codex/.codex-deborah
   minimum_remaining_percent: 5
   monitored_windows_mins: [300, 10080]
+planning:
+  swarm_assist_enabled: true
 server:
   host: "0.0.0.0"
 ---
@@ -618,6 +620,10 @@ Instructions:
 - If `.symphony-base-branch-note` exists, translate it into Russian in `Заметки` once and continue without asking a human; the note may describe repo-label fallback for an already bound workspace or default base-branch fallback chosen for this ticket.
 - If `.symphony-base-branch-error` exists, treat it as a routing/configuration blocker: translate the message into Russian in the workpad, fill `Checkpoint` with `checkpoint_type: human-action`, a justified `risk_level`, and a short `summary`, then move the issue to `Blocked` and stop.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.
+- Canonical delivery/proof/handoff semantics are centralized in
+  `docs/policy/project-contract.md`. Follow that file for `delivery:tdd`,
+  `Acceptance Matrix`, `Proof Mapping`, classified `Checkpoint`, `cheap gate` /
+  `final gate`, and `In Review` / `Blocked` transitions.
 - Run `make symphony-preflight` before treating auth/env/tooling gaps as blockers, and use the validation matrix below instead of ad-hoc test selection.
 - Do not reread skill bodies in straightforward runs unless the workflow does not cover the needed behavior.
 - Move state only when the matching quality bar is satisfied.
@@ -632,6 +638,26 @@ Instructions:
   - `mode:research` -> `research-mode` obligations (`R0`, `R3`, `R4`, `R5`, `R11`, `R13`).
   - `mode:plan` -> `plan-mode` obligations (`R0`, `R5`, `R10`, `R14`, `R15`).
   - execute-ready implementation path -> `execute-mode` obligations (`R0`, `R1`, `R2`, `R5`, `R6`, `R7`, `R8`, `R9`, `R12`, `R13`).
+- Plan swarm gate contract:
+  - workflow gate: `planning.swarm_assist_enabled` (default `true`);
+  - when gate is `false`, keep legacy `plan-mode` path unchanged (compatibility
+    path);
+  - when gate is `true`, keep `plan-mode` as entrypoint and additionally run
+    `swarm-iterate` as bounded drafting/critique helper (prefer repo-local
+    `.agents/skills/swarm-iterate/SKILL.md` when present; otherwise use
+    `$CODEX_HOME/skills/swarm-iterate/SKILL.md`);
+  - enabled gate output is two-layer: canonical short plan (SSOT) +
+    linked swarm artifact (supporting only);
+  - enabled short-plan metadata must include `plan_revision`,
+    `artifact_path`, and `artifact_revision`, where `artifact_revision`
+    equals `plan_revision`;
+  - enabled path stays `provisional` until artifact path and revision checks
+    pass; `provisional` output is not review-ready;
+  - any enabled-path mismatch is `blocking divergence` and must fail closed
+    before review-ready handoff;
+  - swarm helper is never allowed to redefine routing/state transitions or
+    canonical delivery/proof/handoff semantics from
+    `docs/policy/project-contract.md`.
 - Execute readiness rule from `Todo`:
   - minimum execute-ready contract: explicit problem/scope/acceptance criteria, valid final `## Symphony` routing block, and no unresolved blocker that requires `decision`/`human-action` checkpoint first;
   - if `mode:*` label exists, route through `Spec Prep`;
@@ -666,12 +692,10 @@ Instructions:
 
 ## TDD delivery label
 
-- `delivery:tdd` — orthogonal delivery label, а не intake-routing label и не verification profile.
-- Во время `Spec Prep` агент обязан решить, нужен ли задаче opt-in TDD, и нормализовать `delivery:tdd`.
-- Используй `delivery:tdd` только когда cheap deterministic failing test или reproducer может доказать изменяемое поведение в узком core-logic path.
-- Не используй `delivery:tdd` для docs, deploy, CI, визуальной UI-полировки и flaky integration/runtime-heavy work.
-- Нормализовать `delivery:tdd` через `linear_graphql`: добавить label, когда TDD оправдан, и remove stale `delivery:tdd`, когда он не нужен.
-- После входа в `In Progress` `delivery:tdd` больше не влияет на routing; он меняет только delivery/handoff contract.
+- `delivery:tdd` semantics are defined in
+  `docs/policy/project-contract.md`.
+- During `Spec Prep`, decide whether `delivery:tdd` should be normalized via
+  `linear_graphql` according to that contract.
 
 ## Cost Profile Contract
 
@@ -731,6 +755,10 @@ Instructions:
    - determine the intake mode from labels before broad investigation:
    - `mode:research` -> load and follow repo-local `.agents/skills/research-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/research-mode/SKILL.md`;
    - `mode:plan` -> load and follow repo-local `.agents/skills/plan-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/plan-mode/SKILL.md`;
+     - if workflow gate `planning.swarm_assist_enabled` is `true`, additionally run `swarm-iterate` (prefer repo-local `.agents/skills/swarm-iterate/SKILL.md`; fallback `$CODEX_HOME/skills/swarm-iterate/SKILL.md`);
+     - with gate `true`, keep the short plan as SSOT and require linked artifact metadata (`plan_revision`, `artifact_path`, `artifact_revision`) before finalizing `Spec Prep`;
+     - if the gate is `true` but `swarm-iterate` is unavailable, fail closed: record this as `blocking divergence` in `Заметки`, fill `Checkpoint` with `checkpoint_type: human-action`, move the issue to `Blocked`, and stop (or disable the gate and rerun `Spec Prep`);
+     - if the gate is `false`, keep legacy `plan-mode` path unchanged as compatibility baseline;
      - if both labels exist, `mode:research` wins;
      - if neither label exists, treat the ticket as the legacy `plan-mode` path;
    - before finalizing the spec, decide whether execution should carry `delivery:tdd` and нормализовать `delivery:tdd` через `linear_graphql`;
@@ -743,11 +771,12 @@ Instructions:
    - always pass the absolute path to local `workpad.md` when calling `sync_workpad`.
 6. Update the issue-description task-spec only when required sections are missing or the task contract materially changed:
    - use canonical Russian headings `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and keep a final `## Symphony` section;
-   - for execution/review-oriented tasks, add mandatory `## Acceptance Matrix` with atomic items (`id`, `scenario`, `expected_outcome`, `proof_type`, `proof_target`, `proof_semantic`, `required_before`);
-   - use `required_before=review` for proof that must exist before `In Review`; use `required_before=done` only for post-merge/runtime proof that cannot be valid before review;
-   - keep `proof_type` canonical (`test`, `artifact`, `runtime_smoke`) and `proof_semantic` canonical (`surface_exists`, `run_executed`, `runtime_smoke`); legacy labels (`negative proof`, `regression guard`, `side-effect guard`) are tolerated only for backward compatibility of old tasks and must not be used in new specs;
+   - for execution/review-oriented tasks, follow
+     `docs/policy/project-contract.md` for `Acceptance Matrix` schema and proof
+     semantics;
    - when an acceptance item requires external infrastructure before execution can complete, add a machine-readable `Required capabilities: ...` line to the final `## Symphony` section. Use only external prerequisite names: `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`; do not include execution-only requirements (`repo_validation`, `pr_publication`, `pr_body_contract`) in this line because they are implicit workflow obligations;
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
+   - for `mode:plan` with gate `planning.swarm_assist_enabled=true`, keep machine-readable lines for `plan_revision`, `artifact_path`, and `artifact_revision` in the normalized plan body so enabled-path checks are auditable;
    - keep `## Symphony` as the last section with `Repo: <resolved owner/name>`, `Base branch: <configured branch>`, and `Working branch: <configured branch name>` when `.symphony-working-branch` exists;
    - if `.symphony-source-repository`, `.symphony-base-branch`, or `.symphony-working-branch` exist, treat them as authoritative when repopulating `Repo:`, `Base branch:`, and `Working branch:` during normalization;
    - preserve all material user facts, constraints, and acceptance intent, but allow full reformatting into the canonical sections;
@@ -786,14 +815,15 @@ Run `make symphony-preflight` once per run before treating auth/env/tooling gaps
 
 ## Two-tier validation contract
 
-Canonical validation terms:
+Use `docs/policy/project-contract.md` as the canonical definition for:
 
-- `cheap gate` is the local stabilization gate. Run it during implementation and after each meaningful code-change batch. It may run on a dirty workspace and can prove the immediate fix, but it never unlocks `git push`, PR publication/update, CI wait, or review-ready handoff.
-- `final gate` is the publish/review gate. Run it only on the clean committed `HEAD` that is ready to publish or hand off. It must include the successful cheap proof for the same `HEAD`, repo validation, and any class-specific runtime/UI/stateful proof required by the matrix.
-- `RunPhase` is observability only. It can describe `targeted tests`, `runtime proof`, `full validate`, `waiting CI`, or `publishing PR`, but it is not acceptance truth.
-- `symphony_handoff_check` remains the final fail-closed review-ready gate. Do not replace it with agent judgment or a prompt-only heuristic.
+- `cheap gate` / `final gate` semantics
+- `delivery:tdd` red/green proof requirements
+- acceptance proof mapping and evidence classes
+- invalidation/rerun policy for changed `HEAD`
+- classified checkpoint/handoff rules
 
-Decision matrix:
+Execution requirements in this workflow:
 
 | Change class | Cheap gate | Final gate | When final gate is mandatory |
 | -- | -- | -- | -- |
@@ -986,7 +1016,10 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## Task-spec issue description
 
-Use this structure when creating a new issue description or normalizing an existing one:
+Use this minimal structure when creating or normalizing a task-spec. Contract
+fields and semantics (`Acceptance Matrix`, `Proof Mapping`, proof classes,
+checkpoint schema) are defined only in
+`docs/policy/project-contract.md`.
 
 ````md
 ## Проблема
@@ -1006,12 +1039,6 @@ Use this structure when creating a new issue description or normalizing an exist
 
 - Критерий 1
 - Критерий 2
-
-## Acceptance Matrix
-
-| id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
-| -- | -- | -- | -- | -- | -- | -- |
-| AM-1 | <scenario> | <expected outcome> | <test|artifact|runtime_smoke> | <target> | <surface_exists|run_executed|runtime_smoke> | <review|done> |
 
 ## Вне скоупа
 
@@ -1039,7 +1066,8 @@ Do not use checkboxes, managed markers, or progress logs in the issue descriptio
 
 ## Workpad template
 
-Use this exact structure for the persistent workpad comment and keep it updated in place throughout execution:
+Use this compact structure for the persistent workpad comment. Validation/proof
+and checkpoint semantics come from `docs/policy/project-contract.md`.
 
 ````md
 ## Рабочий журнал Codex
@@ -1063,27 +1091,13 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Проверка
 
 - [ ] preflight: `make symphony-preflight`
-- [ ] cheap gate: `<same-HEAD targeted proof>`
-- [ ] red proof: `<command>` (обязательно при `delivery:tdd`; когда обязательно, не помечай `n/a`)
 - [ ] targeted tests: `<command>`
-- [ ] am-<id>: `<command>` (для каждого required `Acceptance Matrix` item с `proof_type=test` и `proof_semantic=run_executed`; label должен быть в lowercase, например `am-539-1`)
-- [ ] runtime smoke: `<command>` (для runtime/infra/workflow-contract/handoff изменений; когда обязательно, не помечай `n/a`)
-- [ ] stateful proof: `<command>` (для DB/schema/stateful изменений)
-- [ ] ui runtime proof: `<command>` (для hosted UI/frontend изменений)
-- [ ] visual artifact: `<artifact title>` (для hosted UI/frontend изменений)
 - [ ] repo validation: `make symphony-validate`
 
 ### Артефакты
 
 - [ ] вложение: `<title>` -> <что подтверждает>
-- [ ] строки `вложение` используй только для реальных file attachments в Linear; evidence по PR (`PR #...`, PR URL, `pull request`, `пулл-реквест`) должно оставаться в linked PR + `github_pr_snapshot`
 - [ ] ожидаемый, но не созданный артефакт: `<name>` -> <почему не был получен>
-
-### Proof Mapping
-
-- [ ] `<AM-id>` -> `validation:<label>` | `artifact:<title>` | `runtime:<label>`
-- Для required `test/run_executed` используй канонический mapping: checked validation label `am-<am-id-lowercase>` и ссылка `validation:am-<am-id-lowercase>` (без prose-описаний после `validation:`).
-- Для `runtime_smoke` используй `validation:runtime smoke`.
 
 ### Checkpoint
 

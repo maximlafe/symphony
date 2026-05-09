@@ -5,109 +5,39 @@ description: Use when the LET workflow routes an execution-ready issue into `In 
 
 # Execute Mode
 
+Entry-point skill for `In Progress` execution passes.
+
+Canonical delivery/proof/handoff semantics live in:
+[`docs/policy/project-contract.md`](../../docs/policy/project-contract.md)
+
 ## Goal
 
-Finish an execution-ready task with the smallest safe change and evidence that matches the task contract.
+Ship the smallest safe change and produce review-ready evidence for `In Review`,
+or produce a classified blocker handoff to `Blocked`.
 
-For the LET workflow, "finished" means one of:
+## Required flow
 
-- review-ready handoff in `In Review` with PR, green checks, required proof, attachments, and a classified checkpoint; or
-- `Blocked` with exact external capability evidence and a concrete unblock action; or
-- when the workflow explicitly allows autonomous landing, merged/released/verified completion.
+1. Start from the current issue contract and known failing signal.
+2. Implement minimal scoped change and required proof.
+3. When `delivery:tdd` is active, run [`tdd`](../tdd/SKILL.md) for explicit
+   red/green evidence before final handoff.
+4. When runtime failure signal is unclear or flaky, run
+   [`diagnose`](../diagnose/SKILL.md) before speculative fixes.
+5. Run required cheap/final gate sequence for the touched change class.
+6. Keep `Acceptance Matrix` and `Proof Mapping` internally consistent before
+   handoff.
+7. Publish/update PR only after repo PR contract is satisfied.
 
-## Engineering Frame
+## Contract hooks
 
-- Do not widen scope beyond the issue contract.
-- Prefer existing repo patterns and the smallest coherent implementation.
-- Apply `DRY`, `KISS`, and `YAGNI`.
-- Separate authoring from verification before any completion claim.
-- Treat missing auth, tooling, DB, runtime, deploy, or external service access as a capability question that must be proven by repo-owned preflight before blocking.
+- `Acceptance Matrix`, `Proof Mapping`, and artifact rules: see project contract.
+- Classified `Checkpoint` (`human-verify` / `decision` / `human-action`): see
+  project contract.
+- `In Review` and `Blocked` transition semantics: see project contract.
 
-## Acceptance Contract Discipline
+## Guardrails
 
-- When the issue contains `Acceptance Matrix`, treat `Acceptance Matrix` + workpad `Proof Mapping` + Linear attachments as one handoff contract surface.
-- Keep matrix item IDs stable during execution; do not rename or reuse IDs for different scenarios.
-- Use canonical matrix values in execution artifacts:
-  - `proof_type` in (`test`, `artifact`, `runtime_smoke`);
-  - `proof_semantic` in (`surface_exists`, `run_executed`, `runtime_smoke`);
-  - `required_before=review` for proof required before `In Review`, `required_before=done` only for post-merge/runtime proof.
-- Legacy proof semantics (`negative proof`, `regression guard`, `side-effect guard`) are backward-compatibility only; do not introduce them in new or rewritten specs/workpads.
-- Before handoff, ensure every required matrix item has exactly one checked `Proof Mapping` entry and that mapping type matches matrix `proof_type`.
-- For required `test` + `run_executed` items, use canonical AM labels in `Validation`: add checked `am-<am-id-lowercase>: <command>` and map with `validation:am-<am-id-lowercase>`.
-- Do not use prose references after `validation:` (for example `validation:... @let_... ...`) because verifier cannot resolve them deterministically.
-- For `runtime_smoke` items, use `validation:runtime smoke` in `Proof Mapping`.
-- For `artifact` mappings, ensure both are true:
-  - matching checked `uploaded attachment` entry exists in `Artifacts`;
-  - matching attachment exists in Linear issue attachments (same title).
-- Do not move the issue to `In Review` if matrix/mapping/artifact surface is stale or internally inconsistent.
-
-## Required Execution Flow
-
-1. Resolve the current issue, state, repo, branch, PR, checks, review state, and recent related work before editing.
-2. If the issue is already blocked, in review, done, or otherwise outside the execution path, follow the workflow state rule instead of coding.
-3. Load the issue description as the canonical task contract and use the workpad as the execution log.
-4. If a known failed guard, failed proof, CI failure, or runtime signal already exists, start from that signal.
-5. Reproduce or capture the target behavior when a safe narrow reproducer materially improves confidence.
-6. Implement the minimum scoped change.
-7. Add or update regression coverage or another proof that directly covers the changed behavior.
-8. Run `make symphony-preflight` and the repo/task acceptance preflight before declaring auth, env, DB, runtime, deploy, or tooling blockers.
-9. Run the validation matrix required by the workflow, the repo instructions, and the issue acceptance matrix.
-10. If `Acceptance Matrix` is present, run a pre-handoff consistency pass on `Proof Mapping` and `Artifacts` before final handoff validation.
-11. Preserve strict 1:1 mapping for required matrix items and resolve drift at source (matrix IDs, mapping references, attachment titles) before handoff.
-12. Publish or update the PR only after the PR body is complete enough to satisfy the repo PR contract.
-13. Triage CI, PR review feedback, and mergeability until no actionable feedback remains or a real blocker is proven.
-14. Do not move to `In Review` until handoff evidence is complete and true before the state transition.
-15. Do not merge directly unless the workflow explicitly routes the issue into an autonomous merge path; use the repo land flow when merging is allowed.
-16. After merge or deployment, verify the landed/released state before claiming completion.
-17. Update Linear in Russian with the final evidence and state.
-
-## Capability Gate
-
-Before treating an external dependency as a blocker, prove it with the repo-owned preflight path:
-
-- generic execution: Codex/OpenAI auth, Linear auth, GitHub auth, git access, and repo bootstrap;
-- PR publication: complete PR body contract, push access, and CI visibility;
-- repo validation: repo-owned validation target can run;
-- stateful DB proof: reachable isolated DB/schema and migration/test safety guards;
-- runtime proof: repo-owned runtime or smoke command can run and produce durable evidence;
-- UI proof: app launch, browser automation, and visual artifact capture;
-- deploy/VPS proof: configured remote access, target path, health check, and rollback path.
-
-If a required capability is absent, fail closed before commit/push/handoff and record:
-
-- what is missing;
-- why it blocks the issue's acceptance matrix;
-- the exact human or repo-owned action that unblocks it.
-
-## Required Outcomes
-
-- Code, tests, PR, CI, required proof, and handoff are complete; or
-- a real external blocker remains with exact evidence.
-
-## Forbidden
-
-- Do not start product code changes without an execution-ready issue.
-- Do not skip the workflow-required preflight before calling an env/auth/tooling gap a blocker.
-- Do not claim "code ready", "review ready", "done", or equivalent if required proof is still missing.
-- Do not use CI green as a substitute for a runtime, DB, UI, deploy, or artifact proof required by the acceptance matrix.
-- Do not leave review comments unanswered or silently force through unresolved feedback.
-- Do not merge through an ad-hoc GitHub command path when the workflow requires the land flow.
-
-## Linear Expectations
-
-- Write Linear comments and final handoffs in Russian.
-- Keep one primary issue as the execution source of truth.
-- Use classified checkpoints for execution handoffs to `In Review` or `Blocked`.
-- For `Blocked`, state the missing capability, why autonomous progress cannot continue, and the exact unblock action.
-
-## Exit Bar
-
-Before handing off or closing:
-
-- required preflight passed or the missing capability is recorded as a blocker;
-- task acceptance criteria and acceptance matrix are mapped to checked proof;
-- acceptance matrix uses canonical `proof_type`/`proof_semantic` values and `required_before` is respected;
-- every required matrix item has exactly one checked `Proof Mapping` entry of the correct type;
-- required artifacts are uploaded or explicitly explained as impossible;
-- PR checks and review feedback are resolved when PR handoff is in scope;
-- the final state claim matches the workflow state.
+- Do not widen scope beyond issue contract.
+- Do not treat CI green alone as acceptance proof.
+- Do not bypass repo preflight/validation contract.
+- Update Linear in Russian with objective evidence and final state claim.

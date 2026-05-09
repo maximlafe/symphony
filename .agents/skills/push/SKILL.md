@@ -7,6 +7,9 @@ description:
 
 # Push
 
+Canonical publish/handoff semantics:
+[`docs/policy/project-contract.md`](../../docs/policy/project-contract.md)
+
 ## Prerequisites
 
 - `gh` CLI is installed and available in `PATH`.
@@ -17,6 +20,7 @@ description:
 - Push current branch changes to `origin` safely.
 - Create a PR if none exists for the branch, otherwise update the existing PR.
 - Keep branch history clean when remote has moved.
+- Respect the repo `cheap gate` / `final gate` contract before publication.
 
 ## Related Skills
 
@@ -26,7 +30,9 @@ description:
 ## Steps
 
 1. Identify current branch and confirm remote state.
-2. Run local validation (`make -C elixir all`) before pushing.
+2. Confirm the current `HEAD` has passed the required final gate for the touched
+   change class (repo default: `make symphony-validate` after successful cheap
+   gate on the same `HEAD`).
 3. Push branch to `origin` with upstream tracking if needed, using whatever
    remote URL is already configured.
 4. If push is not clean/rejected:
@@ -71,8 +77,8 @@ if [ -z "$base_branch" ]; then
 fi
 [ -n "$base_branch" ] || base_branch=main
 
-# Minimal validation gate
-make -C elixir all
+# Final gate baseline (after cheap gate success on the same HEAD)
+make symphony-validate
 
 # Initial push: respect the current origin remote.
 git push -u origin HEAD

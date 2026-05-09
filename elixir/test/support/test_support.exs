@@ -38,7 +38,10 @@ defmodule SymphonyElixir.TestSupport do
         previous_linear_assignee = System.get_env("LINEAR_ASSIGNEE")
 
         File.mkdir_p!(workflow_root)
-        SymphonyElixir.TestSupport.install_test_codex!(workflow_root)
+
+        unless Map.get(context, :live_e2e, false) do
+          SymphonyElixir.TestSupport.install_test_codex!(workflow_root)
+        end
 
         unless Map.get(context, :live_e2e, false) do
           System.delete_env("LINEAR_API_KEY")
