@@ -979,11 +979,13 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp maybe_require_plan_contract_field(errors, value, _message)
-       when is_binary(value) and value != "",
-       do: errors
-
-  defp maybe_require_plan_contract_field(errors, _value, message), do: errors ++ [message]
+  defp maybe_require_plan_contract_field(errors, value, message) do
+    if non_empty_binary?(value) and not placeholder_value?(value) do
+      errors
+    else
+      errors ++ [message]
+    end
+  end
 
   defp maybe_require_plan_revision_match(errors, plan_revision, artifact_revision) do
     if non_empty_binary?(plan_revision) and non_empty_binary?(artifact_revision) and

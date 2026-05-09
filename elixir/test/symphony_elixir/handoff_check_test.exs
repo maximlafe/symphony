@@ -1948,6 +1948,43 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert "cannot validate two-layer artifact path: workspace root is unknown" in unknown_workspace_manifest["missing_items"]
 
+    placeholder_metadata_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+    | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
+
+    ## Two-Layer Plan Contract
+
+    plan_revision: `<fill only>`
+    artifact_path: `<fill only>`
+    artifact_revision: `<fill only>`
+    plan_state: `review-ready`
+    """
+
+    assert {:error, placeholder_metadata_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: placeholder_metadata_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "mode:plan with `planning.swarm_assist_enabled=true` requires machine-readable `plan_revision` in issue description" in placeholder_metadata_manifest["missing_items"]
+    assert "mode:plan with `planning.swarm_assist_enabled=true` requires machine-readable `artifact_path` in issue description" in placeholder_metadata_manifest["missing_items"]
+    assert "mode:plan with `planning.swarm_assist_enabled=true` requires machine-readable `artifact_revision` in issue description" in placeholder_metadata_manifest["missing_items"]
+    assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in placeholder_metadata_manifest["missing_items"]
+
     single_quote_value_description = """
     ## Acceptance Matrix
 
