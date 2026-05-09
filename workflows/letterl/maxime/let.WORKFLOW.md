@@ -757,7 +757,7 @@ Instructions:
    - `mode:plan` -> load and follow repo-local `.agents/skills/plan-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/plan-mode/SKILL.md`;
      - if workflow gate `planning.swarm_assist_enabled` is `true`, additionally run `swarm-iterate` (prefer repo-local `.agents/skills/swarm-iterate/SKILL.md`; fallback `$CODEX_HOME/skills/swarm-iterate/SKILL.md`);
      - with gate `true`, keep the short plan as SSOT and require linked artifact metadata (`plan_revision`, `artifact_path`, `artifact_revision`) before finalizing `Spec Prep`;
-     - if the gate is `true` but `swarm-iterate` is unavailable, fallback to legacy `plan-mode` path, note this fallback in `Заметки`, and continue without blocking;
+     - if the gate is `true` but `swarm-iterate` is unavailable, fail closed: record this as `blocking divergence` in `Заметки`, fill `Checkpoint` with `checkpoint_type: human-action`, move the issue to `Blocked`, and stop (or disable the gate and rerun `Spec Prep`);
      - if the gate is `false`, keep legacy `plan-mode` path unchanged as compatibility baseline;
      - if both labels exist, `mode:research` wins;
      - if neither label exists, treat the ticket as the legacy `plan-mode` path;

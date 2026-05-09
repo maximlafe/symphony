@@ -74,8 +74,10 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ ".agents/skills/swarm-iterate/SKILL.md"
     assert prompt =~ "$CODEX_HOME/skills/swarm-iterate/SKILL.md"
     assert prompt =~ "if workflow gate `planning.swarm_assist_enabled` is `true`, additionally run `swarm-iterate`"
+    assert prompt =~ "if the gate is `true` but `swarm-iterate` is unavailable, fail closed"
     assert prompt =~ "blocking divergence"
     assert prompt =~ "keep machine-readable lines for `plan_revision`, `artifact_path`, and `artifact_revision`"
+    refute prompt =~ "continue without blocking"
     refute prompt =~ ".agents/skills/plan-swarm-mode/SKILL.md"
     refute prompt =~ "make test-unit"
   end
