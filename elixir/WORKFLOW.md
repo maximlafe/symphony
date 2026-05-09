@@ -78,7 +78,7 @@ codex:
     - id: backup
       codex_home: ~/.codex-backup
 planning:
-  swarm_assist_enabled: false
+  swarm_assist_enabled: true
 verification:
   profile_labels:
     ui: "verification:ui"
@@ -193,7 +193,7 @@ Instructions:
 - Repo-local worker skills live in `.agents/skills/` and are part of the required target-repo contract.
 - If a repository enables `mode:plan` spec-prep routing, keep swarm-assisted
   planning behind workflow gate `planning.swarm_assist_enabled` (default
-  `false`) and keep legacy `plan-mode` as compatibility path when disabled.
+  `true`) and keep legacy `plan-mode` as compatibility path when disabled.
 - When gate `planning.swarm_assist_enabled=true`, keep `plan-mode` as the only
   planning entrypoint and run `swarm-iterate` from that entrypoint (repo-local
   path when available, otherwise `$CODEX_HOME/skills/swarm-iterate/SKILL.md`).

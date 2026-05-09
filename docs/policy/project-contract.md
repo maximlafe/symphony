@@ -35,8 +35,8 @@ If a rule must change, update this file first and then align workflows/skills.
 
 - This applies only to `mode:plan` and only when workflow gate
   `planning.swarm_assist_enabled` is enabled.
-- Default contract is disabled (`false`): legacy `plan-mode` remains the
-  compatibility path.
+- Default contract is enabled (`true`): disable the gate only when you need
+  explicit compatibility fallback to legacy `plan-mode`.
 - In enabled mode, plan output has two layers:
   1. canonical short plan (single source of truth, reviewer-facing);
   2. linked swarm artifact (supporting analysis only).

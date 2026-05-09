@@ -40,10 +40,10 @@ contour without shipping product code.
    - `plan_revision` is owned by this stage and must be copied into
      `artifact_revision` for the linked artifact.
 
-## Optional swarm-assisted path (guarded)
+## Guarded swarm-assisted path
 
-- This loop is opt-in and controlled by workflow gate
-  `planning.swarm_assist_enabled`.
+- This loop is controlled by workflow gate `planning.swarm_assist_enabled`
+  (default-on in this repository).
 - If the gate is disabled, keep legacy `plan-mode` path unchanged.
 - If the gate is enabled, run `swarm-iterate` with default three
   critique/repair rounds unless task risk requires additional rounds.

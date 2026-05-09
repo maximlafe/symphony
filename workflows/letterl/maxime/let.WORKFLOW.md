@@ -538,7 +538,7 @@ codex:
   minimum_remaining_percent: 5
   monitored_windows_mins: [300, 10080]
 planning:
-  swarm_assist_enabled: false
+  swarm_assist_enabled: true
 server:
   host: "0.0.0.0"
 ---
@@ -639,7 +639,7 @@ Instructions:
   - `mode:plan` -> `plan-mode` obligations (`R0`, `R5`, `R10`, `R14`, `R15`).
   - execute-ready implementation path -> `execute-mode` obligations (`R0`, `R1`, `R2`, `R5`, `R6`, `R7`, `R8`, `R9`, `R12`, `R13`).
 - Plan swarm gate contract:
-  - workflow gate: `planning.swarm_assist_enabled` (default `false`);
+  - workflow gate: `planning.swarm_assist_enabled` (default `true`);
   - when gate is `false`, keep legacy `plan-mode` path unchanged (compatibility
     path);
   - when gate is `true`, keep `plan-mode` as entrypoint and additionally run

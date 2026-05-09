@@ -58,7 +58,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4"
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "xhigh"
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
-    assert get_in(config, ["planning", "swarm_assist_enabled"]) == false
+    assert get_in(config, ["planning", "swarm_assist_enabled"]) == true
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert get_in(config, ["codex", "cost_policy", "signal_escalations", "rework"]) == "escalated_implementation"
     assert get_in(config, ["codex", "cost_policy", "signal_escalations", "risky_task"]) == "escalated_implementation"
@@ -66,7 +66,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "`mode:research` и `reasoning:implementation-xhigh` не эскалируют"
     assert prompt =~ "fail closed into `Spec Prep` and treat it as the legacy `plan-mode` path."
     assert prompt =~ "Plan swarm gate contract:"
-    assert prompt =~ "`planning.swarm_assist_enabled` (default `false`)"
+    assert prompt =~ "`planning.swarm_assist_enabled` (default `true`)"
     assert prompt =~ "when gate is `false`, keep legacy `plan-mode` path unchanged"
     assert prompt =~ "enabled gate output is two-layer: canonical short plan (SSOT) +"
     assert prompt =~ "`plan_revision`, `artifact_path`, and `artifact_revision`"
@@ -99,7 +99,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4"
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "xhigh"
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
-    assert get_in(config, ["planning", "swarm_assist_enabled"]) == false
+    assert get_in(config, ["planning", "swarm_assist_enabled"]) == true
     assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert prompt =~ "`codex.cost_policy`"
@@ -147,7 +147,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert plan_skill =~ "`planning.swarm_assist_enabled`"
     assert plan_skill =~ "`swarm-iterate`"
     assert plan_skill =~ "owned by this stage"
-    assert plan_skill =~ "Optional swarm-assisted path (guarded)"
+    assert plan_skill =~ "Guarded swarm-assisted path"
     assert plan_skill =~ "emit a two-layer plan"
     assert plan_skill =~ "`plan_revision`"
     assert plan_skill =~ "`artifact_path`"
