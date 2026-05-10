@@ -1446,8 +1446,20 @@ defmodule SymphonyElixir.Orchestrator do
        ) do
     resolved_resume_checkpoint = resolve_resume_checkpoint(issue, resume_checkpoint)
     trace_id = dispatch_trace_id(issue, trace_id)
-    execution_head = capture_execution_head(issue, retry_delay_type, resolved_resume_checkpoint)
-    dispatch_context = dispatch_context(attempt, trace_id, retry_delay_type, resolved_resume_checkpoint)
+    execution_attempt_token = dispatch_execution_attempt_token(issue, attempt, trace_id)
+
+    execution_head =
+      issue
+      |> capture_execution_head(retry_delay_type, resolved_resume_checkpoint)
+      |> Map.put(:execution_attempt_token, execution_attempt_token)
+
+    dispatch_context =
+      dispatch_context(
+        attempt,
+        trace_id,
+        retry_delay_type,
+        resolved_resume_checkpoint
+      )
 
     case stale_execution_head_reason(execution_head) do
       nil ->
@@ -1589,7 +1601,12 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp dispatch_context(attempt, trace_id, retry_delay_type, resolved_resume_checkpoint) do
+  defp dispatch_context(
+         attempt,
+         trace_id,
+         retry_delay_type,
+         resolved_resume_checkpoint
+       ) do
     %{
       attempt: attempt,
       trace_id: trace_id,
@@ -2314,9 +2331,17 @@ defmodule SymphonyElixir.Orchestrator do
        ) do
     recipient = self()
     finalizer_fun = Map.get(state, :controller_finalizer_fun, &ControllerFinalizer.run/3)
+    execution_attempt_token = Map.get(execution_head, :execution_attempt_token)
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           result = finalizer_fun.(issue, resume_checkpoint, trace_id: trace_id)
+           result =
+             finalizer_fun.(
+               issue,
+               resume_checkpoint,
+               trace_id: trace_id,
+               execution_attempt_token: execution_attempt_token
+             )
+
            send(recipient, {:controller_finalizer_result, issue.id, result})
          end) do
       {:ok, pid} ->
@@ -2334,6 +2359,7 @@ defmodule SymphonyElixir.Orchestrator do
                 identifier: issue.identifier,
                 issue: issue,
                 trace_id: trace_id,
+                execution_attempt_token: execution_attempt_token,
                 session_id: nil,
                 thread_id: nil,
                 turn_id: nil,
@@ -2400,6 +2426,7 @@ defmodule SymphonyElixir.Orchestrator do
          resume_checkpoint,
          execution_head
        ) do
+    execution_attempt_token = Map.get(execution_head, :execution_attempt_token)
     retry_metadata = Map.get(execution_head, :retry_metadata, %{})
     recipient = self()
 
@@ -2410,6 +2437,7 @@ defmodule SymphonyElixir.Orchestrator do
              attempt: attempt,
              codex_account: codex_account,
              trace_id: trace_id,
+             execution_attempt_token: execution_attempt_token,
              resume_checkpoint: resume_checkpoint,
              cost_profile_key: retry_cost_profile_key(retry_metadata, resume_checkpoint),
              cost_stage: retry_cost_stage(retry_metadata, resume_checkpoint)
@@ -2432,6 +2460,7 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: issue.identifier,
             issue: issue,
             trace_id: trace_id,
+            execution_attempt_token: execution_attempt_token,
             session_id: nil,
             thread_id: nil,
             turn_id: nil,
@@ -7001,6 +7030,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp new_trace_id do
     Ecto.UUID.generate()
+  end
+
+  defp dispatch_execution_attempt_token(_issue, _attempt, _trace_id) do
+    new_execution_attempt_token()
+  end
+
+  defp new_execution_attempt_token do
+    "run-" <> Integer.to_string(System.unique_integer([:positive, :monotonic]))
   end
 
   defp dispatch_trace_id(_issue, trace_id) when is_binary(trace_id) and trace_id != "",

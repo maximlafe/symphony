@@ -89,6 +89,8 @@ verification:
     - In Review
     - Human Review
   manifest_path: .symphony/verification/handoff-manifest.json
+  execution_evidence:
+    strict_runtime_token_required: false
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`
@@ -125,6 +127,7 @@ Title: {{ issue.title }}
 Current status: {{ issue.state }}
 Labels: {{ issue.labels }}
 URL: {{ issue.url }}
+Execution run token: {{ execution_run_token }}
 
 Description:
 {% if issue.description %}
@@ -203,6 +206,11 @@ Instructions:
 - In enabled mode, require the swarm artifact referenced by `artifact_path` to
   be uploaded to Linear issue attachments (title match by full path or
   filename) before planning handoff is considered complete.
+- In enabled `mode:plan` execution, require two-layer preflight before code
+  edits and a dedicated `Execution Evidence` marker in workpad with runtime
+  fields: `status`, `run_token`, `artifact_file`,
+  `revision_pair.plan_revision`, `revision_pair.artifact_revision`,
+  `consumed_sections`, `note`.
 - Any enabled-path mismatch is `blocking divergence` and must fail closed
   before review-ready handoff.
 - When a fresh working branch is needed, use the exact `Working branch:` value from the issue description's final `## Symphony` section when it is present. Otherwise, do not reuse tracker-generated `branchName` values and create the branch yourself as `Symphony/<lowercase issue identifier>-<short-kebab-summary>`.
@@ -269,10 +277,16 @@ Instructions:
      `docs/policy/project-contract.md`.
    - If the plan still needs a new abstraction, shared helper, or refactor, justify in `Notes` why reuse or a simpler localized change is insufficient.
 4. Before code edits, run the `pull` skill to sync with latest `origin/main`, then record the result in `Notes` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
-5. Implement against the checklist, keep completed items checked, and sync the live workpad only after milestone transitions or before handoff.
+5. For `mode:plan` with `planning.swarm_assist_enabled=true`, run two-layer execution preflight before code edits:
+   - read issue `plan_revision`, `artifact_path`, `artifact_revision`;
+   - verify artifact file/attachment/revision alignment;
+   - consume artifact as supporting-only source (risk/rollback/diagnostics), never as scope authority;
+   - write `Execution Evidence` section in workpad with required runtime-owned fields;
+   - if preflight is blocked/partial/stale/divergent, fail closed with classified blocker handoff to `Blocked` and stop.
+6. Implement against the checklist, keep completed items checked, and sync the live workpad only after milestone transitions or before handoff.
    - milestone sync points in this stage are `code-ready`, `validation-running`, `PR-opened`, `CI-failed`, `handoff-ready`;
    - track repeated fix loops for the same failing signal in the workpad and follow the auto-fix limit below;
-6. Run the required validation for the scope:
+7. Run the required validation for the scope:
    - run `make symphony-preflight` before concluding that auth or tooling is missing for the current task;
    - execute all ticket-provided validation/test-plan requirements when present;
    - prefer targeted proof for the changed behavior;
@@ -280,9 +294,9 @@ Instructions:
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, include a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
    - if the task produces export/report files or machine-readable validation artifacts that support the handoff, attach those files to the issue instead of leaving them only in the workpad or local runtime.
-7. Before `git push`, rerun the required validation only when the current `HEAD^{tree}` changed since the latest final-gate proof checkpoint; otherwise reuse the existing final-gate proof on the same tree.
-8. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
-9. Merge latest `origin/main` into the branch before final handoff, resolve conflicts, and rerun required validation.
+8. Before `git push`, rerun the required validation only when the current `HEAD^{tree}` changed since the latest final-gate proof checkpoint; otherwise reuse the existing final-gate proof on the same tree.
+9. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
+10. Merge latest `origin/main` into the branch before final handoff, resolve conflicts, and rerun required validation.
 
 ## Validation gate matrix
 
@@ -465,6 +479,16 @@ validation/proof/checkpoint semantics are defined in
 
 - [ ] uploaded attachment: `<title>` -> <what it proves>
 - [ ] missing expected artifact: `<name>` -> <why it was not produced>
+
+### Execution Evidence
+
+- `status`: `<passed|blocked>` (`mode:plan` + `planning.swarm_assist_enabled=true`)
+- `run_token`: `<attempt token>` (fresh per preflight attempt)
+- `artifact_file`: `<docs/reports/...>`
+- `revision_pair.plan_revision`: `<value>`
+- `revision_pair.artifact_revision`: `<value>`
+- `consumed_sections`: `<section1, section2>`
+- `note`: `artifact is secondary, short plan is canonical`
 
 ### Checkpoint
 

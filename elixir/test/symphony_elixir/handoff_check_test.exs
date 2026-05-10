@@ -2257,6 +2257,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
              )
 
     assert get_in(manifest, ["execution_evidence", "run_token_matches_current_attempt"]) == true
+    assert get_in(manifest, ["execution_evidence", "expected_run_token_source"]) == "argument_fallback"
 
     assert {:error, stale_manifest} =
              HandoffCheck.evaluate(
@@ -2279,6 +2280,104 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert "execution evidence stale marker: `Execution Evidence.run_token` does not match the current preflight attempt" in stale_manifest["missing_items"]
     assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in stale_manifest["missing_items"]
+  end
+
+  test "evaluate enforces runtime token source when strict runtime token mode is enabled" do
+    workspace = Path.join(System.tmp_dir!(), "two-layer-plan-exec-token-strict-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    artifact_relative_path = "docs/reports/let-504-swarm-artifact.md"
+    artifact_path = Path.join(workspace, artifact_relative_path)
+    File.mkdir_p!(Path.dirname(artifact_path))
+
+    File.write!(
+      artifact_path,
+      """
+      # LET-504 Swarm Artifact
+
+      plan_revision: `plan-rev-1`
+      artifact_revision: `plan-rev-1`
+      """
+    )
+
+    issue_description =
+      two_layer_acceptance_matrix_description(
+        artifact_relative_path,
+        "plan-rev-1",
+        "plan-rev-1",
+        "review-ready"
+      )
+
+    assert {:error, strict_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(run_token: "run-token-current"),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               execution_evidence_run_token: "run-token-current",
+               execution_evidence_expected_run_token_source: "argument_fallback",
+               execution_evidence_strict_runtime_token_required: true,
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "let-504-swarm-artifact.md"}
+               ],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "execution evidence stale marker: runtime execution attempt token is required for current preflight attempt" in strict_manifest["missing_items"]
+    assert get_in(strict_manifest, ["execution_evidence", "strict_runtime_token_required"]) == true
+
+    assert {:ok, runtime_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(run_token: "run-token-current"),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               execution_evidence_run_token: "run-token-current",
+               execution_evidence_expected_run_token_source: "runtime_execution_attempt_token",
+               execution_evidence_strict_runtime_token_required: true,
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "let-504-swarm-artifact.md"}
+               ],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert get_in(runtime_manifest, ["execution_evidence", "expected_run_token_source"]) ==
+             "runtime_execution_attempt_token"
+
+    assert {:ok, normalized_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(run_token: "run-token-current"),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               execution_evidence_run_token: "run-token-current",
+               execution_evidence_expected_run_token_source: "unexpected-custom-source",
+               execution_evidence_strict_runtime_token_required: false,
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "let-504-swarm-artifact.md"}
+               ],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert get_in(normalized_manifest, ["execution_evidence", "expected_run_token_source"]) ==
+             "argument_fallback"
   end
 
   test "evaluate fails closed when execution evidence current run token is missing" do
@@ -2324,7 +2423,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
                git: git_metadata()
              )
 
-    assert "mode:plan with `planning.swarm_assist_enabled=true` requires `execution_evidence_run_token` in `symphony_handoff_check` arguments" in manifest["missing_items"]
+    assert "mode:plan with `planning.swarm_assist_enabled=true` requires current preflight attempt run token for `Execution Evidence.run_token` freshness checks" in manifest["missing_items"]
 
     assert "execution evidence stale marker: `execution_evidence_run_token` is required for current preflight attempt" in manifest["missing_items"]
 

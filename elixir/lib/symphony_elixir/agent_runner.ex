@@ -179,6 +179,7 @@ defmodule SymphonyElixir.AgentRunner do
     monotonic_time_ms = Keyword.get(opts, :monotonic_time_ms, &default_monotonic_time_ms/0)
     sleep_fn = Keyword.get(opts, :sleep_fn, &Process.sleep/1)
     trace_id = trace_id(issue, opts)
+    execution_attempt_token = execution_attempt_token(opts)
 
     session_opts =
       codex_launch_options(codex_account)
@@ -186,6 +187,7 @@ defmodule SymphonyElixir.AgentRunner do
       |> maybe_put_cost_profile_key_opt(Keyword.get(opts, :cost_profile_key))
       |> maybe_put_cost_stage_opt(Keyword.get(opts, :cost_stage))
       |> maybe_put_trace_id_opt(trace_id)
+      |> maybe_put_execution_attempt_token_opt(execution_attempt_token)
 
     with {:ok, session} <- AppServer.start_session(workspace, session_opts) do
       session_context = %{
@@ -197,7 +199,8 @@ defmodule SymphonyElixir.AgentRunner do
         max_turns: max_turns,
         monotonic_time_ms: monotonic_time_ms,
         sleep_fn: sleep_fn,
-        trace_id: trace_id
+        trace_id: trace_id,
+        execution_attempt_token: execution_attempt_token
       }
 
       try do
@@ -406,6 +409,19 @@ defmodule SymphonyElixir.AgentRunner do
     Keyword.get(opts, :trace_id) || Map.get(issue, :trace_id)
   end
 
+  defp execution_attempt_token(opts) when is_list(opts) do
+    case Keyword.get(opts, :execution_attempt_token) do
+      token when is_binary(token) ->
+        case String.trim(token) do
+          "" -> nil
+          normalized -> normalized
+        end
+
+      _ ->
+        nil
+    end
+  end
+
   defp attach_trace_id(%Issue{} = issue, trace_id) when is_binary(trace_id) and trace_id != "" do
     Map.put(issue, :trace_id, trace_id)
   end
@@ -417,6 +433,12 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp maybe_put_trace_id_opt(opts, _trace_id), do: opts
+
+  defp maybe_put_execution_attempt_token_opt(opts, token) when is_binary(token) and token != "" do
+    Keyword.put(opts, :execution_attempt_token, token)
+  end
+
+  defp maybe_put_execution_attempt_token_opt(opts, _token), do: opts
 
   defp with_issue_logger_metadata(issue, trace_id, fun) when is_function(fun, 0) do
     previous_metadata = Logger.metadata()

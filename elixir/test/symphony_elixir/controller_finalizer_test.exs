@@ -1295,6 +1295,51 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert payload.reason == "controller finalizer completed successfully"
   end
 
+  test "run/3 forwards runtime execution attempt token to handoff check tool opts" do
+    issue = %Issue{id: "issue-runtime-token-forward", identifier: "LET-716-RUNTIME-TOKEN", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())
+
+    checkpoint = %{
+      "head" => "head-runtime-token-forward",
+      "open_pr" => %{"number" => 208, "url" => "https://github.com/acme/symphony/pull/208"}
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/208",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, tool_opts ->
+        assert tool_opts[:execution_attempt_token] == "run-token-208"
+
+        {:ok,
+         %{
+           "manifest" => %{
+             "passed" => true,
+             "summary" => "ok",
+             "manifest_path" => ".symphony/verification/handoff-manifest.json"
+           }
+         }}
+      end
+    }
+
+    assert {:ok, payload} =
+             run_finalizer(
+               issue,
+               checkpoint,
+               script,
+               execution_attempt_token: "run-token-208"
+             )
+
+    assert payload.reason == "controller finalizer completed successfully"
+  end
+
   test "run/3 returns fallback when git remote origin is missing or unparsable" do
     issue_missing = %Issue{id: "issue-git-missing", identifier: "LET-462-GIT-MISSING", state: "In Progress"}
     _workspace_missing = create_workspace!(issue_missing.identifier, git_init: true)
@@ -1428,8 +1473,9 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     tracker_module = Keyword.get(opts, :tracker_module, TrackerStub)
     repo_opt = Keyword.get(opts, :repo, "acme/symphony")
     executor = script_executor(script)
+    passthrough_opts = Keyword.drop(opts, [:tracker_module, :repo])
 
-    base_opts = [tracker_module: tracker_module, tool_executor: executor]
+    base_opts = [tracker_module: tracker_module, tool_executor: executor] ++ passthrough_opts
 
     final_opts =
       case repo_opt do

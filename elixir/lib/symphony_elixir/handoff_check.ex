@@ -945,6 +945,15 @@ defmodule SymphonyElixir.HandoffCheck do
     expected_artifact_revision = normalize_optional_machine_readable(contract["artifact_revision"])
     expected_run_token = normalize_optional_run_token(Keyword.get(opts, :execution_evidence_run_token))
 
+    expected_run_token_source =
+      normalize_expected_run_token_source(
+        Keyword.get(opts, :execution_evidence_expected_run_token_source),
+        expected_run_token
+      )
+
+    strict_runtime_token_required? =
+      Keyword.get(opts, :execution_evidence_strict_runtime_token_required, false) == true
+
     status = normalize_optional_machine_readable(execution_evidence["status"])
     run_token = normalize_optional_machine_readable(execution_evidence["run_token"])
     artifact_file = normalize_optional_machine_readable(execution_evidence["artifact_file"])
@@ -959,7 +968,7 @@ defmodule SymphonyElixir.HandoffCheck do
       []
       |> maybe_require_plan_contract_field(
         expected_run_token,
-        "mode:plan with `planning.swarm_assist_enabled=true` requires `execution_evidence_run_token` in `symphony_handoff_check` arguments"
+        "mode:plan with `planning.swarm_assist_enabled=true` requires current preflight attempt run token for `Execution Evidence.run_token` freshness checks"
       )
       |> maybe_require_plan_contract_field(
         status,
@@ -999,6 +1008,10 @@ defmodule SymphonyElixir.HandoffCheck do
         expected_artifact_revision
       )
       |> maybe_require_execution_evidence_run_token_match(run_token, expected_run_token)
+      |> maybe_require_runtime_expected_run_token_source(
+        expected_run_token_source,
+        strict_runtime_token_required?
+      )
       |> maybe_require_execution_evidence_note_precedence(note)
 
     normalized_status = normalize_execution_evidence_status(status)
@@ -1015,6 +1028,8 @@ defmodule SymphonyElixir.HandoffCheck do
       "status" => status,
       "run_token" => run_token,
       "expected_run_token" => expected_run_token,
+      "expected_run_token_source" => expected_run_token_source,
+      "strict_runtime_token_required" => strict_runtime_token_required?,
       "run_token_matches_current_attempt" => token_match?,
       "artifact_file" => artifact_file,
       "revision_pair" => revision_pair,
@@ -1138,6 +1153,47 @@ defmodule SymphonyElixir.HandoffCheck do
     else
       errors
     end
+  end
+
+  defp maybe_require_runtime_expected_run_token_source(errors, _expected_run_token_source, false), do: errors
+
+  defp maybe_require_runtime_expected_run_token_source(
+         errors,
+         "runtime_execution_attempt_token",
+         true
+       ),
+       do: errors
+
+  defp maybe_require_runtime_expected_run_token_source(errors, _expected_run_token_source, true) do
+    errors ++
+      [
+        "execution evidence stale marker: runtime execution attempt token is required for current preflight attempt"
+      ]
+  end
+
+  defp normalize_expected_run_token_source(source, expected_run_token) when is_binary(source) do
+    normalized =
+      source
+      |> String.downcase()
+      |> String.trim()
+
+    case normalized do
+      "runtime_execution_attempt_token" ->
+        normalized
+
+      "argument_fallback" ->
+        normalized
+
+      "missing" ->
+        normalized
+
+      _ ->
+        normalize_expected_run_token_source(nil, expected_run_token)
+    end
+  end
+
+  defp normalize_expected_run_token_source(_source, expected_run_token) do
+    if non_empty_binary?(expected_run_token), do: "argument_fallback", else: "missing"
   end
 
   defp maybe_require_execution_evidence_note_precedence(errors, note) do

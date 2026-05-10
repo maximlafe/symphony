@@ -337,11 +337,13 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp session_metadata(port, opts, cost_decision) when is_list(opts) do
     issue = Keyword.get(opts, :issue, %{})
     trace_id = Keyword.get(opts, :trace_id)
+    execution_attempt_token = Keyword.get(opts, :execution_attempt_token)
     workspace = Keyword.get(opts, :workspace)
 
     port_metadata(port)
     |> Map.merge(cost_metadata(cost_decision))
     |> maybe_put_metadata(:trace_id, trace_id)
+    |> maybe_put_metadata(:execution_attempt_token, execution_attempt_token)
     |> maybe_put_metadata(:issue_id, Map.get(issue, :id))
     |> maybe_put_metadata(:issue_identifier, Map.get(issue, :identifier))
     |> maybe_put_metadata(:workspace, workspace)
@@ -2270,6 +2272,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     [workspace: workspace]
     |> Keyword.merge(runtime_opts)
     |> maybe_put_dynamic_tool_opt(:trace_id, Map.get(metadata, :trace_id))
+    |> maybe_put_dynamic_tool_opt(:execution_attempt_token, Map.get(metadata, :execution_attempt_token))
   end
 
   defp dynamic_tool_opts(workspace, _metadata, runtime_opts) when is_list(runtime_opts) do
