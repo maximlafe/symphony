@@ -2120,6 +2120,135 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert get_in(manifest, ["issue", "two_layer_plan_contract", "plan_state"]) == "review-ready"
   end
 
+  test "evaluate derives acceptance matrix items from canonical Russian criteria bullets" do
+    workspace = Path.join(System.tmp_dir!(), "two-layer-russian-criteria-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    artifact_relative_path = "docs/reports/let-716-swarm-artifact.md"
+    artifact_path = Path.join(workspace, artifact_relative_path)
+    File.mkdir_p!(Path.dirname(artifact_path))
+
+    File.write!(
+      artifact_path,
+      """
+      # LET-716 Swarm Artifact
+
+      plan_revision: `let-716-plan-r1`
+      artifact_revision: `let-716-plan-r1`
+      """
+    )
+
+    issue_description = """
+    ## Критерии приемки
+
+    * AM-1: targeted tests подтверждают workflow consistency.
+    * AM-2: stage routing подтвержден через `make symphony-runtime-smoke SCENARIO=all`.
+    * AM-3: runtime proof загружен через `runtime-proof.log`.
+
+    ## План выполнения
+
+    plan_revision: `let-716-plan-r1`
+    artifact_path: `#{artifact_relative_path}`
+    artifact_revision: `let-716-plan-r1`
+    plan_state: `review-ready`
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(
+                 artifact_path: artifact_relative_path,
+                 plan_revision: "let-716-plan-r1",
+                 artifact_revision: "let-716-plan-r1",
+                 run_token: "let-716-exec-r1"
+               ),
+               issue_id: "LET-716",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               execution_evidence_run_token: "let-716-exec-r1",
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => artifact_relative_path}
+               ],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert manifest["missing_items"] == []
+    assert Enum.map(get_in(manifest, ["issue", "acceptance_matrix"]), & &1["id"]) == ["AM-1", "AM-2", "AM-3"]
+  end
+
+  test "proof contract accepts Russian criteria fallback proof target variants" do
+    markdown = """
+    ## Критерии приемки
+
+    * AM-1: manifest proof uploaded.
+    * AM-2: negative path writes `let-716-handoff-negative.json`.
+    * AM-3: positive path writes `let-716-handoff-positive.json`.
+    * AM-4: runtime proof uploaded as `runtime-proof.log`.
+    * AM-5: stage routing uses `make symphony-runtime-smoke SCENARIO=all`.
+    * AM-6: repo gate uses `make symphony-validate`.
+    * AM-7: targeted tests cover the contract.
+    * Not an acceptance matrix item.
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `artifact:manifest-proof.json`
+    - [x] `AM-2` -> `artifact:.symphony/verification/let-716-handoff-negative.json`
+    - [x] `AM-3` -> `artifact:.symphony/verification/let-716-handoff-positive.json`
+    - [x] `AM-4` -> `artifact:runtime-proof.log`
+    - [x] `AM-5` -> `validation:runtime smoke`
+    - [x] `AM-6` -> `validation:repo validation`
+    - [x] `AM-7` -> `validation:targeted tests`
+
+    ### Validation
+
+    - [x] runtime smoke: `make symphony-runtime-smoke SCENARIO=all`
+    - [x] repo validation: `make symphony-validate`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `manifest-proof.json` -> manifest proof uploaded.
+    - [x] uploaded attachment: `.symphony/verification/let-716-handoff-negative.json` -> negative manifest uploaded.
+    - [x] uploaded attachment: `.symphony/verification/let-716-handoff-positive.json` -> positive manifest uploaded.
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime proof uploaded.
+    """
+
+    assert HandoffCheck.proof_contract_errors(markdown) == []
+    assert HandoffCheck.acceptance_matrix_parse_errors("## Проблема\n\nНет матрицы.") == []
+
+    assert HandoffCheck.acceptance_matrix_parse_errors("""
+           ## Критерии приемки
+
+           * AM-1: first proof.
+           * AM-1: duplicate proof.
+           """) == ["acceptance matrix contains duplicate id `AM-1`"]
+
+    assert HandoffCheck.acceptance_matrix_parse_errors("""
+           ## Критерии приемки
+
+           | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+           | -- | -- | -- | -- | -- | -- |
+           | AM-1 | Runtime smoke | Runtime smoke passed | runtime_smoke | make symphony-runtime-smoke SCENARIO=all | runtime_smoke |
+           """) == []
+
+    assert HandoffCheck.acceptance_matrix_parse_errors("""
+           ## Критерии приемки
+
+           | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+           | -- | -- | -- | -- | -- | -- |
+           | AM-1 | Runtime smoke | Runtime smoke passed | runtime_smoke | make symphony-runtime-smoke SCENARIO=all | runtime_smoke |
+           | AM-1 | Duplicate | Duplicate proof | test | mix test | run_executed |
+           | AM-BAD | broken |
+           """) == [
+             "acceptance matrix row has invalid column count: | AM-BAD | broken |",
+             "acceptance matrix contains duplicate id `AM-1`"
+           ]
+  end
+
   test "evaluate fails closed when execution evidence status is blocked or partial" do
     workspace = Path.join(System.tmp_dir!(), "two-layer-plan-exec-evidence-#{System.unique_integer([:positive])}")
     workpad_path = Path.join(workspace, "workpad.md")

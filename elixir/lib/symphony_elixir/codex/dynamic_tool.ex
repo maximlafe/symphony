@@ -323,6 +323,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "type" => ["string", "null"],
         "description" => "Optional explicit verification profile override."
       },
+      "execution_evidence_run_token" => %{
+        "type" => ["string", "null"],
+        "description" => "Optional current execution evidence token used to reject stale mode:plan handoff proof."
+      },
       "phase" => %{
         "type" => ["string", "null"],
         "description" => "Optional handoff phase. Use `review` before moving to review-ready states and `done` before final closure."
@@ -603,7 +607,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
     workspace = Keyword.get(opts, :workspace)
 
-    with {:ok, issue_id, workpad_path, repo, pr_number, profile, phase, manifest_path} <-
+    with {:ok, issue_id, workpad_path, repo, pr_number, profile, phase, manifest_path, run_token} <-
            normalize_symphony_handoff_check_arguments(arguments, opts),
          {:ok, workpad_body} <- read_workpad_file(workpad_path, :symphony_handoff_check),
          {:ok, issue_context} <- fetch_handoff_issue_context(issue_id, linear_client),
@@ -626,6 +630,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           attachments: Map.get(issue_context, "attachments", []),
           pr_snapshot: pr_snapshot,
           profile_labels: Config.settings!().verification.profile_labels,
+          execution_evidence_run_token: run_token,
           swarm_assist_enabled: plan_swarm_assist_enabled?(opts),
           change_classes: validation_context.change_classes,
           git: validation_context.git,
@@ -1113,8 +1118,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
              get_argument(arguments, "manifest_path") || verification.manifest_path,
              workspace,
              :symphony_handoff_check
-           ) do
-      {:ok, issue_id, resolved_workpad_path, repo, pr_number, profile, phase || "review", manifest_path}
+           ),
+         {:ok, run_token} <-
+           normalize_optional_string_arg(arguments, "execution_evidence_run_token", :symphony_handoff_check) do
+      {:ok, issue_id, resolved_workpad_path, repo, pr_number, profile, phase || "review", manifest_path, run_token}
     end
   end
 

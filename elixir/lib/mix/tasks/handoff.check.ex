@@ -20,6 +20,7 @@ defmodule Mix.Tasks.Handoff.Check do
     pr: :integer,
     phase: :string,
     profile: :string,
+    execution_evidence_run_token: :string,
     manifest: :string
   ]
 
@@ -52,6 +53,7 @@ defmodule Mix.Tasks.Handoff.Check do
           "pr_number" => pr_number,
           "phase" => Keyword.get(opts, :phase) || "review",
           "profile" => Keyword.get(opts, :profile) || verification.profile,
+          "execution_evidence_run_token" => Keyword.get(opts, :execution_evidence_run_token),
           "manifest_path" => manifest_path
         },
         workspace: workspace,

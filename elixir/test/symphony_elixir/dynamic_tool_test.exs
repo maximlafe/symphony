@@ -41,6 +41,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert handoff_spec["description"] =~ "handoff"
     assert get_in(handoff_spec, ["inputSchema", "properties", "phase", "description"]) =~ "handoff phase"
 
+    assert get_in(handoff_spec, ["inputSchema", "properties", "execution_evidence_run_token", "description"]) =~
+             "stale mode:plan handoff proof"
+
     assert spec_check_spec["inputSchema"]["required"] == ["issue_id"]
     assert spec_check_spec["description"] =~ "spec gate"
   end
@@ -2472,6 +2475,149 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert payload["error"]["message"] =~ "verification contract failed"
 
     assert "mode:plan with `planning.swarm_assist_enabled=true` requires machine-readable `plan_revision` in issue description" in payload["manifest"]["missing_items"]
+  end
+
+  test "symphony_handoff_check passes current mode:plan execution evidence token when swarm gate is enabled" do
+    workspace = Path.join(System.tmp_dir!(), "handoff_two_layer_token_workspace_#{System.unique_integer([:positive])}")
+    artifact_path = Path.join(["docs", "reports", "let-716-swarm-artifact.md"])
+
+    File.mkdir_p!(Path.join(workspace, "docs/reports"))
+
+    write_tmp_file(workspace, artifact_path, """
+    plan_revision: `let-716-plan-r1`
+    artifact_revision: `let-716-plan-r1`
+    """)
+
+    workpad_path =
+      write_tmp_file(workspace, "workpad.md", """
+      ## Codex Workpad
+
+      ### Validation
+
+      - [x] preflight: `make symphony-preflight`
+      - [x] cheap gate: `same HEAD targeted proof completed`
+      - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+      - [x] runtime smoke: `make symphony-runtime-smoke SCENARIO=all`
+      - [x] repo validation: `make symphony-validate`
+
+      ### Artifacts
+
+      - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log from the health check
+      - [x] uploaded attachment: `docs/reports/let-716-swarm-artifact.md` -> linked swarm artifact
+
+      ### Proof Mapping
+
+      - [x] `AM-1` -> `validation:targeted tests`
+      - [x] `AM-2` -> `validation:runtime smoke`
+      - [x] `AM-3` -> `artifact:runtime-proof.log`
+
+      ### Execution Evidence
+
+      - `status`: `passed`
+      - `run_token`: `let-716-token-current`
+      - `artifact_file`: `docs/reports/let-716-swarm-artifact.md`
+      - `revision_pair.plan_revision`: `let-716-plan-r1`
+      - `revision_pair.artifact_revision`: `let-716-plan-r1`
+      - `consumed_sections`: `Проверка, Артефакты, Proof Mapping`
+      - `note`: `artifact is secondary, short plan is canonical`
+
+      ### Checkpoint
+
+      - `checkpoint_type`: `human-verify`
+      - `risk_level`: `low`
+      - `summary`: Current token proof is fresh.
+      """)
+
+    response =
+      DynamicTool.execute(
+        "symphony_handoff_check",
+        %{
+          "issue_id" => "LET-716",
+          "file_path" => workpad_path,
+          "repo" => "maximlafe/symphony",
+          "pr_number" => 52,
+          "execution_evidence_run_token" => "let-716-token-current"
+        },
+        workspace: workspace,
+        planning_swarm_assist_enabled: true,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckIssue" do
+            {:ok,
+             %{
+               "data" => %{
+                 "issue" => %{
+                   "id" => "LET-716",
+                   "identifier" => "LET-716",
+                   "state" => %{"name" => "In Progress"},
+                   "description" => """
+                   ## Acceptance Matrix
+
+                   | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+                   | --- | --- | --- | --- | --- | --- |
+                   | AM-1 | Contract consistency | Targeted tests pass | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+                   | AM-2 | Runtime smoke | Runtime smoke proof exists | runtime_smoke | make symphony-runtime-smoke SCENARIO=all | runtime_smoke |
+                   | AM-3 | Runtime artifact | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
+
+                   ## Two-Layer Plan Contract
+
+                   plan_revision: `let-716-plan-r1`
+                   artifact_path: `docs/reports/let-716-swarm-artifact.md`
+                   artifact_revision: `let-716-plan-r1`
+                   plan_state: `review-ready`
+                   """,
+                   "labels" => %{"nodes" => [%{"name" => "mode:plan"}, %{"name" => "verification:runtime"}]},
+                   "attachments" => %{
+                     "nodes" => [
+                       %{"title" => "runtime-proof.log", "url" => "https://example.test/runtime-proof.log"},
+                       %{
+                         "title" => "docs/reports/let-716-swarm-artifact.md",
+                         "url" => "https://example.test/let-716-swarm-artifact.md"
+                       }
+                     ]
+                   }
+                 }
+               }
+             }}
+          else
+            flunk("unexpected GraphQL query: #{query}")
+          end
+        end,
+        git_runner: handoff_git_runner(),
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "52", "-R", "maximlafe/symphony", "--json", _] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://example.test/pr/52",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "",
+                 "mergeStateStatus" => "CLEAN",
+                 "statusCheckRollup" => [
+                   %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/symphony/issues/52/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/symphony/pulls/52/reviews?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/symphony/pulls/52/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            _ ->
+              flunk("unexpected gh command: #{inspect(args)}")
+          end
+        end
+      )
+
+    assert response["success"] == true
+    payload = decode_tool_text(response)
+    assert payload["passed"] == true
+    assert payload["missing_items"] == []
+    assert get_in(payload, ["execution_evidence", "run_token_matches_current_attempt"]) == true
   end
 
   test "symphony_handoff_check ignores stale auto-synced uploaded rows for linked PR attachments" do

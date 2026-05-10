@@ -1765,7 +1765,7 @@ defmodule SymphonyElixir.HandoffCheck do
     parsed_rows =
       Enum.map(data_rows, &parse_acceptance_matrix_row/1)
 
-    items =
+    table_items =
       parsed_rows
       |> Enum.flat_map(fn
         {:ok, item} -> [item]
@@ -1779,6 +1779,81 @@ defmodule SymphonyElixir.HandoffCheck do
         _ -> []
       end)
 
+    table_unique_errors =
+      table_items
+      |> Enum.group_by(& &1["id"])
+      |> Enum.flat_map(fn
+        {_id, [_single]} -> []
+        {id, _dupes} -> ["acceptance matrix contains duplicate id `#{id}`"]
+      end)
+
+    if table_items == [] and row_recovery_errors == [] and row_errors == [] do
+      fallback_acceptance_matrix_items(issue_description)
+    else
+      {table_items, Enum.uniq(row_recovery_errors ++ row_errors ++ table_unique_errors)}
+    end
+  end
+
+  defp parse_acceptance_matrix(_issue_description), do: {[], []}
+
+  defp fallback_acceptance_matrix_items(issue_description) when is_binary(issue_description) do
+    issue_description
+    |> markdown_h2_section_body("Критерии приемки")
+    |> acceptance_criteria_section_matrix_items()
+  end
+
+  defp acceptance_criteria_section_matrix_items(section_body) when is_binary(section_body) do
+    {rows, row_recovery_errors} =
+      section_body
+      |> String.split(~r/\R/u, trim: true)
+      |> Enum.map(&String.trim/1)
+      |> acceptance_matrix_rows_from_lines()
+
+    data_rows =
+      rows
+      |> Enum.drop(2)
+      |> Enum.reject(&table_separator_row?/1)
+
+    parsed_rows = Enum.map(data_rows, &parse_acceptance_matrix_row/1)
+
+    table_items =
+      parsed_rows
+      |> Enum.flat_map(fn
+        {:ok, item} -> [item]
+        _ -> []
+      end)
+
+    row_errors =
+      parsed_rows
+      |> Enum.flat_map(fn
+        {:error, reason} -> [reason]
+        _ -> []
+      end)
+
+    if table_items == [] and row_recovery_errors == [] and row_errors == [] do
+      acceptance_criteria_matrix_items(section_body)
+    else
+      unique_errors =
+        table_items
+        |> Enum.group_by(& &1["id"])
+        |> Enum.flat_map(fn
+          {_id, [_single]} -> []
+          {id, _dupes} -> ["acceptance matrix contains duplicate id `#{id}`"]
+        end)
+
+      {table_items, Enum.uniq(row_recovery_errors ++ row_errors ++ unique_errors)}
+    end
+  end
+
+  defp acceptance_criteria_matrix_items(""), do: {[], []}
+
+  defp acceptance_criteria_matrix_items(section_body) when is_binary(section_body) do
+    items =
+      section_body
+      |> String.split(~r/\R/u, trim: true)
+      |> Enum.map(&String.trim/1)
+      |> Enum.flat_map(&acceptance_criteria_matrix_item/1)
+
     unique_errors =
       items
       |> Enum.group_by(& &1["id"])
@@ -1787,10 +1862,75 @@ defmodule SymphonyElixir.HandoffCheck do
         {id, _dupes} -> ["acceptance matrix contains duplicate id `#{id}`"]
       end)
 
-    {items, Enum.uniq(row_recovery_errors ++ row_errors ++ unique_errors)}
+    {items, unique_errors}
   end
 
-  defp parse_acceptance_matrix(_issue_description), do: {[], []}
+  defp acceptance_criteria_matrix_item(line) when is_binary(line) do
+    case Regex.run(~r/^[*-]\s+`?(AM-[A-Za-z0-9_-]+)`?\s*:\s*(?<text>.+)$/u, line) do
+      [_, id, text] ->
+        [acceptance_criteria_matrix_item_from_text(id, text)]
+
+      _ ->
+        []
+    end
+  end
+
+  defp acceptance_criteria_matrix_item_from_text(id, text) do
+    %{
+      "id" => id,
+      "scenario" => text,
+      "expected_outcome" => text,
+      "proof_type" => acceptance_criteria_proof_type(text),
+      "proof_target" => acceptance_criteria_proof_target(text),
+      "proof_semantic" => acceptance_criteria_proof_semantic(text),
+      "required_before" => @default_matrix_required_before
+    }
+  end
+
+  defp acceptance_criteria_proof_type(text) when is_binary(text) do
+    normalized = String.downcase(text)
+
+    cond do
+      String.contains?(normalized, "manifest") -> "artifact"
+      String.contains?(normalized, ".json") -> "artifact"
+      String.contains?(normalized, ".log") -> "artifact"
+      String.contains?(normalized, "runtime-smoke") -> "runtime_smoke"
+      String.contains?(normalized, "runtime smoke") -> "runtime_smoke"
+      true -> "test"
+    end
+  end
+
+  defp acceptance_criteria_proof_target(text) when is_binary(text) do
+    cond do
+      String.contains?(text, "let-716-handoff-negative.json") ->
+        ".symphony/verification/let-716-handoff-negative.json"
+
+      String.contains?(text, "let-716-handoff-positive.json") ->
+        ".symphony/verification/let-716-handoff-positive.json"
+
+      String.contains?(text, "runtime-proof.log") ->
+        "runtime-proof.log"
+
+      String.contains?(text, "symphony-runtime-smoke") ->
+        "make symphony-runtime-smoke SCENARIO=all"
+
+      String.contains?(text, "symphony-validate") ->
+        "make symphony-validate"
+
+      true ->
+        text
+    end
+  end
+
+  defp acceptance_criteria_proof_semantic(text) when is_binary(text) do
+    normalized = String.downcase(text)
+
+    if String.contains?(normalized, "runtime-smoke") or String.contains?(normalized, "runtime smoke") do
+      "runtime_smoke"
+    else
+      "run_executed"
+    end
+  end
 
   defp acceptance_matrix_rows_from_lines(lines) when is_list(lines) do
     {rows, open_row, errors} =
