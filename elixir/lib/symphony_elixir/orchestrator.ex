@@ -7037,7 +7037,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp new_execution_attempt_token do
-    "run-" <> Integer.to_string(System.unique_integer([:positive, :monotonic]))
+    "run-" <> Ecto.UUID.generate()
   end
 
   defp dispatch_trace_id(_issue, trace_id) when is_binary(trace_id) and trace_id != "",
