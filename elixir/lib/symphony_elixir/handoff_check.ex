@@ -303,7 +303,9 @@ defmodule SymphonyElixir.HandoffCheck do
       two_layer_plan_contract_missing_items(
         issue_labels,
         issue_description,
+        attachments,
         workpad_path,
+        parsed_workpad,
         opts
       )
 
@@ -367,6 +369,7 @@ defmodule SymphonyElixir.HandoffCheck do
         "summary" => summary_for_manifest(passed, profile, missing_items),
         "proof_signals" => proof_signals,
         "deferred_proofs" => deferred_proofs,
+        "execution_evidence" => two_layer_plan_contract["execution_evidence"],
         "issue" => %{
           "id" => issue_id,
           "identifier" => issue_identifier,
@@ -394,6 +397,7 @@ defmodule SymphonyElixir.HandoffCheck do
           "artifacts" => parsed_workpad["artifacts"],
           "artifacts_auto_reconciled" => parsed_workpad["artifacts_auto_reconciled"] == true,
           "proof_mapping" => parsed_workpad["proof_mapping"],
+          "execution_evidence" => parsed_workpad["execution_evidence"],
           "checkpoint" => parsed_workpad["checkpoint"]
         },
         "handoff_failure" => handoff_failure,
@@ -845,6 +849,7 @@ defmodule SymphonyElixir.HandoffCheck do
     validation_items = parse_checkbox_items(section_body(sections, ["Validation", "Проверка"]))
     artifact_items = parse_artifact_items(section_body(sections, ["Artifacts", "Артефакты"]))
     proof_mapping_items = parse_proof_mapping_items(section_body(sections, ["Proof Mapping", "Маппинг доказательств"]))
+    execution_evidence = parse_execution_evidence(section_body(sections, ["Execution Evidence", "Доказательства выполнения"]))
     checkpoint = parse_checkpoint(Map.get(sections, "Checkpoint", ""))
 
     %{
@@ -852,12 +857,20 @@ defmodule SymphonyElixir.HandoffCheck do
       "validation" => validation_items,
       "artifacts" => artifact_items,
       "proof_mapping" => proof_mapping_items,
+      "execution_evidence" => execution_evidence,
       "checkpoint" => checkpoint
     }
   end
 
-  defp two_layer_plan_contract_missing_items(issue_labels, issue_description, workpad_path, opts)
-       when is_list(issue_labels) and is_list(opts) do
+  defp two_layer_plan_contract_missing_items(
+         issue_labels,
+         issue_description,
+         attachments,
+         workpad_path,
+         parsed_workpad,
+         opts
+       )
+       when is_list(issue_labels) and is_map(parsed_workpad) and is_list(opts) do
     swarm_assist_enabled? = plan_swarm_assist_enabled?(opts)
     plan_mode? = @plan_mode_label in issue_labels
     contract = parse_two_layer_plan_contract_fields(issue_description)
@@ -869,6 +882,19 @@ defmodule SymphonyElixir.HandoffCheck do
         validate_two_layer_artifact_link(
           contract,
           workspace_root
+        )
+
+      {attachment_errors, attachment_details} =
+        validate_two_layer_artifact_attachment_link(
+          contract,
+          attachments
+        )
+
+      {execution_evidence_errors, execution_evidence_details} =
+        validate_two_layer_execution_evidence(
+          contract,
+          parsed_workpad["execution_evidence"] || %{},
+          opts
         )
 
       metadata_errors =
@@ -891,6 +917,8 @@ defmodule SymphonyElixir.HandoffCheck do
       {
         metadata_errors
         |> Kernel.++(artifact_errors)
+        |> Kernel.++(attachment_errors)
+        |> Kernel.++(execution_evidence_errors)
         |> Enum.uniq()
         |> maybe_require_blocking_divergence(),
         contract
@@ -898,14 +926,316 @@ defmodule SymphonyElixir.HandoffCheck do
         |> Map.put("mode_plan", true)
         |> Map.put("workspace_root", workspace_root)
         |> Map.merge(artifact_details)
+        |> Map.merge(attachment_details)
+        |> Map.put("execution_evidence", execution_evidence_details)
       }
     else
       {[],
        contract
        |> Map.put("enabled", swarm_assist_enabled?)
-       |> Map.put("mode_plan", plan_mode?)}
+       |> Map.put("mode_plan", plan_mode?)
+       |> Map.put("execution_evidence", %{"required" => false})}
     end
   end
+
+  defp validate_two_layer_execution_evidence(contract, execution_evidence, opts)
+       when is_map(contract) and is_map(execution_evidence) and is_list(opts) do
+    expected_plan_revision = normalize_optional_machine_readable(contract["plan_revision"])
+    expected_artifact_path = normalize_optional_machine_readable(contract["artifact_path"])
+    expected_artifact_revision = normalize_optional_machine_readable(contract["artifact_revision"])
+    expected_run_token = normalize_optional_run_token(Keyword.get(opts, :execution_evidence_run_token))
+
+    status = normalize_optional_machine_readable(execution_evidence["status"])
+    run_token = normalize_optional_machine_readable(execution_evidence["run_token"])
+    artifact_file = normalize_optional_machine_readable(execution_evidence["artifact_file"])
+    note = normalize_optional_machine_readable(execution_evidence["note"])
+    consumed_sections = normalize_execution_evidence_sections(execution_evidence["consumed_sections"])
+
+    revision_pair =
+      execution_evidence["revision_pair"]
+      |> normalize_execution_evidence_revision_pair()
+
+    evidence_errors =
+      []
+      |> maybe_require_plan_contract_field(
+        expected_run_token,
+        "mode:plan with `planning.swarm_assist_enabled=true` requires `execution_evidence_run_token` in `symphony_handoff_check` arguments"
+      )
+      |> maybe_require_plan_contract_field(
+        status,
+        "mode:plan with `planning.swarm_assist_enabled=true` requires `Execution Evidence.status` in workpad"
+      )
+      |> maybe_require_plan_contract_field(
+        run_token,
+        "mode:plan with `planning.swarm_assist_enabled=true` requires `Execution Evidence.run_token` in workpad"
+      )
+      |> maybe_require_plan_contract_field(
+        artifact_file,
+        "mode:plan with `planning.swarm_assist_enabled=true` requires `Execution Evidence.artifact_file` in workpad"
+      )
+      |> maybe_require_plan_contract_field(
+        revision_pair["plan_revision"],
+        "mode:plan with `planning.swarm_assist_enabled=true` requires `Execution Evidence.revision_pair.plan_revision` in workpad"
+      )
+      |> maybe_require_plan_contract_field(
+        revision_pair["artifact_revision"],
+        "mode:plan with `planning.swarm_assist_enabled=true` requires `Execution Evidence.revision_pair.artifact_revision` in workpad"
+      )
+      |> maybe_require_execution_evidence_sections(consumed_sections)
+      |> maybe_require_plan_contract_field(
+        note,
+        "mode:plan with `planning.swarm_assist_enabled=true` requires `Execution Evidence.note` in workpad"
+      )
+      |> maybe_require_execution_evidence_status(status)
+      |> maybe_require_execution_evidence_artifact_alignment(artifact_file, expected_artifact_path)
+      |> maybe_require_execution_evidence_revision_alignment(
+        "plan_revision",
+        revision_pair["plan_revision"],
+        expected_plan_revision
+      )
+      |> maybe_require_execution_evidence_revision_alignment(
+        "artifact_revision",
+        revision_pair["artifact_revision"],
+        expected_artifact_revision
+      )
+      |> maybe_require_execution_evidence_run_token_match(run_token, expected_run_token)
+      |> maybe_require_execution_evidence_note_precedence(note)
+
+    normalized_status = normalize_execution_evidence_status(status)
+
+    token_match? =
+      cond do
+        not non_empty_binary?(run_token) -> false
+        not non_empty_binary?(expected_run_token) -> false
+        true -> run_token == expected_run_token
+      end
+
+    details = %{
+      "required" => true,
+      "status" => status,
+      "run_token" => run_token,
+      "expected_run_token" => expected_run_token,
+      "run_token_matches_current_attempt" => token_match?,
+      "artifact_file" => artifact_file,
+      "revision_pair" => revision_pair,
+      "consumed_sections" => consumed_sections,
+      "note" => note,
+      "manifest_mirror_allowed" => evidence_errors == [] and normalized_status == "passed"
+    }
+
+    {evidence_errors, details}
+  end
+
+  defp normalize_optional_run_token(value) when is_binary(value), do: normalize_machine_readable_value(value)
+  defp normalize_optional_run_token(_value), do: nil
+
+  defp normalize_optional_machine_readable(value) when is_binary(value),
+    do: normalize_machine_readable_value(value)
+
+  defp normalize_optional_machine_readable(_value), do: nil
+
+  defp normalize_execution_evidence_revision_pair(value) do
+    pair = if is_map(value), do: value, else: %{}
+
+    %{
+      "plan_revision" => normalize_optional_machine_readable(pair["plan_revision"] || pair["revision_pair.plan_revision"]),
+      "artifact_revision" => normalize_optional_machine_readable(pair["artifact_revision"] || pair["revision_pair.artifact_revision"])
+    }
+  end
+
+  defp normalize_execution_evidence_sections(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.trim_leading("[")
+    |> String.trim_trailing("]")
+    |> String.split(~r/[,;]+/, trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp normalize_execution_evidence_sections(_value), do: []
+
+  defp maybe_require_execution_evidence_sections(errors, sections) when is_list(errors) do
+    if sections == [] do
+      errors ++
+        [
+          "mode:plan with `planning.swarm_assist_enabled=true` requires non-empty `Execution Evidence.consumed_sections` in workpad"
+        ]
+    else
+      errors
+    end
+  end
+
+  defp maybe_require_execution_evidence_status(errors, nil), do: errors
+
+  defp maybe_require_execution_evidence_status(errors, status) when is_binary(status) do
+    normalized_status = normalize_execution_evidence_status(status)
+
+    cond do
+      normalized_status == "passed" ->
+        errors
+
+      normalized_status == "blocked" ->
+        errors ++
+          ["execution preflight is marked `blocked` and cannot pass review-ready handoff"]
+
+      normalized_status == "partial" ->
+        errors ++
+          ["execution preflight is marked `partial`; partial evidence cannot be mirrored into handoff manifest"]
+
+      true ->
+        errors ++
+          ["unsupported `Execution Evidence.status`: `#{status}` (expected `passed` or `blocked`)"]
+    end
+  end
+
+  defp normalize_execution_evidence_status(status) when is_binary(status) do
+    status
+    |> String.downcase()
+    |> String.trim()
+  end
+
+  defp normalize_execution_evidence_status(_status), do: nil
+
+  defp maybe_require_execution_evidence_artifact_alignment(errors, artifact_file, expected_artifact_path) do
+    if non_empty_binary?(artifact_file) and non_empty_binary?(expected_artifact_path) and
+         artifact_file != expected_artifact_path do
+      errors ++
+        [
+          "execution evidence mismatch: `Execution Evidence.artifact_file` must match issue `artifact_path`"
+        ]
+    else
+      errors
+    end
+  end
+
+  defp maybe_require_execution_evidence_revision_alignment(errors, field, actual, expected)
+       when is_binary(field) do
+    if non_empty_binary?(actual) and non_empty_binary?(expected) and actual != expected do
+      errors ++
+        [
+          "execution evidence mismatch: `Execution Evidence.revision_pair.#{field}` must match issue `#{field}`"
+        ]
+    else
+      errors
+    end
+  end
+
+  defp maybe_require_execution_evidence_run_token_match(errors, _run_token, nil) do
+    errors ++
+      [
+        "execution evidence stale marker: `execution_evidence_run_token` is required for current preflight attempt"
+      ]
+  end
+
+  defp maybe_require_execution_evidence_run_token_match(errors, run_token, expected_run_token) do
+    if non_empty_binary?(run_token) and non_empty_binary?(expected_run_token) and
+         run_token != expected_run_token do
+      errors ++
+        [
+          "execution evidence stale marker: `Execution Evidence.run_token` does not match the current preflight attempt"
+        ]
+    else
+      errors
+    end
+  end
+
+  defp maybe_require_execution_evidence_note_precedence(errors, note) do
+    if non_empty_binary?(note) do
+      normalized = String.downcase(note)
+
+      if String.contains?(normalized, "artifact is secondary") and
+           String.contains?(normalized, "short plan is canonical") do
+        errors
+      else
+        errors ++
+          [
+            "execution evidence note must state canonical precedence: artifact secondary, short plan canonical"
+          ]
+      end
+    else
+      errors
+    end
+  end
+
+  defp validate_two_layer_artifact_attachment_link(contract, attachments)
+       when is_map(contract) and is_list(attachments) do
+    artifact_path = contract["artifact_path"]
+
+    if placeholder_value?(artifact_path) do
+      {[], %{"artifact_attachment_present" => false}}
+    else
+      normalized_path = normalize_machine_readable_value(artifact_path)
+      attachment_result_for_path(normalized_path, attachments)
+    end
+  end
+
+  defp attachment_result_for_path(normalized_path, attachments) do
+    if non_empty_binary?(normalized_path) do
+      case two_layer_artifact_attachment_present?(normalized_path, attachments) do
+        {true, match} ->
+          {[],
+           %{
+             "artifact_attachment_present" => true,
+             "artifact_attachment_match" => match
+           }}
+
+        {false, _nil} ->
+          {["linked swarm artifact `#{normalized_path}` is missing from Linear issue attachments"],
+           %{
+             "artifact_attachment_present" => false,
+             "artifact_attachment_match" => nil
+           }}
+      end
+    else
+      {[], %{"artifact_attachment_present" => false}}
+    end
+  end
+
+  defp two_layer_artifact_attachment_present?(artifact_path, attachments)
+       when is_binary(artifact_path) and is_list(attachments) do
+    artifact_basename = Path.basename(artifact_path)
+    artifact_basename_downcased = String.downcase(artifact_basename)
+    artifact_path_downcased = String.downcase(artifact_path)
+
+    Enum.find_value(
+      attachments,
+      {false, nil},
+      &match_two_layer_artifact_attachment(&1, artifact_path_downcased, artifact_basename_downcased)
+    )
+  end
+
+  defp match_two_layer_artifact_attachment(
+         %{} = attachment,
+         artifact_path_downcased,
+         artifact_basename_downcased
+       ) do
+    title = normalized_attachment_value(attachment, "title")
+    url = normalized_attachment_value(attachment, "url")
+    normalized_title = downcased_or_nil(title)
+    normalized_url = downcased_or_nil(url)
+
+    cond do
+      normalized_title in [artifact_path_downcased, artifact_basename_downcased] ->
+        {true, %{"by" => "title", "value" => title}}
+
+      is_binary(normalized_url) and String.contains?(normalized_url, artifact_basename_downcased) ->
+        {true, %{"by" => "url", "value" => url}}
+
+      true ->
+        false
+    end
+  end
+
+  defp normalized_attachment_value(attachment, key) when is_map(attachment) and is_binary(key) do
+    attachment
+    |> Map.get(key)
+    |> to_string_or_nil()
+    |> normalize_attachment_title()
+  end
+
+  defp downcased_or_nil(value) when is_binary(value), do: String.downcase(value)
+  defp downcased_or_nil(_value), do: nil
 
   defp maybe_require_blocking_divergence([]), do: []
 
@@ -1349,6 +1679,69 @@ defmodule SymphonyElixir.HandoffCheck do
       case Regex.run(~r/^- `([^`]+)`: (.+)$/, line) do
         [_, key, value] -> Map.put(acc, key, normalize_checkpoint_value(value))
         _ -> acc
+      end
+    end)
+  end
+
+  defp parse_execution_evidence(section_body) when is_binary(section_body) do
+    raw_fields =
+      Regex.scan(~r/^- `([^`]+)`: (.+)$/m, section_body)
+      |> Enum.reduce(%{}, fn [_, key, value], acc ->
+        Map.put(acc, String.trim(key), normalize_machine_readable_value(value))
+      end)
+
+    status = execution_evidence_field(raw_fields, ["status", "Execution Evidence.status"])
+    run_token = execution_evidence_field(raw_fields, ["run_token", "Execution Evidence.run_token"])
+
+    artifact_file =
+      execution_evidence_field(raw_fields, [
+        "artifact_file",
+        "Execution Evidence.artifact_file"
+      ])
+
+    consumed_sections_value =
+      execution_evidence_field(raw_fields, [
+        "consumed_sections",
+        "Execution Evidence.consumed_sections"
+      ])
+
+    note = execution_evidence_field(raw_fields, ["note", "Execution Evidence.note"])
+
+    revision_pair = %{
+      "plan_revision" =>
+        execution_evidence_field(raw_fields, [
+          "revision_pair.plan_revision",
+          "plan_revision",
+          "Execution Evidence.revision_pair.plan_revision"
+        ]),
+      "artifact_revision" =>
+        execution_evidence_field(raw_fields, [
+          "revision_pair.artifact_revision",
+          "artifact_revision",
+          "Execution Evidence.revision_pair.artifact_revision"
+        ])
+    }
+
+    %{
+      "status" => status,
+      "run_token" => run_token,
+      "artifact_file" => artifact_file,
+      "revision_pair" => revision_pair,
+      "consumed_sections" => consumed_sections_value,
+      "note" => note,
+      "raw" => raw_fields
+    }
+  end
+
+  defp execution_evidence_field(raw_fields, candidate_keys)
+       when is_map(raw_fields) and is_list(candidate_keys) do
+    Enum.find_value(candidate_keys, fn key ->
+      case Map.get(raw_fields, key) do
+        value when is_binary(value) and value != "" ->
+          normalize_machine_readable_value(value)
+
+        _ ->
+          nil
       end
     end)
   end
