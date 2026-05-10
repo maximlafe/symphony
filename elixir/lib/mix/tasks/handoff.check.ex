@@ -20,7 +20,8 @@ defmodule Mix.Tasks.Handoff.Check do
     pr: :integer,
     phase: :string,
     profile: :string,
-    manifest: :string
+    manifest: :string,
+    execution_run_token: :string
   ]
 
   @impl true
@@ -52,7 +53,8 @@ defmodule Mix.Tasks.Handoff.Check do
           "pr_number" => pr_number,
           "phase" => Keyword.get(opts, :phase) || "review",
           "profile" => Keyword.get(opts, :profile) || verification.profile,
-          "manifest_path" => manifest_path
+          "manifest_path" => manifest_path,
+          "execution_evidence_run_token" => Keyword.get(opts, :execution_run_token)
         },
         workspace: workspace,
         linear_client: &Client.graphql/3

@@ -539,6 +539,9 @@ codex:
   monitored_windows_mins: [300, 10080]
 planning:
   swarm_assist_enabled: true
+verification:
+  execution_evidence:
+    strict_runtime_token_required: false
 server:
   host: "0.0.0.0"
 ---
@@ -577,6 +580,7 @@ Title: {{ issue.title }}
 Current status: {{ issue.state }}
 Labels: {{ issue.labels }}
 URL: {{ issue.url }}
+Execution run token: {{ execution_run_token }}
 
 Description:
 {% if issue.description %}
@@ -651,6 +655,13 @@ Instructions:
   - enabled short-plan metadata must include `plan_revision`,
     `artifact_path`, and `artifact_revision`, where `artifact_revision`
     equals `plan_revision`;
+  - in `In Progress` for enabled `mode:plan`, execution must run two-layer
+    preflight and write dedicated `Execution Evidence` marker fields in workpad
+    (`status`, `run_token`, `artifact_file`,
+    `revision_pair.plan_revision`, `revision_pair.artifact_revision`,
+    `consumed_sections`, `note`);
+  - `Execution Evidence` is runtime-owned by `symphony_handoff_check`, which
+    mirrors the marker into handoff manifest `execution_evidence`;
   - enabled path stays `provisional` until artifact path and revision checks
     pass; `provisional` output is not review-ready;
   - any enabled-path mismatch is `blocking divergence` and must fail closed
@@ -883,15 +894,21 @@ Use this only when completion is blocked by missing required tools or missing au
 4. If this run entered `In Progress` directly from `Todo`, do one short readiness check before the first repo-changing command:
    - if the issue description is already implementation-ready, continue execution;
    - if the task contract is materially underspecified, do not improvise hidden scope in the workpad; normalize the task-spec, sync the workpad once, move the issue to `Spec Review`, and stop before product code changes.
-5. Ignore `mode:*` labels once the issue is in `In Progress`; the current state is authoritative for routing.
-6. Run the `pull` skill against the configured base branch from `.symphony-base-branch` before code edits, then record the result in `Заметки` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
+5. For `mode:plan` with `planning.swarm_assist_enabled=true`, run two-layer execution preflight before code edits:
+   - read issue `plan_revision`, `artifact_path`, `artifact_revision`;
+   - verify artifact file/attachment/revision alignment;
+   - consume artifact as supporting-only source (risk/rollback/diagnostics), never as scope authority;
+   - write `Execution Evidence` section in workpad with required runtime-owned fields;
+   - if preflight is blocked/partial/stale/divergent, fail closed with classified blocker handoff to `Blocked` and stop.
+6. Ignore `mode:*` labels once the issue is in `In Progress`; the current state is authoritative for routing.
+7. Run the `pull` skill against the configured base branch from `.symphony-base-branch` before code edits, then record the result in `Заметки` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
    - if the run creates a fresh working branch from `origin/<configured base branch>`, record `Новая ветка <branch> создана от origin/<configured base branch>.` in `Заметки` on the next live workpad sync;
    - if the run resumes on an existing non-base branch and no lineage note exists yet, record `Текущая рабочая ветка <branch>; базовая ветка origin/<configured base branch>.` instead of inventing a creation event.
-7. Use the issue description as the canonical task contract and local `workpad.md` as the implementation plan and detailed execution log.
-8. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before final handoff.
+8. Use the issue description as the canonical task contract and local `workpad.md` as the implementation plan and detailed execution log.
+9. Implement against the checklist, keep completed items checked, and sync the live workpad only after meaningful milestones or before final handoff.
    - milestone sync points in this stage are `code-ready`, `validation-running`, `PR-opened`, `CI-failed`, `handoff-ready`;
    - фиксируй повторные попытки исправить один и тот же сигнал в workpad и соблюдай лимит auto-fix attempts ниже;
-9. Run the required validation for the scope:
+10. Run the required validation for the scope:
    - run `make symphony-preflight` before concluding that auth/env/tooling is missing for the current task;
    - run `make symphony-acceptance-preflight` when the task-spec declares `Required capabilities`;
    - apply the validation matrix above instead of picking tests heuristically;
@@ -901,14 +918,14 @@ Use this only when completion is blocked by missing required tools or missing au
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, attach a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
    - if the task produced review-relevant export/report files or machine-readable validation artifacts, attach them to the issue instead of leaving them only in the workpad, logs, or local runtime.
-10. Before `git push`, rerun the required validation only when the current `HEAD^{tree}` changed since the latest final-gate proof checkpoint; otherwise reuse the existing final-gate proof on the same tree.
-11. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
-12. Merge latest `origin/<configured base branch>` into the branch before final handoff, resolve conflicts, and rerun required validation.
-13. Before moving to `In Review`, use the compact PR/check flow:
+11. Before `git push`, rerun the required validation only when the current `HEAD^{tree}` changed since the latest final-gate proof checkpoint; otherwise reuse the existing final-gate proof on the same tree.
+12. Attach the PR URL to the issue and ensure the GitHub PR has label `symphony`.
+13. Merge latest `origin/<configured base branch>` into the branch before final handoff, resolve conflicts, and rerun required validation.
+14. Before moving to `In Review`, use the compact PR/check flow:
    - run the PR feedback and checks protocol above;
    - if checks are green and no actionable feedback remains, first rewrite every final checklist item so it is already true before the state transition (for example, `PR checks зелёные; задача готова к переводу в In Review` instead of `задача переведена в In Review`), затем заполни `Checkpoint` с `checkpoint_type: human-verify`, обоснованным `risk_level` и однострочным `summary`, закрой все выполненные parent/child checkboxes, финализируй local `workpad.md`, убедись что в `Артефакты` перечислены загруженные вложения, их claims и ожидаемые, но не созданные артефакты, один раз синхронизируй live workpad, при необходимости один раз обнови task-spec description и только потом переводи issue в `In Review`;
    - do not repeat label or attachment checks in the same run unless the PR changed.
-14. If PR publication or handoff is blocked by missing required non-GitHub tools/auth/permissions after all fallbacks, заполни `Checkpoint` с `checkpoint_type: human-action`, подходящим `risk_level` и blocker summary, затем переводи issue в `Blocked` с blocker brief и явным unblock action; после выполнения unblock action человек должен вручную вернуть issue в `In Progress`.
+15. If PR publication or handoff is blocked by missing required non-GitHub tools/auth/permissions after all fallbacks, заполни `Checkpoint` с `checkpoint_type: human-action`, подходящим `risk_level` и blocker summary, затем переводи issue в `Blocked` с blocker brief и явным unblock action; после выполнения unblock action человек должен вручную вернуть issue в `In Progress`.
 
 ## Step 3: In Review and merge handling
 
@@ -1100,6 +1117,16 @@ and checkpoint semantics come from `docs/policy/project-contract.md`.
 
 - [ ] вложение: `<title>` -> <что подтверждает>
 - [ ] ожидаемый, но не созданный артефакт: `<name>` -> <почему не был получен>
+
+### Execution Evidence
+
+- `status`: `<passed|blocked>` (для `mode:plan` + `planning.swarm_assist_enabled=true`)
+- `run_token`: `<attempt token>` (новый на каждый preflight)
+- `artifact_file`: `<docs/reports/...>`
+- `revision_pair.plan_revision`: `<value>`
+- `revision_pair.artifact_revision`: `<value>`
+- `consumed_sections`: `<section1, section2>`
+- `note`: `artifact is secondary, short plan is canonical`
 
 ### Checkpoint
 

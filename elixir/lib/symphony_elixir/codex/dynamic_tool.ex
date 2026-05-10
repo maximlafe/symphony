@@ -330,6 +330,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "manifest_path" => %{
         "type" => ["string", "null"],
         "description" => "Optional workspace-relative path for the verification manifest JSON file."
+      },
+      "execution_evidence_run_token" => %{
+        "type" => ["string", "null"],
+        "description" => "Optional current preflight attempt token for `Execution Evidence.run_token` freshness validation."
       }
     }
   }
@@ -603,12 +607,20 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
     workspace = Keyword.get(opts, :workspace)
 
-    with {:ok, issue_id, workpad_path, repo, pr_number, profile, phase, manifest_path} <-
+    with {:ok, issue_id, workpad_path, repo, pr_number, profile, phase, manifest_path, execution_evidence_run_token} <-
            normalize_symphony_handoff_check_arguments(arguments, opts),
          {:ok, workpad_body} <- read_workpad_file(workpad_path, :symphony_handoff_check),
          {:ok, issue_context} <- fetch_handoff_issue_context(issue_id, linear_client),
          {:ok, pr_snapshot} <- build_github_pr_snapshot(repo, pr_number, true, opts) do
       validation_context = build_handoff_validation_context(opts)
+      strict_runtime_token_required = strict_runtime_execution_token_required?(opts)
+
+      {resolved_execution_evidence_run_token, expected_run_token_source} =
+        resolve_execution_evidence_expected_run_token(
+          opts,
+          execution_evidence_run_token,
+          strict_runtime_token_required
+        )
 
       result =
         HandoffCheck.evaluate(
@@ -627,6 +639,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           pr_snapshot: pr_snapshot,
           profile_labels: Config.settings!().verification.profile_labels,
           swarm_assist_enabled: plan_swarm_assist_enabled?(opts),
+          execution_evidence_run_token: resolved_execution_evidence_run_token,
+          execution_evidence_expected_run_token_source: expected_run_token_source,
+          execution_evidence_strict_runtime_token_required: strict_runtime_token_required,
           change_classes: validation_context.change_classes,
           git: validation_context.git,
           validation_gate_errors: validation_context.errors
@@ -829,6 +844,49 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
       _ ->
         false
+    end
+  end
+
+  defp strict_runtime_execution_token_required?(opts) when is_list(opts) do
+    case Keyword.fetch(opts, :execution_evidence_strict_runtime_token_required) do
+      {:ok, true} ->
+        true
+
+      {:ok, _value} ->
+        false
+
+      :error ->
+        workflow_strict_runtime_execution_token_required?()
+    end
+  end
+
+  defp workflow_strict_runtime_execution_token_required? do
+    verification = Config.settings!().verification
+
+    case Map.get(verification, :execution_evidence) do
+      %{strict_runtime_token_required: true} -> true
+      _ -> false
+    end
+  end
+
+  defp resolve_execution_evidence_expected_run_token(opts, argument_token, strict_runtime_token_required?)
+       when is_list(opts) do
+    runtime_token =
+      opts
+      |> Keyword.get(:execution_attempt_token)
+      |> blank_to_nil()
+
+    argument_token = blank_to_nil(argument_token)
+
+    cond do
+      is_binary(runtime_token) ->
+        {runtime_token, "runtime_execution_attempt_token"}
+
+      is_binary(argument_token) and strict_runtime_token_required? == false ->
+        {argument_token, "argument_fallback"}
+
+      true ->
+        {nil, "missing"}
     end
   end
 
@@ -1113,8 +1171,26 @@ defmodule SymphonyElixir.Codex.DynamicTool do
              get_argument(arguments, "manifest_path") || verification.manifest_path,
              workspace,
              :symphony_handoff_check
+           ),
+         {:ok, execution_evidence_run_token} <-
+           normalize_optional_string_arg(
+             arguments,
+             "execution_evidence_run_token",
+             :symphony_handoff_check
            ) do
-      {:ok, issue_id, resolved_workpad_path, repo, pr_number, profile, phase || "review", manifest_path}
+      resolved_phase = phase || "review"
+
+      {
+        :ok,
+        issue_id,
+        resolved_workpad_path,
+        repo,
+        pr_number,
+        profile,
+        resolved_phase,
+        manifest_path,
+        execution_evidence_run_token
+      }
     end
   end
 

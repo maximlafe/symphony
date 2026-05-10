@@ -506,8 +506,14 @@ defmodule SymphonyElixir.ControllerFinalizer do
 
   defp call_tool(tool, arguments, workspace, opts) do
     executor = Keyword.get(opts, :tool_executor, &DynamicTool.execute/3)
-    tool_opts = Keyword.get(opts, :tool_opts, [])
-    tool_opts = Keyword.put(tool_opts, :workspace, workspace)
+
+    tool_opts =
+      opts
+      |> Keyword.get(:tool_opts, [])
+      |> maybe_put_tool_opt(:trace_id, Keyword.get(opts, :trace_id))
+      |> maybe_put_tool_opt(:execution_attempt_token, Keyword.get(opts, :execution_attempt_token))
+      |> Keyword.put(:workspace, workspace)
+
     response = executor.(tool, arguments, tool_opts)
 
     case decode_tool_response(response) do
@@ -536,6 +542,9 @@ defmodule SymphonyElixir.ControllerFinalizer do
   end
 
   defp maybe_put_runner_opt(opts, _key, _runner), do: opts
+
+  defp maybe_put_tool_opt(opts, _key, value) when value in [nil, ""], do: opts
+  defp maybe_put_tool_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp decode_tool_payload(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text) do
     case Jason.decode(text) do

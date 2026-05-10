@@ -2242,6 +2242,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.server.path == nil
     assert config.agent.max_concurrent_agents == 10
     assert config.codex.command == "codex app-server"
+    assert config.verification.execution_evidence.strict_runtime_token_required == false
     assert config.codex.planning_command == nil
     assert config.codex.implementation_command == nil
     assert Map.get(config.codex, :handoff_command) == nil

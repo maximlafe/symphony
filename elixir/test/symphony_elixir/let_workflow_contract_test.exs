@@ -77,6 +77,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "if the gate is `true` but `swarm-iterate` is unavailable, fail closed"
     assert prompt =~ "blocking divergence"
     assert prompt =~ "keep machine-readable lines for `plan_revision`, `artifact_path`, and `artifact_revision`"
+    assert prompt =~ "For `mode:plan` with `planning.swarm_assist_enabled=true`, run two-layer execution preflight before code edits"
+    assert prompt =~ "`Execution Evidence` section in workpad"
     refute prompt =~ "continue without blocking"
     refute prompt =~ ".agents/skills/plan-swarm-mode/SKILL.md"
     refute prompt =~ "make test-unit"
@@ -165,6 +167,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert execute_skill =~ "[`diagnose`](../diagnose/SKILL.md)"
     assert execute_skill =~ "Update Linear in Russian"
     assert execute_skill =~ "Blocked"
+    assert execute_skill =~ "`planning.swarm_assist_enabled=true`"
+    assert execute_skill =~ "Execution Evidence"
   end
 
   test "worker method skills exist and setup lives outside worker bundle" do
@@ -194,6 +198,9 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert project_contract =~ "`artifact_revision`"
     assert project_contract =~ "`plan_revision`"
     assert project_contract =~ "`blocking divergence`"
+    assert project_contract =~ "Execution-Time Secondary Artifact Contract"
+    assert project_contract =~ "`Execution Evidence`"
+    assert project_contract =~ "`run_token`"
 
     refute File.exists?(Path.expand("../../../.agents/skills/plan-swarm-mode/SKILL.md", __DIR__))
     refute File.exists?(@worker_setup_skill_path)

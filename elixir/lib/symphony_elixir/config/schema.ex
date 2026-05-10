@@ -305,10 +305,27 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule VerificationExecutionEvidence do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:strict_runtime_token_required, :boolean, default: false)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      cast(schema, attrs, [:strict_runtime_token_required], empty_values: [])
+    end
+  end
+
   defmodule Verification do
     @moduledoc false
     use Ecto.Schema
     import Ecto.Changeset
+    alias SymphonyElixir.Config.Schema.VerificationExecutionEvidence
 
     @supported_profiles ["ui", "data-extraction", "runtime", "generic"]
     @default_profile_labels %{
@@ -326,12 +343,14 @@ defmodule SymphonyElixir.Config.Schema do
       field(:profile_labels, :map, default: @default_profile_labels)
       field(:review_ready_states, {:array, :string}, default: @default_review_ready_states)
       field(:manifest_path, :string, default: @default_manifest_path)
+      embeds_one(:execution_evidence, VerificationExecutionEvidence, on_replace: :update, defaults_to_struct: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:profile, :profile_labels, :review_ready_states, :manifest_path], empty_values: [])
+      |> cast_embed(:execution_evidence, with: &VerificationExecutionEvidence.changeset/2)
       |> update_change(:profile, &normalize_optional_string/1)
       |> validate_inclusion(:profile, @supported_profiles)
       |> update_change(:profile_labels, &normalize_profile_labels/1)

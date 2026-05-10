@@ -25,6 +25,7 @@ defmodule SymphonyElixir.PromptBuilder do
     |> Solid.render!(
       %{
         "attempt" => Keyword.get(opts, :attempt),
+        "execution_run_token" => execution_run_token(opts),
         "issue" => issue |> Map.from_struct() |> to_solid_map(),
         "resume_checkpoint" => to_solid_value(resume_checkpoint)
       },
@@ -92,5 +93,18 @@ defmodule SymphonyElixir.PromptBuilder do
 
   defp replace_invalid_utf8(<<_invalid, rest::binary>>, acc) do
     replace_invalid_utf8(rest, [<<0xEF, 0xBF, 0xBD>> | acc])
+  end
+
+  defp execution_run_token(opts) when is_list(opts) do
+    case Keyword.get(opts, :execution_attempt_token) do
+      token when is_binary(token) ->
+        case String.trim(token) do
+          "" -> nil
+          normalized -> normalized
+        end
+
+      _ ->
+        nil
+    end
   end
 end

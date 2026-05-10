@@ -87,6 +87,55 @@ If a rule must change, update this file first and then align workflows/skills.
 - During `Spec Prep`, swarm planning loop must stay read-only for tracker state
   and execution handoff semantics.
 
+## Execution-Time Secondary Artifact Contract
+
+- Applies only to `In Progress` execution when:
+  - issue has `mode:plan`;
+  - workflow gate `planning.swarm_assist_enabled=true`.
+- Canonical precedence:
+  - short plan in issue description is SSOT for scope/acceptance;
+  - linked swarm artifact is supporting-only and may refine risk/rollback/
+    diagnostics context;
+  - artifact is not allowed to redefine scope, acceptance, or proof semantics.
+- Required execution preflight before implementation:
+  1. read issue machine-readable `plan_revision`, `artifact_path`,
+     `artifact_revision`;
+  2. confirm `artifact_revision == plan_revision`;
+  3. confirm artifact file exists/readable under `docs/reports/`;
+  4. confirm matching Linear attachment exists (title match by full path or
+     filename);
+  5. consume supporting sections only and keep short plan canonical.
+- Required workpad section: `Execution Evidence`.
+- Runtime-owned `Execution Evidence` fields:
+  - `status` (`passed` or `blocked`);
+  - `run_token` (fresh per preflight attempt);
+  - expected run token source in handoff runtime:
+    `runtime_execution_attempt_token` (preferred), `argument_fallback`
+    (compatibility mode only), or `missing`;
+  - `artifact_file` (normalized path);
+  - `revision_pair.plan_revision`;
+  - `revision_pair.artifact_revision`;
+  - `consumed_sections` (non-empty list);
+  - `note` (explicit canonicality statement: artifact secondary, short plan
+    canonical).
+- Runtime mirror:
+  - `symphony_handoff_check` must parse `Execution Evidence` and mirror it into
+    handoff manifest under `execution_evidence`.
+  - strict runtime mode is controlled by
+    `verification.execution_evidence.strict_runtime_token_required`.
+    When enabled, fallback token from tool arguments is not accepted.
+- Fail-closed rules for execution preflight:
+  - missing/invalid `Execution Evidence` fields is `blocking divergence`;
+  - `status=blocked` is `blocking divergence` for review-ready handoff;
+  - `status=partial` or any unsupported status is `blocking divergence`;
+  - stale marker (`run_token` mismatch for current attempt) is
+    `blocking divergence`;
+  - `artifact_file` mismatch with issue `artifact_path` is
+    `blocking divergence`;
+  - revision pair mismatch with issue contract is `blocking divergence`;
+  - any artifact-vs-short-plan scope/acceptance conflict is
+    `blocking divergence`.
+
 ## Delivery Label: `delivery:tdd`
 
 - `delivery:tdd` is an opt-in delivery label, not an intake-routing label.

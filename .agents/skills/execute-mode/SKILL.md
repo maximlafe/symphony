@@ -18,15 +18,33 @@ or produce a classified blocker handoff to `Blocked`.
 ## Required flow
 
 1. Start from the current issue contract and known failing signal.
-2. Implement minimal scoped change and required proof.
-3. When `delivery:tdd` is active, run [`tdd`](../tdd/SKILL.md) for explicit
+2. For `mode:plan` with `planning.swarm_assist_enabled=true`, run a two-layer
+   execution preflight before implementation:
+   - read machine-readable `plan_revision`, `artifact_path`, and
+     `artifact_revision` from issue description;
+   - read the artifact at `artifact_path` as supporting-only context (residual
+     risks, rollback/failure modes, diagnostics expansion), never as scope
+     authority;
+   - write a dedicated `Execution Evidence` workpad section with runtime-owned
+     fields:
+     - `status` (`passed` or `blocked`)
+     - `run_token` (fresh per attempt)
+     - `artifact_file`
+     - `revision_pair.plan_revision`
+     - `revision_pair.artifact_revision`
+     - `consumed_sections`
+     - `note` (explicitly: artifact is secondary, short plan is canonical)
+   - if preflight is blocked, partial, stale, or divergent, fail closed and use
+     classified blocker handoff to `Blocked`.
+3. Implement minimal scoped change and required proof.
+4. When `delivery:tdd` is active, run [`tdd`](../tdd/SKILL.md) for explicit
    red/green evidence before final handoff.
-4. When runtime failure signal is unclear or flaky, run
+5. When runtime failure signal is unclear or flaky, run
    [`diagnose`](../diagnose/SKILL.md) before speculative fixes.
-5. Run required cheap/final gate sequence for the touched change class.
-6. Keep `Acceptance Matrix` and `Proof Mapping` internally consistent before
+6. Run required cheap/final gate sequence for the touched change class.
+7. Keep `Acceptance Matrix` and `Proof Mapping` internally consistent before
    handoff.
-7. Publish/update PR only after repo PR contract is satisfied.
+8. Publish/update PR only after repo PR contract is satisfied.
 
 ## Contract hooks
 
