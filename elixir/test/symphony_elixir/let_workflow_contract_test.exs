@@ -59,6 +59,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "xhigh"
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
     assert get_in(config, ["planning", "swarm_assist_enabled"]) == true
+    assert get_in(config, ["verification", "execution_evidence", "strict_runtime_token_required"]) == true
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert get_in(config, ["codex", "cost_policy", "signal_escalations", "rework"]) == "escalated_implementation"
     assert get_in(config, ["codex", "cost_policy", "signal_escalations", "risky_task"]) == "escalated_implementation"
@@ -102,6 +103,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "xhigh"
     assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
     assert get_in(config, ["planning", "swarm_assist_enabled"]) == true
+    assert get_in(config, ["verification", "execution_evidence", "strict_runtime_token_required"]) == true
     assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
     assert prompt =~ "`codex.cost_policy`"

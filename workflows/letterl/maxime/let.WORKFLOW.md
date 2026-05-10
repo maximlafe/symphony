@@ -541,7 +541,7 @@ planning:
   swarm_assist_enabled: true
 verification:
   execution_evidence:
-    strict_runtime_token_required: false
+    strict_runtime_token_required: true
 server:
   host: "0.0.0.0"
 ---

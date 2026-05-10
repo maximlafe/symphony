@@ -2622,6 +2622,155 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert get_in(payload, ["execution_evidence", "expected_run_token"]) == "run-token-current"
   end
 
+  test "symphony_handoff_check rejects argument-only token when strict runtime token mode is enabled" do
+    workspace = Path.join(System.tmp_dir!(), "handoff_two_layer_argument_only_strict_#{System.unique_integer([:positive])}")
+    artifact_relative_path = "docs/reports/let-504-swarm-artifact.md"
+    artifact_path = Path.join(workspace, artifact_relative_path)
+    File.mkdir_p!(Path.dirname(artifact_path))
+
+    File.write!(
+      artifact_path,
+      """
+      # LET-504 Swarm Artifact
+
+      plan_revision: `plan-rev-1`
+      artifact_revision: `plan-rev-1`
+      """
+    )
+
+    workpad_path =
+      write_tmp_file(workspace, "workpad.md", """
+      ## Codex Workpad
+
+      ### Validation
+
+      - [x] preflight: `make symphony-preflight`
+      - [x] cheap gate: `same HEAD targeted proof completed`
+      - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+      - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
+      - [x] repo validation: `make symphony-validate`
+
+      ### Artifacts
+
+      - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log from the health check
+
+      ### Proof Mapping
+
+      - [x] `AM-1` -> `validation:targeted tests`
+      - [x] `AM-2` -> `validation:runtime smoke`
+      - [x] `AM-3` -> `artifact:runtime-proof.log`
+
+      ### Execution Evidence
+
+      - `status`: `passed`
+      - `run_token`: `run-token-current`
+      - `artifact_file`: `docs/reports/let-504-swarm-artifact.md`
+      - `revision_pair.plan_revision`: `plan-rev-1`
+      - `revision_pair.artifact_revision`: `plan-rev-1`
+      - `consumed_sections`: `[acceptance matrix, proof mapping]`
+      - `note`: `artifact is secondary context; short plan is canonical source`
+
+      ### Checkpoint
+
+      - `checkpoint_type`: `human-verify`
+      - `risk_level`: `medium`
+      - `summary`: Acceptance matrix coverage is complete.
+      """)
+
+    response =
+      DynamicTool.execute(
+        "symphony_handoff_check",
+        %{
+          "issue_id" => "LET-504",
+          "file_path" => workpad_path,
+          "repo" => "maximlafe/symphony",
+          "pr_number" => 52,
+          "execution_evidence_run_token" => "run-token-current"
+        },
+        workspace: workspace,
+        planning_swarm_assist_enabled: true,
+        execution_evidence_strict_runtime_token_required: true,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckIssue" do
+            {:ok,
+             %{
+               "data" => %{
+                 "issue" => %{
+                   "id" => "LET-504",
+                   "identifier" => "LET-504",
+                   "state" => %{"name" => "In Progress"},
+                   "description" => """
+                   ## Acceptance Matrix
+
+                   | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+                   | --- | --- | --- | --- | --- | --- |
+                   | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+                   | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+                   | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
+
+                   ## Two-Layer Plan Contract
+
+                   plan_revision: `plan-rev-1`
+                   artifact_path: `docs/reports/let-504-swarm-artifact.md`
+                   artifact_revision: `plan-rev-1`
+                   plan_state: `review-ready`
+                   """,
+                   "labels" => %{"nodes" => [%{"name" => "mode:plan"}, %{"name" => "verification:runtime"}]},
+                   "attachments" => %{
+                     "nodes" => [
+                       %{"title" => "runtime-proof.log", "url" => "https://example.test/runtime-proof.log"},
+                       %{"title" => "let-504-swarm-artifact.md", "url" => "https://example.test/let-504-swarm-artifact.md"}
+                     ]
+                   }
+                 }
+               }
+             }}
+          else
+            flunk("unexpected GraphQL query: #{query}")
+          end
+        end,
+        git_runner: handoff_git_runner(),
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "52", "-R", "maximlafe/symphony", "--json", _] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://example.test/pr/52",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "",
+                 "mergeStateStatus" => "CLEAN",
+                 "statusCheckRollup" => [
+                   %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/symphony/issues/52/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/symphony/pulls/52/reviews?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/symphony/pulls/52/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            _ ->
+              flunk("unexpected gh command: #{inspect(args)}")
+          end
+        end
+      )
+
+    assert response["success"] == false
+    payload = decode_tool_text(response)
+    assert payload["error"]["message"] =~ "verification contract failed"
+
+    assert "execution evidence stale marker: runtime execution attempt token is required for current preflight attempt" in payload[
+             "manifest"
+           ]["missing_items"]
+
+    assert get_in(payload, ["manifest", "execution_evidence", "expected_run_token_source"]) == "missing"
+  end
+
   test "symphony_handoff_check ignores stale auto-synced uploaded rows for linked PR attachments" do
     workspace = Path.join(System.tmp_dir!(), "handoff_linked_pr_workspace_#{System.unique_integer([:positive])}")
 

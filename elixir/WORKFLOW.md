@@ -90,7 +90,7 @@ verification:
     - Human Review
   manifest_path: .symphony/verification/handoff-manifest.json
   execution_evidence:
-    strict_runtime_token_required: false
+    strict_runtime_token_required: true
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`

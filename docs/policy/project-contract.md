@@ -110,8 +110,8 @@ If a rule must change, update this file first and then align workflows/skills.
   - `status` (`passed` or `blocked`);
   - `run_token` (fresh per preflight attempt);
   - expected run token source in handoff runtime:
-    `runtime_execution_attempt_token` (preferred), `argument_fallback`
-    (compatibility mode only), or `missing`;
+    `runtime_execution_attempt_token`, `argument_fallback` (compatibility mode
+    only when strict runtime-token mode is disabled), or `missing`;
   - `artifact_file` (normalized path);
   - `revision_pair.plan_revision`;
   - `revision_pair.artifact_revision`;
@@ -123,7 +123,8 @@ If a rule must change, update this file first and then align workflows/skills.
     handoff manifest under `execution_evidence`.
   - strict runtime mode is controlled by
     `verification.execution_evidence.strict_runtime_token_required`.
-    When enabled, fallback token from tool arguments is not accepted.
+    When enabled, fallback token from tool arguments is not accepted as strict
+    proof.
 - Fail-closed rules for execution preflight:
   - missing/invalid `Execution Evidence` fields is `blocking divergence`;
   - `status=blocked` is `blocking divergence` for review-ready handoff;
