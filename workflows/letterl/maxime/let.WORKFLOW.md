@@ -757,6 +757,7 @@ Instructions:
    - `mode:plan` -> load and follow repo-local `.agents/skills/plan-mode/SKILL.md`; if that file is absent in the current workspace, fallback to `$CODEX_HOME/skills/plan-mode/SKILL.md`;
      - if workflow gate `planning.swarm_assist_enabled` is `true`, additionally run `swarm-iterate` (prefer repo-local `.agents/skills/swarm-iterate/SKILL.md`; fallback `$CODEX_HOME/skills/swarm-iterate/SKILL.md`);
      - with gate `true`, keep the short plan as SSOT and require linked artifact metadata (`plan_revision`, `artifact_path`, `artifact_revision`) before finalizing `Spec Prep`;
+     - with gate `true`, upload the referenced swarm artifact to Linear attachments before `Spec Review`; attachment title must match the artifact filename or full `artifact_path`;
      - if the gate is `true` but `swarm-iterate` is unavailable, fail closed: record this as `blocking divergence` in `Заметки`, fill `Checkpoint` with `checkpoint_type: human-action`, move the issue to `Blocked`, and stop (or disable the gate and rerun `Spec Prep`);
      - if the gate is `false`, keep legacy `plan-mode` path unchanged as compatibility baseline;
      - if both labels exist, `mode:research` wins;
@@ -794,6 +795,7 @@ Instructions:
    - ensure the task-spec issue description is current;
    - if `mode:research`, ensure the description and workpad clearly separate confirmed findings from remaining hypotheses and recommend the minimal implementation contour;
    - if `mode:plan` or legacy spec-prep path, ensure the description and workpad are implementation-ready and contain no hidden scope assumptions;
+   - for `mode:plan` with gate `planning.swarm_assist_enabled=true`, ensure `artifact_path` points to an uploaded Linear attachment (title match by filename or full path);
    - ensure the final local `workpad.md` is synced exactly once;
    - do not fill the classified `Checkpoint` section for this spec-prep/research gate; `Spec Review` is an unclassified review of the resulting spec, not an execution handoff;
    - record notes such as `на этапе Spec Prep продуктовые файлы не изменялись` locally before that final sync, not through an extra sync cycle.
