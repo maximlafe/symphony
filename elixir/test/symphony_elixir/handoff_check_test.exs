@@ -1635,6 +1635,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
                workpad_path: workpad_path,
                workspace: workspace,
                swarm_assist_enabled: true,
+               execution_evidence_run_token: "run-token-1",
                attachments: [
                  %{"title" => "runtime-proof.log"},
                  %{"title" => "let-504-swarm-artifact.md"}
@@ -2095,12 +2096,17 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert {:ok, manifest} =
              HandoffCheck.evaluate(
-               mode_plan_runtime_workpad(),
+               mode_plan_runtime_workpad(
+                 artifact_path: artifact_relative_path,
+                 plan_revision: "plan-rev-quoted",
+                 artifact_revision: "plan-rev-quoted"
+               ),
                issue_id: "LET-504",
                labels: ["mode:plan", "verification:runtime"],
                issue_description: quoted_description,
                workpad_path: workpad_path,
                swarm_assist_enabled: true,
+               execution_evidence_run_token: "run-token-1",
                attachments: [
                  %{"title" => "runtime-proof.log"},
                  %{"title" => "docs/reports/let-quoted-swarm-artifact.md"}
@@ -2112,6 +2118,217 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert manifest["missing_items"] == []
     assert get_in(manifest, ["issue", "two_layer_plan_contract", "plan_state"]) == "review-ready"
+  end
+
+  test "evaluate fails closed when execution evidence status is blocked or partial" do
+    workspace = Path.join(System.tmp_dir!(), "two-layer-plan-exec-evidence-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    artifact_relative_path = "docs/reports/let-504-swarm-artifact.md"
+    artifact_path = Path.join(workspace, artifact_relative_path)
+    File.mkdir_p!(Path.dirname(artifact_path))
+
+    File.write!(
+      artifact_path,
+      """
+      # LET-504 Swarm Artifact
+
+      plan_revision: `plan-rev-1`
+      artifact_revision: `plan-rev-1`
+      """
+    )
+
+    issue_description =
+      two_layer_acceptance_matrix_description(
+        artifact_relative_path,
+        "plan-rev-1",
+        "plan-rev-1",
+        "review-ready"
+      )
+
+    assert {:error, blocked_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(status: "blocked"),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "let-504-swarm-artifact.md"}
+               ],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "execution preflight is marked `blocked` and cannot pass review-ready handoff" in blocked_manifest["missing_items"]
+    assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in blocked_manifest["missing_items"]
+
+    assert {:error, partial_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(status: "partial"),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "let-504-swarm-artifact.md"}
+               ],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "execution preflight is marked `partial`; partial evidence cannot be mirrored into handoff manifest" in partial_manifest["missing_items"]
+    assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in partial_manifest["missing_items"]
+
+    assert {:error, unsupported_status_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(status: "unknown", note: "artifact note"),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "let-504-swarm-artifact.md"}
+               ],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "unsupported `Execution Evidence.status`: `unknown` (expected `passed` or `blocked`)" in unsupported_status_manifest["missing_items"]
+
+    assert "execution evidence note must state canonical precedence: artifact secondary, short plan canonical" in unsupported_status_manifest["missing_items"]
+
+    assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in unsupported_status_manifest["missing_items"]
+  end
+
+  test "evaluate enforces execution evidence run token freshness for current attempt" do
+    workspace = Path.join(System.tmp_dir!(), "two-layer-plan-exec-token-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    artifact_relative_path = "docs/reports/let-504-swarm-artifact.md"
+    artifact_path = Path.join(workspace, artifact_relative_path)
+    File.mkdir_p!(Path.dirname(artifact_path))
+
+    File.write!(
+      artifact_path,
+      """
+      # LET-504 Swarm Artifact
+
+      plan_revision: `plan-rev-1`
+      artifact_revision: `plan-rev-1`
+      """
+    )
+
+    issue_description =
+      two_layer_acceptance_matrix_description(
+        artifact_relative_path,
+        "plan-rev-1",
+        "plan-rev-1",
+        "review-ready"
+      )
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(run_token: "run-token-current"),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               execution_evidence_run_token: "run-token-current",
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "let-504-swarm-artifact.md"}
+               ],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert get_in(manifest, ["execution_evidence", "run_token_matches_current_attempt"]) == true
+
+    assert {:error, stale_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(run_token: "run-token-old"),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               execution_evidence_run_token: "run-token-current",
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "let-504-swarm-artifact.md"}
+               ],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "execution evidence stale marker: `Execution Evidence.run_token` does not match the current preflight attempt" in stale_manifest["missing_items"]
+    assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in stale_manifest["missing_items"]
+  end
+
+  test "evaluate fails closed when execution evidence current run token is missing" do
+    workspace = Path.join(System.tmp_dir!(), "two-layer-plan-exec-token-missing-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    artifact_relative_path = "docs/reports/let-504-swarm-artifact.md"
+    artifact_path = Path.join(workspace, artifact_relative_path)
+    File.mkdir_p!(Path.dirname(artifact_path))
+
+    File.write!(
+      artifact_path,
+      """
+      # LET-504 Swarm Artifact
+
+      plan_revision: `plan-rev-1`
+      artifact_revision: `plan-rev-1`
+      """
+    )
+
+    issue_description =
+      two_layer_acceptance_matrix_description(
+        artifact_relative_path,
+        "plan-rev-1",
+        "plan-rev-1",
+        "review-ready"
+      )
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(run_token: "run-token-current"),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "let-504-swarm-artifact.md"}
+               ],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "mode:plan with `planning.swarm_assist_enabled=true` requires `execution_evidence_run_token` in `symphony_handoff_check` arguments" in manifest["missing_items"]
+
+    assert "execution evidence stale marker: `execution_evidence_run_token` is required for current preflight attempt" in manifest["missing_items"]
+
+    assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in manifest["missing_items"]
   end
 
   test "evaluate defers done-phase acceptance matrix proofs during review handoff" do
@@ -3530,7 +3747,26 @@ defmodule SymphonyElixir.HandoffCheckTest do
     """
   end
 
-  defp mode_plan_runtime_workpad do
+  defp mode_plan_runtime_workpad(opts \\ []) do
+    artifact_path = Keyword.get(opts, :artifact_path, "docs/reports/let-504-swarm-artifact.md")
+    plan_revision = Keyword.get(opts, :plan_revision, "plan-rev-1")
+    artifact_revision = Keyword.get(opts, :artifact_revision, "plan-rev-1")
+    status = Keyword.get(opts, :status, "passed")
+    run_token = Keyword.get(opts, :run_token, "run-token-1")
+
+    consumed_sections =
+      opts
+      |> Keyword.get(:consumed_sections, ["Residual Risks", "Rollback"])
+      |> List.wrap()
+      |> Enum.map_join(", ", &to_string/1)
+
+    note =
+      Keyword.get(
+        opts,
+        :note,
+        "artifact is secondary, short plan is canonical"
+      )
+
     """
     ## Codex Workpad
 
@@ -3551,6 +3787,16 @@ defmodule SymphonyElixir.HandoffCheckTest do
     - [x] `AM-1` -> `validation:targeted tests`
     - [x] `AM-2` -> `validation:runtime smoke`
     - [x] `AM-3` -> `artifact:runtime-proof.log`
+
+    ### Execution Evidence
+
+    - `status`: `#{status}`
+    - `run_token`: `#{run_token}`
+    - `artifact_file`: `#{artifact_path}`
+    - `revision_pair.plan_revision`: `#{plan_revision}`
+    - `revision_pair.artifact_revision`: `#{artifact_revision}`
+    - `consumed_sections`: `#{consumed_sections}`
+    - `note`: `#{note}`
 
     ### Checkpoint
 
