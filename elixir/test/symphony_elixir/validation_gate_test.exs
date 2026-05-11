@@ -106,6 +106,13 @@ defmodule SymphonyElixir.ValidationGateTest do
            ]) == ["preflight", "cheap_gate", "targeted_tests", "runtime_smoke", "repo_validation"]
   end
 
+  test "normalizes legacy LET-717 runtime-contract validation aliases" do
+    assert ValidationGate.normalize_checks([
+             "targeted runtime contract tests",
+             "runtime/contract final gate"
+           ]) == ["targeted_tests", "runtime_smoke"]
+  end
+
   test "derives required proof checks from delivery:tdd and runtime contract sources" do
     assert ValidationGate.required_proof_checks(["delivery:tdd"], ["backend_only"]) == [
              %{

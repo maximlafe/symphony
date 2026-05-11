@@ -1331,7 +1331,7 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp extract_machine_readable_field(markdown, key) when is_binary(markdown) and is_binary(key) do
-    pattern = ~r/^\s*(?:-\s*)?(?:`)?#{Regex.escape(key)}(?:`)?\s*:\s*(.+?)\s*$/mi
+    pattern = ~r/^\s*(?:[-*]\s*)?(?:`)?#{Regex.escape(key)}(?:`)?\s*:\s*(.+?)\s*$/mi
 
     case Regex.run(pattern, markdown, capture: :all_but_first) do
       [value | _] -> normalize_machine_readable_value(value)
@@ -2351,10 +2351,16 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp normalize_validation_reference(value) when is_binary(value) do
-    value
-    |> strip_wrapping_backticks()
-    |> String.trim()
-    |> String.downcase()
+    normalized =
+      value
+      |> strip_wrapping_backticks()
+      |> String.trim()
+      |> String.downcase()
+
+    case ValidationGate.normalize_check(normalized) do
+      canonical when is_binary(canonical) -> String.replace(canonical, "_", " ")
+      _ -> normalized
+    end
   end
 
   defp matrix_item_validation_label(matrix_item_id) do
@@ -2401,7 +2407,7 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp validate_validation_match(validation_match, _reference_value, matrix_item_id, "runtime_smoke", matrix_semantic, errors, signals) do
     cond do
-      validation_match["label"] != "runtime smoke" ->
+      normalize_validation_reference(to_string(validation_match["label"])) != "runtime smoke" ->
         {errors ++ ["acceptance matrix item `#{matrix_item_id}` with proof_type `runtime_smoke` must map to `runtime smoke` validation entry"], signals}
 
       matrix_semantic == "run_executed" and surface_only_command?(validation_match["command"]) ->

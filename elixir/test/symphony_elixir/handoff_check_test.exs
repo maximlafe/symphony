@@ -1571,6 +1571,103 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "acceptance matrix item `AM-2` requires executed proof; mapped validation command looks surface-only (`--help`)" in manifest["missing_items"]
   end
 
+  test "evaluate enforces complete one-to-one checked proof mapping for AM-717 matrix" do
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-717-1 | Research-stage runtime signal | stale and missing execution evidence fail closed | test | mix test test/symphony_elixir/handoff_check_test.exs:2240 test/symphony_elixir/handoff_check_test.exs:2383 | run_executed |
+    | AM-717-2 | Runtime tool token path | runtime attempt token forwarding is validated | test | mix test test/symphony_elixir/dynamic_tool_test.exs:2481 test/symphony_elixir/controller_finalizer_test.exs:1318 | run_executed |
+    | AM-717-3 | Review-ready handoff contract | strict execution evidence and manifest freshness are validated | artifact | runtime-proof.log | run_executed |
+    """
+
+    base_workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime smoke: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log from the health check
+
+    ### Proof Mapping
+
+    - [x] `AM-717-1` -> `validation:targeted tests`
+    - [x] `AM-717-2` -> `validation:runtime smoke`
+    - [x] `AM-717-3` -> `artifact:runtime-proof.log`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: AM-717 mapping is complete and checked.
+    """
+
+    assert {:ok, passed_manifest} =
+             HandoffCheck.evaluate(
+               base_workpad,
+               issue_id: "LET-717",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert passed_manifest["missing_items"] == []
+    assert get_in(passed_manifest, ["proof_signals", "acceptance_matrix_covered"]) == true
+
+    missing_mapping_workpad =
+      String.replace(
+        base_workpad,
+        "- [x] `AM-717-3` -> `artifact:runtime-proof.log`\n",
+        ""
+      )
+
+    assert {:error, missing_manifest} =
+             HandoffCheck.evaluate(
+               missing_mapping_workpad,
+               issue_id: "LET-717",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "acceptance matrix item `AM-717-3` is missing a checked proof mapping entry" in missing_manifest["missing_items"]
+
+    duplicate_mapping_workpad =
+      String.replace(
+        base_workpad,
+        "- [x] `AM-717-2` -> `validation:runtime smoke`",
+        "- [x] `AM-717-2` -> `validation:runtime smoke`\n- [x] `AM-717-2` -> `validation:runtime smoke`"
+      )
+
+    assert {:error, duplicate_manifest} =
+             HandoffCheck.evaluate(
+               duplicate_mapping_workpad,
+               issue_id: "LET-717",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "acceptance matrix item `AM-717-2` has multiple proof mapping entries; exactly one is required" in duplicate_manifest["missing_items"]
+  end
+
   test "evaluate enforces two-layer mode:plan metadata when swarm assist gate is enabled" do
     workspace = Path.join(System.tmp_dir!(), "two-layer-plan-metadata-#{System.unique_integer([:positive])}")
     workpad_path = Path.join(workspace, "workpad.md")
@@ -2118,6 +2215,102 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert manifest["missing_items"] == []
     assert get_in(manifest, ["issue", "two_layer_plan_contract", "plan_state"]) == "review-ready"
+  end
+
+  test "evaluate parses two-layer machine-readable fields authored with star bullets" do
+    workspace = Path.join(System.tmp_dir!(), "two-layer-plan-star-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    artifact_relative_path = "docs/reports/let-717-swarm-artifact.md"
+    artifact_path = Path.join(workspace, artifact_relative_path)
+    File.mkdir_p!(Path.dirname(artifact_path))
+
+    File.write!(
+      artifact_path,
+      """
+      # LET-717 Swarm Artifact
+
+      plan_revision: `plan-rev-star`
+      artifact_revision: `plan-rev-star`
+      """
+    )
+
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+    | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
+
+    ## Two-Layer Plan Contract
+
+    * plan_revision: `plan-rev-star`
+    * artifact_path: `docs/reports/let-717-swarm-artifact.md`
+    * artifact_revision: `plan-rev-star`
+    * plan_state: `review-ready`
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(
+                 artifact_path: artifact_relative_path,
+                 plan_revision: "plan-rev-star",
+                 artifact_revision: "plan-rev-star"
+               ),
+               issue_id: "LET-717",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               execution_evidence_run_token: "run-token-1",
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "let-717-swarm-artifact.md"}
+               ],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert manifest["missing_items"] == []
+    assert get_in(manifest, ["issue", "two_layer_plan_contract", "plan_revision"]) == "plan-rev-star"
+    assert get_in(manifest, ["issue", "two_layer_plan_contract", "artifact_path"]) == artifact_relative_path
+    assert get_in(manifest, ["issue", "two_layer_plan_contract", "artifact_revision"]) == "plan-rev-star"
+  end
+
+  test "evaluate keeps parser mismatch as hard failure when proof mapping drift is also present" do
+    workspace = Path.join(System.tmp_dir!(), "two-layer-plan-mixed-failure-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    File.mkdir_p!(workspace)
+
+    drift_workpad =
+      String.replace(
+        mode_plan_runtime_workpad(),
+        "`AM-1` -> `validation:targeted tests`",
+        "`AM-1` -> `validation:unknown-label`"
+      )
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               drift_workpad,
+               issue_id: "LET-717",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: acceptance_matrix_description(),
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert manifest["handoff_failure"]["kind"] == "hard_contract_failure"
+    assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in manifest["missing_items"]
+    assert Enum.any?(manifest["handoff_failure"]["recoverable_items"], &String.contains?(&1, "maps to validation `unknown-label` that is not checked"))
+    assert Enum.any?(manifest["handoff_failure"]["hard_items"], &String.contains?(&1, "requires machine-readable `plan_revision` in issue description"))
   end
 
   test "evaluate fails closed when execution evidence status is blocked or partial" do
@@ -2864,6 +3057,79 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert manifest["missing_items"] == []
     assert get_in(manifest, ["proof_signals", "proof_run_executed"]) == true
+  end
+
+  test "evaluate normalizes known validation label aliases in proof mapping and rejects unknown aliases" do
+    issue_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-ALIAS-1 | Targeted alias path | Targeted alias normalizes to canonical label | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    | AM-ALIAS-2 | Runtime alias path | Runtime alias normalizes to canonical label | runtime_smoke | mix test test/symphony_elixir/handoff_check_test.exs | runtime_smoke |
+    """
+
+    alias_workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] cheap gate: `same HEAD targeted proof completed`
+    - [x] targeted runtime contract tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] runtime/contract final gate: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime smoke log from the health check
+
+    ### Proof Mapping
+
+    - [x] `AM-ALIAS-1` -> `validation:targeted tests`
+    - [x] `AM-ALIAS-2` -> `validation:runtime smoke`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Known aliases are normalized before matrix checks.
+    """
+
+    assert {:ok, alias_manifest} =
+             HandoffCheck.evaluate(
+               alias_workpad,
+               issue_id: "LET-717",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert alias_manifest["missing_items"] == []
+
+    unknown_alias_workpad =
+      String.replace(
+        alias_workpad,
+        "targeted runtime contract tests",
+        "targeted runtime contract checks extended"
+      )
+
+    assert {:error, unknown_alias_manifest} =
+             HandoffCheck.evaluate(
+               unknown_alias_workpad,
+               issue_id: "LET-717",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description: issue_description,
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "acceptance matrix item `AM-ALIAS-1` maps to validation `targeted tests` that is not checked" in unknown_alias_manifest["missing_items"]
   end
 
   test "evaluate reports deterministic AM label hint when prose mapping is not checked" do
