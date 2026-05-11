@@ -7,6 +7,8 @@ defmodule SymphonyElixir.Linear.Client do
   alias SymphonyElixir.{AcceptanceCapability, Config, Linear.Issue, RiskyTaskClassifier}
 
   @issue_page_size 50
+  @execution_comment_page_size 10
+  @execution_attachment_page_size 20
   @max_error_body_log_bytes 1_000
 
   @query """
@@ -166,6 +168,58 @@ defmodule SymphonyElixir.Linear.Client do
   }
   """
 
+  @execution_issue_query """
+  query SymphonyLinearExecutionIssue($id: String!, $attachmentFirst: Int!, $commentFirst: Int!) {
+    issue(id: $id) {
+      id
+      identifier
+      title
+      description
+      priority
+      project {
+        slugId
+        name
+      }
+      state {
+        name
+      }
+      branchName
+      url
+      assignee {
+        id
+        email
+        name
+      }
+      labels {
+        nodes {
+          name
+        }
+      }
+      createdAt
+      updatedAt
+      attachments(first: $attachmentFirst) {
+        nodes {
+          title
+          url
+          sourceType
+          metadata
+        }
+      }
+      comments(first: $commentFirst) {
+        nodes {
+          id
+          body
+          createdAt
+          updatedAt
+          user {
+            name
+          }
+        }
+      }
+    }
+  }
+  """
+
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
     tracker = Config.settings!().tracker
@@ -245,6 +299,29 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
+  @spec fetch_issue_for_execution(String.t()) :: {:ok, Issue.t()} | {:error, term()}
+  def fetch_issue_for_execution(issue_id_or_identifier) when is_binary(issue_id_or_identifier) do
+    trimmed = String.trim(issue_id_or_identifier)
+
+    cond do
+      trimmed == "" ->
+        {:error, :missing_issue_identifier}
+
+      is_nil(Config.settings!().tracker.api_key) ->
+        {:error, :missing_linear_api_token}
+
+      true ->
+        case graphql(@execution_issue_query, %{
+               id: trimmed,
+               attachmentFirst: @execution_attachment_page_size,
+               commentFirst: @execution_comment_page_size
+             }) do
+          {:ok, body} -> decode_execution_issue_response(body)
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
   @doc false
   @spec normalize_issue_for_test(map()) :: Issue.t() | nil
   def normalize_issue_for_test(issue) when is_map(issue) do
@@ -311,6 +388,31 @@ defmodule SymphonyElixir.Linear.Client do
       {:ok, []}
     else
       do_fetch_by_states(scope, normalized_states, nil, graphql_fun)
+    end
+  end
+
+  @doc false
+  @spec fetch_issue_for_execution_for_test(
+          String.t(),
+          (String.t(), map() -> {:ok, map()} | {:error, term()})
+        ) :: {:ok, Issue.t()} | {:error, term()}
+  def fetch_issue_for_execution_for_test(issue_id_or_identifier, graphql_fun)
+      when is_binary(issue_id_or_identifier) and is_function(graphql_fun, 2) do
+    trimmed = String.trim(issue_id_or_identifier)
+
+    case trimmed do
+      "" ->
+        {:error, :missing_issue_identifier}
+
+      _ ->
+        case graphql_fun.(@execution_issue_query, %{
+               id: trimmed,
+               attachmentFirst: @execution_attachment_page_size,
+               commentFirst: @execution_comment_page_size
+             }) do
+          {:ok, body} -> decode_execution_issue_response(body)
+          {:error, reason} -> {:error, reason}
+        end
     end
   end
 
@@ -522,6 +624,18 @@ defmodule SymphonyElixir.Linear.Client do
     {:error, :linear_unknown_payload}
   end
 
+  defp decode_execution_issue_response(%{"data" => %{"issue" => issue}}) when is_map(issue) do
+    {:ok, normalize_execution_issue(issue)}
+  end
+
+  defp decode_execution_issue_response(%{"errors" => errors}) do
+    {:error, {:linear_graphql_errors, errors}}
+  end
+
+  defp decode_execution_issue_response(_unknown) do
+    {:error, :linear_unknown_payload}
+  end
+
   defp decode_linear_page_response(
          %{
            "data" => %{
@@ -586,6 +700,29 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp normalize_issue(_issue, _assignee_filter), do: nil
+
+  defp normalize_execution_issue(issue) when is_map(issue) do
+    assignee = issue["assignee"]
+
+    %Issue{
+      id: issue["id"],
+      identifier: issue["identifier"],
+      title: issue["title"],
+      description: issue["description"],
+      priority: parse_priority(issue["priority"]),
+      project_slug: issue |> project_field("slugId"),
+      project_name: issue |> project_field("name"),
+      state: get_in(issue, ["state", "name"]),
+      branch_name: issue["branchName"],
+      url: issue["url"],
+      assignee_id: assignee_field(assignee, "id"),
+      labels: extract_labels(issue),
+      attachments: normalize_execution_attachments(get_in(issue, ["attachments", "nodes"])),
+      comments: normalize_execution_comments(get_in(issue, ["comments", "nodes"])),
+      created_at: parse_datetime(issue["createdAt"]),
+      updated_at: parse_datetime(issue["updatedAt"])
+    }
+  end
 
   defp assignee_field(%{} = assignee, field) when is_binary(field), do: assignee[field]
   defp assignee_field(_assignee, _field), do: nil
@@ -705,6 +842,74 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp extract_blockers(_), do: []
+
+  defp normalize_execution_attachments(attachments) when is_list(attachments) do
+    attachments
+    |> Enum.map(fn
+      %{} = attachment ->
+        %{
+          "title" => normalize_optional_string(attachment["title"]),
+          "url" => normalize_optional_string(attachment["url"]),
+          "source_type" => normalize_optional_string(attachment["sourceType"]),
+          "metadata" => attachment["metadata"]
+        }
+
+      _ ->
+        nil
+    end)
+    |> Enum.reject(&(is_nil(&1) or is_nil(&1["title"])))
+  end
+
+  defp normalize_execution_attachments(_attachments), do: []
+
+  defp normalize_execution_comments(comments) when is_list(comments) do
+    comments
+    |> Enum.map(&normalize_execution_comment/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(&comment_sort_key/1, {:desc, DateTime})
+  end
+
+  defp normalize_execution_comments(_comments), do: []
+
+  defp normalize_execution_comment(%{} = comment) do
+    body = normalize_optional_string(comment["body"])
+
+    cond do
+      is_nil(body) ->
+        nil
+
+      workpad_comment_body?(body) ->
+        nil
+
+      true ->
+        %{
+          "id" => normalize_optional_string(comment["id"]),
+          "body" => body,
+          "created_at" => parse_datetime(comment["createdAt"]),
+          "updated_at" => parse_datetime(comment["updatedAt"]),
+          "author_name" => normalize_optional_string(get_in(comment, ["user", "name"]))
+        }
+    end
+  end
+
+  defp normalize_execution_comment(_comment), do: nil
+
+  defp comment_sort_key(%{"created_at" => %DateTime{} = created_at}), do: created_at
+  defp comment_sort_key(_comment), do: ~U[1970-01-01 00:00:00Z]
+
+  defp workpad_comment_body?(body) when is_binary(body) do
+    String.contains?(body, "## Codex Workpad") or
+      String.contains?(body, "## Рабочий журнал Codex")
+  end
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_optional_string(_value), do: nil
 
   defp parse_datetime(nil), do: nil
 

@@ -30,6 +30,20 @@ defmodule SymphonyElixir.Config do
   {% else %}
   No description provided.
   {% endif %}
+
+  {% if issue.attachments != empty %}
+  Attachments:
+  {% for attachment in issue.attachments %}
+  - {{ attachment.title }}{% if attachment.url %} ({{ attachment.url }}){% endif %}
+  {% endfor %}
+  {% endif %}
+
+  {% if issue.comments != empty %}
+  Recent issue comments:
+  {% for comment in issue.comments %}
+  - {% if comment.author_name %}{{ comment.author_name }}: {% endif %}{{ comment.body }}
+  {% endfor %}
+  {% endif %}
   """
 
   @type codex_runtime_settings :: %{

@@ -2437,6 +2437,7 @@ defmodule SymphonyElixir.Orchestrator do
              attempt: attempt,
              codex_account: codex_account,
              trace_id: trace_id,
+             issue_for_execution_fetcher: &Tracker.fetch_issue_for_execution/1,
              execution_attempt_token: execution_attempt_token,
              resume_checkpoint: resume_checkpoint,
              cost_profile_key: retry_cost_profile_key(retry_metadata, resume_checkpoint),

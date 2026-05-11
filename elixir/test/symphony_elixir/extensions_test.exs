@@ -25,6 +25,11 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok, issue_ids}
     end
 
+    def fetch_issue_for_execution(issue_id_or_identifier) do
+      send(self(), {:fetch_issue_for_execution_called, issue_id_or_identifier})
+      {:ok, issue_id_or_identifier}
+    end
+
     def graphql(query, variables) do
       send(self(), {:graphql_called, query, variables})
 
@@ -194,6 +199,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_candidate_issues()
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issues_by_states([" in progress ", 42])
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
+    assert {:ok, ^issue} = SymphonyElixir.Tracker.fetch_issue_for_execution("issue-1")
+    assert {:error, :issue_not_found} = SymphonyElixir.Tracker.fetch_issue_for_execution("issue-missing")
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
@@ -218,6 +225,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert {:ok, ["issue-1"]} = Adapter.fetch_issue_states_by_ids(["issue-1"])
     assert_receive {:fetch_issue_states_by_ids_called, ["issue-1"]}
+
+    assert {:ok, "issue-1"} = Adapter.fetch_issue_for_execution("issue-1")
+    assert_receive {:fetch_issue_for_execution_called, "issue-1"}
 
     Process.put(
       {FakeLinearClient, :graphql_result},

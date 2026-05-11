@@ -1701,6 +1701,87 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.risk_classification["stateful_migration"] == true
   end
 
+  test "linear client fetches execution issue context with attachments and bounded comments" do
+    graphql_fun = fn query, variables ->
+      send(self(), {:linear_execution_issue_query, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "id" => "issue-exec-1",
+             "identifier" => "LET-719",
+             "title" => "Execution hydration",
+             "description" => "Hydrate richer context",
+             "priority" => 3,
+             "project" => %{"slugId" => "symphony", "name" => "Symphony"},
+             "state" => %{"name" => "In Progress"},
+             "branchName" => "Symphony/let-719-exec-context",
+             "url" => "https://linear.app/letterl/issue/LET-719",
+             "assignee" => %{"id" => "user-1", "name" => "symphony"},
+             "labels" => %{"nodes" => [%{"name" => "backend"}]},
+             "createdAt" => "2026-05-11T10:00:00Z",
+             "updatedAt" => "2026-05-11T10:05:00Z",
+             "attachments" => %{
+               "nodes" => [
+                 %{
+                   "title" => "design.pdf",
+                   "url" => "https://example.test/design.pdf",
+                   "sourceType" => "upload",
+                   "metadata" => %{"kind" => "spec"}
+                 }
+               ]
+             },
+             "comments" => %{
+               "nodes" => [
+                 %{
+                   "id" => "comment-2",
+                   "body" => "Most recent reviewer note",
+                   "createdAt" => "2026-05-11T10:04:00Z",
+                   "updatedAt" => "2026-05-11T10:04:00Z",
+                   "user" => %{"name" => "Reviewer"}
+                 },
+                 %{
+                   "id" => "comment-1",
+                   "body" => "## Codex Workpad\nignore this",
+                   "createdAt" => "2026-05-11T10:03:00Z",
+                   "updatedAt" => "2026-05-11T10:03:00Z",
+                   "user" => %{"name" => "Codex"}
+                 },
+                 %{
+                   "id" => "comment-0",
+                   "body" => "Earlier task note",
+                   "createdAt" => "2026-05-11T10:01:00Z",
+                   "updatedAt" => "2026-05-11T10:01:00Z",
+                   "user" => %{"name" => "Author"}
+                 }
+               ]
+             }
+           }
+         }
+       }}
+    end
+
+    assert {:ok, issue} = Client.fetch_issue_for_execution_for_test("LET-719", graphql_fun)
+
+    assert_receive {:linear_execution_issue_query, query, %{id: "LET-719", attachmentFirst: 20, commentFirst: 10}}
+    assert query =~ "SymphonyLinearExecutionIssue"
+
+    assert issue.attachments == [
+             %{
+               "title" => "design.pdf",
+               "url" => "https://example.test/design.pdf",
+               "source_type" => "upload",
+               "metadata" => %{"kind" => "spec"}
+             }
+           ]
+
+    assert Enum.map(issue.comments, & &1["body"]) == ["Most recent reviewer note", "Earlier task note"]
+    assert Enum.map(issue.comments, & &1["author_name"]) == ["Reviewer", "Author"]
+    assert issue.labels == ["backend"]
+    assert issue.state == "In Progress"
+  end
+
   test "linear client matches configured assignee email" do
     raw_issue = %{
       "id" => "issue-email-1",
