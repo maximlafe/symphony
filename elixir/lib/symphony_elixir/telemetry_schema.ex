@@ -148,9 +148,9 @@ defmodule SymphonyElixir.TelemetrySchema do
   @spec validation_guard_payload(map()) :: map()
   def validation_guard_payload(source) when is_map(source) do
     %{
-      "validation_guard_name" => normalize_string(fetch(source, :validation_guard_name) || fetch(source, :verification_profile)),
-      "validation_guard_result" => normalize_string(fetch(source, :validation_guard_result) || fetch(source, :verification_result)),
-      "validation_guard_reason" => normalize_string(fetch(source, :validation_guard_reason) || fetch(source, :verification_summary))
+      "validation_guard_name" => normalize_string(fetch(source, :validation_guard_name)),
+      "validation_guard_result" => normalize_string(fetch(source, :validation_guard_result)),
+      "validation_guard_reason" => normalize_string(fetch(source, :validation_guard_reason))
     }
     |> reject_nil_values()
   end

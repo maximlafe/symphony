@@ -2858,8 +2858,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "issue_id" => "LET-416",
                "file_path" => workpad_path,
                "repo" => "maximlafe/symphony",
-               "pr_number" => 52,
-               "profile" => "runtime"
+               "pr_number" => 52
              },
              workspace: workspace,
              linear_client: fn query, _variables, _opts ->
@@ -3195,8 +3194,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "change_classes" => ["backend_only"],
           "strictest_change_class" => "backend_only",
           "requires_final_gate" => true,
-          "required_checks" => ["preflight", "cheap_gate", "targeted_tests", "repo_validation"],
-          "passed_checks" => ["preflight", "cheap_gate", "targeted_tests", "repo_validation"],
+          "required_checks" => ["preflight", "targeted_tests", "repo_validation"],
+          "passed_checks" => ["preflight", "targeted_tests", "repo_validation"],
           "remote_finalization_allowed" => true
         },
         "git" => git_metadata_for_repo!(workspace)
@@ -3300,8 +3299,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "issue_id" => "LET-416",
                "file_path" => workpad_path,
                "repo" => "maximlafe/symphony",
-               "pr_number" => 52,
-               "profile" => "generic"
+               "pr_number" => 52
              },
              workspace: workspace,
              linear_client: fn query, _variables, _opts ->

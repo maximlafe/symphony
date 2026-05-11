@@ -80,11 +80,6 @@ codex:
 planning:
   swarm_assist_enabled: true
 verification:
-  profile_labels:
-    ui: "verification:ui"
-    "data-extraction": "verification:data-extraction"
-    runtime: "verification:runtime"
-    generic: "verification:generic"
   review_ready_states:
     - In Review
     - Human Review

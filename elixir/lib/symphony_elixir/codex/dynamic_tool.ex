@@ -319,10 +319,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "type" => ["integer", "string"],
         "description" => "Pull request number."
       },
-      "profile" => %{
-        "type" => ["string", "null"],
-        "description" => "Optional explicit verification profile override."
-      },
       "phase" => %{
         "type" => ["string", "null"],
         "description" => "Optional handoff phase. Use `review` before moving to review-ready states and `done` before final closure."
@@ -607,7 +603,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
     workspace = Keyword.get(opts, :workspace)
 
-    with {:ok, issue_id, workpad_path, repo, pr_number, profile, phase, manifest_path, execution_evidence_run_token} <-
+    with {:ok, issue_id, workpad_path, repo, pr_number, phase, manifest_path, execution_evidence_run_token} <-
            normalize_symphony_handoff_check_arguments(arguments, opts),
          {:ok, workpad_body} <- read_workpad_file(workpad_path, :symphony_handoff_check),
          {:ok, issue_context} <- fetch_handoff_issue_context(issue_id, linear_client),
@@ -633,11 +629,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           repo: repo,
           pr_number: pr_number,
           phase: phase,
-          profile: profile || Config.settings!().verification.profile,
           labels: Map.get(issue_context, "labels", []),
           attachments: Map.get(issue_context, "attachments", []),
           pr_snapshot: pr_snapshot,
-          profile_labels: Config.settings!().verification.profile_labels,
           swarm_assist_enabled: plan_swarm_assist_enabled?(opts),
           execution_evidence_run_token: resolved_execution_evidence_run_token,
           execution_evidence_expected_run_token_source: expected_run_token_source,
@@ -1162,8 +1156,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
          {:ok, pr_number} <- normalize_pr_number(arguments, :symphony_handoff_check),
          {:ok, resolved_workpad_path} <-
            normalize_workspace_file_path(file_path, workspace, :symphony_handoff_check),
-         {:ok, profile} <-
-           normalize_optional_string_arg(arguments, "profile", :symphony_handoff_check),
          {:ok, phase} <-
            normalize_optional_string_arg(arguments, "phase", :symphony_handoff_check),
          {:ok, manifest_path} <-
@@ -1186,7 +1178,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         resolved_workpad_path,
         repo,
         pr_number,
-        profile,
         resolved_phase,
         manifest_path,
         execution_evidence_run_token

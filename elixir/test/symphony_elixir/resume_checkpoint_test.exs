@@ -30,6 +30,9 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
       verification_result: "passed",
       verification_summary: "handoff check passed",
       verification_checked_at: DateTime.utc_now(),
+      validation_guard_name: "contract",
+      validation_guard_result: "passed",
+      validation_guard_reason: "handoff check passed",
       latest_pr_snapshot: %{
         "url" => "https://github.com/maximlafe/symphony/pull/77",
         "state" => "OPEN",
