@@ -15,7 +15,6 @@ defmodule SymphonyElixir.ValidationGate do
 
   @check_order [
     "preflight",
-    "cheap_gate",
     "red_proof",
     "targeted_tests",
     "stateful_proof",
@@ -37,17 +36,16 @@ defmodule SymphonyElixir.ValidationGate do
   @requirements %{
     "backend_only" => %{
       "cheap" => ["preflight", "targeted_tests"],
-      "final" => ["preflight", "cheap_gate", "targeted_tests", "repo_validation"]
+      "final" => ["preflight", "targeted_tests", "repo_validation"]
     },
     "stateful" => %{
       "cheap" => ["preflight", "targeted_tests", "stateful_proof"],
-      "final" => ["preflight", "cheap_gate", "targeted_tests", "stateful_proof", "repo_validation"]
+      "final" => ["preflight", "targeted_tests", "stateful_proof", "repo_validation"]
     },
     "ui" => %{
       "cheap" => ["preflight", "targeted_tests", "ui_runtime_proof"],
       "final" => [
         "preflight",
-        "cheap_gate",
         "targeted_tests",
         "ui_runtime_proof",
         "visual_artifact",
@@ -56,7 +54,7 @@ defmodule SymphonyElixir.ValidationGate do
     },
     "runtime_contract" => %{
       "cheap" => ["preflight", "targeted_tests", "runtime_smoke"],
-      "final" => ["preflight", "cheap_gate", "targeted_tests", "runtime_smoke", "repo_validation"]
+      "final" => ["preflight", "targeted_tests", "runtime_smoke", "repo_validation"]
     },
     "docs_only" => %{
       "cheap" => ["docs_review"],

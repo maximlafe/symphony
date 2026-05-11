@@ -19,7 +19,6 @@ defmodule Mix.Tasks.Handoff.Check do
     repo: :string,
     pr: :integer,
     phase: :string,
-    profile: :string,
     manifest: :string,
     execution_run_token: :string
   ]
@@ -52,7 +51,6 @@ defmodule Mix.Tasks.Handoff.Check do
           "repo" => repo,
           "pr_number" => pr_number,
           "phase" => Keyword.get(opts, :phase) || "review",
-          "profile" => Keyword.get(opts, :profile) || verification.profile,
           "manifest_path" => manifest_path,
           "execution_evidence_run_token" => Keyword.get(opts, :execution_run_token)
         },

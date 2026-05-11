@@ -229,17 +229,7 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
     refute Map.has_key?(ready_payload, "resume_fallback_reason")
   end
 
-  test "validation_guard_payload supports canonical and legacy keys" do
-    assert TelemetrySchema.validation_guard_payload(%{
-             verification_profile: "runtime",
-             verification_result: "passed",
-             verification_summary: "all checks green"
-           }) == %{
-             "validation_guard_name" => "runtime",
-             "validation_guard_result" => "passed",
-             "validation_guard_reason" => "all checks green"
-           }
-
+  test "validation_guard_payload supports canonical keys" do
     assert TelemetrySchema.validation_guard_payload(%{
              validation_guard_name: "handoff",
              validation_guard_result: :failed,
@@ -404,8 +394,7 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
                "resume_ready" => true
              }
 
-    assert TelemetrySchema.put_validation_guard_payload(%{}, %{verification_profile: "runtime"}) ==
-             %{"validation_guard_name" => "runtime"}
+    assert TelemetrySchema.put_validation_guard_payload(%{}, %{verification_profile: "runtime"}) == %{}
 
     assert TelemetrySchema.runtime_payload(nil) == %{}
     assert TelemetrySchema.checkpoint_payload(nil, "resume_checkpoint") == %{}

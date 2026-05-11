@@ -568,7 +568,11 @@ defmodule SymphonyElixir.Orchestrator do
     if verification_guard_recoverable_drift?(manifest) do
       recoverable_verification_guard_decision(context, failure_attempt)
     else
-      hard_verification_guard_decision(context, "verification guard failed for profile `#{context.profile}`: #{context.summary}", "hard_contract_failure")
+      hard_verification_guard_decision(
+        context,
+        "verification guard failed for `#{context.guard_name}`: #{context.summary}",
+        "hard_contract_failure"
+      )
     end
   end
 
@@ -665,16 +669,16 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp verification_guard_failure_context(running_entry, manifest)
        when is_map(running_entry) and is_map(manifest) do
-    profile = Map.get(running_entry, :verification_profile) || manifest["profile"] || "unknown"
+    guard_name = Map.get(running_entry, :validation_guard_name) || manifest["validation_guard_name"] || "contract"
     summary = Map.get(running_entry, :verification_summary) || manifest["summary"] || "verification guard failed"
     missing_items = normalize_manifest_missing_items(manifest["missing_items"])
 
     %{
-      profile: profile,
+      guard_name: guard_name,
       summary: summary,
       missing_items: missing_items,
       log_fields: %{
-        validation_guard_name: profile,
+        validation_guard_name: guard_name,
         validation_guard_result: "failed",
         validation_guard_reason: summary,
         verification_missing_items: Enum.join(missing_items, ", ")
@@ -686,7 +690,7 @@ defmodule SymphonyElixir.Orchestrator do
     if failure_attempt <= @verification_recoverable_drift_max_attempts do
       RetryFailoverDecision.decide(%{
         recoverable_drift: %{
-          reason: "verification guard recoverable drift for profile `#{context.profile}`: #{context.summary}",
+          reason: "verification guard recoverable drift for `#{context.guard_name}`: #{context.summary}",
           log_fields:
             Map.merge(context.log_fields, %{
               handoff_failure_kind: "recoverable_drift",
@@ -698,7 +702,7 @@ defmodule SymphonyElixir.Orchestrator do
     else
       hard_verification_guard_decision(
         context,
-        "verification guard recoverable drift exceeded auto-reconcile budget (attempt #{failure_attempt}/#{@verification_recoverable_drift_max_attempts}) for profile `#{context.profile}`: #{context.summary}",
+        "verification guard recoverable drift exceeded auto-reconcile budget (attempt #{failure_attempt}/#{@verification_recoverable_drift_max_attempts}) for `#{context.guard_name}`: #{context.summary}",
         "recoverable_drift_budget_exhausted",
         recoverable_attempt: failure_attempt,
         recoverable_attempt_limit: @verification_recoverable_drift_max_attempts
@@ -6676,15 +6680,15 @@ defmodule SymphonyElixir.Orchestrator do
       {:ok, manifest} ->
         verification_result = if(manifest["passed"] == true, do: "passed", else: "failed")
         verification_summary = manifest["summary"]
-        verification_profile = manifest["profile"]
+        validation_guard_name = manifest["validation_guard_name"] || "contract"
 
         Map.merge(running_entry, %{
-          verification_profile: verification_profile,
+          verification_profile: nil,
           verification_result: verification_result,
           verification_summary: verification_summary,
           verification_missing_items: normalize_manifest_missing_items(manifest["missing_items"]),
           verification_checked_at: parse_manifest_checked_at(manifest["checked_at"]),
-          validation_guard_name: verification_profile,
+          validation_guard_name: validation_guard_name,
           validation_guard_result: verification_result,
           validation_guard_reason: verification_summary
         })

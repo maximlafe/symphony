@@ -8,13 +8,6 @@ defmodule SymphonyElixir.HandoffCheck do
   @allowed_checkpoint_types ["human-verify", "decision", "human-action"]
   @allowed_risk_levels ["low", "medium", "high"]
   @plan_mode_label "mode:plan"
-  @supported_profiles ["ui", "data-extraction", "runtime", "generic"]
-  @default_profile_labels %{
-    "ui" => "verification:ui",
-    "data-extraction" => "verification:data-extraction",
-    "runtime" => "verification:runtime",
-    "generic" => "verification:generic"
-  }
   @default_review_ready_states ["In Review", "Human Review"]
   @default_manifest_path ".symphony/verification/handoff-manifest.json"
   @default_contract_lock_path ".symphony/verification/acceptance-contract.lock.json"
@@ -65,12 +58,6 @@ defmodule SymphonyElixir.HandoffCheck do
   ]
 
   @type result :: {:ok, map()} | {:error, map()}
-
-  @spec supported_profiles() :: [String.t()]
-  def supported_profiles, do: @supported_profiles
-
-  @spec default_profile_labels() :: map()
-  def default_profile_labels, do: @default_profile_labels
 
   @spec default_review_ready_states() :: [String.t()]
   def default_review_ready_states, do: @default_review_ready_states
@@ -280,16 +267,7 @@ defmodule SymphonyElixir.HandoffCheck do
     issue_labels = normalize_labels(Keyword.get(opts, :labels, []))
     attachments = normalize_attachments(Keyword.get(opts, :attachments, []))
     pr_snapshot = normalize_pr_snapshot(Keyword.get(opts, :pr_snapshot))
-    profile_labels = normalize_profile_labels(Keyword.get(opts, :profile_labels, @default_profile_labels))
     {phase, phase_errors} = normalize_handoff_phase(Keyword.get(opts, :phase))
-
-    {profile, profile_source, profile_errors} =
-      select_profile(
-        Keyword.get(opts, :profile),
-        issue_labels,
-        profile_labels,
-        Keyword.get(opts, :default_profile, "generic")
-      )
 
     {acceptance_matrix_items, acceptance_matrix_errors} = parse_acceptance_matrix(issue_description)
     {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(issue_description)
@@ -343,8 +321,6 @@ defmodule SymphonyElixir.HandoffCheck do
         issue_labels,
         attachments,
         pr_snapshot,
-        profile,
-        profile_errors,
         validation_context,
         capability_context
       )
@@ -362,11 +338,9 @@ defmodule SymphonyElixir.HandoffCheck do
         "contract_revision" => acceptance_contract["revision"],
         "acceptance_contract" => acceptance_contract,
         "phase" => phase,
-        "profile" => profile,
-        "profile_source" => profile_source,
         "validation_gate" => validation_gate,
         "git" => git_metadata,
-        "summary" => summary_for_manifest(passed, profile, missing_items),
+        "summary" => summary_for_manifest(passed, missing_items),
         "proof_signals" => proof_signals,
         "deferred_proofs" => deferred_proofs,
         "execution_evidence" => two_layer_plan_contract["execution_evidence"],
@@ -405,9 +379,9 @@ defmodule SymphonyElixir.HandoffCheck do
       }
       |> Map.merge(
         TelemetrySchema.validation_guard_payload(%{
-          validation_guard_name: profile,
+          validation_guard_name: "contract",
           validation_guard_result: if(passed, do: "passed", else: "failed"),
-          validation_guard_reason: summary_for_manifest(passed, profile, missing_items)
+          validation_guard_reason: summary_for_manifest(passed, missing_items)
         })
       )
 
@@ -801,47 +775,6 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp normalize_handoff_phase(value) do
     {@default_handoff_phase, ["handoff phase must be a string, got: #{inspect(value)}"]}
-  end
-
-  defp select_profile(explicit_profile, issue_labels, profile_labels, default_profile) do
-    normalized_explicit = normalize_profile(explicit_profile)
-    normalized_default = normalize_profile(default_profile) || "generic"
-    matched_profiles = profiles_for_issue_labels(issue_labels, profile_labels)
-
-    cond do
-      is_binary(normalized_explicit) and normalized_explicit in @supported_profiles ->
-        {normalized_explicit, "config", []}
-
-      is_binary(normalized_explicit) ->
-        {"generic", "fallback", ["explicit profile `#{explicit_profile}` is not supported"]}
-
-      true ->
-        case matched_profiles do
-          [profile] ->
-            {profile, "label", []}
-
-          [] ->
-            {normalized_default, "fallback", []}
-
-          profiles ->
-            {"generic", "fallback", ["conflicting verification labels matched multiple profiles: #{Enum.join(profiles, ", ")}"]}
-        end
-    end
-  end
-
-  defp profiles_for_issue_labels(issue_labels, profile_labels) do
-    label_to_profile =
-      Enum.reduce(@supported_profiles, %{}, fn profile, acc ->
-        case Map.get(profile_labels, profile) do
-          label when is_binary(label) and label != "" -> Map.put(acc, label, profile)
-          _ -> acc
-        end
-      end)
-
-    issue_labels
-    |> Enum.map(&Map.get(label_to_profile, &1))
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
   end
 
   defp parse_workpad(body) do
@@ -2525,13 +2458,10 @@ defmodule SymphonyElixir.HandoffCheck do
          issue_labels,
          attachments,
          pr_snapshot,
-         profile,
-         profile_errors,
          validation_context,
          capability_context
        ) do
     []
-    |> Kernel.++(profile_errors)
     |> Kernel.++(Map.get(capability_context, :capability_parse_errors, []))
     |> Kernel.++(validation_context["errors"])
     |> Kernel.++(validation_missing_items(parsed_workpad["validation"], issue_labels, validation_context["gate"]))
@@ -2553,7 +2483,6 @@ defmodule SymphonyElixir.HandoffCheck do
         Map.get(capability_context, :proof_signals, %{})
       )
     )
-    |> Kernel.++(profile_missing_items(profile, parsed_workpad["artifacts"], attachments))
     |> Kernel.++(pr_snapshot_missing_items(pr_snapshot))
     |> Enum.uniq()
   end
@@ -2718,28 +2647,6 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp profile_missing_items("generic", _artifact_items, _attachments), do: []
-
-  defp profile_missing_items(profile, artifact_items, attachments) do
-    uploaded_present =
-      artifact_items
-      |> Enum.filter(fn item ->
-        item["checked"] == true and item["kind"] == "uploaded_attachment" and
-          attachment_present?(attachments, item["title"])
-      end)
-
-    profile_match? =
-      Enum.any?(uploaded_present, fn item ->
-        proof_matches_profile?(profile, item["title"], item["claim"])
-      end)
-
-    if profile_match? do
-      []
-    else
-      ["profile `#{profile}` is missing a matching uploaded proof artifact"]
-    end
-  end
-
   defp pr_snapshot_missing_items(pr_snapshot) when map_size(pr_snapshot) == 0 do
     ["pull request snapshot is missing"]
   end
@@ -2755,16 +2662,16 @@ defmodule SymphonyElixir.HandoffCheck do
   defp maybe_require_snapshot(acc, true, _message), do: acc
   defp maybe_require_snapshot(acc, false, message), do: acc ++ [message]
 
-  defp summary_for_manifest(true, profile, _missing_items),
-    do: "verification passed for profile `#{profile}`"
+  defp summary_for_manifest(true, _missing_items),
+    do: "verification contract passed"
 
-  defp summary_for_manifest(false, profile, missing_items) do
+  defp summary_for_manifest(false, missing_items) do
     trimmed =
       missing_items
       |> Enum.take(3)
       |> Enum.join("; ")
 
-    "verification failed for profile `#{profile}`: #{trimmed}"
+    "verification contract failed: #{trimmed}"
   end
 
   defp acceptance_contract(acceptance_matrix_items, required_capabilities) do
@@ -2934,18 +2841,6 @@ defmodule SymphonyElixir.HandoffCheck do
       normalized when is_binary(normalized) -> String.downcase(normalized)
       _ -> nil
     end
-  end
-
-  defp proof_matches_profile?("ui", title, claim) do
-    visual_file?(title) or claim_matches?(claim, ["screenshot", "screen recording", "visual", "gif", "video"])
-  end
-
-  defp proof_matches_profile?("data-extraction", title, claim) do
-    machine_readable_file?(title) or claim_matches?(claim, ["fixture", "json", "jsonl", "csv", "representative run", "sample"])
-  end
-
-  defp proof_matches_profile?("runtime", title, claim) do
-    runtime_proof_file?(title) or claim_matches?(claim, ["dashboard", "health", "log", "runtime", "smoke"])
   end
 
   defp artifact_kind(text, title, _claim) do
@@ -3143,34 +3038,6 @@ defmodule SymphonyElixir.HandoffCheck do
   defp normalize_pr_snapshot(%{} = pr_snapshot), do: pr_snapshot
   defp normalize_pr_snapshot(_pr_snapshot), do: %{}
 
-  defp normalize_profile(nil), do: nil
-
-  defp normalize_profile(profile) when is_binary(profile) do
-    profile
-    |> String.trim()
-    |> String.downcase()
-    |> case do
-      "" -> nil
-      normalized -> normalized
-    end
-  end
-
-  defp normalize_profile(_profile), do: nil
-
-  defp normalize_profile_labels(profile_labels) when is_map(profile_labels) do
-    Enum.reduce(profile_labels, %{}, fn {profile, label}, acc ->
-      normalized_profile = normalize_profile(to_string(profile))
-
-      if normalized_profile in @supported_profiles do
-        Map.put(acc, normalized_profile, label |> to_string() |> String.trim())
-      else
-        acc
-      end
-    end)
-  end
-
-  defp normalize_profile_labels(_profile_labels), do: @default_profile_labels
-
   defp non_empty_binary?(value) when is_binary(value), do: String.trim(value) != ""
   defp non_empty_binary?(_value), do: false
 
@@ -3185,13 +3052,6 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp surface_only_command?(value), do: is_binary(value) and String.contains?(String.downcase(value), "--help")
-
-  defp claim_matches?(claim, phrases) when is_binary(claim) do
-    normalized_claim = String.downcase(claim)
-    Enum.any?(phrases, &String.contains?(normalized_claim, &1))
-  end
-
-  defp claim_matches?(_claim, _phrases), do: false
 
   defp visual_file?(title), do: MapSet.member?(@visual_extensions, extension(title))
   defp machine_readable_file?(title), do: MapSet.member?(@machine_readable_extensions, extension(title))

@@ -56,7 +56,7 @@ defmodule SymphonyElixir.ValidationGateTest do
 
     assert {:ok, final} = ValidationGate.requirements(["backend_only"], "final")
 
-    assert final["required_checks"] == ["preflight", "cheap_gate", "targeted_tests", "repo_validation"]
+    assert final["required_checks"] == ["preflight", "targeted_tests", "repo_validation"]
     assert final["requires_final_gate"] == true
     assert final["remote_finalization_allowed"] == true
   end
@@ -88,7 +88,6 @@ defmodule SymphonyElixir.ValidationGateTest do
 
     assert mixed["required_checks"] == [
              "preflight",
-             "cheap_gate",
              "targeted_tests",
              "runtime_smoke",
              "repo_validation"
@@ -103,7 +102,7 @@ defmodule SymphonyElixir.ValidationGateTest do
              "repo validation",
              "runtime-smoke",
              "ignored"
-           ]) == ["preflight", "cheap_gate", "targeted_tests", "runtime_smoke", "repo_validation"]
+           ]) == ["preflight", "targeted_tests", "runtime_smoke", "repo_validation", "cheap_gate"]
   end
 
   test "derives required proof checks from delivery:tdd and runtime contract sources" do
@@ -235,7 +234,7 @@ defmodule SymphonyElixir.ValidationGateTest do
     assert {:ok, proof} =
              ValidationGate.final_proof(
                ["runtime_contract"],
-               ["preflight", "cheap_gate", "targeted_tests", "runtime_smoke", "repo_validation"],
+               ["preflight", "targeted_tests", "runtime_smoke", "repo_validation"],
                git
              )
 
@@ -273,7 +272,7 @@ defmodule SymphonyElixir.ValidationGateTest do
     assert {:error, reasons} = ValidationGate.validate_final_proof(proof, dirty_git)
 
     assert "git.worktree_clean must be true for final proof" in reasons
-    assert "validation gate final proof is missing passed check `cheap_gate`" in reasons
+    refute Enum.any?(reasons, &String.contains?(&1, "cheap_gate"))
   end
 
   test "final proof helpers report invalidation, missing required checks, and unsupported classes" do
@@ -282,7 +281,7 @@ defmodule SymphonyElixir.ValidationGateTest do
     assert {:ok, valid_proof} =
              ValidationGate.final_proof(
                ["backend_only"],
-               ["preflight", "cheap_gate", "targeted_tests", "repo_validation"],
+               ["preflight", "targeted_tests", "repo_validation"],
                git
              )
 
@@ -306,7 +305,6 @@ defmodule SymphonyElixir.ValidationGateTest do
                    "required_checks" => ["preflight"],
                    "passed_checks" => [
                      "preflight",
-                     "cheap_gate",
                      "targeted_tests",
                      "repo_validation"
                    ]
@@ -316,7 +314,7 @@ defmodule SymphonyElixir.ValidationGateTest do
                git
              )
 
-    assert "validation gate final proof is missing required check `cheap_gate`" in missing_required_reasons
+    refute Enum.any?(missing_required_reasons, &String.contains?(&1, "cheap_gate"))
     assert "validation gate final proof is missing required check `targeted_tests`" in missing_required_reasons
 
     assert {:error, invalid_class_reasons} =

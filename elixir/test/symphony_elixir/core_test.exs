@@ -5501,7 +5501,6 @@ defmodule SymphonyElixir.CoreTest do
 
       update =
         handoff_check_tool_update(%{
-          "profile" => "runtime",
           "passed" => false,
           "summary" => "proof mapping reference 'validation:targeted tests' is reused by multiple acceptance matrix items",
           "missing_items" => ["validation:targeted tests"],
@@ -5513,7 +5512,7 @@ defmodule SymphonyElixir.CoreTest do
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
       assert blocker_body =~ "### What to do"
-      assert blocker_body =~ "Fix the handoff proof/artifact contract for guard `runtime`"
+      assert blocker_body =~ "Fix the handoff proof/artifact contract for guard `contract`"
       assert blocker_body =~ "rerun the verification guard"
       assert blocker_body =~ "selected_rule: `validation_env_mismatch`"
       assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
@@ -5573,7 +5572,6 @@ defmodule SymphonyElixir.CoreTest do
 
       update =
         handoff_check_tool_update(%{
-          "profile" => "runtime",
           "passed" => false,
           "summary" => "proof mapping reference 'validation:targeted tests' is reused by multiple acceptance matrix items",
           "missing_items" => ["validation:targeted tests"],
@@ -5643,7 +5641,6 @@ defmodule SymphonyElixir.CoreTest do
 
       update =
         handoff_check_tool_update(%{
-          "profile" => "runtime",
           "passed" => false,
           "summary" => "proof mapping reference `validation:targeted tests` is reused by multiple acceptance matrix items: AM-1, AM-2",
           "missing_items" => [
@@ -5709,7 +5706,6 @@ defmodule SymphonyElixir.CoreTest do
 
       update =
         handoff_check_tool_update(%{
-          "profile" => "runtime",
           "passed" => false,
           "summary" => "proof mapping reference `validation:targeted tests` is reused by multiple acceptance matrix items: AM-1, AM-2",
           "missing_items" => [
@@ -5727,7 +5723,7 @@ defmodule SymphonyElixir.CoreTest do
 
       assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
       assert blocker_body =~ "### What to do"
-      assert blocker_body =~ "Fix the handoff proof/artifact contract for guard `runtime`"
+      assert blocker_body =~ "Fix the handoff proof/artifact contract for guard `contract`"
       assert blocker_body =~ "selected_rule: `validation_env_mismatch`"
       assert blocker_body =~ "recoverable drift exceeded auto-reconcile budget"
       assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
@@ -5777,7 +5773,6 @@ defmodule SymphonyElixir.CoreTest do
 
     update =
       handoff_check_tool_update(%{
-        "profile" => "runtime",
         "passed" => true,
         "summary" => "all checks green",
         "missing_items" => [],
@@ -5788,11 +5783,12 @@ defmodule SymphonyElixir.CoreTest do
              Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
 
     assert %{^issue_id => running_entry} = updated_state.running
-    assert running_entry.verification_profile == "runtime"
+    assert running_entry.verification_profile == nil
     assert running_entry.verification_result == "passed"
     assert running_entry.verification_summary == "all checks green"
     assert running_entry.verification_missing_items == []
     assert running_entry.verification_checked_at == checked_at
+    assert running_entry.validation_guard_name == "contract"
     assert running_entry.validation_guard_reason == "all checks green"
     assert updated_state.retry_attempts == %{}
     assert Process.alive?(worker_pid)

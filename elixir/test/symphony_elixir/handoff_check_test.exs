@@ -46,7 +46,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert Enum.any?(manifest["missing_items"], &String.contains?(&1, "`risk_level`"))
   end
 
-  test "evaluate passes for a runtime profile with matching attachment, checklist, and green PR" do
+  test "evaluate passes with matching attachment, checklist, and green PR" do
     workpad = """
     ## Codex Workpad
 
@@ -103,13 +103,12 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert manifest["passed"]
     assert manifest["contract_version"] == 3
-    assert manifest["profile"] == "runtime"
-    assert manifest["profile_source"] == "label"
     assert manifest["issue"]["required_capabilities"] == ["runtime_smoke", "artifact_upload"]
+    assert manifest["validation_guard_name"] == "contract"
     assert manifest["validation_gate"]["gate"] == "final"
     assert manifest["git"]["head_sha"] == "abc123"
     assert manifest["missing_items"] == []
-    assert manifest["summary"] =~ "verification passed"
+    assert manifest["summary"] =~ "verification contract passed"
     assert manifest["workpad"]["sha256"]
   end
 
@@ -173,16 +172,13 @@ defmodule SymphonyElixir.HandoffCheckTest do
   end
 
   test "default accessors expose the verification contract and default evaluate fails closed" do
-    assert HandoffCheck.supported_profiles() == ["ui", "data-extraction", "runtime", "generic"]
-    assert HandoffCheck.default_profile_labels()["runtime"] == "verification:runtime"
     assert HandoffCheck.default_review_ready_states() == ["In Review", "Human Review"]
     assert HandoffCheck.default_manifest_path() == ".symphony/verification/handoff-manifest.json"
     assert HandoffCheck.default_contract_lock_path() == ".symphony/verification/acceptance-contract.lock.json"
 
     assert {:error, manifest} = HandoffCheck.evaluate("## Codex Workpad")
 
-    assert manifest["profile"] == "generic"
-    assert manifest["profile_source"] == "fallback"
+    assert manifest["validation_guard_name"] == "contract"
     assert "pull request snapshot is missing" in manifest["missing_items"]
   end
 
@@ -823,7 +819,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "required capability `artifact_upload` is missing a checked uploaded Linear attachment" in manifest["missing_items"]
   end
 
-  test "evaluate reports unsupported profile metadata and malformed artifact entries" do
+  test "evaluate reports malformed artifact entries" do
     workpad = """
     ## Codex Workpad
 
@@ -850,34 +846,16 @@ defmodule SymphonyElixir.HandoffCheckTest do
              HandoffCheck.evaluate(
                workpad,
                issue_id: "LET-416",
-               profile: "unsupported",
                labels: :invalid,
                attachments: ["bad"],
-               profile_labels: %{"bogus" => "verification:bogus"},
                pr_snapshot: green_pr_snapshot()
              )
 
-    assert manifest["profile"] == "generic"
-    assert "explicit profile `unsupported` is not supported" in manifest["missing_items"]
     assert "uploaded attachment `screenshot.png` is missing from the Linear issue attachments" in manifest["missing_items"]
     assert "uploaded attachment `evidence.json` is missing from the Linear issue attachments" in manifest["missing_items"]
-
-    assert {:error, blank_profile_manifest} =
-             HandoffCheck.evaluate(
-               workpad,
-               issue_id: "LET-416",
-               profile: "   ",
-               labels: :invalid,
-               attachments: ["bad"],
-               profile_labels: %{"bogus" => "verification:bogus"},
-               pr_snapshot: green_pr_snapshot()
-             )
-
-    assert blank_profile_manifest["profile"] == "generic"
-    assert blank_profile_manifest["profile_source"] == "fallback"
   end
 
-  test "evaluate detects conflicting verification labels and missing ui proof" do
+  test "evaluate ignores verification labels as routing input" do
     conflicting_labels_workpad = """
     ## Codex Workpad
 
@@ -910,9 +888,9 @@ defmodule SymphonyElixir.HandoffCheckTest do
                pr_snapshot: green_pr_snapshot()
              )
 
-    assert conflict_manifest["profile"] == "generic"
-
-    assert "conflicting verification labels matched multiple profiles: ui, runtime" in conflict_manifest["missing_items"]
+    refute Enum.any?(conflict_manifest["missing_items"], fn item ->
+             String.contains?(item, "conflicting verification labels matched multiple profiles")
+           end)
 
     ui_workpad = """
     ## Codex Workpad
@@ -941,7 +919,6 @@ defmodule SymphonyElixir.HandoffCheckTest do
              HandoffCheck.evaluate(
                ui_workpad,
                issue_id: "LET-416",
-               profile: "ui",
                attachments: [%{"title" => "notes.txt"}],
                pr_snapshot: green_pr_snapshot(),
                change_classes: ["ui"],
@@ -949,7 +926,10 @@ defmodule SymphonyElixir.HandoffCheckTest do
              )
 
     assert "uploaded attachment `screenshot.png` is missing from the Linear issue attachments" in ui_manifest["missing_items"]
-    assert "profile `ui` is missing a matching uploaded proof artifact" in ui_manifest["missing_items"]
+
+    refute Enum.any?(ui_manifest["missing_items"], fn item ->
+             String.contains?(item, "matching uploaded proof artifact")
+           end)
   end
 
   test "evaluate auto-reconciles free-form artifacts from existing Linear attachments when artifact proof is not required" do
@@ -1469,7 +1449,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
              )
 
     assert passing_manifest["missing_items"] == []
-    assert passing_manifest["profile"] == "runtime"
+    assert passing_manifest["validation_guard_name"] == "contract"
   end
 
   test "evaluate enforces acceptance matrix proof mapping for mode:plan issues" do
@@ -3597,7 +3577,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
                git: git_metadata()
              )
 
-    assert ui_manifest["profile"] == "ui"
+    assert ui_manifest["validation_guard_name"] == "contract"
 
     data_workpad = """
     ## Codex Workpad
@@ -3631,7 +3611,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
                git: git_metadata()
              )
 
-    assert data_manifest["profile"] == "data-extraction"
+    assert data_manifest["validation_guard_name"] == "contract"
 
     assert {:error, pr_manifest} =
              HandoffCheck.evaluate(
@@ -3778,7 +3758,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     - `summary`: Artifact normalization paths were exercised.
     """
 
-    assert {:error, loose_manifest} =
+    assert {:error, _loose_manifest} =
              HandoffCheck.evaluate(
                loose_artifacts_workpad,
                issue_id: "LET-416",
@@ -3787,8 +3767,6 @@ defmodule SymphonyElixir.HandoffCheckTest do
                profile_labels: :invalid,
                pr_snapshot: green_pr_snapshot()
              )
-
-    assert loose_manifest["profile"] == "generic"
 
     claimless_attachment_workpad = """
     ## Codex Workpad
@@ -3976,8 +3954,8 @@ defmodule SymphonyElixir.HandoffCheckTest do
         "change_classes" => ["backend_only"],
         "strictest_change_class" => "backend_only",
         "requires_final_gate" => true,
-        "required_checks" => ["preflight", "cheap_gate", "targeted_tests", "repo_validation"],
-        "passed_checks" => ["preflight", "cheap_gate", "targeted_tests", "repo_validation"],
+        "required_checks" => ["preflight", "targeted_tests", "repo_validation"],
+        "passed_checks" => ["preflight", "targeted_tests", "repo_validation"],
         "remote_finalization_allowed" => true
       },
       "git" => git_metadata
