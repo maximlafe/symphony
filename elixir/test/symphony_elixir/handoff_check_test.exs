@@ -2623,6 +2623,112 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in manifest["missing_items"]
   end
 
+  test "evaluate validates LET-718 execution evidence token paths and manifest mirror" do
+    workspace = Path.join(System.tmp_dir!(), "let-718-execution-evidence-#{System.unique_integer([:positive])}")
+    workpad_path = Path.join(workspace, "workpad.md")
+    artifact_relative_path = "docs/reports/let-718-swarm-artifact.md"
+    artifact_path = Path.join(workspace, artifact_relative_path)
+    run_token = "run-ddfb4c26-4415-4e58-995a-caa9a5b33af6"
+
+    File.mkdir_p!(Path.dirname(artifact_path))
+
+    File.write!(
+      artifact_path,
+      """
+      # LET-718 Swarm Artifact
+
+      plan_revision: `let-718-plan-r1`
+      artifact_revision: `let-718-plan-r1`
+      """
+    )
+
+    issue_description =
+      two_layer_acceptance_matrix_description(
+        artifact_relative_path,
+        "let-718-plan-r1",
+        "let-718-plan-r1",
+        "review-ready"
+      )
+
+    base_opts = [
+      issue_id: "LET-718",
+      issue_identifier: "LET-718",
+      labels: ["mode:plan", "repo:symphony"],
+      issue_description: issue_description,
+      workpad_path: workpad_path,
+      workspace: workspace,
+      swarm_assist_enabled: true,
+      attachments: [
+        %{"title" => "runtime-proof.log"},
+        %{"title" => "docs/reports/let-718-swarm-artifact.md"}
+      ],
+      pr_snapshot: green_pr_snapshot(),
+      change_classes: ["runtime_contract"],
+      git: git_metadata()
+    ]
+
+    let_718_workpad =
+      mode_plan_runtime_workpad(
+        artifact_path: artifact_relative_path,
+        plan_revision: "let-718-plan-r1",
+        artifact_revision: "let-718-plan-r1",
+        run_token: run_token,
+        consumed_sections: [
+          "Risk / Signal",
+          "Implementation Contour",
+          "Validation Contour",
+          "Rollback / Diagnostics",
+          "Residual Risks"
+        ]
+      )
+
+    assert {:error, missing_token_manifest} =
+             HandoffCheck.evaluate(
+               let_718_workpad,
+               base_opts
+             )
+
+    assert "execution evidence stale marker: `execution_evidence_run_token` is required for current preflight attempt" in missing_token_manifest[
+             "missing_items"
+           ]
+
+    assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in missing_token_manifest[
+             "missing_items"
+           ]
+
+    assert {:error, stale_token_manifest} =
+             HandoffCheck.evaluate(
+               let_718_workpad,
+               Keyword.put(base_opts, :execution_evidence_run_token, "run-stale")
+             )
+
+    assert "execution evidence stale marker: `Execution Evidence.run_token` does not match the current preflight attempt" in stale_token_manifest[
+             "missing_items"
+           ]
+
+    assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in stale_token_manifest[
+             "missing_items"
+           ]
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               let_718_workpad,
+               base_opts
+               |> Keyword.put(:execution_evidence_run_token, run_token)
+               |> Keyword.put(:execution_evidence_expected_run_token_source, "runtime_execution_attempt_token")
+               |> Keyword.put(:execution_evidence_strict_runtime_token_required, true)
+             )
+
+    assert get_in(manifest, ["execution_evidence", "run_token_matches_current_attempt"]) == true
+    assert get_in(manifest, ["execution_evidence", "expected_run_token_source"]) == "runtime_execution_attempt_token"
+    assert get_in(manifest, ["execution_evidence", "manifest_mirror_allowed"]) == true
+
+    assert get_in(manifest, ["execution_evidence", "revision_pair"]) == %{
+             "artifact_revision" => "let-718-plan-r1",
+             "plan_revision" => "let-718-plan-r1"
+           }
+  end
+
   test "evaluate defers done-phase acceptance matrix proofs during review handoff" do
     workpad = """
     ## Codex Workpad
