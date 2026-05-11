@@ -34,6 +34,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end
 
+    def fetch_issue_for_execution(issue_id_or_identifier) when is_binary(issue_id_or_identifier) do
+      send_tracker_event({:fetch_issue_for_execution, issue_id_or_identifier})
+
+      case Enum.find(configured_issues(), fn %Issue{id: id, identifier: identifier} ->
+             issue_id_or_identifier in [id, identifier]
+           end) do
+        %Issue{} = issue -> {:ok, issue}
+        nil -> {:error, :issue_not_found}
+      end
+    end
+
     defp fetch_configured_issue_states(issue_ids) do
       wanted_ids = MapSet.new(issue_ids)
 

@@ -16,10 +16,69 @@ defmodule SymphonyElixir.CoreTest do
        end)}
     end
 
+    def fetch_issue_for_execution(issue_id_or_identifier) when is_binary(issue_id_or_identifier) do
+      case Enum.find(configured_issues(), fn %Issue{id: id, identifier: identifier} ->
+             issue_id_or_identifier in [id, identifier]
+           end) do
+        %Issue{} = issue -> {:ok, issue}
+        nil -> {:error, :issue_not_found}
+      end
+    end
+
     def graphql(_query, _variables), do: {:error, :simulated_linear_mutation_failure}
 
     defp configured_issues do
       Application.get_env(:symphony_elixir, :escalation_failure_linear_issues, [])
+    end
+  end
+
+  defmodule HydrationLinearClient do
+    alias SymphonyElixir.Linear.Issue
+
+    def fetch_candidate_issues, do: {:ok, configured_issues()}
+    def fetch_issues_by_states(_state_names), do: {:ok, configured_issues()}
+
+    def fetch_issue_states_by_ids(issue_ids) when is_list(issue_ids) do
+      wanted_ids = MapSet.new(issue_ids)
+
+      {:ok,
+       Enum.filter(configured_issues(), fn %Issue{id: id} ->
+         MapSet.member?(wanted_ids, id)
+       end)}
+    end
+
+    def fetch_issue_for_execution(issue_id_or_identifier) when is_binary(issue_id_or_identifier) do
+      send_event({:fetch_issue_for_execution, issue_id_or_identifier})
+
+      case Application.get_env(:symphony_elixir, :hydration_linear_fetch_issue_for_execution_result) do
+        nil ->
+          case find_configured_issue(issue_id_or_identifier) do
+            %Issue{} = issue -> {:ok, issue}
+            nil -> {:error, :issue_not_found}
+          end
+
+        result ->
+          result
+      end
+    end
+
+    def graphql(_query, _variables), do: {:ok, %{"data" => %{}}}
+
+    defp configured_issues do
+      Application.get_env(:symphony_elixir, :hydration_linear_issues, [])
+    end
+
+    defp find_configured_issue(issue_id_or_identifier) do
+      Enum.find(configured_issues(), fn %Issue{id: id, identifier: identifier} ->
+        issue_id_or_identifier in [id, identifier]
+      end)
+    end
+
+    defp send_event(event) do
+      case Application.get_env(:symphony_elixir, :hydration_linear_recipient) do
+        pid when is_pid(pid) -> send(pid, event)
+        _ -> :ok
+      end
     end
   end
 
@@ -6236,7 +6295,9 @@ defmodule SymphonyElixir.CoreTest do
       description: "Include enough issue context to start working.",
       state: "In Progress",
       url: "https://example.org/issues/MT-777",
-      labels: ["prompt"]
+      labels: ["prompt"],
+      attachments: [%{"title" => "spec.pdf", "url" => "https://example.org/spec.pdf"}],
+      comments: [%{"author_name" => "Reviewer", "body" => "Please preserve attachments in intake."}]
     }
 
     prompt = PromptBuilder.build_prompt(issue)
@@ -6246,9 +6307,15 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Title: Make fallback prompt useful"
     assert prompt =~ "Body:"
     assert prompt =~ "Include enough issue context to start working."
+    assert prompt =~ "Attachments:"
+    assert prompt =~ "spec.pdf"
+    assert prompt =~ "Recent issue comments:"
+    assert prompt =~ "Reviewer: Please preserve attachments in intake."
     assert Config.workflow_prompt() =~ "{{ issue.identifier }}"
     assert Config.workflow_prompt() =~ "{{ issue.title }}"
     assert Config.workflow_prompt() =~ "{{ issue.description }}"
+    assert Config.workflow_prompt() =~ "Attachments:"
+    assert Config.workflow_prompt() =~ "Recent issue comments:"
   end
 
   test "prompt builder default template handles missing issue body" do
@@ -6310,7 +6377,9 @@ defmodule SymphonyElixir.CoreTest do
       description: "Render with rich template variables",
       state: "In Progress",
       url: "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd",
-      labels: ["templating", "workflow"]
+      labels: ["templating", "workflow"],
+      attachments: [%{"title" => "capture.png", "url" => "https://example.org/capture.png"}],
+      comments: [%{"author_name" => "Operator", "body" => "Latest reviewer context"}]
     }
 
     on_exit(fn -> Workflow.set_workflow_file_path(workflow_path) end)
@@ -6323,6 +6392,10 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Title: Use rich templates for WORKFLOW.md"
     assert prompt =~ "Current status: In Progress"
     assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
+    assert prompt =~ "Relevant attachments:"
+    assert prompt =~ "capture.png"
+    assert prompt =~ "Recent issue comments:"
+    assert prompt =~ "Operator: Latest reviewer context"
     assert prompt =~ "This is an unattended orchestration session."
     assert prompt =~ "Only stop early for a true blocker or an explicitly classified handoff"
     assert prompt =~ "Do not include \"next steps for user\""
@@ -6387,6 +6460,178 @@ defmodule SymphonyElixir.CoreTest do
       )
 
     assert prompt == "fallback_reread|resume_checkpoint_unavailable"
+  end
+
+  test "agent runner hydrates execution issue context before the first prompt" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-hydration-#{System.unique_integer([:positive])}"
+      )
+
+    previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    previous_issues = Application.get_env(:symphony_elixir, :hydration_linear_issues)
+    previous_recipient = Application.get_env(:symphony_elixir, :hydration_linear_recipient)
+    previous_result = Application.get_env(:symphony_elixir, :hydration_linear_fetch_issue_for_execution_result)
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(test_root)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-hydration"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-hydration"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      Application.put_env(:symphony_elixir, :linear_client_module, HydrationLinearClient)
+      Application.put_env(:symphony_elixir, :hydration_linear_recipient, self())
+      Application.put_env(:symphony_elixir, :hydration_linear_fetch_issue_for_execution_result, nil)
+
+      Application.put_env(:symphony_elixir, :hydration_linear_issues, [
+        %Issue{
+          id: "issue-hydration",
+          identifier: "LET-719",
+          title: "Hydrated title",
+          description: "Hydrated description",
+          state: "In Progress",
+          url: "https://example.org/issues/LET-719",
+          labels: ["runtime"],
+          attachments: [%{"title" => "runtime-proof.log", "url" => "https://example.org/runtime-proof.log"}],
+          comments: [%{"author_name" => "Reviewer", "body" => "Use the attachment as input."}]
+        }
+      ])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "linear",
+        tracker_api_token: "token",
+        tracker_project_slug: "symphony",
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        prompt:
+          "Ticket {{ issue.identifier }} :: {% for attachment in issue.attachments %}[{{ attachment.title }}]{% endfor %} :: {% for comment in issue.comments %}[{{ comment.author_name }}: {{ comment.body }}]{% endfor %}"
+      )
+
+      issue = %Issue{
+        id: "issue-hydration",
+        identifier: "LET-719",
+        title: "Initial title",
+        description: "Initial description",
+        state: "In Progress",
+        url: "https://example.org/issues/LET-719",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 issue_for_execution_fetcher: &SymphonyElixir.Tracker.fetch_issue_for_execution/1
+               )
+
+      assert_receive {:fetch_issue_for_execution, "issue-hydration"}
+
+      prompt_text =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.find_value(fn
+          %{"method" => "turn/start", "params" => %{"input" => input}} ->
+            Enum.map_join(input, "\n", &Map.get(&1, "text", ""))
+
+          _ ->
+            nil
+        end)
+
+      assert prompt_text =~ "Ticket LET-719"
+      assert prompt_text =~ "[runtime-proof.log]"
+      assert prompt_text =~ "[Reviewer: Use the attachment as input.]"
+    after
+      restore_app_env(:linear_client_module, previous_client_module)
+      restore_app_env(:hydration_linear_issues, previous_issues)
+      restore_app_env(:hydration_linear_recipient, previous_recipient)
+      restore_app_env(:hydration_linear_fetch_issue_for_execution_result, previous_result)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner fails closed when execution issue hydration fails" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-hydration-failure-#{System.unique_integer([:positive])}"
+      )
+
+    previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    previous_result = Application.get_env(:symphony_elixir, :hydration_linear_fetch_issue_for_execution_result)
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+
+      Application.put_env(:symphony_elixir, :linear_client_module, HydrationLinearClient)
+
+      Application.put_env(
+        :symphony_elixir,
+        :hydration_linear_fetch_issue_for_execution_result,
+        {:error, :execution_context_unavailable}
+      )
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "linear",
+        tracker_api_token: "token",
+        tracker_project_slug: "symphony",
+        workspace_root: workspace_root
+      )
+
+      issue = %Issue{
+        id: "issue-hydration-failure",
+        identifier: "LET-719",
+        title: "Hydration failure",
+        description: "Hydration should fail closed",
+        state: "In Progress",
+        url: "https://example.org/issues/LET-719",
+        labels: []
+      }
+
+      error =
+        assert_raise AgentRunner.RunError, fn ->
+          AgentRunner.run(issue, nil, issue_for_execution_fetcher: &SymphonyElixir.Tracker.fetch_issue_for_execution/1)
+        end
+
+      assert error.reason == {:issue_execution_context_hydration_failed, :execution_context_unavailable}
+      assert File.ls!(workspace_root) == []
+    after
+      restore_app_env(:linear_client_module, previous_client_module)
+      restore_app_env(:hydration_linear_fetch_issue_for_execution_result, previous_result)
+      File.rm_rf(test_root)
+    end
   end
 
   test "agent runner keeps workspace after successful codex run" do

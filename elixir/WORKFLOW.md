@@ -136,6 +136,20 @@ Description:
 No description provided.
 {% endif %}
 
+{% if issue.attachments != empty %}
+Relevant attachments:
+{% for attachment in issue.attachments %}
+- {{ attachment.title }}{% if attachment.url %} ({{ attachment.url }}){% endif %}
+{% endfor %}
+{% endif %}
+
+{% if issue.comments != empty %}
+Recent issue comments:
+{% for comment in issue.comments %}
+- {% if comment.author_name %}{{ comment.author_name }}: {% endif %}{{ comment.body }}
+{% endfor %}
+{% endif %}
+
 Instructions:
 
 1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.

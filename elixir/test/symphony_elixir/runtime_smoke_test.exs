@@ -39,6 +39,17 @@ defmodule SymphonyElixir.RuntimeSmokeTest do
        end)}
     end
 
+    def fetch_issue_for_execution(issue_id_or_identifier) when is_binary(issue_id_or_identifier) do
+      send_event({:fetch_issue_for_execution, issue_id_or_identifier})
+
+      case Enum.find(configured_issues(), fn %Issue{id: id, identifier: identifier} ->
+             issue_id_or_identifier in [id, identifier]
+           end) do
+        %Issue{} = issue -> {:ok, issue}
+        nil -> {:error, :issue_not_found}
+      end
+    end
+
     def graphql(_query, _variables), do: {:ok, %{"data" => %{}}}
 
     defp configured_issues do

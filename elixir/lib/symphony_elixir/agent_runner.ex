@@ -28,7 +28,16 @@ defmodule SymphonyElixir.AgentRunner do
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
     trace_id = trace_id(issue, opts)
-    issue_with_trace = attach_trace_id(issue, trace_id)
+
+    issue_with_trace =
+      case hydrate_issue_for_execution(issue, Keyword.get(opts, :issue_for_execution_fetcher)) do
+        {:ok, hydrated_issue} ->
+          attach_trace_id(hydrated_issue, trace_id)
+
+        {:error, reason} ->
+          raise_run_error(issue, {:issue_execution_context_hydration_failed, reason})
+      end
+
     pre_run_hook_window? = pre_run_hook_window_enabled?()
 
     with_issue_logger_metadata(issue_with_trace, trace_id, fn ->
@@ -360,6 +369,68 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
+
+  defp hydrate_issue_for_execution(%Issue{} = issue, fetcher) when is_function(fetcher, 1) do
+    if is_binary(issue_execution_lookup_key(issue)) do
+      issue
+      |> issue_execution_lookup_key()
+      |> fetcher.()
+      |> case do
+        {:ok, %Issue{} = hydrated_issue} ->
+          {:ok, merge_execution_issue_context(issue, hydrated_issue)}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:ok, issue}
+    end
+  end
+
+  defp hydrate_issue_for_execution(issue, _fetcher), do: {:ok, issue}
+
+  defp issue_execution_lookup_key(%Issue{id: issue_id}) when is_binary(issue_id) and issue_id != "", do: issue_id
+
+  defp issue_execution_lookup_key(%Issue{identifier: identifier}) when is_binary(identifier) and identifier != "",
+    do: identifier
+
+  defp issue_execution_lookup_key(_issue), do: nil
+
+  @execution_issue_overlay_fields [
+    :id,
+    :identifier,
+    :title,
+    :description,
+    :priority,
+    :project_slug,
+    :project_name,
+    :state,
+    :branch_name,
+    :url,
+    :assignee_id,
+    :created_at,
+    :updated_at
+  ]
+
+  defp merge_execution_issue_context(%Issue{} = issue, %Issue{} = hydrated_issue) do
+    issue
+    |> merge_execution_issue_scalar_fields(hydrated_issue)
+    |> merge_execution_issue_labels(hydrated_issue.labels)
+    |> Map.put(:attachments, hydrated_issue.attachments)
+    |> Map.put(:comments, hydrated_issue.comments)
+  end
+
+  defp merge_execution_issue_scalar_fields(%Issue{} = issue, %Issue{} = hydrated_issue) do
+    Enum.reduce(@execution_issue_overlay_fields, issue, fn field, acc ->
+      case Map.get(hydrated_issue, field) do
+        nil -> acc
+        value -> Map.put(acc, field, value)
+      end
+    end)
+  end
+
+  defp merge_execution_issue_labels(%Issue{} = issue, []), do: issue
+  defp merge_execution_issue_labels(%Issue{} = issue, labels) when is_list(labels), do: Map.put(issue, :labels, labels)
 
   defp active_issue_state?(state_name) when is_binary(state_name) do
     normalized_state = normalize_issue_state(state_name)
