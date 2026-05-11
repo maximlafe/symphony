@@ -1702,6 +1702,17 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "linear client fetches execution issue context with attachments and bounded comments" do
+    attachment_download_fun = fn url, opts ->
+      send(self(), {:linear_attachment_download, url, opts})
+
+      {:ok,
+       %Req.Response{
+         status: 200,
+         headers: %{"content-type" => ["text/markdown"]},
+         body: "# Design Context\nHydration details"
+       }}
+    end
+
     graphql_fun = fn query, variables ->
       send(self(), {:linear_execution_issue_query, query, variables})
 
@@ -1725,8 +1736,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "attachments" => %{
                "nodes" => [
                  %{
-                   "title" => "design.pdf",
-                   "url" => "https://example.test/design.pdf",
+                   "title" => "design.md",
+                   "url" => "https://uploads.linear.app/workspace/design.md",
                    "sourceType" => "upload",
                    "metadata" => %{"kind" => "spec"}
                  }
@@ -1762,17 +1773,22 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
        }}
     end
 
-    assert {:ok, issue} = Client.fetch_issue_for_execution_for_test("LET-719", graphql_fun)
+    assert {:ok, issue} =
+             Client.fetch_issue_for_execution_for_test("LET-719", graphql_fun, attachment_download_fun: attachment_download_fun)
 
     assert_receive {:linear_execution_issue_query, query, %{id: "LET-719", attachmentFirst: 20, commentFirst: 10}}
     assert query =~ "SymphonyLinearExecutionIssue"
+    assert_receive {:linear_attachment_download, "https://uploads.linear.app/workspace/design.md", [timeout: 15_000]}
 
     assert issue.attachments == [
              %{
-               "title" => "design.pdf",
-               "url" => "https://example.test/design.pdf",
+               "title" => "design.md",
+               "url" => "https://uploads.linear.app/workspace/design.md",
                "source_type" => "upload",
-               "metadata" => %{"kind" => "spec"}
+               "metadata" => %{"kind" => "spec"},
+               "content_status" => "ok",
+               "content_type" => "text/markdown",
+               "content_text" => "# Design Context\nHydration details"
              }
            ]
 
@@ -1780,6 +1796,296 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Enum.map(issue.comments, & &1["author_name"]) == ["Reviewer", "Author"]
     assert issue.labels == ["backend"]
     assert issue.state == "In Progress"
+  end
+
+  test "linear client keeps metadata when downloaded execution attachment is non-text" do
+    attachment_download_fun = fn url, opts ->
+      send(self(), {:linear_attachment_download, url, opts})
+
+      {:ok,
+       %Req.Response{
+         status: 200,
+         headers: %{"content-type" => ["image/png"]},
+         body: <<137, 80, 78, 71>>
+       }}
+    end
+
+    graphql_fun = fn _query, _variables ->
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "id" => "issue-exec-2",
+             "identifier" => "LET-727",
+             "title" => "Non text fallback",
+             "description" => "Attachment should remain metadata-only",
+             "state" => %{"name" => "In Progress"},
+             "attachments" => %{
+               "nodes" => [
+                 %{
+                   "title" => "diagram.txt",
+                   "url" => "https://uploads.linear.app/workspace/diagram.txt",
+                   "sourceType" => "upload",
+                   "metadata" => %{"kind" => "binary"}
+                 }
+               ]
+             },
+             "comments" => %{"nodes" => []}
+           }
+         }
+       }}
+    end
+
+    assert {:ok, issue} =
+             Client.fetch_issue_for_execution_for_test("LET-727", graphql_fun, attachment_download_fun: attachment_download_fun)
+
+    assert_receive {:linear_attachment_download, "https://uploads.linear.app/workspace/diagram.txt", [timeout: 15_000]}
+
+    assert issue.attachments == [
+             %{
+               "title" => "diagram.txt",
+               "url" => "https://uploads.linear.app/workspace/diagram.txt",
+               "source_type" => "upload",
+               "metadata" => %{"kind" => "binary"},
+               "content_status" => "unsupported_content_type",
+               "content_type" => "image/png",
+               "content_text" => nil
+             }
+           ]
+  end
+
+  test "linear client skips download for unsupported attachment extension during execution hydration" do
+    attachment_download_fun = fn url, opts ->
+      send(self(), {:linear_attachment_download, url, opts})
+
+      {:ok,
+       %Req.Response{
+         status: 200,
+         headers: %{"content-type" => ["text/plain"]},
+         body: "should not be downloaded for binary extension"
+       }}
+    end
+
+    graphql_fun = fn _query, _variables ->
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "id" => "issue-exec-unsupported-ext",
+             "identifier" => "LET-730",
+             "title" => "Unsupported extension",
+             "description" => "Binary extensions should short-circuit before download",
+             "state" => %{"name" => "In Progress"},
+             "attachments" => %{
+               "nodes" => [
+                 %{
+                   "title" => "diagram.png",
+                   "url" => "https://uploads.linear.app/workspace/diagram.png",
+                   "sourceType" => "upload",
+                   "metadata" => %{"kind" => "binary"}
+                 }
+               ]
+             },
+             "comments" => %{"nodes" => []}
+           }
+         }
+       }}
+    end
+
+    assert {:ok, issue} =
+             Client.fetch_issue_for_execution_for_test("LET-730", graphql_fun, attachment_download_fun: attachment_download_fun)
+
+    refute_receive {:linear_attachment_download, _, _}
+
+    assert issue.attachments == [
+             %{
+               "title" => "diagram.png",
+               "url" => "https://uploads.linear.app/workspace/diagram.png",
+               "source_type" => "upload",
+               "metadata" => %{"kind" => "binary"},
+               "content_status" => "unsupported_extension",
+               "content_type" => nil,
+               "content_text" => nil
+             }
+           ]
+  end
+
+  test "linear client does not download non-Linear attachment hosts during execution hydration" do
+    attachment_download_fun = fn url, opts ->
+      send(self(), {:linear_attachment_download, url, opts})
+
+      {:ok,
+       %Req.Response{
+         status: 200,
+         headers: %{"content-type" => ["text/plain"]},
+         body: "should not be read"
+       }}
+    end
+
+    graphql_fun = fn _query, _variables ->
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "id" => "issue-exec-host-1",
+             "identifier" => "LET-731",
+             "title" => "Host allowlist",
+             "description" => "Only uploads.linear.app should be ingested",
+             "state" => %{"name" => "In Progress"},
+             "attachments" => %{
+               "nodes" => [
+                 %{
+                   "title" => "external-spec.md",
+                   "url" => "https://example.test/external-spec.md",
+                   "sourceType" => "url",
+                   "metadata" => %{"kind" => "external"}
+                 }
+               ]
+             },
+             "comments" => %{"nodes" => []}
+           }
+         }
+       }}
+    end
+
+    assert {:ok, issue} =
+             Client.fetch_issue_for_execution_for_test("LET-731", graphql_fun, attachment_download_fun: attachment_download_fun)
+
+    refute_receive {:linear_attachment_download, _, _}
+
+    assert issue.attachments == [
+             %{
+               "title" => "external-spec.md",
+               "url" => "https://example.test/external-spec.md",
+               "source_type" => "url",
+               "metadata" => %{"kind" => "external"},
+               "content_status" => "unsupported_host",
+               "content_type" => nil,
+               "content_text" => nil
+             }
+           ]
+  end
+
+  test "linear client ingests uploads links from description and comments during execution hydration" do
+    attachment_download_fun = fn url, opts ->
+      send(self(), {:linear_attachment_download, url, opts})
+
+      body =
+        case url do
+          "https://uploads.linear.app/context/doc-a.md" -> "# Doc A"
+          "https://uploads.linear.app/context/doc-b.txt" -> "Doc B"
+          "https://uploads.linear.app/context/doc-c.json" -> ~s({"doc":"c"})
+        end
+
+      {:ok,
+       %Req.Response{
+         status: 200,
+         headers: %{"content-type" => ["text/plain"]},
+         body: body
+       }}
+    end
+
+    graphql_fun = fn _query, _variables ->
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "id" => "issue-exec-3",
+             "identifier" => "LET-728",
+             "title" => "Link extraction",
+             "description" => "Links: https://uploads.linear.app/context/doc-a.md and https://uploads.linear.app/context/doc-b.txt",
+             "state" => %{"name" => "In Progress"},
+             "attachments" => %{"nodes" => []},
+             "comments" => %{
+               "nodes" => [
+                 %{
+                   "id" => "comment-link-1",
+                   "body" => "Repeat https://uploads.linear.app/context/doc-b.txt and add https://uploads.linear.app/context/doc-c.json",
+                   "createdAt" => "2026-05-11T10:04:00Z",
+                   "updatedAt" => "2026-05-11T10:04:00Z",
+                   "user" => %{"name" => "Reviewer"}
+                 }
+               ]
+             }
+           }
+         }
+       }}
+    end
+
+    assert {:ok, issue} =
+             Client.fetch_issue_for_execution_for_test("LET-728", graphql_fun, attachment_download_fun: attachment_download_fun)
+
+    assert Enum.map(issue.attachments, & &1["url"]) == [
+             "https://uploads.linear.app/context/doc-a.md",
+             "https://uploads.linear.app/context/doc-b.txt",
+             "https://uploads.linear.app/context/doc-c.json"
+           ]
+
+    assert Enum.map(issue.attachments, & &1["source_type"]) == [
+             "linear_upload_link",
+             "linear_upload_link",
+             "linear_upload_link"
+           ]
+
+    assert Enum.map(issue.attachments, & &1["content_status"]) == ["ok", "ok", "ok"]
+    assert Enum.map(issue.attachments, & &1["metadata"]) == [%{"source" => "description"}, %{"source" => "description"}, %{"source" => "comment"}]
+
+    assert_receive {:linear_attachment_download, "https://uploads.linear.app/context/doc-a.md", [timeout: 15_000]}
+    assert_receive {:linear_attachment_download, "https://uploads.linear.app/context/doc-b.txt", [timeout: 15_000]}
+    assert_receive {:linear_attachment_download, "https://uploads.linear.app/context/doc-c.json", [timeout: 15_000]}
+  end
+
+  test "linear client truncates oversized text attachment content during execution hydration" do
+    long_text = String.duplicate("ёж", 10_000)
+
+    attachment_download_fun = fn url, opts ->
+      send(self(), {:linear_attachment_download, url, opts})
+
+      {:ok,
+       %Req.Response{
+         status: 200,
+         headers: %{"content-type" => ["text/plain; charset=utf-8"]},
+         body: long_text
+       }}
+    end
+
+    graphql_fun = fn _query, _variables ->
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "id" => "issue-exec-4",
+             "identifier" => "LET-729",
+             "title" => "Truncate content",
+             "description" => "Oversized upload should be bounded",
+             "state" => %{"name" => "In Progress"},
+             "attachments" => %{
+               "nodes" => [
+                 %{
+                   "title" => "notes.md",
+                   "url" => "https://uploads.linear.app/context/notes.md",
+                   "sourceType" => "upload",
+                   "metadata" => %{}
+                 }
+               ]
+             },
+             "comments" => %{"nodes" => []}
+           }
+         }
+       }}
+    end
+
+    assert {:ok, issue} =
+             Client.fetch_issue_for_execution_for_test("LET-729", graphql_fun, attachment_download_fun: attachment_download_fun)
+
+    assert_receive {:linear_attachment_download, "https://uploads.linear.app/context/notes.md", [timeout: 15_000]}
+    [attachment] = issue.attachments
+
+    assert attachment["content_status"] == "truncated"
+    assert is_binary(attachment["content_text"])
+    assert byte_size(attachment["content_text"]) <= 16_384
+    assert String.valid?(attachment["content_text"])
+    assert String.starts_with?(long_text, attachment["content_text"])
   end
 
   test "linear client matches configured assignee email" do

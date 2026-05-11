@@ -10,6 +10,43 @@ defmodule SymphonyElixir.Linear.Client do
   @execution_comment_page_size 10
   @execution_attachment_page_size 20
   @max_error_body_log_bytes 1_000
+  @max_execution_attachment_content_bytes 16_384
+  @max_execution_attachment_download_bytes @max_execution_attachment_content_bytes + 1
+  @execution_attachment_download_timeout_ms 15_000
+  @linear_upload_host "uploads.linear.app"
+  @linear_upload_url_regex ~r/https?:\/\/uploads\.linear\.app\/[^\s<>\]\[(){}"']+/u
+  @ingested_attachment_body_private_key :symphony_linear_ingested_attachment_body
+
+  @text_attachment_extensions MapSet.new([
+                                "csv",
+                                "json",
+                                "log",
+                                "markdown",
+                                "md",
+                                "text",
+                                "tsv",
+                                "txt",
+                                "xml",
+                                "yaml",
+                                "yml"
+                              ])
+
+  @text_attachment_content_types MapSet.new([
+                                   "application/json",
+                                   "application/ld+json",
+                                   "application/problem+json",
+                                   "application/x-ndjson",
+                                   "application/x-yaml",
+                                   "application/xml",
+                                   "application/yaml",
+                                   "text/csv",
+                                   "text/markdown",
+                                   "text/plain",
+                                   "text/tab-separated-values",
+                                   "text/xml",
+                                   "text/x-yaml",
+                                   "text/yaml"
+                                 ])
 
   @query """
   query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
@@ -302,12 +339,13 @@ defmodule SymphonyElixir.Linear.Client do
   @spec fetch_issue_for_execution(String.t()) :: {:ok, Issue.t()} | {:error, term()}
   def fetch_issue_for_execution(issue_id_or_identifier) when is_binary(issue_id_or_identifier) do
     trimmed = String.trim(issue_id_or_identifier)
+    tracker = Config.settings!().tracker
 
     cond do
       trimmed == "" ->
         {:error, :missing_issue_identifier}
 
-      is_nil(Config.settings!().tracker.api_key) ->
+      is_nil(tracker.api_key) ->
         {:error, :missing_linear_api_token}
 
       true ->
@@ -316,8 +354,13 @@ defmodule SymphonyElixir.Linear.Client do
                attachmentFirst: @execution_attachment_page_size,
                commentFirst: @execution_comment_page_size
              }) do
-          {:ok, body} -> decode_execution_issue_response(body)
-          {:error, reason} -> {:error, reason}
+          {:ok, body} ->
+            decode_execution_issue_response(body,
+              attachment_download_fun: linear_attachment_download_fun(tracker.api_key)
+            )
+
+          {:error, reason} ->
+            {:error, reason}
         end
     end
   end
@@ -394,10 +437,17 @@ defmodule SymphonyElixir.Linear.Client do
   @doc false
   @spec fetch_issue_for_execution_for_test(
           String.t(),
-          (String.t(), map() -> {:ok, map()} | {:error, term()})
+          (String.t(), map() -> {:ok, map()} | {:error, term()}),
+          keyword()
         ) :: {:ok, Issue.t()} | {:error, term()}
-  def fetch_issue_for_execution_for_test(issue_id_or_identifier, graphql_fun)
-      when is_binary(issue_id_or_identifier) and is_function(graphql_fun, 2) do
+  def fetch_issue_for_execution_for_test(issue_id_or_identifier, graphql_fun, opts \\ [])
+
+  def fetch_issue_for_execution_for_test(issue_id_or_identifier, graphql_fun, opts)
+      when is_binary(issue_id_or_identifier) and is_function(graphql_fun, 2) and is_list(opts) do
+    attachment_download_fun = Keyword.get(opts, :attachment_download_fun, &default_test_attachment_download/2)
+
+    decode_opts = [attachment_download_fun: attachment_download_fun]
+
     trimmed = String.trim(issue_id_or_identifier)
 
     case trimmed do
@@ -410,7 +460,7 @@ defmodule SymphonyElixir.Linear.Client do
                attachmentFirst: @execution_attachment_page_size,
                commentFirst: @execution_comment_page_size
              }) do
-          {:ok, body} -> decode_execution_issue_response(body)
+          {:ok, body} -> decode_execution_issue_response(body, decode_opts)
           {:error, reason} -> {:error, reason}
         end
     end
@@ -624,15 +674,17 @@ defmodule SymphonyElixir.Linear.Client do
     {:error, :linear_unknown_payload}
   end
 
-  defp decode_execution_issue_response(%{"data" => %{"issue" => issue}}) when is_map(issue) do
-    {:ok, normalize_execution_issue(issue)}
+  defp decode_execution_issue_response(response, opts)
+
+  defp decode_execution_issue_response(%{"data" => %{"issue" => issue}}, opts) when is_map(issue) do
+    {:ok, normalize_execution_issue(issue, opts)}
   end
 
-  defp decode_execution_issue_response(%{"errors" => errors}) do
+  defp decode_execution_issue_response(%{"errors" => errors}, _opts) do
     {:error, {:linear_graphql_errors, errors}}
   end
 
-  defp decode_execution_issue_response(_unknown) do
+  defp decode_execution_issue_response(_unknown, _opts) do
     {:error, :linear_unknown_payload}
   end
 
@@ -701,8 +753,12 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp normalize_issue(_issue, _assignee_filter), do: nil
 
-  defp normalize_execution_issue(issue) when is_map(issue) do
+  defp normalize_execution_issue(issue, opts)
+
+  defp normalize_execution_issue(issue, opts) when is_map(issue) and is_list(opts) do
     assignee = issue["assignee"]
+    raw_comments = get_in(issue, ["comments", "nodes"])
+    comments = normalize_execution_comments(raw_comments)
 
     %Issue{
       id: issue["id"],
@@ -717,11 +773,33 @@ defmodule SymphonyElixir.Linear.Client do
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
       labels: extract_labels(issue),
-      attachments: normalize_execution_attachments(get_in(issue, ["attachments", "nodes"])),
-      comments: normalize_execution_comments(get_in(issue, ["comments", "nodes"])),
+      attachments: execution_attachments(issue, raw_comments, opts),
+      comments: comments,
       created_at: parse_datetime(issue["createdAt"]),
       updated_at: parse_datetime(issue["updatedAt"])
     }
+  end
+
+  defp execution_attachments(issue, raw_comments, opts) when is_map(issue) and is_list(opts) do
+    issue
+    |> execution_attachment_candidates(raw_comments)
+    |> ingest_execution_attachments(opts)
+  end
+
+  defp execution_attachment_candidates(issue, raw_comments) when is_map(issue) do
+    metadata_attachments = normalize_execution_attachments(get_in(issue, ["attachments", "nodes"]))
+
+    description_attachments =
+      issue
+      |> Map.get("description")
+      |> extract_linear_upload_attachments("description")
+
+    comment_attachments =
+      raw_comments
+      |> comment_bodies()
+      |> Enum.flat_map(&extract_linear_upload_attachments(&1, "comment"))
+
+    dedupe_attachments(metadata_attachments ++ description_attachments ++ comment_attachments)
   end
 
   defp assignee_field(%{} = assignee, field) when is_binary(field), do: assignee[field]
@@ -861,6 +939,442 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp normalize_execution_attachments(_attachments), do: []
+
+  defp ingest_execution_attachments(attachments, opts) when is_list(attachments) and is_list(opts) do
+    attachment_download_fun = Keyword.get(opts, :attachment_download_fun, &default_test_attachment_download/2)
+
+    Enum.map(attachments, &ingest_execution_attachment(&1, attachment_download_fun))
+  end
+
+  defp ingest_execution_attachment(%{"url" => url} = attachment, attachment_download_fun)
+       when is_binary(url) and is_function(attachment_download_fun, 2) do
+    if linear_upload_url?(url) do
+      extension = attachment_extension(url)
+      extension_capability = extension_capability(extension)
+
+      if extension_capability == :binary do
+        Map.merge(attachment, %{
+          "content_status" => "unsupported_extension",
+          "content_type" => extension_content_type(extension),
+          "content_text" => nil
+        })
+      else
+        case attachment_download_fun.(url, timeout: @execution_attachment_download_timeout_ms) do
+          {:ok, response} ->
+            attach_execution_content(attachment, response, extension)
+
+          {:error, reason} ->
+            Map.merge(attachment, %{
+              "content_status" => "download_error",
+              "content_type" => nil,
+              "content_text" => nil,
+              "content_error" => inspect(reason)
+            })
+        end
+      end
+    else
+      Map.merge(attachment, %{
+        "content_status" => "unsupported_host",
+        "content_type" => nil,
+        "content_text" => nil
+      })
+    end
+  end
+
+  defp ingest_execution_attachment(%{} = attachment, _attachment_download_fun) do
+    Map.merge(attachment, %{
+      "content_status" => "missing_url",
+      "content_type" => nil,
+      "content_text" => nil
+    })
+  end
+
+  defp ingest_execution_attachment(attachment, _attachment_download_fun), do: attachment
+
+  defp attach_execution_content(attachment, response, extension)
+       when is_map(attachment) and is_map(response) do
+    content_type = normalize_content_type(response_content_type(response))
+    extension_capability = extension_capability(extension)
+    content_type_capability = content_type_capability(content_type)
+
+    cond do
+      extension_capability == :binary ->
+        Map.merge(attachment, %{
+          "content_status" => "unsupported_extension",
+          "content_type" => content_type,
+          "content_text" => nil
+        })
+
+      content_type_capability == :binary ->
+        Map.merge(attachment, %{
+          "content_status" => "unsupported_content_type",
+          "content_type" => content_type,
+          "content_text" => nil
+        })
+
+      extension_capability == :unknown and content_type_capability == :unknown ->
+        Map.merge(attachment, %{
+          "content_status" => "unsupported_type",
+          "content_type" => content_type,
+          "content_text" => nil
+        })
+
+      text_body = response_text_body(response) ->
+        case capped_utf8_text(text_body) do
+          {:ok, text, truncated?} ->
+            Map.merge(attachment, %{
+              "content_status" => if(truncated?, do: "truncated", else: "ok"),
+              "content_type" => content_type || extension_content_type(extension),
+              "content_text" => text
+            })
+
+          :error ->
+            Map.merge(attachment, %{
+              "content_status" => "invalid_text",
+              "content_type" => content_type || extension_content_type(extension),
+              "content_text" => nil
+            })
+        end
+
+      true ->
+        Map.merge(attachment, %{
+          "content_status" => "invalid_body",
+          "content_type" => content_type || extension_content_type(extension),
+          "content_text" => nil
+        })
+    end
+  end
+
+  defp comment_bodies(comments) when is_list(comments) do
+    comments
+    |> Enum.map(fn
+      %{} = comment ->
+        body = normalize_optional_string(comment["body"])
+        if is_binary(body) and workpad_comment_body?(body), do: nil, else: body
+
+      _ ->
+        nil
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp comment_bodies(_comments), do: []
+
+  defp extract_linear_upload_attachments(text, source) when is_binary(text) and is_binary(source) do
+    text
+    |> extract_linear_upload_links()
+    |> Enum.map(fn url ->
+      %{
+        "title" => title_from_url(url),
+        "url" => url,
+        "source_type" => "linear_upload_link",
+        "metadata" => %{"source" => source}
+      }
+    end)
+  end
+
+  defp extract_linear_upload_attachments(_text, _source), do: []
+
+  defp extract_linear_upload_links(text) when is_binary(text) do
+    @linear_upload_url_regex
+    |> Regex.scan(text)
+    |> Enum.map(&List.first/1)
+    |> Enum.map(&sanitize_detected_url/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp extract_linear_upload_links(_text), do: []
+
+  defp sanitize_detected_url(url) when is_binary(url) do
+    sanitized =
+      url
+      |> String.trim()
+      |> String.trim_trailing(".")
+      |> String.trim_trailing(",")
+      |> String.trim_trailing(";")
+      |> String.trim_trailing(":")
+      |> String.trim_trailing(")")
+      |> String.trim_trailing("]")
+
+    case URI.parse(sanitized) do
+      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and host == @linear_upload_host ->
+        sanitized
+
+      _ ->
+        nil
+    end
+  end
+
+  defp sanitize_detected_url(_url), do: nil
+
+  defp title_from_url(url) when is_binary(url) do
+    title =
+      url
+      |> URI.parse()
+      |> Map.get(:path)
+      |> Kernel.||("")
+      |> Path.basename()
+      |> normalize_optional_string()
+
+    title || "linear-upload"
+  end
+
+  defp title_from_url(_url), do: "linear-upload"
+
+  defp dedupe_attachments(attachments) when is_list(attachments) do
+    attachments
+    |> Enum.reduce([], fn
+      %{} = attachment, acc ->
+        if attachment_duplicate?(attachment, acc) do
+          acc
+        else
+          acc ++ [attachment]
+        end
+
+      _attachment, acc ->
+        acc
+    end)
+  end
+
+  defp dedupe_attachments(_attachments), do: []
+
+  defp attachment_duplicate?(attachment, attachments)
+       when is_map(attachment) and is_list(attachments) do
+    candidate_url = normalize_optional_string(attachment["url"])
+    candidate_title = normalize_optional_string(attachment["title"])
+
+    Enum.any?(attachments, fn existing ->
+      existing_url = normalize_optional_string(existing["url"])
+      existing_title = normalize_optional_string(existing["title"])
+
+      cond do
+        is_binary(candidate_url) ->
+          is_binary(existing_url) and candidate_url == existing_url
+
+        is_binary(candidate_title) ->
+          is_binary(existing_title) and candidate_title == existing_title
+
+        true ->
+          false
+      end
+    end)
+  end
+
+  defp attachment_duplicate?(_attachment, _attachments), do: false
+
+  defp attachment_extension(url) when is_binary(url) do
+    url
+    |> URI.parse()
+    |> Map.get(:path)
+    |> Kernel.||("")
+    |> Path.extname()
+    |> String.trim_leading(".")
+    |> String.downcase()
+  end
+
+  defp attachment_extension(_url), do: ""
+
+  defp linear_upload_url?(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host} -> scheme in ["http", "https"] and host == @linear_upload_host
+      _ -> false
+    end
+  end
+
+  defp linear_upload_url?(_url), do: false
+
+  defp extension_allowed?(extension) when is_binary(extension),
+    do: MapSet.member?(@text_attachment_extensions, extension)
+
+  defp extension_allowed?(_extension), do: false
+
+  defp content_type_allowed?(content_type) when is_binary(content_type) do
+    String.starts_with?(content_type, "text/") or MapSet.member?(@text_attachment_content_types, content_type)
+  end
+
+  defp content_type_allowed?(_content_type), do: false
+
+  defp extension_capability(extension) when is_binary(extension) do
+    cond do
+      extension == "" -> :unknown
+      extension_allowed?(extension) -> :text
+      true -> :binary
+    end
+  end
+
+  defp extension_capability(_extension), do: :unknown
+
+  defp content_type_capability(content_type) when is_binary(content_type) do
+    if content_type_allowed?(content_type), do: :text, else: :binary
+  end
+
+  defp content_type_capability(_content_type), do: :unknown
+
+  defp response_text_body(%{body: body}) when is_binary(body), do: body
+  defp response_text_body(%{body: body}) when is_list(body), do: IO.iodata_to_binary(body)
+  defp response_text_body(_response), do: nil
+
+  defp response_content_type(%Req.Response{} = response),
+    do: response |> Req.Response.get_header("content-type") |> List.first()
+
+  defp response_content_type(%{headers: headers}) when is_map(headers) do
+    headers
+    |> Map.get("content-type")
+    |> first_header_value()
+  end
+
+  defp response_content_type(%{headers: headers}) when is_list(headers) do
+    headers
+    |> Enum.find_value(fn
+      {key, value} when is_binary(key) ->
+        if String.downcase(key) == "content-type", do: value, else: nil
+
+      _ ->
+        nil
+    end)
+    |> first_header_value()
+  end
+
+  defp response_content_type(_response), do: nil
+
+  defp first_header_value([value | _]) when is_binary(value), do: value
+  defp first_header_value(value) when is_binary(value), do: value
+  defp first_header_value(_value), do: nil
+
+  defp normalize_content_type(content_type) when is_binary(content_type) do
+    content_type
+    |> String.downcase()
+    |> String.split(";", parts: 2)
+    |> List.first()
+    |> normalize_optional_string()
+  end
+
+  defp normalize_content_type(_content_type), do: nil
+
+  defp extension_content_type("csv"), do: "text/csv"
+  defp extension_content_type("json"), do: "application/json"
+  defp extension_content_type("log"), do: "text/plain"
+  defp extension_content_type("markdown"), do: "text/markdown"
+  defp extension_content_type("md"), do: "text/markdown"
+  defp extension_content_type("text"), do: "text/plain"
+  defp extension_content_type("tsv"), do: "text/tab-separated-values"
+  defp extension_content_type("txt"), do: "text/plain"
+  defp extension_content_type("xml"), do: "application/xml"
+  defp extension_content_type("yaml"), do: "application/yaml"
+  defp extension_content_type("yml"), do: "application/yaml"
+  defp extension_content_type(_extension), do: nil
+
+  defp capped_utf8_text(text) when is_binary(text) do
+    {truncated, truncated?} = utf8_prefix(text, @max_execution_attachment_content_bytes)
+
+    if String.valid?(truncated) do
+      {:ok, truncated, truncated?}
+    else
+      :error
+    end
+  end
+
+  defp capped_utf8_text(_text), do: :error
+
+  defp utf8_prefix(binary, max_bytes) when is_binary(binary) and is_integer(max_bytes) and max_bytes >= 0 do
+    utf8_prefix(binary, max_bytes, <<>>, false)
+  end
+
+  defp utf8_prefix(<<>>, _remaining, acc, truncated?), do: {acc, truncated?}
+  defp utf8_prefix(_rest, remaining, acc, _truncated?) when remaining <= 0, do: {acc, true}
+
+  defp utf8_prefix(<<codepoint::utf8, rest::binary>>, remaining, acc, truncated?) do
+    char = <<codepoint::utf8>>
+    char_size = byte_size(char)
+
+    if char_size <= remaining do
+      utf8_prefix(rest, remaining - char_size, <<acc::binary, char::binary>>, truncated?)
+    else
+      {acc, true}
+    end
+  end
+
+  defp utf8_prefix(_invalid, _remaining, acc, _truncated?), do: {acc, true}
+
+  defp linear_attachment_download_fun(token) when is_binary(token) do
+    fn url, opts ->
+      download_linear_attachment_content(url, token, opts)
+    end
+  end
+
+  defp linear_attachment_download_fun(_token), do: &default_test_attachment_download/2
+
+  defp download_linear_attachment_content(url, token, opts)
+       when is_binary(url) and is_binary(token) and is_list(opts) do
+    timeout = Keyword.get(opts, :timeout, @execution_attachment_download_timeout_ms)
+    normalized_token = String.trim(token)
+    auth_header = [{"Authorization", normalized_token}]
+
+    with {:error, {:http_status, status}} when status in [401, 403] <- request_linear_upload(url, auth_header, timeout),
+         false <- String.starts_with?(normalized_token, "Bearer "),
+         bearer when byte_size(bearer) > byte_size("Bearer ") <- "Bearer " <> normalized_token do
+      request_linear_upload(url, [{"Authorization", bearer}], timeout)
+    else
+      result -> result
+    end
+  end
+
+  defp download_linear_attachment_content(_url, _token, _opts), do: {:error, :invalid_download_request}
+
+  defp request_linear_upload(url, headers, timeout)
+       when is_binary(url) and is_list(headers) and is_integer(timeout) do
+    case Req.get(url,
+           headers: headers,
+           decode_body: false,
+           compressed: false,
+           into: &collect_bounded_response_body/2,
+           connect_options: [timeout: timeout]
+         ) do
+      {:ok, %{status: 200} = response} ->
+        {:ok, with_bounded_response_body(response)}
+
+      {:ok, response} ->
+        {:error, {:http_status, response.status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp collect_bounded_response_body({:data, data}, {request, response})
+       when is_binary(data) and is_map(request) do
+    current = Req.Response.get_private(response, @ingested_attachment_body_private_key, <<>>)
+    remaining = @max_execution_attachment_download_bytes - byte_size(current)
+
+    cond do
+      remaining <= 0 ->
+        {:halt, {request, response}}
+
+      byte_size(data) <= remaining ->
+        updated_response =
+          Req.Response.put_private(response, @ingested_attachment_body_private_key, <<current::binary, data::binary>>)
+
+        {:cont, {request, updated_response}}
+
+      true ->
+        chunk = binary_part(data, 0, remaining)
+
+        updated_response =
+          Req.Response.put_private(response, @ingested_attachment_body_private_key, <<current::binary, chunk::binary>>)
+
+        {:halt, {request, updated_response}}
+    end
+  end
+
+  defp collect_bounded_response_body(_other, {request, response}), do: {:cont, {request, response}}
+
+  defp with_bounded_response_body(%Req.Response{} = response) do
+    body = Req.Response.get_private(response, @ingested_attachment_body_private_key, <<>>)
+    %{response | body: body}
+  end
+
+  defp default_test_attachment_download(_url, _opts), do: {:error, :download_not_configured}
 
   defp normalize_execution_comments(comments) when is_list(comments) do
     comments
