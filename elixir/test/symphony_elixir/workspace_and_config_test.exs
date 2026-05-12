@@ -1774,7 +1774,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
 
     assert {:ok, issue} =
-             Client.fetch_issue_for_execution_for_test("LET-719", graphql_fun, attachment_download_fun: attachment_download_fun)
+             Client.fetch_issue_for_execution_for_test(
+               "LET-719",
+               graphql_fun,
+               attachment_download_fun: attachment_download_fun
+             )
 
     assert_receive {:linear_execution_issue_query, query, %{id: "LET-719", attachmentFirst: 20, commentFirst: 10}}
     assert query =~ "SymphonyLinearExecutionIssue"
@@ -1837,7 +1841,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
 
     assert {:ok, issue} =
-             Client.fetch_issue_for_execution_for_test("LET-727", graphql_fun, attachment_download_fun: attachment_download_fun)
+             Client.fetch_issue_for_execution_for_test(
+               "LET-727",
+               graphql_fun,
+               attachment_download_fun: attachment_download_fun
+             )
 
     assert_receive {:linear_attachment_download, "https://uploads.linear.app/workspace/diagram.txt", [timeout: 15_000]}
 
@@ -1893,7 +1901,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
 
     assert {:ok, issue} =
-             Client.fetch_issue_for_execution_for_test("LET-730", graphql_fun, attachment_download_fun: attachment_download_fun)
+             Client.fetch_issue_for_execution_for_test(
+               "LET-730",
+               graphql_fun,
+               attachment_download_fun: attachment_download_fun
+             )
 
     refute_receive {:linear_attachment_download, _, _}
 
@@ -1949,7 +1961,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
 
     assert {:ok, issue} =
-             Client.fetch_issue_for_execution_for_test("LET-731", graphql_fun, attachment_download_fun: attachment_download_fun)
+             Client.fetch_issue_for_execution_for_test(
+               "LET-731",
+               graphql_fun,
+               attachment_download_fun: attachment_download_fun
+             )
 
     refute_receive {:linear_attachment_download, _, _}
 
@@ -2013,7 +2029,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
 
     assert {:ok, issue} =
-             Client.fetch_issue_for_execution_for_test("LET-728", graphql_fun, attachment_download_fun: attachment_download_fun)
+             Client.fetch_issue_for_execution_for_test(
+               "LET-728",
+               graphql_fun,
+               attachment_download_fun: attachment_download_fun
+             )
 
     assert Enum.map(issue.attachments, & &1["url"]) == [
              "https://uploads.linear.app/context/doc-a.md",
@@ -2076,7 +2096,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
 
     assert {:ok, issue} =
-             Client.fetch_issue_for_execution_for_test("LET-729", graphql_fun, attachment_download_fun: attachment_download_fun)
+             Client.fetch_issue_for_execution_for_test(
+               "LET-729",
+               graphql_fun,
+               attachment_download_fun: attachment_download_fun
+             )
 
     assert_receive {:linear_attachment_download, "https://uploads.linear.app/context/notes.md", [timeout: 15_000]}
     [attachment] = issue.attachments

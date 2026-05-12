@@ -441,8 +441,6 @@ defmodule SymphonyElixir.Linear.Client do
           keyword()
         ) :: {:ok, Issue.t()} | {:error, term()}
   def fetch_issue_for_execution_for_test(issue_id_or_identifier, graphql_fun, opts \\ [])
-
-  def fetch_issue_for_execution_for_test(issue_id_or_identifier, graphql_fun, opts)
       when is_binary(issue_id_or_identifier) and is_function(graphql_fun, 2) and is_list(opts) do
     attachment_download_fun = Keyword.get(opts, :attachment_download_fun, &default_test_attachment_download/2)
 
@@ -948,45 +946,27 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp ingest_execution_attachment(%{"url" => url} = attachment, attachment_download_fun)
        when is_binary(url) and is_function(attachment_download_fun, 2) do
-    if linear_upload_url?(url) do
-      extension = attachment_extension(url)
-      extension_capability = extension_capability(extension)
+    extension = attachment_extension(url)
 
-      if extension_capability == :binary do
-        Map.merge(attachment, %{
-          "content_status" => "unsupported_extension",
-          "content_type" => extension_content_type(extension),
-          "content_text" => nil
-        })
-      else
-        case attachment_download_fun.(url, timeout: @execution_attachment_download_timeout_ms) do
-          {:ok, response} ->
-            attach_execution_content(attachment, response, extension)
+    cond do
+      not linear_upload_url?(url) ->
+        merge_execution_attachment_content(attachment, "unsupported_host", nil, nil)
 
-          {:error, reason} ->
-            Map.merge(attachment, %{
-              "content_status" => "download_error",
-              "content_type" => nil,
-              "content_text" => nil,
-              "content_error" => inspect(reason)
-            })
-        end
-      end
-    else
-      Map.merge(attachment, %{
-        "content_status" => "unsupported_host",
-        "content_type" => nil,
-        "content_text" => nil
-      })
+      extension_capability(extension) == :binary ->
+        merge_execution_attachment_content(
+          attachment,
+          "unsupported_extension",
+          extension_content_type(extension),
+          nil
+        )
+
+      true ->
+        download_and_attach_execution_content(attachment, url, extension, attachment_download_fun)
     end
   end
 
   defp ingest_execution_attachment(%{} = attachment, _attachment_download_fun) do
-    Map.merge(attachment, %{
-      "content_status" => "missing_url",
-      "content_type" => nil,
-      "content_text" => nil
-    })
+    merge_execution_attachment_content(attachment, "missing_url", nil, nil)
   end
 
   defp ingest_execution_attachment(attachment, _attachment_download_fun), do: attachment
@@ -994,55 +974,80 @@ defmodule SymphonyElixir.Linear.Client do
   defp attach_execution_content(attachment, response, extension)
        when is_map(attachment) and is_map(response) do
     content_type = normalize_content_type(response_content_type(response))
+    fallback_content_type = content_type || extension_content_type(extension)
+
+    case execution_attachment_policy(extension, content_type) do
+      {:reject, status} ->
+        merge_execution_attachment_content(attachment, status, content_type, nil)
+
+      :accept ->
+        attach_execution_text_body(attachment, response, fallback_content_type)
+    end
+  end
+
+  defp download_and_attach_execution_content(attachment, url, extension, attachment_download_fun) do
+    case attachment_download_fun.(url, timeout: @execution_attachment_download_timeout_ms) do
+      {:ok, response} ->
+        attach_execution_content(attachment, response, extension)
+
+      {:error, reason} ->
+        merge_execution_attachment_content(
+          attachment,
+          "download_error",
+          nil,
+          nil,
+          %{"content_error" => inspect(reason)}
+        )
+    end
+  end
+
+  defp execution_attachment_policy(extension, content_type) do
     extension_capability = extension_capability(extension)
     content_type_capability = content_type_capability(content_type)
 
     cond do
-      extension_capability == :binary ->
-        Map.merge(attachment, %{
-          "content_status" => "unsupported_extension",
-          "content_type" => content_type,
-          "content_text" => nil
-        })
-
-      content_type_capability == :binary ->
-        Map.merge(attachment, %{
-          "content_status" => "unsupported_content_type",
-          "content_type" => content_type,
-          "content_text" => nil
-        })
-
-      extension_capability == :unknown and content_type_capability == :unknown ->
-        Map.merge(attachment, %{
-          "content_status" => "unsupported_type",
-          "content_type" => content_type,
-          "content_text" => nil
-        })
-
-      text_body = response_text_body(response) ->
-        case capped_utf8_text(text_body) do
-          {:ok, text, truncated?} ->
-            Map.merge(attachment, %{
-              "content_status" => if(truncated?, do: "truncated", else: "ok"),
-              "content_type" => content_type || extension_content_type(extension),
-              "content_text" => text
-            })
-
-          :error ->
-            Map.merge(attachment, %{
-              "content_status" => "invalid_text",
-              "content_type" => content_type || extension_content_type(extension),
-              "content_text" => nil
-            })
-        end
-
-      true ->
-        Map.merge(attachment, %{
-          "content_status" => "invalid_body",
-          "content_type" => content_type || extension_content_type(extension),
-          "content_text" => nil
-        })
+      extension_capability == :binary -> {:reject, "unsupported_extension"}
+      content_type_capability == :binary -> {:reject, "unsupported_content_type"}
+      extension_capability == :unknown and content_type_capability == :unknown -> {:reject, "unsupported_type"}
+      true -> :accept
     end
+  end
+
+  defp attach_execution_text_body(attachment, response, fallback_content_type) do
+    case response_text_body(response) do
+      text_body when is_binary(text_body) ->
+        attach_capped_execution_text(attachment, text_body, fallback_content_type)
+
+      _ ->
+        merge_execution_attachment_content(attachment, "invalid_body", fallback_content_type, nil)
+    end
+  end
+
+  defp attach_capped_execution_text(attachment, text_body, fallback_content_type)
+       when is_binary(text_body) do
+    case capped_utf8_text(text_body) do
+      {:ok, text, truncated?} ->
+        status = if(truncated?, do: "truncated", else: "ok")
+        merge_execution_attachment_content(attachment, status, fallback_content_type, text)
+
+      :error ->
+        merge_execution_attachment_content(attachment, "invalid_text", fallback_content_type, nil)
+    end
+  end
+
+  defp merge_execution_attachment_content(attachment, status, content_type, content_text, extra_fields \\ %{})
+       when is_map(attachment) and is_binary(status) and is_map(extra_fields) do
+    Map.merge(
+      attachment,
+      Map.merge(
+        %{
+          "content_status" => status,
+          "content_type" => content_type,
+          "content_text" => content_text
+        },
+        extra_fields
+      )
+    )
   end
 
   defp comment_bodies(comments) when is_list(comments) do
@@ -1083,8 +1088,6 @@ defmodule SymphonyElixir.Linear.Client do
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
   end
-
-  defp extract_linear_upload_links(_text), do: []
 
   defp sanitize_detected_url(url) when is_binary(url) do
     sanitized =
@@ -1137,8 +1140,6 @@ defmodule SymphonyElixir.Linear.Client do
     end)
   end
 
-  defp dedupe_attachments(_attachments), do: []
-
   defp attachment_duplicate?(attachment, attachments)
        when is_map(attachment) and is_list(attachments) do
     candidate_url = normalize_optional_string(attachment["url"])
@@ -1173,27 +1174,18 @@ defmodule SymphonyElixir.Linear.Client do
     |> String.downcase()
   end
 
-  defp attachment_extension(_url), do: ""
-
   defp linear_upload_url?(url) when is_binary(url) do
     case URI.parse(url) do
       %URI{scheme: scheme, host: host} -> scheme in ["http", "https"] and host == @linear_upload_host
-      _ -> false
     end
   end
-
-  defp linear_upload_url?(_url), do: false
 
   defp extension_allowed?(extension) when is_binary(extension),
     do: MapSet.member?(@text_attachment_extensions, extension)
 
-  defp extension_allowed?(_extension), do: false
-
   defp content_type_allowed?(content_type) when is_binary(content_type) do
     String.starts_with?(content_type, "text/") or MapSet.member?(@text_attachment_content_types, content_type)
   end
-
-  defp content_type_allowed?(_content_type), do: false
 
   defp extension_capability(extension) when is_binary(extension) do
     cond do
@@ -1202,8 +1194,6 @@ defmodule SymphonyElixir.Linear.Client do
       true -> :binary
     end
   end
-
-  defp extension_capability(_extension), do: :unknown
 
   defp content_type_capability(content_type) when is_binary(content_type) do
     if content_type_allowed?(content_type), do: :text, else: :binary
@@ -1274,8 +1264,6 @@ defmodule SymphonyElixir.Linear.Client do
       :error
     end
   end
-
-  defp capped_utf8_text(_text), do: :error
 
   defp utf8_prefix(binary, max_bytes) when is_binary(binary) and is_integer(max_bytes) and max_bytes >= 0 do
     utf8_prefix(binary, max_bytes, <<>>, false)
