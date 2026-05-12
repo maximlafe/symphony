@@ -1924,8 +1924,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp guard_plan_mode_acceptance_matrix_presence(_description, _issue_id, _issue_context_result), do: :ok
-
   defp enforce_plan_mode_acceptance_matrix_presence(issue_id, issue_context_result)
        when is_binary(issue_id) do
     case issue_context_result do
