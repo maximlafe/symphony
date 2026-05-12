@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SpecCheck do
   @default_contract_lock_path ".symphony/verification/spec-contract.lock.json"
   @default_execution_states ["In Progress"]
   @default_spec_review_states ["Spec Review"]
+  @plan_mode_label "mode:plan"
   @terminal_dependency_states MapSet.new([
                                 "closed",
                                 "cancelled",
@@ -94,6 +95,7 @@ defmodule SymphonyElixir.SpecCheck do
     {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(issue_description)
     acceptance_matrix_errors = HandoffCheck.acceptance_matrix_parse_errors(issue_description)
     spec_contract = HandoffCheck.acceptance_contract_from_issue_description(issue_description)
+    {contract_missing_items, contract_diagnostics} = contract_requirement_findings(spec_contract, issue_labels)
 
     risk_classifier =
       RiskyTaskClassifier.classify(%{
@@ -107,7 +109,7 @@ defmodule SymphonyElixir.SpecCheck do
 
     missing_items =
       []
-      |> Kernel.++(missing_contract_items(spec_contract))
+      |> Kernel.++(contract_missing_items)
       |> Kernel.++(acceptance_matrix_errors)
       |> Kernel.++(capability_parse_errors)
       |> Kernel.++(dependency_conflicts)
@@ -136,7 +138,8 @@ defmodule SymphonyElixir.SpecCheck do
         "labels" => issue_labels,
         "required_capabilities" => required_capabilities
       },
-      "missing_items" => missing_items
+      "missing_items" => missing_items,
+      "diagnostics" => contract_diagnostics
     }
 
     if passed, do: {:ok, manifest}, else: {:error, manifest}
@@ -509,16 +512,58 @@ defmodule SymphonyElixir.SpecCheck do
     end
   end
 
-  defp missing_contract_items(spec_contract) when is_map(spec_contract) do
+  defp contract_requirement_findings(spec_contract, issue_labels) do
     acceptance_matrix = get_in(spec_contract, ["payload", "acceptance_matrix"]) || []
     required_capabilities = get_in(spec_contract, ["payload", "required_capabilities"]) || []
 
-    if acceptance_matrix == [] and required_capabilities == [] do
-      ["spec contract is missing: add `Acceptance Matrix` and/or `Required capabilities` in the issue description"]
-    else
-      []
+    cond do
+      mode_plan_issue?(issue_labels) and acceptance_matrix == [] ->
+        {[
+           "spec contract is missing: `mode:plan` requires non-empty `Acceptance Matrix` in the issue description"
+         ],
+         [
+           %{
+             "reason_code" => "acceptance_matrix_required_for_plan_mode",
+             "reason" => "`mode:plan` cannot pass spec gate without a non-empty `Acceptance Matrix` section",
+             "remediation" => %{
+               "required_section" => "## Acceptance Matrix",
+               "required_fields" => [
+                 "id",
+                 "scenario",
+                 "expected_outcome",
+                 "proof_type",
+                 "proof_target",
+                 "proof_semantic"
+               ],
+               "notes" => [
+                 "Add at least one Acceptance Matrix row.",
+                 "`Required capabilities` remains supplemental and cannot replace Acceptance Matrix for mode:plan."
+               ]
+             }
+           }
+         ]}
+
+      acceptance_matrix == [] and required_capabilities == [] ->
+        {[
+           "spec contract is missing: add `Acceptance Matrix` and/or `Required capabilities` in the issue description"
+         ],
+         [
+           %{
+             "reason_code" => "spec_contract_missing",
+             "reason" => "spec check requires explicit contract signals before execution",
+             "remediation" => %{
+               "required_section_options" => ["## Acceptance Matrix", "Required capabilities: ..."],
+               "notes" => ["Provide at least one contract signal in issue description."]
+             }
+           }
+         ]}
+
+      true ->
+        {[], []}
     end
   end
+
+  defp mode_plan_issue?(issue_labels), do: @plan_mode_label in List.wrap(issue_labels)
 
   defp summary_for_manifest(true, _missing_items), do: "spec check passed"
   defp summary_for_manifest(false, missing_items), do: "spec check failed (#{length(missing_items)} issue(s))"

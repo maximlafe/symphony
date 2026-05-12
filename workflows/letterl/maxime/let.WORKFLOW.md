@@ -642,6 +642,9 @@ Instructions:
   `docs/policy/project-contract.md`. Follow that file for `delivery:tdd`,
   `Acceptance Matrix`, `Proof Mapping`, classified `Checkpoint`, `cheap gate` /
   `final gate`, and `In Review` / `Blocked` transitions.
+- For `mode:plan` (including legacy spec-prep fallback), treat missing
+  `Acceptance Matrix` as a contract violation even when `Required capabilities`
+  is present.
 - Run `make symphony-preflight` before treating auth/env/tooling gaps as blockers, and use the validation matrix below instead of ad-hoc test selection.
 - Do not reread skill bodies in straightforward runs unless the workflow does not cover the needed behavior.
 - Move state only when the matching quality bar is satisfied.
@@ -797,9 +800,10 @@ Instructions:
    - always pass the absolute path to local `workpad.md` when calling `sync_workpad`.
 6. Update the issue-description task-spec only when required sections are missing or the task contract materially changed:
    - use canonical Russian headings `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and keep a final `## Symphony` section;
-   - for execution/review-oriented tasks, follow
+   - for `mode:plan` and other execution/review-oriented tasks, follow
      `docs/policy/project-contract.md` for `Acceptance Matrix` schema and proof
-     semantics;
+     semantics; for `mode:plan`, `Acceptance Matrix` is mandatory and
+     `Required capabilities` is additive only;
    - when an acceptance item requires external infrastructure before execution can complete, add a machine-readable `Required capabilities: ...` line to the final `## Symphony` section. Use only external prerequisite names: `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`; do not include execution-only requirements (`repo_validation`, `pr_publication`, `pr_body_contract`) in this line because they are implicit workflow obligations;
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
    - for `mode:plan` with gate `planning.swarm_assist_enabled=true`, keep machine-readable lines for `plan_revision`, `artifact_path`, and `artifact_revision` in the normalized plan body so enabled-path checks are auditable;

@@ -43,6 +43,9 @@ If a rule must change, update this file first and then align workflows/skills.
 - The short plan must stay standalone and keep canonical task-spec fields:
   `Document Spec`, `Verification Plan`, `Residual Risks`, and for
   execution/review-oriented work also `Acceptance Matrix` and `Proof Mapping`.
+- For `mode:plan` paths (including legacy spec-prep fallback and the
+  `planning.swarm_assist_enabled=true` two-layer flow), `Acceptance Matrix` is
+  mandatory and cannot be substituted by `Required capabilities`.
 - In enabled mode, the short plan must additionally carry:
   - `plan_revision`: short-plan revision token;
   - `artifact_path`: repo-relative artifact path under `docs/reports/`;
@@ -154,7 +157,8 @@ If a rule must change, update this file first and then align workflows/skills.
 ## Acceptance Matrix
 
 Execution/review-oriented specs must use `Acceptance Matrix` rows with stable
-IDs and canonical fields:
+IDs and canonical fields. For `mode:plan`, this section is mandatory in the
+task-spec contract and cannot be replaced by `Required capabilities`:
 
 - `id`
 - `scenario`
@@ -169,6 +173,8 @@ Rules:
 - `required_before=review` for proof required before `In Review`.
 - `required_before=done` only for proof that cannot be valid before review.
 - Do not reuse one matrix ID for different scenarios in the same task.
+- `Required capabilities` can declare external prerequisites, but it is
+  supplementary metadata and never satisfies a missing `Acceptance Matrix`.
 
 ## Proof Mapping
 

@@ -3056,6 +3056,105 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            )
   end
 
+  test "linear_graphql blocks mode:plan issueUpdate(description) when Acceptance Matrix is missing or empty" do
+    issue_id = "LET-728"
+
+    for {case_name, updated_description} <- [
+          {"missing_section", "## Контекст\n\nRequired capabilities: runtime_smoke\n"},
+          {"empty_section", "## Acceptance Matrix\n\n"}
+        ] do
+      blocked =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+            "variables" => %{"id" => issue_id, "input" => %{"description" => updated_description}}
+          },
+          linear_client: fn query, _variables, _opts ->
+            cond do
+              query =~ "SymphonyHandoffCheckState" ->
+                {:ok,
+                 %{
+                   "data" => %{
+                     "issue" => %{
+                       "id" => issue_id,
+                       "identifier" => issue_id,
+                       "description" => "## Текущее описание\n\nКонтракт существует.\n",
+                       "state" => %{"name" => "Spec Review"},
+                       "labels" => %{"nodes" => [%{"name" => "mode:plan"}]},
+                       "inverseRelations" => %{"nodes" => []},
+                       "team" => %{
+                         "states" => %{
+                           "nodes" => [
+                             %{"id" => "spec-review-state-id", "name" => "Spec Review"}
+                           ]
+                         }
+                       }
+                     }
+                   }
+                 }}
+
+              query =~ "issueUpdate" ->
+                flunk("issueUpdate(description) should not execute for mode:plan #{case_name}")
+
+              true ->
+                flunk("unexpected GraphQL query in mode:plan missing/empty AM test: #{query}")
+            end
+          end
+        )
+
+      assert blocked["success"] == false
+      payload = decode_tool_text(blocked)
+      details = payload["error"]["details"] || %{}
+
+      diagnostic =
+        [payload["error"]["message"], details["reason"], details["remediation"], details["remediation_hint"], details["required_action"]]
+        |> Kernel.++(details["proof_contract_errors"] || [])
+        |> Enum.filter(&is_binary/1)
+        |> Enum.join(" ")
+        |> String.downcase()
+
+      assert diagnostic =~ "acceptance matrix"
+      assert diagnostic =~ "mode:plan"
+      assert diagnostic =~ "blocked"
+      assert details["reason_code"] == "acceptance_matrix_required_for_plan_mode"
+    end
+  end
+
+  test "linear_graphql fails closed when issue context lookup is temporarily unavailable" do
+    issue_id = "LET-901"
+    updated_description = "## Контекст\n\nRequired capabilities: runtime_smoke\n"
+    Process.put(:context_lookup_calls, 0)
+
+    blocked =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+          "variables" => %{"id" => issue_id, "input" => %{"description" => updated_description}}
+        },
+        linear_client: fn query, _variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              calls = Process.get(:context_lookup_calls, 0)
+              Process.put(:context_lookup_calls, calls + 1)
+              {:error, :temporary_unavailable}
+
+            query =~ "issueUpdate" ->
+              flunk("issueUpdate(description) should not execute when context lookup is unavailable")
+
+            true ->
+              flunk("unexpected GraphQL query in temporary context lookup test: #{query}")
+          end
+        end
+      )
+
+    assert blocked["success"] == false
+    payload = decode_tool_text(blocked)
+    assert payload["error"]["details"]["reason_code"] == "material_spec_change_context_unavailable"
+    assert Process.get(:context_lookup_calls) == 1
+  end
+
   test "linear_graphql blocks issueUpdate(description) when artifact proof maps to validation evidence" do
     invalid_description = """
     ## Acceptance Matrix
@@ -3174,6 +3273,63 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert allowed["success"] == true
     assert_received {:description_issue_update, %{"id" => "LET-652", "input" => %{"description" => ^valid_description}}}
+  end
+
+  test "linear_graphql allows mode:plan issueUpdate(description) when Acceptance Matrix is valid" do
+    valid_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | LET-728 valid plan contract | mode:plan accepts complete matrix | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    """
+
+    issue_id = "LET-728"
+
+    allowed =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+          "variables" => %{"id" => issue_id, "input" => %{"description" => valid_description}}
+        },
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => issue_id,
+                     "identifier" => issue_id,
+                     "description" => valid_description,
+                     "state" => %{"name" => "Spec Review"},
+                     "labels" => %{"nodes" => [%{"name" => "mode:plan"}]},
+                     "inverseRelations" => %{"nodes" => []},
+                     "team" => %{
+                       "states" => %{
+                         "nodes" => [
+                           %{"id" => "spec-review-state-id", "name" => "Spec Review"}
+                         ]
+                       }
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              send(self(), {:mode_plan_description_issue_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected GraphQL query in mode:plan valid AM test: #{query}")
+          end
+        end
+      )
+
+    assert allowed["success"] == true
+
+    assert_received {:mode_plan_description_issue_update, %{"id" => "LET-728", "input" => %{"description" => ^valid_description}}}
   end
 
   test "linear_graphql review-ready guard works without an injected git_runner" do
