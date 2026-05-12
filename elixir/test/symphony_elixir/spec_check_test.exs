@@ -19,6 +19,12 @@ defmodule SymphonyElixir.SpecCheckTest do
   | AM-1 | changed | changed gate | test | mix test | run_executed |
   """
 
+  @required_capabilities_only_description """
+  ## Symphony
+
+  Required capabilities: runtime_smoke
+  """
+
   test "default helpers and state predicates" do
     assert SpecCheck.default_manifest_path() == ".symphony/verification/spec-manifest.json"
     assert SpecCheck.default_contract_lock_path() == ".symphony/verification/spec-contract.lock.json"
@@ -70,6 +76,36 @@ defmodule SymphonyElixir.SpecCheckTest do
 
     assert {:ok, manifest} = SpecCheck.evaluate(@base_description, labels: :invalid)
     assert manifest["issue"]["labels"] == []
+  end
+
+  test "evaluate fails mode:plan specs without Acceptance Matrix even when Required capabilities exist" do
+    assert {:error, manifest} =
+             SpecCheck.evaluate(
+               @required_capabilities_only_description,
+               labels: ["mode:plan"]
+             )
+
+    assert manifest["passed"] == false
+    assert manifest["issue"]["required_capabilities"] == ["runtime_smoke"]
+    assert get_in(manifest, ["diagnostics"]) |> Enum.any?(&(&1["reason_code"] == "acceptance_matrix_required_for_plan_mode"))
+
+    assert Enum.any?(
+             manifest["missing_items"],
+             &(String.contains?(String.downcase(&1), "acceptance matrix") and
+                 String.contains?(String.downcase(&1), "mode:plan"))
+           )
+  end
+
+  test "evaluate allows non-plan specs with Required capabilities only" do
+    assert {:ok, manifest} =
+             SpecCheck.evaluate(
+               @required_capabilities_only_description,
+               labels: ["mode:research"]
+             )
+
+    assert manifest["passed"] == true
+    assert manifest["issue"]["required_capabilities"] == ["runtime_smoke"]
+    assert manifest["missing_items"] == []
   end
 
   test "execution transition guard returns issue_id error for invalid arity input" do
