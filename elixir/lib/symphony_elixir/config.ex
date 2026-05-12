@@ -35,6 +35,9 @@ defmodule SymphonyElixir.Config do
   Attachments:
   {% for attachment in issue.attachments %}
   - {{ attachment.title }}{% if attachment.url %} ({{ attachment.url }}){% endif %}
+  {% if attachment.content_text %}
+    Excerpt: {{ attachment.content_text }}
+  {% endif %}
   {% endfor %}
   {% endif %}
 

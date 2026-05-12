@@ -6292,7 +6292,14 @@ defmodule SymphonyElixir.CoreTest do
       state: "In Progress",
       url: "https://example.org/issues/MT-777",
       labels: ["prompt"],
-      attachments: [%{"title" => "spec.pdf", "url" => "https://example.org/spec.pdf"}],
+      attachments: [
+        %{
+          "title" => "spec.pdf",
+          "url" => "https://example.org/spec.pdf",
+          "content_text" => "Spec excerpt: preserve this requirement in prompt context."
+        },
+        %{"title" => "diagram.png", "url" => "https://example.org/diagram.png"}
+      ],
       comments: [%{"author_name" => "Reviewer", "body" => "Please preserve attachments in intake."}]
     }
 
@@ -6305,12 +6312,15 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Include enough issue context to start working."
     assert prompt =~ "Attachments:"
     assert prompt =~ "spec.pdf"
+    assert prompt =~ "diagram.png"
+    assert prompt =~ "Excerpt: Spec excerpt: preserve this requirement in prompt context."
     assert prompt =~ "Recent issue comments:"
     assert prompt =~ "Reviewer: Please preserve attachments in intake."
     assert Config.workflow_prompt() =~ "{{ issue.identifier }}"
     assert Config.workflow_prompt() =~ "{{ issue.title }}"
     assert Config.workflow_prompt() =~ "{{ issue.description }}"
     assert Config.workflow_prompt() =~ "Attachments:"
+    assert Config.workflow_prompt() =~ "attachment.content_text"
     assert Config.workflow_prompt() =~ "Recent issue comments:"
   end
 
@@ -6374,7 +6384,13 @@ defmodule SymphonyElixir.CoreTest do
       state: "In Progress",
       url: "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd",
       labels: ["templating", "workflow"],
-      attachments: [%{"title" => "capture.png", "url" => "https://example.org/capture.png"}],
+      attachments: [
+        %{
+          "title" => "capture.png",
+          "url" => "https://example.org/capture.png",
+          "content_text" => "Screenshot OCR: failing step occurs after attachment ingest."
+        }
+      ],
       comments: [%{"author_name" => "Operator", "body" => "Latest reviewer context"}]
     }
 
@@ -6390,6 +6406,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
     assert prompt =~ "Relevant attachments:"
     assert prompt =~ "capture.png"
+    assert prompt =~ "Excerpt: Screenshot OCR: failing step occurs after attachment ingest."
     assert prompt =~ "Recent issue comments:"
     assert prompt =~ "Operator: Latest reviewer context"
     assert prompt =~ "This is an unattended orchestration session."
