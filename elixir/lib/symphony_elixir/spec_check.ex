@@ -512,7 +512,7 @@ defmodule SymphonyElixir.SpecCheck do
     end
   end
 
-  defp contract_requirement_findings(spec_contract, issue_labels) when is_map(spec_contract) do
+  defp contract_requirement_findings(spec_contract, issue_labels) do
     acceptance_matrix = get_in(spec_contract, ["payload", "acceptance_matrix"]) || []
     required_capabilities = get_in(spec_contract, ["payload", "required_capabilities"]) || []
 
@@ -563,10 +563,7 @@ defmodule SymphonyElixir.SpecCheck do
     end
   end
 
-  defp contract_requirement_findings(_spec_contract, _issue_labels), do: {[], []}
-
-  defp mode_plan_issue?(issue_labels) when is_list(issue_labels), do: @plan_mode_label in issue_labels
-  defp mode_plan_issue?(_issue_labels), do: false
+  defp mode_plan_issue?(issue_labels), do: @plan_mode_label in List.wrap(issue_labels)
 
   defp summary_for_manifest(true, _missing_items), do: "spec check passed"
   defp summary_for_manifest(false, missing_items), do: "spec check failed (#{length(missing_items)} issue(s))"
