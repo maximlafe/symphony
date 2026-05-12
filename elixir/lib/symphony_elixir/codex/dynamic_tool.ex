@@ -1780,44 +1780,58 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp guard_issue_description_change(query, variables, description, linear_client, opts) do
-    case maybe_guard_acceptance_matrix_description(
-           description,
-           review_ready_issue_id(query, variables),
-           linear_client
-         ) do
+    issue_id = review_ready_issue_id(query, variables)
+
+    case guard_proof_contract_description(description, issue_id) do
       :ok ->
-        maybe_guard_material_spec_change_update(
-          query,
-          variables,
-          description,
-          linear_client,
-          opts
-        )
+        issue_context_result = issue_state_context_result(issue_id, linear_client)
+
+        case guard_plan_mode_acceptance_matrix_presence(description, issue_id, issue_context_result) do
+          :ok ->
+            maybe_guard_material_spec_change_update(
+              query,
+              variables,
+              description,
+              linear_client,
+              opts,
+              issue_id,
+              issue_context_result
+            )
+
+          {:error, _reason} = error ->
+            error
+        end
 
       {:error, _reason} = error ->
         error
     end
   end
 
-  defp maybe_guard_material_spec_change_update(query, variables, description, linear_client, _opts)
+  defp maybe_guard_material_spec_change_update(
+         query,
+         variables,
+         description,
+         _linear_client,
+         _opts,
+         issue_id,
+         issue_context_result
+       )
        when is_binary(query) and is_binary(description) do
-    issue_id = review_ready_issue_id(query, variables)
-
     if is_binary(issue_id) do
       guard_material_spec_change_update(
         issue_id,
+        issue_context_result,
         query,
         variables,
-        description,
-        linear_client
+        description
       )
     else
       :ok
     end
   end
 
-  defp guard_material_spec_change_update(issue_id, query, variables, description, linear_client) do
-    case fetch_issue_state_context(issue_id, linear_client) do
+  defp guard_material_spec_change_update(issue_id, issue_context_result, query, variables, description) do
+    case issue_context_result do
       {:ok, issue_context} ->
         enforce_material_spec_change_guard(issue_id, issue_context, query, variables, description)
 
@@ -1867,14 +1881,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp maybe_guard_acceptance_matrix_description(description, issue_id, linear_client)
-       when is_binary(description) do
-    with :ok <- guard_proof_contract_description(description, issue_id),
-         :ok <- guard_plan_mode_acceptance_matrix_presence(description, issue_id, linear_client) do
-      :ok
-    end
-  end
-
   defp guard_proof_contract_description(description, issue_id) when is_binary(description) do
     if Regex.match?(~r/(?:^|\n)##\s+Acceptance Matrix\b/m, description) do
       case HandoffCheck.proof_contract_errors(description) do
@@ -1903,7 +1909,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp guard_plan_mode_acceptance_matrix_presence(description, issue_id, linear_client)
+  defp guard_plan_mode_acceptance_matrix_presence(description, issue_id, issue_context_result)
        when is_binary(description) do
     acceptance_matrix_items =
       description
@@ -1912,17 +1918,17 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       |> Kernel.||([])
 
     if acceptance_matrix_items == [] do
-      enforce_plan_mode_acceptance_matrix_presence(issue_id, linear_client)
+      enforce_plan_mode_acceptance_matrix_presence(issue_id, issue_context_result)
     else
       :ok
     end
   end
 
-  defp guard_plan_mode_acceptance_matrix_presence(_description, _issue_id, _linear_client), do: :ok
+  defp guard_plan_mode_acceptance_matrix_presence(_description, _issue_id, _issue_context_result), do: :ok
 
-  defp enforce_plan_mode_acceptance_matrix_presence(issue_id, linear_client)
-       when is_binary(issue_id) and is_function(linear_client, 3) do
-    case fetch_issue_state_context(issue_id, linear_client) do
+  defp enforce_plan_mode_acceptance_matrix_presence(issue_id, issue_context_result)
+       when is_binary(issue_id) do
+    case issue_context_result do
       {:ok, issue_context} ->
         if plan_mode_issue?(Map.get(issue_context, "issue_labels", [])) do
           {:error,
@@ -1951,16 +1957,21 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           :ok
         end
 
-      {:error, reason} ->
+      {:error, _reason} ->
         # Do not hard-block on context lookup errors here.
         # Material spec-change guard runs later and performs its own state checks.
         # This prevents false AM-specific blocking for non-plan issues.
-        _ = reason
         :ok
     end
   end
 
-  defp enforce_plan_mode_acceptance_matrix_presence(_issue_id, _linear_client), do: :ok
+  defp enforce_plan_mode_acceptance_matrix_presence(_issue_id, _issue_context_result), do: :ok
+
+  defp issue_state_context_result(issue_id, linear_client)
+       when is_binary(issue_id) and is_function(linear_client, 3),
+       do: fetch_issue_state_context(issue_id, linear_client)
+
+  defp issue_state_context_result(_issue_id, _linear_client), do: :skip
 
   defp plan_mode_issue?(issue_labels) when is_list(issue_labels) do
     Enum.any?(issue_labels, fn

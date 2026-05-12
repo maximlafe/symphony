@@ -3121,52 +3121,27 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     end
   end
 
-  test "linear_graphql does not AM-block description update when context lookup is temporarily unavailable" do
+  test "linear_graphql fails closed when issue context lookup is temporarily unavailable" do
     issue_id = "LET-901"
     updated_description = "## Контекст\n\nRequired capabilities: runtime_smoke\n"
-    Process.put(:am_lookup_calls, 0)
+    Process.put(:context_lookup_calls, 0)
 
-    allowed =
+    blocked =
       DynamicTool.execute(
         "linear_graphql",
         %{
           "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
           "variables" => %{"id" => issue_id, "input" => %{"description" => updated_description}}
         },
-        linear_client: fn query, variables, _opts ->
+        linear_client: fn query, _variables, _opts ->
           cond do
             query =~ "SymphonyHandoffCheckState" ->
-              calls = Process.get(:am_lookup_calls, 0)
-              Process.put(:am_lookup_calls, calls + 1)
-
-              if calls == 0 do
-                {:error, :temporary_unavailable}
-              else
-                {:ok,
-                 %{
-                   "data" => %{
-                     "issue" => %{
-                       "id" => issue_id,
-                       "identifier" => issue_id,
-                       "description" => "## Previous\n\nNo AM yet.\n",
-                       "state" => %{"name" => "Spec Review"},
-                       "labels" => %{"nodes" => []},
-                       "inverseRelations" => %{"nodes" => []},
-                       "team" => %{
-                         "states" => %{
-                           "nodes" => [
-                             %{"id" => "spec-review-state-id", "name" => "Spec Review"}
-                           ]
-                         }
-                       }
-                     }
-                   }
-                 }}
-              end
+              calls = Process.get(:context_lookup_calls, 0)
+              Process.put(:context_lookup_calls, calls + 1)
+              {:error, :temporary_unavailable}
 
             query =~ "issueUpdate" ->
-              send(self(), {:non_plan_description_issue_update, variables})
-              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+              flunk("issueUpdate(description) should not execute when context lookup is unavailable")
 
             true ->
               flunk("unexpected GraphQL query in temporary context lookup test: #{query}")
@@ -3174,9 +3149,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         end
       )
 
-    assert allowed["success"] == true
-    assert Process.get(:am_lookup_calls) == 2
-    assert_received {:non_plan_description_issue_update, %{"id" => "LET-901", "input" => %{"description" => ^updated_description}}}
+    assert blocked["success"] == false
+    payload = decode_tool_text(blocked)
+    assert payload["error"]["details"]["reason_code"] == "material_spec_change_context_unavailable"
+    assert Process.get(:context_lookup_calls) == 1
   end
 
   test "linear_graphql blocks issueUpdate(description) when artifact proof maps to validation evidence" do
