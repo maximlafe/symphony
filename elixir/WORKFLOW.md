@@ -281,7 +281,7 @@ Instructions:
    - bootstrap the live workpad once if missing;
    - pass the absolute path to local `workpad.md` when calling `sync_workpad`;
    - keep subsequent edits local until a meaningful milestone or final handoff.
-3. Maintain the workpad with a compact environment stamp, plan, acceptance criteria, validation checklist, artifact manifest, and notes.
+3. Maintain the workpad with a compact environment stamp, plan, acceptance criteria, validation checklist, proof mapping (when `Acceptance Matrix` exists), artifact manifest, and notes.
    - If `Confusions` is non-empty, every bullet must be an actionable blocker in three parts: what is still unconfirmed, why it blocks execution or acceptance, and which exact artifact, signal, or human input will resolve it.
    - Prefer concrete terms such as `production bundle bytes`, `deploy manifest`, `literal copy`, or `screenshot baseline`; avoid vague statements that do not name the unblock condition.
    - Shape the plan with `DRY`, `KISS`, and `YAGNI`: reuse existing code paths before inventing new abstractions, choose the smallest coherent change that satisfies the acceptance criteria, and keep speculative cleanup or future-proofing out of scope unless the ticket explicitly requires it.
@@ -422,6 +422,7 @@ Use this only when completion is blocked by missing required tools or missing au
 ## In Review handoff bar
 
 - The single workpad comment accurately reflects the completed plan, acceptance criteria, validation, and handoff notes.
+- When the issue contract includes `Acceptance Matrix`, the workpad contains checked `Proof Mapping` coverage for every required matrix ID exactly once.
 - The workpad contains a classified checkpoint with one of `checkpoint_type: human-verify`, `decision`, or `human-action`, and a justified `risk_level`.
 - For `checkpoint_type: human-verify` handoffs:
   - required validation/tests are green for the latest commit;
@@ -486,6 +487,10 @@ validation/proof/checkpoint semantics are defined in
 - [ ] ui runtime proof: `<command>` (hosted UI/frontend changes)
 - [ ] visual artifact: `<artifact title>` (hosted UI/frontend changes)
 - [ ] repo validation: `make symphony-validate`
+
+### Proof Mapping
+
+- [ ] `AM-<id>` -> `validation:targeted tests`
 
 ### Artifacts
 
