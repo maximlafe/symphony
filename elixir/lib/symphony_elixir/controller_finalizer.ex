@@ -190,7 +190,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
   end
 
   defp run_pre_handoff_guard(context, checkpoint, snapshot, opts) do
-    proof_diagnostic = pre_handoff_proof_diagnostic(context, checkpoint)
+    proof_diagnostic = pre_handoff_proof_diagnostic(context, checkpoint, snapshot)
 
     if pre_handoff_proof_ready?(proof_diagnostic) do
       run_handoff_check(context, checkpoint, snapshot, opts)
@@ -214,7 +214,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
     end
   end
 
-  defp pre_handoff_proof_diagnostic(context, checkpoint) do
+  defp pre_handoff_proof_diagnostic(context, checkpoint, snapshot) do
     {workpad_body, validation_items} =
       case File.read(context.workpad_path) do
         {:ok, body} -> {body, parse_validation_items(body)}
@@ -222,7 +222,8 @@ defmodule SymphonyElixir.ControllerFinalizer do
       end
 
     change_classes = pre_handoff_change_classes(context.workspace, checkpoint)
-    proof_contract_errors = pre_handoff_proof_contract_errors(context, workpad_body)
+    proof_contract_errors = pre_handoff_proof_contract_errors(context, workpad_body, snapshot)
+    final_gate_checks = pre_handoff_final_gate_checks(validation_items, change_classes, workpad_body)
 
     ValidationGate.missing_required_proof_checks(
       validation_items,
@@ -231,16 +232,23 @@ defmodule SymphonyElixir.ControllerFinalizer do
     )
     |> Map.put("change_classes", change_classes)
     |> Map.put("proof_contract_errors", proof_contract_errors)
+    |> Map.put("required_final_checks", final_gate_checks["required_checks"])
+    |> Map.put("checked_final_checks", final_gate_checks["checked_checks"])
+    |> Map.put("missing_final_checks", final_gate_checks["missing_checks"])
   end
 
-  defp pre_handoff_proof_contract_errors(_context, workpad_body)
+  defp pre_handoff_proof_contract_errors(_context, workpad_body, _snapshot)
        when not is_binary(workpad_body) or workpad_body == "",
        do: []
 
-  defp pre_handoff_proof_contract_errors(context, workpad_body) do
+  defp pre_handoff_proof_contract_errors(context, workpad_body, snapshot) do
     context
     |> merged_proof_contract_markdown(workpad_body)
-    |> HandoffCheck.proof_contract_errors()
+    |> HandoffCheck.proof_contract_errors(
+      attachments: Map.get(context, :issue_attachments, []),
+      expected_pr_url: snapshot["url"],
+      enforce_mapping_completeness: true
+    )
   end
 
   defp merged_proof_contract_markdown(context, workpad_body) when is_map(context) do
@@ -251,6 +259,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
 
   defp pre_handoff_proof_ready?(proof_diagnostic) when is_map(proof_diagnostic) do
     Map.get(proof_diagnostic, "missing_checks", []) == [] and
+      Map.get(proof_diagnostic, "missing_final_checks", []) == [] and
       Map.get(proof_diagnostic, "proof_contract_errors", []) == []
   end
 
@@ -260,6 +269,36 @@ defmodule SymphonyElixir.ControllerFinalizer do
 
   defp pre_handoff_guard_reason(%{"missing_checks" => [_ | _]}) do
     "required proof checks are missing before handoff"
+  end
+
+  defp pre_handoff_guard_reason(%{"missing_final_checks" => [_ | _]}) do
+    "required validation gate checks are missing before handoff"
+  end
+
+  defp pre_handoff_final_gate_checks(_validation_items, _change_classes, workpad_body)
+       when not is_binary(workpad_body),
+       do: %{"required_checks" => [], "checked_checks" => [], "missing_checks" => []}
+
+  defp pre_handoff_final_gate_checks(validation_items, change_classes, workpad_body) do
+    if String.trim(workpad_body) == "" do
+      %{"required_checks" => [], "checked_checks" => [], "missing_checks" => []}
+    else
+      checked_checks = ValidationGate.checked_validation_checks(validation_items)
+      required_checks = pre_handoff_required_final_checks(change_classes)
+
+      %{
+        "required_checks" => required_checks,
+        "checked_checks" => checked_checks,
+        "missing_checks" => Enum.reject(required_checks, &(&1 in checked_checks))
+      }
+    end
+  end
+
+  defp pre_handoff_required_final_checks([]), do: []
+
+  defp pre_handoff_required_final_checks(change_classes) do
+    {:ok, %{"required_checks" => checks}} = ValidationGate.requirements(change_classes, "final")
+    ValidationGate.normalize_checks(checks)
   end
 
   defp run_handoff_check(context, checkpoint, snapshot, opts) do
@@ -449,6 +488,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
            issue_id: issue_id,
            issue_identifier: identifier,
            issue_description: issue_description(issue),
+           issue_attachments: issue_attachments(issue),
            workspace: workspace,
            workpad_path: workpad_path,
            comment_id: comment_id,
@@ -713,7 +753,8 @@ defmodule SymphonyElixir.ControllerFinalizer do
     |> Enum.map(fn [_, checked, text] ->
       %{
         "checked" => String.downcase(checked) == "x",
-        "label" => checkbox_label(text),
+        "text" => String.trim(text),
+        "label" => canonical_validation_label(text),
         "command" => checkbox_command(text)
       }
     end)
@@ -738,6 +779,21 @@ defmodule SymphonyElixir.ControllerFinalizer do
     case Regex.run(~r/`([^`]+)`/, text) do
       [_, command] -> String.trim(command)
       _ -> text |> String.split(":", parts: 2) |> List.last() |> to_string() |> String.trim()
+    end
+  end
+
+  defp canonical_validation_label(text) when is_binary(text) do
+    label = checkbox_label(text)
+
+    expanded_label =
+      text
+      |> String.split("`", parts: 2)
+      |> hd()
+      |> String.trim()
+
+    case ValidationGate.normalize_check(label) || ValidationGate.normalize_check(expanded_label) do
+      canonical when is_binary(canonical) -> String.replace(canonical, "_", " ")
+      _ -> label
     end
   end
 
@@ -814,6 +870,34 @@ defmodule SymphonyElixir.ControllerFinalizer do
     end)
     |> Enum.reject(&(&1 == ""))
   end
+
+  defp issue_attachments(%Issue{attachments: attachments}) when is_list(attachments),
+    do: normalize_attachments(attachments)
+
+  defp issue_attachments(%{} = issue) do
+    case issue[:attachments] || issue["attachments"] do
+      attachments when is_list(attachments) -> normalize_attachments(attachments)
+      _ -> []
+    end
+  end
+
+  defp normalize_attachments(attachments) when is_list(attachments) do
+    Enum.map(attachments, fn
+      %{} = attachment ->
+        %{
+          "title" => attachment["title"] || attachment[:title],
+          "url" => attachment["url"] || attachment[:url],
+          "source_type" => normalize_attachment_source_type(attachment),
+          "metadata" => attachment["metadata"] || attachment[:metadata]
+        }
+
+      _ ->
+        %{}
+    end)
+  end
+
+  defp normalize_attachment_source_type(attachment) when is_map(attachment),
+    do: attachment["source_type"] || attachment[:source_type] || attachment["sourceType"] || attachment[:sourceType]
 
   defp checkpoint_pr_number(checkpoint) when is_map(checkpoint) do
     case checkpoint["open_pr"] do

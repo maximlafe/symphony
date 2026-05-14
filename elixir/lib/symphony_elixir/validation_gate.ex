@@ -127,15 +127,15 @@ defmodule SymphonyElixir.ValidationGate do
 
   @spec normalize_check(term()) :: String.t() | nil
   def normalize_check(value) when is_binary(value) do
-    normalized =
-      value
-      |> String.trim()
-      |> String.downcase()
-      |> String.replace(~r/[\s-]+/, "_")
+    normalized = normalize_check_token(value)
 
-    Map.get(@check_aliases, normalized) ||
-      Map.get(@check_aliases, String.replace(normalized, "_", " ")) ||
-      if(normalized in @check_order, do: normalized)
+    normalized
+    |> check_normalization_candidates()
+    |> Enum.find_value(fn candidate ->
+      Map.get(@check_aliases, candidate) ||
+        Map.get(@check_aliases, String.replace(candidate, "_", " ")) ||
+        if(candidate in @check_order, do: candidate)
+    end)
   end
 
   def normalize_check(_value), do: nil
@@ -154,28 +154,65 @@ defmodule SymphonyElixir.ValidationGate do
   @spec checked_validation_checks(term()) :: [String.t()]
   def checked_validation_checks(validation_items) when is_list(validation_items) do
     validation_items
-    |> Enum.flat_map(fn
-      %{} = item ->
-        checked = item["checked"] || item[:checked]
-        label = item["label"] || item[:label]
-        command = item["command"] || item[:command] || ""
-
-        if checked == true and not placeholder_check_command?(command) and is_binary(label) do
-          [label]
-        else
-          []
-        end
-
-      label when is_binary(label) ->
-        [label]
-
-      _ ->
-        []
-    end)
+    |> Enum.flat_map(&checked_validation_item_checks/1)
     |> normalize_checks()
   end
 
   def checked_validation_checks(_validation_items), do: []
+
+  defp checked_validation_item_checks(%{} = item) do
+    if checked_validation_item?(item) do
+      normalize_checked_validation_item(item)
+    else
+      []
+    end
+  end
+
+  defp checked_validation_item_checks(label) when is_binary(label), do: [label]
+  defp checked_validation_item_checks(_item), do: []
+
+  defp checked_validation_item?(item) when is_map(item) do
+    checked = item["checked"] || item[:checked]
+    command = item["command"] || item[:command] || ""
+
+    checked == true and not placeholder_check_command?(command)
+  end
+
+  defp normalize_checked_validation_item(item) when is_map(item) do
+    label = item["label"] || item[:label]
+    text = item["text"] || item[:text]
+
+    case normalize_check(label) || normalize_check(validation_label_from_text(text)) do
+      normalized when is_binary(normalized) -> [normalized]
+      _ -> []
+    end
+  end
+
+  defp validation_label_from_text(text) when is_binary(text) do
+    fragment =
+      text
+      |> String.split("`", parts: 2)
+      |> hd()
+      |> String.trim()
+
+    parts =
+      fragment
+      |> String.split(":")
+      |> Enum.map(&String.trim/1)
+
+    case parts do
+      [_single] ->
+        fragment
+
+      [first, _command_or_value] ->
+        first
+
+      [first | rest] ->
+        [first | Enum.drop(rest, -1)] |> Enum.join(":")
+    end
+  end
+
+  defp validation_label_from_text(_text), do: nil
 
   @spec required_proof_checks(term(), term()) :: [map()]
   def required_proof_checks(issue_labels, change_classes) do
@@ -427,6 +464,41 @@ defmodule SymphonyElixir.ValidationGate do
   end
 
   defp normalize_change_class(_value), do: nil
+
+  defp normalize_check_token(value) when is_binary(value) do
+    value
+    |> strip_wrapping_backticks()
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace(~r/[^[:alnum:]]+/u, "_")
+    |> String.trim("_")
+  end
+
+  defp check_normalization_candidates(normalized) when is_binary(normalized) do
+    [normalized, String.trim_trailing(normalized, "_")]
+    |> Enum.flat_map(&prefixed_check_candidates/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp prefixed_check_candidates(""), do: [""]
+
+  defp prefixed_check_candidates(candidate) when is_binary(candidate) do
+    [
+      candidate,
+      String.trim_leading(candidate, "validation_"),
+      String.trim_leading(candidate, "validation_check_"),
+      String.trim_leading(candidate, "check_")
+    ]
+  end
+
+  defp strip_wrapping_backticks("`" <> rest) do
+    rest
+    |> String.trim_trailing("`")
+    |> String.trim()
+  end
+
+  defp strip_wrapping_backticks(value), do: value
 
   defp canonical_gate(gate) do
     case normalize_gate_value(gate) do
