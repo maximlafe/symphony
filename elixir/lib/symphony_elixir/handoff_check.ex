@@ -94,6 +94,9 @@ defmodule SymphonyElixir.HandoffCheck do
   def proof_contract_errors(markdown, opts) when is_binary(markdown) and is_list(opts) do
     {acceptance_matrix_items, parse_errors} = parse_acceptance_matrix(markdown)
     {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(markdown)
+    normalized_attachments = normalize_attachments(Keyword.get(opts, :attachments, []))
+    expected_pr_url = normalize_optional_pr_url(Keyword.get(opts, :expected_pr_url))
+    enforce_mapping_completeness = Keyword.get(opts, :enforce_mapping_completeness, false) == true
 
     parsed_workpad =
       markdown
@@ -116,6 +119,13 @@ defmodule SymphonyElixir.HandoffCheck do
     |> Kernel.++(capability_parse_errors)
     |> Kernel.++(parse_errors)
     |> Kernel.++(mapping_errors)
+    |> Kernel.++(
+      mapping_completeness_errors(
+        acceptance_matrix_items,
+        checked_mappings,
+        enforce_mapping_completeness
+      )
+    )
     |> Kernel.++(matrix_mapping_errors)
     |> Kernel.++(
       artifact_manifest_missing_items(
@@ -132,6 +142,7 @@ defmodule SymphonyElixir.HandoffCheck do
         proof_signals
       )
     )
+    |> Kernel.++(pr_evidence_contract_errors(normalized_attachments, expected_pr_url))
     |> Enum.uniq()
   end
 
@@ -172,6 +183,87 @@ defmodule SymphonyElixir.HandoffCheck do
         ["acceptance matrix item `#{matrix_item_id}` has multiple proof mapping entries; exactly one is required"]
     end)
   end
+
+  defp mapping_completeness_errors(acceptance_matrix_items, checked_mappings, enforce?)
+       when is_list(acceptance_matrix_items) and is_list(checked_mappings) and is_boolean(enforce?) do
+    if checked_mappings == [] and not enforce? do
+      []
+    else
+      do_mapping_completeness_errors(acceptance_matrix_items, checked_mappings)
+    end
+  end
+
+  defp mapping_completeness_errors(_acceptance_matrix_items, _checked_mappings, _enforce?), do: []
+
+  defp do_mapping_completeness_errors(acceptance_matrix_items, checked_mappings)
+       when is_list(acceptance_matrix_items) and is_list(checked_mappings) do
+    matrix_ids =
+      acceptance_matrix_items
+      |> Enum.map(& &1["id"])
+      |> Enum.reject(&placeholder_value?/1)
+      |> MapSet.new()
+
+    mapped_ids =
+      checked_mappings
+      |> Enum.map(& &1["matrix_item_id"])
+      |> Enum.reject(&placeholder_value?/1)
+      |> MapSet.new()
+
+    missing_ids =
+      matrix_ids
+      |> MapSet.difference(mapped_ids)
+      |> MapSet.to_list()
+      |> Enum.sort()
+
+    extra_ids =
+      mapped_ids
+      |> MapSet.difference(matrix_ids)
+      |> MapSet.to_list()
+      |> Enum.sort()
+
+    []
+    |> maybe_append_diff_diagnostic(missing_ids, "checked AM->Proof mapping is incomplete; missing matrix ids")
+    |> maybe_append_diff_diagnostic(extra_ids, "checked AM->Proof mapping has unknown matrix ids")
+  end
+
+  defp maybe_append_diff_diagnostic(errors, [], _message), do: errors
+
+  defp maybe_append_diff_diagnostic(errors, ids, message) when is_list(ids) and is_binary(message) do
+    [message <> ": " <> Enum.join(ids, ", ") | errors]
+  end
+
+  defp pr_evidence_contract_errors(attachments, expected_pr_url)
+       when is_list(attachments) and attachments != [] and is_binary(expected_pr_url) and expected_pr_url != "" do
+    canonical_expected_url = canonical_pull_request_url(expected_pr_url)
+
+    linked_urls =
+      attachments
+      |> Enum.filter(&linked_pull_request_attachment?/1)
+      |> Enum.map(fn %{} = attachment ->
+        attachment
+        |> Map.get("url")
+        |> normalize_optional_pr_url()
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    cond do
+      linked_urls == [] ->
+        ["evidence channel is missing canonical issue-linked PR URL attachment"]
+
+      is_nil(canonical_expected_url) ->
+        []
+
+      Enum.any?(linked_urls, &(canonical_pull_request_url(&1) == canonical_expected_url)) ->
+        []
+
+      true ->
+        [
+          "evidence channel PR URL mismatch: expected linked PR URL `#{canonical_expected_url}` in Linear attachments"
+        ]
+    end
+  end
+
+  defp pr_evidence_contract_errors(_attachments, _expected_pr_url), do: []
 
   defp proof_contract_matrix_mapping_errors(
          acceptance_matrix_items,
@@ -2498,19 +2590,10 @@ defmodule SymphonyElixir.HandoffCheck do
     change_classes = validation_gate_change_classes(validation_gate)
 
     required_gate_checks =
-      case ValidationGate.requirements(change_classes, "final") do
-        {:ok, %{"required_checks" => checks}} ->
-          checks
-          |> ValidationGate.normalize_checks()
-          |> Enum.reject(&(&1 in checked_checks))
-          |> Enum.map(&"validation checklist is missing a checked `#{human_check_label(&1)}` item")
-
-        _other ->
-          ["preflight", "targeted tests", "repo validation"]
-          |> ValidationGate.normalize_checks()
-          |> Enum.reject(&(&1 in checked_checks))
-          |> Enum.map(&"validation checklist is missing a checked `#{human_check_label(&1)}` item")
-      end
+      change_classes
+      |> final_required_gate_checks(validation_gate)
+      |> Enum.reject(&(&1 in checked_checks))
+      |> Enum.map(&"validation checklist is missing a checked `#{human_check_label(&1)}` item")
 
     proof_check_diagnostic =
       ValidationGate.missing_required_proof_checks(
@@ -2526,6 +2609,30 @@ defmodule SymphonyElixir.HandoffCheck do
       end)
 
     (required_gate_checks ++ required_proof_checks) |> Enum.uniq()
+  end
+
+  defp final_required_gate_checks(change_classes, validation_gate) when is_list(change_classes) do
+    case ValidationGate.requirements(change_classes, "final") do
+      {:ok, %{"required_checks" => checks}} ->
+        ValidationGate.normalize_checks(checks)
+
+      _other ->
+        fallback_checks =
+          (validation_gate["required_checks"] || validation_gate[:required_checks] || [])
+          |> ValidationGate.normalize_checks()
+
+        if fallback_checks == [] do
+          # Keep a strict fallback when gate metadata is missing or malformed.
+          ValidationGate.normalize_checks([
+            "preflight",
+            "targeted_tests",
+            "stateful_proof",
+            "repo_validation"
+          ])
+        else
+          fallback_checks
+        end
+    end
   end
 
   defp validation_gate_missing_items(validation_gate, git_metadata) do
@@ -2813,31 +2920,51 @@ defmodule SymphonyElixir.HandoffCheck do
             nil
         end
 
-      title =
-        attachment
-        |> Map.get("title")
-        |> to_string_or_nil()
-        |> normalize_attachment_title()
-
       url =
         attachment
         |> Map.get("url")
         |> to_string_or_nil()
         |> normalize_attachment_title()
 
-      metadata_kind == "pull_request" or
-        (source_type == "github" and
-           (github_pull_request_url?(url) or
-              pull_request_evidence_attachment_title?(%{"title" => title})))
+      canonical_url = canonical_pull_request_url(url)
+
+      (metadata_kind == "pull_request" and is_binary(canonical_url)) or
+        (source_type == "github" and is_binary(canonical_url))
     else
       false
     end
   end
 
-  defp github_pull_request_url?(url) do
-    is_binary(url) and
-      Regex.match?(~r{^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+(?:\b|[/?#])}, url)
+  defp canonical_pull_request_url(url) when is_binary(url) do
+    normalized =
+      url
+      |> String.trim()
+      |> String.replace_suffix("/", "")
+
+    case Regex.named_captures(
+           ~r{^https://github\.com/(?<owner>[^/\s]+)/(?<repo>[^/\s]+)/pull/(?<number>\d+)(?:[/?#].*)?$},
+           normalized
+         ) do
+      %{"owner" => owner, "repo" => repo, "number" => number} ->
+        "https://github.com/#{owner}/#{repo}/pull/#{number}"
+
+      _ ->
+        nil
+    end
   end
+
+  defp canonical_pull_request_url(_url), do: nil
+
+  defp normalize_optional_pr_url(url) when is_binary(url) do
+    url
+    |> String.trim()
+    |> case do
+      "" -> nil
+      value -> value
+    end
+  end
+
+  defp normalize_optional_pr_url(_url), do: nil
 
   defp normalize_attachment_token(value) do
     value

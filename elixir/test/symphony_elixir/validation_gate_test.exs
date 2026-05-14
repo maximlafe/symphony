@@ -105,6 +105,15 @@ defmodule SymphonyElixir.ValidationGateTest do
            ]) == ["preflight", "targeted_tests", "runtime_smoke", "repo_validation", "cheap_gate"]
   end
 
+  test "normalizes non-canonical and backticked validation labels" do
+    assert ValidationGate.normalize_checks([
+             "`preflight`",
+             "validation:targeted tests",
+             "validation:stateful proof",
+             "validation:repo validation"
+           ]) == ["preflight", "targeted_tests", "stateful_proof", "repo_validation"]
+  end
+
   test "normalizes legacy LET-717 runtime-contract validation aliases" do
     assert ValidationGate.normalize_checks([
              "targeted runtime contract tests",
@@ -182,6 +191,20 @@ defmodule SymphonyElixir.ValidationGateTest do
              %{"checked" => true, "label" => 123, "command" => "mix test"},
              456
            ]) == []
+
+    assert ValidationGate.checked_validation_checks([
+             %{
+               "checked" => true,
+               "label" => "validation",
+               "text" => "validation:stateful proof: `poetry run pytest tests/integration/test_task_v3_stateful_repeatability.py -v -m integration`",
+               "command" => "poetry run pytest tests/integration/test_task_v3_stateful_repeatability.py -v -m integration"
+             },
+             %{
+               "checked" => true,
+               "label" => "`validation:repo validation`",
+               "command" => "make symphony-validate"
+             }
+           ]) == ["stateful_proof", "repo_validation"]
 
     assert ValidationGate.checked_validation_checks(:invalid) == []
   end

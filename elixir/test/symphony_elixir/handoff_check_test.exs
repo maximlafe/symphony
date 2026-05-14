@@ -1313,7 +1313,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
            end)
   end
 
-  test "evaluate recognizes linked PR attachments by github title fallback when URL is not a PR link" do
+  test "evaluate treats github attachments with non-PR URL as regular uploaded artifacts" do
     workpad = """
     ## Codex Workpad
 
@@ -1343,7 +1343,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
       }
     ]
 
-    assert {:ok, manifest} =
+    assert {:error, manifest} =
              HandoffCheck.evaluate(
                workpad,
                issue_id: "LET-673",
@@ -1353,7 +1353,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
                git: git_metadata()
              )
 
-    refute Enum.any?(manifest["missing_items"], fn item ->
+    assert Enum.any?(manifest["missing_items"], fn item ->
              String.contains?(
                item,
                "pull request evidence must stay in linked PR/github_pr_snapshot, not in uploaded attachment artifacts"
@@ -1379,6 +1379,50 @@ defmodule SymphonyElixir.HandoffCheckTest do
     errors = HandoffCheck.proof_contract_errors(markdown, attachments: :invalid_shape)
 
     assert "uploaded attachment `runtime-proof.log` is missing from the Linear issue attachments" in errors
+  end
+
+  test "proof_contract_errors enforces canonical issue-linked PR URL evidence channel" do
+    markdown = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Runtime proof | Runtime proof is attached | artifact | runtime-proof.log | run_executed |
+
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `mix test`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime log
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `artifact:runtime-proof.log`
+    """
+
+    missing_link =
+      HandoffCheck.proof_contract_errors(
+        markdown,
+        attachments: [%{"title" => "PR #180", "url" => "https://github.com/maximlafe/symphony/issues/180", "source_type" => "github"}],
+        expected_pr_url: "https://github.com/maximlafe/symphony/pull/180"
+      )
+
+    assert "evidence channel is missing canonical issue-linked PR URL attachment" in missing_link
+
+    mismatched_link =
+      HandoffCheck.proof_contract_errors(
+        markdown,
+        attachments: [%{"title" => "PR #181", "url" => "https://github.com/maximlafe/symphony/pull/181", "source_type" => "github"}],
+        expected_pr_url: "https://github.com/maximlafe/symphony/pull/180"
+      )
+
+    assert "evidence channel PR URL mismatch: expected linked PR URL `https://github.com/maximlafe/symphony/pull/180` in Linear attachments" in mismatched_link
   end
 
   test "evaluate requires explicit red proof when delivery:tdd is enabled" do
@@ -2885,6 +2929,35 @@ defmodule SymphonyElixir.HandoffCheckTest do
            )
 
     assert "acceptance matrix item `AM-1` has multiple proof mapping entries; exactly one is required" in manifest["missing_items"]
+  end
+
+  test "proof_contract_errors reports checked AM->Proof mapping diff diagnostics" do
+    markdown = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+    | AM-2 | Negative path | Canonical proof fails closed | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
+
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `validation:targeted tests`
+    - [x] `AM-UNKNOWN` -> `validation:targeted tests`
+    """
+
+    errors = HandoffCheck.proof_contract_errors(markdown)
+
+    assert "checked AM->Proof mapping is incomplete; missing matrix ids: AM-2" in errors
+    assert "checked AM->Proof mapping has unknown matrix ids: AM-UNKNOWN" in errors
   end
 
   test "evaluate accepts legacy proof aliases and selector-based test mappings" do
