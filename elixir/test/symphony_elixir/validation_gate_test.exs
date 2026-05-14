@@ -114,6 +114,10 @@ defmodule SymphonyElixir.ValidationGateTest do
            ]) == ["preflight", "targeted_tests", "stateful_proof", "repo_validation"]
   end
 
+  test "treats empty binary check labels as non-canonical noise" do
+    assert ValidationGate.normalize_check("   ") == nil
+  end
+
   test "normalizes legacy LET-717 runtime-contract validation aliases" do
     assert ValidationGate.normalize_checks([
              "targeted runtime contract tests",
@@ -203,8 +207,14 @@ defmodule SymphonyElixir.ValidationGateTest do
                "checked" => true,
                "label" => "`validation:repo validation`",
                "command" => "make symphony-validate"
+             },
+             %{
+               "checked" => true,
+               "label" => nil,
+               "text" => "preflight",
+               "command" => "make symphony-preflight"
              }
-           ]) == ["stateful_proof", "repo_validation"]
+           ]) == ["preflight", "stateful_proof", "repo_validation"]
 
     assert ValidationGate.checked_validation_checks(:invalid) == []
   end

@@ -1425,6 +1425,35 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "evidence channel PR URL mismatch: expected linked PR URL `https://github.com/maximlafe/symphony/pull/180` in Linear attachments" in mismatched_link
   end
 
+  test "proof_contract_errors ignores blank expected PR URL values" do
+    markdown = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | --- | --- | --- | --- | --- | --- |
+    | AM-1 | Runtime proof | Runtime proof is attached | artifact | runtime-proof.log | run_executed |
+
+    ## Codex Workpad
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> runtime log
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `artifact:runtime-proof.log`
+    """
+
+    errors =
+      HandoffCheck.proof_contract_errors(
+        markdown,
+        attachments: [%{"title" => "PR #181", "url" => "https://github.com/maximlafe/symphony/pull/181", "source_type" => "github"}],
+        expected_pr_url: "   "
+      )
+
+    refute Enum.any?(errors, &String.starts_with?(&1, "evidence channel PR URL mismatch"))
+  end
+
   test "evaluate requires explicit red proof when delivery:tdd is enabled" do
     workpad_without_tdd_evidence = """
     ## Codex Workpad
@@ -3994,6 +4023,28 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert manifest["passed"]
     assert manifest["git"]["changed_paths"] == []
+  end
+
+  test "evaluate reuses explicit validation_gate.required_checks fallback when gate change_classes are malformed" do
+    malformed_gate =
+      valid_gate_manifest_fields()
+      |> Map.fetch!("validation_gate")
+      |> Map.put("change_classes", [])
+      |> Map.put("required_checks", ["preflight", "targeted tests", "repo validation"])
+      |> Map.put("passed_checks", ["preflight", "targeted tests", "repo validation"])
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               runtime_workpad(),
+               issue_id: "LET-416",
+               profile: "runtime",
+               attachments: [%{"title" => "runtime-proof.log"}],
+               pr_snapshot: green_pr_snapshot(),
+               validation_gate: malformed_gate,
+               git: git_metadata()
+             )
+
+    assert Enum.any?(manifest["missing_items"], &String.contains?(&1, "validation gate final proof invalid"))
   end
 
   test "review_ready_transition_allowed? exercises default git runner success and failure paths" do

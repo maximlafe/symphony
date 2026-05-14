@@ -193,8 +193,6 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp mapping_completeness_errors(_acceptance_matrix_items, _checked_mappings, _enforce?), do: []
-
   defp do_mapping_completeness_errors(acceptance_matrix_items, checked_mappings)
        when is_list(acceptance_matrix_items) and is_list(checked_mappings) do
     matrix_ids =

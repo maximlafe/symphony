@@ -884,6 +884,48 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert Enum.map(payload.details["proof_diagnostic"]["missing_checks"], & &1["check"]) == ["red_proof", "runtime_smoke"]
   end
 
+  test "run/3 fails fast before handoff when final validation gate checks are missing" do
+    issue = %Issue{id: "issue-proof-final-gate", identifier: "LET-462-PROOF-FINAL-GATE", state: "In Progress"}
+
+    _workspace =
+      create_workspace!(
+        issue.identifier,
+        workpad_body: """
+        ## Codex Workpad
+
+        ### Validation
+        - [x] preflight: `make symphony-preflight`
+        - [x] targeted tests: `mix test test/symphony_elixir/controller_finalizer_test.exs`
+        """
+      )
+
+    checkpoint = %{
+      "head" => "head-proof-final-gate",
+      "open_pr" => %{"number" => 2051, "url" => "https://github.com/acme/symphony/pull/2051"},
+      "changed_files" => ["elixir/lib/symphony_elixir/error_classifier.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/2051",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run when final validation checks are missing")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "required validation gate checks are missing before handoff"
+    assert payload.details["proof_diagnostic"]["missing_final_checks"] == ["repo_validation"]
+  end
+
   test "run/3 keeps backend-only scenario unblocked when proof checks are not required" do
     issue = %Issue{id: "issue-proof-backend", identifier: "LET-462-PROOF-BACKEND", state: "In Progress"}
     _workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())
@@ -1072,6 +1114,53 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert payload.checkpoint["controller_finalizer"]["status"] == "succeeded"
   end
 
+  test "run/3 normalizes map issue attachments with sourceType and ignores non-map entries" do
+    issue = %{
+      "id" => "issue-map-attachments",
+      "identifier" => "LET-462-MAP-ATTACHMENTS",
+      "state" => "In Progress",
+      "description" => "Map issue with attachment normalization coverage.",
+      "attachments" => [
+        %{
+          "title" => "PR #214",
+          "url" => "https://github.com/acme/symphony/pull/214",
+          "sourceType" => "github"
+        },
+        %{
+          title: "PR #215",
+          url: "https://github.com/acme/symphony/pull/215",
+          sourceType: "github"
+        },
+        "noise"
+      ]
+    }
+
+    _workspace = create_workspace!(issue["identifier"], workpad_body: validation_workpad())
+
+    checkpoint = %{
+      "head" => "head-map-attachments",
+      "open_pr" => %{"number" => 214, "url" => "https://github.com/acme/symphony/pull/214"},
+      "changed_files" => ["elixir/lib/symphony_elixir/error_classifier.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/214",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => {:ok, %{"manifest" => %{"passed" => true, "manifest_path" => ".symphony/verification/handoff-manifest.json"}}}
+    }
+
+    assert {:ok, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.checkpoint["controller_finalizer"]["status"] == "succeeded"
+  end
+
   test "run/3 keeps working when workpad disappears after sync and file read fails" do
     issue = %Issue{id: "issue-proof-workpad-gone", identifier: "LET-462-PROOF-WORKPAD-GONE", state: "In Progress"}
     workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())
@@ -1092,6 +1181,34 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
         {:ok,
          %{
            "url" => "https://github.com/acme/symphony/pull/210",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => {:ok, %{"manifest" => %{"passed" => true, "manifest_path" => ".symphony/verification/handoff-manifest.json"}}}
+    }
+
+    assert {:ok, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.checkpoint["controller_finalizer"]["status"] == "succeeded"
+  end
+
+  test "run/3 treats whitespace-only workpad as empty and keeps pre-handoff non-blocking" do
+    issue = %Issue{id: "issue-proof-workpad-whitespace", identifier: "LET-462-PROOF-WORKPAD-WS", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier, workpad_body: "\n   \n")
+
+    checkpoint = %{
+      "head" => "head-proof-workpad-whitespace",
+      "open_pr" => %{"number" => 2101, "url" => "https://github.com/acme/symphony/pull/2101"},
+      "changed_files" => ["elixir/lib/symphony_elixir/error_classifier.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/2101",
            "state" => "OPEN",
            "has_pending_checks" => false,
            "has_actionable_feedback" => false
@@ -1167,6 +1284,47 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
         {:ok,
          %{
            "url" => "https://github.com/acme/symphony/pull/2111",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => {:ok, %{"manifest" => %{"passed" => true, "manifest_path" => ".symphony/verification/handoff-manifest.json"}}}
+    }
+
+    assert {:ok, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.checkpoint["controller_finalizer"]["status"] == "succeeded"
+  end
+
+  test "run/3 tolerates unknown validation labels while keeping canonical checks intact" do
+    issue = %Issue{id: "issue-proof-unknown-labels", identifier: "LET-462-UNKNOWN-LABELS", state: "In Progress"}
+
+    _workspace =
+      create_workspace!(
+        issue.identifier,
+        workpad_body: """
+        ## Codex Workpad
+
+        ### Validation
+        - [x] custom gate marker: `echo marker`
+        - [x] preflight: `make symphony-preflight`
+        - [x] targeted tests: `mix test test/symphony_elixir/controller_finalizer_test.exs`
+        - [x] repo validation: `make symphony-validate`
+        """
+      )
+
+    checkpoint = %{
+      "head" => "head-proof-unknown-labels",
+      "open_pr" => %{"number" => 2112, "url" => "https://github.com/acme/symphony/pull/2112"},
+      "changed_files" => ["elixir/lib/symphony_elixir/error_classifier.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/2112",
            "state" => "OPEN",
            "has_pending_checks" => false,
            "has_actionable_feedback" => false

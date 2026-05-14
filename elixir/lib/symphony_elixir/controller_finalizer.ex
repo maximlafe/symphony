@@ -242,17 +242,11 @@ defmodule SymphonyElixir.ControllerFinalizer do
        do: []
 
   defp pre_handoff_proof_contract_errors(context, workpad_body, snapshot) do
-    expected_pr_url =
-      case snapshot do
-        %{} -> snapshot["url"]
-        _ -> nil
-      end
-
     context
     |> merged_proof_contract_markdown(workpad_body)
     |> HandoffCheck.proof_contract_errors(
       attachments: Map.get(context, :issue_attachments, []),
-      expected_pr_url: expected_pr_url,
+      expected_pr_url: snapshot["url"],
       enforce_mapping_completeness: true
     )
   end
@@ -285,10 +279,6 @@ defmodule SymphonyElixir.ControllerFinalizer do
        when not is_binary(workpad_body),
        do: %{"required_checks" => [], "checked_checks" => [], "missing_checks" => []}
 
-  defp pre_handoff_final_gate_checks(_validation_items, _change_classes, workpad_body)
-       when is_binary(workpad_body) and workpad_body == "",
-       do: %{"required_checks" => [], "checked_checks" => [], "missing_checks" => []}
-
   defp pre_handoff_final_gate_checks(validation_items, change_classes, workpad_body) do
     if String.trim(workpad_body) == "" do
       %{"required_checks" => [], "checked_checks" => [], "missing_checks" => []}
@@ -307,18 +297,8 @@ defmodule SymphonyElixir.ControllerFinalizer do
   defp pre_handoff_required_final_checks([]), do: []
 
   defp pre_handoff_required_final_checks(change_classes) do
-    case ValidationGate.requirements(change_classes, "final") do
-      {:ok, %{"required_checks" => checks}} ->
-        ValidationGate.normalize_checks(checks)
-
-      _other ->
-        ValidationGate.normalize_checks([
-          "preflight",
-          "targeted_tests",
-          "stateful_proof",
-          "repo_validation"
-        ])
-    end
+    {:ok, %{"required_checks" => checks}} = ValidationGate.requirements(change_classes, "final")
+    ValidationGate.normalize_checks(checks)
   end
 
   defp run_handoff_check(context, checkpoint, snapshot, opts) do
@@ -901,19 +881,13 @@ defmodule SymphonyElixir.ControllerFinalizer do
     end
   end
 
-  defp issue_attachments(_issue), do: []
-
   defp normalize_attachments(attachments) when is_list(attachments) do
     Enum.map(attachments, fn
       %{} = attachment ->
         %{
           "title" => attachment["title"] || attachment[:title],
           "url" => attachment["url"] || attachment[:url],
-          "source_type" =>
-            attachment["source_type"] ||
-              attachment[:source_type] ||
-              attachment["sourceType"] ||
-              attachment[:sourceType],
+          "source_type" => normalize_attachment_source_type(attachment),
           "metadata" => attachment["metadata"] || attachment[:metadata]
         }
 
@@ -922,7 +896,8 @@ defmodule SymphonyElixir.ControllerFinalizer do
     end)
   end
 
-  defp normalize_attachments(_attachments), do: []
+  defp normalize_attachment_source_type(attachment) when is_map(attachment),
+    do: attachment["source_type"] || attachment[:source_type] || attachment["sourceType"] || attachment[:sourceType]
 
   defp checkpoint_pr_number(checkpoint) when is_map(checkpoint) do
     case checkpoint["open_pr"] do
