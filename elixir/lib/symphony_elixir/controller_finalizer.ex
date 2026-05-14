@@ -285,35 +285,39 @@ defmodule SymphonyElixir.ControllerFinalizer do
        when not is_binary(workpad_body),
        do: %{"required_checks" => [], "checked_checks" => [], "missing_checks" => []}
 
+  defp pre_handoff_final_gate_checks(_validation_items, _change_classes, workpad_body)
+       when is_binary(workpad_body) and workpad_body == "",
+       do: %{"required_checks" => [], "checked_checks" => [], "missing_checks" => []}
+
   defp pre_handoff_final_gate_checks(validation_items, change_classes, workpad_body) do
     if String.trim(workpad_body) == "" do
       %{"required_checks" => [], "checked_checks" => [], "missing_checks" => []}
     else
       checked_checks = ValidationGate.checked_validation_checks(validation_items)
-
-      required_checks =
-        if change_classes == [] do
-          []
-        else
-          case ValidationGate.requirements(change_classes, "final") do
-            {:ok, %{"required_checks" => checks}} ->
-              ValidationGate.normalize_checks(checks)
-
-            _other ->
-              ValidationGate.normalize_checks([
-                "preflight",
-                "targeted_tests",
-                "stateful_proof",
-                "repo_validation"
-              ])
-          end
-        end
+      required_checks = pre_handoff_required_final_checks(change_classes)
 
       %{
         "required_checks" => required_checks,
         "checked_checks" => checked_checks,
         "missing_checks" => Enum.reject(required_checks, &(&1 in checked_checks))
       }
+    end
+  end
+
+  defp pre_handoff_required_final_checks([]), do: []
+
+  defp pre_handoff_required_final_checks(change_classes) do
+    case ValidationGate.requirements(change_classes, "final") do
+      {:ok, %{"required_checks" => checks}} ->
+        ValidationGate.normalize_checks(checks)
+
+      _other ->
+        ValidationGate.normalize_checks([
+          "preflight",
+          "targeted_tests",
+          "stateful_proof",
+          "repo_validation"
+        ])
     end
   end
 

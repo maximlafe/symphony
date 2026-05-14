@@ -154,32 +154,39 @@ defmodule SymphonyElixir.ValidationGate do
   @spec checked_validation_checks(term()) :: [String.t()]
   def checked_validation_checks(validation_items) when is_list(validation_items) do
     validation_items
-    |> Enum.flat_map(fn
-      %{} = item ->
-        checked = item["checked"] || item[:checked]
-        label = item["label"] || item[:label]
-        text = item["text"] || item[:text]
-        command = item["command"] || item[:command] || ""
-
-        if checked == true and not placeholder_check_command?(command) do
-          case normalize_check(label) || normalize_check(validation_label_from_text(text)) do
-            normalized when is_binary(normalized) -> [normalized]
-            _ -> []
-          end
-        else
-          []
-        end
-
-      label when is_binary(label) ->
-        [label]
-
-      _ ->
-        []
-    end)
+    |> Enum.flat_map(&checked_validation_item_checks/1)
     |> normalize_checks()
   end
 
   def checked_validation_checks(_validation_items), do: []
+
+  defp checked_validation_item_checks(%{} = item) do
+    if checked_validation_item?(item) do
+      normalize_checked_validation_item(item)
+    else
+      []
+    end
+  end
+
+  defp checked_validation_item_checks(label) when is_binary(label), do: [label]
+  defp checked_validation_item_checks(_item), do: []
+
+  defp checked_validation_item?(item) when is_map(item) do
+    checked = item["checked"] || item[:checked]
+    command = item["command"] || item[:command] || ""
+
+    checked == true and not placeholder_check_command?(command)
+  end
+
+  defp normalize_checked_validation_item(item) when is_map(item) do
+    label = item["label"] || item[:label]
+    text = item["text"] || item[:text]
+
+    case normalize_check(label) || normalize_check(validation_label_from_text(text)) do
+      normalized when is_binary(normalized) -> [normalized]
+      _ -> []
+    end
+  end
 
   defp validation_label_from_text(text) when is_binary(text) do
     fragment =
