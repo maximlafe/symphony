@@ -813,7 +813,7 @@ Instructions:
    - preserve user-uploaded files, screenshots, and inline media verbatim; if the current description contains uploads or embeds that would be dropped by normalization, do not rewrite the description and keep the extra structure in the workpad instead;
    - do not remove machine-readable `Repo:`, `Base branch:`, or `Working branch:` lines even when repo routing is also inferred from project metadata or `repo:*` labels;
    - do not write checklists, managed markers, or workpad-style progress notes into the description.
-7. Maintain the Russian workpad with a compact environment stamp, hierarchical plan, `Критерии приемки`, `Проверка`, `Артефакты`, and `Заметки`.
+7. Maintain the Russian workpad with a compact environment stamp, hierarchical plan, `Критерии приемки`, canonical `Validation`, `Proof Mapping` (for execution/review-oriented tasks), `Артефакты`, and `Заметки`.
    - If `Неясности` is non-empty, every bullet must be a concrete decision-blocker written in three parts: what is still unconfirmed, why that blocks execution or acceptance, and which exact repo-controlled signal, artifact, or human input will clear it.
    - Prefer specific nouns such as `production bundle bytes`, `deploy manifest`, `literal copy`, `drawer footer/actions`, `screenshot baseline`, or `Basic auth access`; avoid vague phrasing like `нужно разобраться` without a stated unblock condition.
    - For `mode:research`, explicitly record confirmed root cause or the smallest evidence-ranked set of plausible hypotheses; never blur confirmed facts and open hypotheses.
@@ -974,7 +974,8 @@ Use this only when completion is blocked by missing required tools or missing au
 - For `mode:research`, the description/workpad explicitly separate confirmed findings from remaining hypotheses and recommend the minimal implementation contour.
 - For `mode:plan` and legacy spec-prep tickets, the description/workpad explicitly capture the recommended implementation contour and validation plan.
 - The workpad comment exists and mirrors the resulting spec and detailed plan in Russian.
-- Required `Критерии приемки` and `Проверка` checklists are explicit and reviewable.
+- Required `Критерии приемки` and `Validation` checklists are explicit and reviewable.
+- When the issue contract includes `Acceptance Matrix`, the workpad includes a checked `Proof Mapping` section that covers all required matrix IDs exactly once.
 - Any important reproduction or investigation signal is recorded in the workpad.
 - No product code changes, commits, or PR publication happened during `Spec Prep`.
 - `Spec Review` does not require a classified `Checkpoint`; classified checkpoints begin with execution handoffs to `In Review` or `Blocked`.
@@ -1125,11 +1126,17 @@ and checkpoint semantics come from `docs/policy/project-contract.md`.
 - [ ] Критерий 1
 - [ ] Критерий 2
 
-### Проверка
+### Validation
 
 - [ ] preflight: `make symphony-preflight`
 - [ ] targeted tests: `<command>`
+- [ ] stateful proof: `<command>` (stateful/DB/schema changes)
+- [ ] runtime smoke: `<command>` (runtime/infra/workflow-contract/handoff changes)
 - [ ] repo validation: `make symphony-validate`
+
+### Proof Mapping
+
+- [ ] `AM-<id>` -> `validation:targeted tests`
 
 ### Артефакты
 
