@@ -90,17 +90,14 @@ defmodule SymphonyElixir.Codex.AppServer do
       case do_start_session(port, expanded_workspace, session_policies) do
         {:ok, thread_id} ->
           {:ok,
-           %{
-             port: port,
-             metadata: metadata,
-             account_id: account_id,
-             approval_policy: session_policies.approval_policy,
-             auto_approve_requests: session_policies.approval_policy == "never",
-             thread_sandbox: session_policies.thread_sandbox,
-             turn_sandbox_policy: session_policies.turn_sandbox_policy,
-             thread_id: thread_id,
-             workspace: expanded_workspace
-           }}
+           build_session(
+             port,
+             metadata,
+             account_id,
+             session_policies,
+             thread_id,
+             expanded_workspace
+           )}
 
         {:error, reason} ->
           stop_port(port)
@@ -186,18 +183,22 @@ defmodule SymphonyElixir.Codex.AppServer do
     with_logger_metadata(metadata, fn ->
       case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
         {:ok, turn_id} ->
+          turn_context_base = %{
+            port: port,
+            metadata: metadata,
+            account_id: account_id,
+            auto_approve_requests: auto_approve_requests,
+            thread_id: thread_id
+          }
+
           handle_started_turn(
-            %{
-              port: port,
-              on_message: on_message,
-              issue: issue,
-              metadata: metadata,
-              account_id: account_id,
-              tool_executor: tool_executor,
-              auto_approve_requests: auto_approve_requests,
-              thread_id: thread_id,
-              monotonic_time_ms: monotonic_time_ms
-            },
+            run_turn_context(
+              turn_context_base,
+              on_message,
+              issue,
+              tool_executor,
+              monotonic_time_ms
+            ),
             turn_id
           )
 
@@ -240,6 +241,43 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:error, {:path_canonicalize_failed, path, reason}} ->
         {:error, {:invalid_workspace_cwd, :path_unreadable, path, reason}}
     end
+  end
+
+  defp build_session(
+         port,
+         metadata,
+         account_id,
+         session_policies,
+         thread_id,
+         workspace
+       ) do
+    %{
+      port: port,
+      metadata: metadata,
+      account_id: account_id,
+      approval_policy: session_policies.approval_policy,
+      auto_approve_requests: session_policies.approval_policy == "never",
+      thread_sandbox: session_policies.thread_sandbox,
+      turn_sandbox_policy: session_policies.turn_sandbox_policy,
+      thread_id: thread_id,
+      workspace: workspace
+    }
+  end
+
+  defp run_turn_context(
+         turn_context_base,
+         on_message,
+         issue,
+         tool_executor,
+         monotonic_time_ms
+       ) do
+    turn_context_base
+    |> Map.merge(%{
+      on_message: on_message,
+      issue: issue,
+      tool_executor: tool_executor,
+      monotonic_time_ms: monotonic_time_ms
+    })
   end
 
   defp start_port(workspace, command_env, issue, cost_profile_key, cost_stage) do
