@@ -2395,46 +2395,35 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp graphql_response(response) do
-    success =
-      case response do
-        %{"errors" => errors} when is_list(errors) and errors != [] -> false
-        %{errors: errors} when is_list(errors) and errors != [] -> false
-        _ -> true
-      end
+    tool_response(graphql_response_success?(response), response)
+  end
 
+  defp success_response(payload) do
+    tool_response(true, payload)
+  end
+
+  defp failure_response(payload) do
+    tool_response(false, payload)
+  end
+
+  defp tool_response(success, payload) when is_boolean(success) do
     %{
       "success" => success,
       "contentItems" => [
         %{
           "type" => "inputText",
-          "text" => encode_payload(response)
-        }
-      ]
-    }
-  end
-
-  defp success_response(payload) do
-    %{
-      "success" => true,
-      "contentItems" => [
-        %{
-          "type" => "inputText",
           "text" => encode_payload(payload)
         }
       ]
     }
   end
 
-  defp failure_response(payload) do
-    %{
-      "success" => false,
-      "contentItems" => [
-        %{
-          "type" => "inputText",
-          "text" => encode_payload(payload)
-        }
-      ]
-    }
+  defp graphql_response_success?(response) do
+    case response do
+      %{"errors" => errors} when is_list(errors) and errors != [] -> false
+      %{errors: errors} when is_list(errors) and errors != [] -> false
+      _ -> true
+    end
   end
 
   defp encode_payload(payload) when is_map(payload) or is_list(payload) do

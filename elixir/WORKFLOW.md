@@ -374,11 +374,11 @@ Use this whenever you pause, hand off, or stop because autonomous progress is no
 - `decision`:
   - use when progress depends on a product/technical choice, conflicting requirements, or multiple plausible fixes after repeated attempts;
   - include the viable options, your recommendation, and the consequence of choosing differently;
-  - route to `In Review` and wait for an explicit human decision instead of normal PR approval.
+  - route to `Blocked` and wait for an explicit human decision before resuming autonomous execution.
 - `human-action`:
   - use when a human must do something outside the agent loop (grant access, add a secret, repair external state, run a deploy gate, provide missing input);
   - include the exact required action and why the agent cannot complete it alone;
-  - route to `In Review` and wait for that action.
+  - route to `Blocked` and wait for that action before resuming autonomous execution.
 - Classify risk conservatively:
   - `low` for localized, reversible changes with strong evidence;
   - `medium` for multi-file behavior changes or incomplete verification;
@@ -398,17 +398,19 @@ Use this whenever you pause, hand off, or stop because autonomous progress is no
 Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
 
 - GitHub is not a valid blocker by default; try fallback publish/review strategies first.
-- If a required non-GitHub tool or auth path is missing, record a concise blocker brief in the workpad with `checkpoint_type: human-action`, an appropriate `risk_level`, what is missing, why it blocks acceptance, and the exact human unblock action, then move the issue to `In Review`.
-- This blocker route is a classified handoff, not a PR-ready `human-verify` handoff, so satisfy the matching `In Review` handoff bar below instead of the PR-ready bar.
+- If a required non-GitHub tool or auth path is missing, record a concise blocker brief in the workpad with `checkpoint_type: human-action`, an appropriate `risk_level`, what is missing, why it blocks acceptance, and the exact human unblock action, then move the issue to `Blocked`.
+- This blocker route is a classified blocker handoff, not a PR-ready `human-verify` handoff, so satisfy the matching `Blocked` handoff bar below instead of the PR-ready bar.
 
-## Step 2: In Review and merge handling
+## Step 2: Blocked and In Review handling
 
-1. In `In Review`, do not code or change ticket content.
-2. Poll for review updates as needed.
-   - if the latest checkpoint is `decision` or `human-action`, wait for that explicit decision/action instead of treating the state like ordinary PR approval;
-3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
-4. If approved, a human moves the issue to `Merging`.
-5. In `Merging`, use the `land` skill until the PR is merged, then move the issue to `Done`.
+1. In `Blocked`, do not code or change ticket content.
+2. Poll for explicit unblock signals (decision made, required human action completed).
+3. Once unblocked, move the issue back to `In Progress` and resume execution flow.
+4. In `In Review`, do not code or change ticket content.
+5. Poll for review updates as needed.
+6. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
+7. If approved, a human moves the issue to `Merging`.
+8. In `Merging`, use the `land` skill until the PR is merged, then move the issue to `Done`.
 
 ## Step 3: Rework handling
 
@@ -422,7 +424,7 @@ Use this only when completion is blocked by missing required tools or missing au
 ## In Review handoff bar
 
 - The single workpad comment accurately reflects the completed plan, acceptance criteria, validation, and handoff notes.
-- The workpad contains a classified checkpoint with one of `checkpoint_type: human-verify`, `decision`, or `human-action`, and a justified `risk_level`.
+- The workpad contains a classified checkpoint with `checkpoint_type: human-verify` and a justified `risk_level`.
 - For `checkpoint_type: human-verify` handoffs:
   - required validation/tests are green for the latest commit;
   - the PR is pushed, linked on the issue, and labeled `symphony`;
@@ -432,10 +434,14 @@ Use this only when completion is blocked by missing required tools or missing au
   - review-relevant artifacts created during the task are uploaded as issue attachments;
   - runtime evidence is uploaded when the change is app-touching;
   - the workpad includes a compact artifact manifest that maps each attachment to the claim it supports and calls out expected artifacts that were not produced.
+
+## Blocked handoff bar
+
+- The workpad contains a classified checkpoint with `checkpoint_type: decision` or `checkpoint_type: human-action`, and a justified `risk_level`.
 - For `checkpoint_type: decision` or `human-action` handoffs:
   - the workpad explains the blocking choice or required external action;
   - the summary makes clear why further autonomous progress is not justified yet;
-  - PR publication, green checks, and review-ready validation are not required before moving to `In Review`.
+  - PR publication, green checks, and review-ready validation are not required before moving to `Blocked`.
 
 ## Guardrails
 

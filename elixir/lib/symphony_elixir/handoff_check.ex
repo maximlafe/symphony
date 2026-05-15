@@ -70,8 +70,9 @@ defmodule SymphonyElixir.HandoffCheck do
 
   @spec acceptance_contract_from_issue_description(String.t() | nil) :: map()
   def acceptance_contract_from_issue_description(issue_description) when is_binary(issue_description) do
-    {acceptance_matrix_items, _errors} = parse_acceptance_matrix(issue_description)
-    {required_capabilities, _errors} = AcceptanceCapability.required_capabilities(issue_description)
+    {acceptance_matrix_items, _matrix_errors, required_capabilities, _capability_parse_errors} =
+      parse_contract_inputs(issue_description)
+
     acceptance_contract(acceptance_matrix_items, required_capabilities)
   end
 
@@ -92,8 +93,8 @@ defmodule SymphonyElixir.HandoffCheck do
 
   @spec proof_contract_errors(String.t() | nil, keyword()) :: [String.t()]
   def proof_contract_errors(markdown, opts) when is_binary(markdown) and is_list(opts) do
-    {acceptance_matrix_items, parse_errors} = parse_acceptance_matrix(markdown)
-    {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(markdown)
+    {acceptance_matrix_items, parse_errors, required_capabilities, capability_parse_errors} =
+      parse_contract_inputs(markdown)
 
     parsed_workpad =
       markdown
@@ -136,6 +137,13 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   def proof_contract_errors(_markdown, _opts), do: []
+
+  defp parse_contract_inputs(issue_description) do
+    {acceptance_matrix_items, acceptance_matrix_errors} = parse_acceptance_matrix(issue_description)
+    {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(issue_description)
+
+    {acceptance_matrix_items, acceptance_matrix_errors, required_capabilities, capability_parse_errors}
+  end
 
   defp effective_proof_contract_attachments(parsed_workpad, opts) do
     if Keyword.has_key?(opts, :attachments) do
@@ -215,8 +223,9 @@ defmodule SymphonyElixir.HandoffCheck do
     issue_id = issue_field(issue, [:id, "id"])
     issue_identifier = issue_field(issue, [:identifier, "identifier"])
     locked_at = Keyword.get(opts, :locked_at, DateTime.utc_now())
-    {acceptance_matrix_items, acceptance_matrix_errors} = parse_acceptance_matrix(issue_description)
-    {required_capabilities, _capability_errors} = AcceptanceCapability.required_capabilities(issue_description)
+
+    {acceptance_matrix_items, acceptance_matrix_errors, required_capabilities, _capability_parse_errors} =
+      parse_contract_inputs(issue_description)
 
     acceptance_contract = acceptance_contract(acceptance_matrix_items, required_capabilities)
 
@@ -269,8 +278,8 @@ defmodule SymphonyElixir.HandoffCheck do
     pr_snapshot = normalize_pr_snapshot(Keyword.get(opts, :pr_snapshot))
     {phase, phase_errors} = normalize_handoff_phase(Keyword.get(opts, :phase))
 
-    {acceptance_matrix_items, acceptance_matrix_errors} = parse_acceptance_matrix(issue_description)
-    {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(issue_description)
+    {acceptance_matrix_items, acceptance_matrix_errors, required_capabilities, capability_parse_errors} =
+      parse_contract_inputs(issue_description)
 
     parsed_workpad =
       workpad_body

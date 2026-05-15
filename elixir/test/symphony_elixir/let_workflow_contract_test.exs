@@ -104,6 +104,12 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert get_in(config, ["planning", "swarm_assist_enabled"]) == true
     assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
     refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
+    assert prompt =~ "## In Review handoff bar"
+    assert prompt =~ "## Blocked handoff bar"
+    assert prompt =~ "route to `Blocked` and wait for an explicit human decision"
+    assert prompt =~ "route to `Blocked` and wait for that action before resuming autonomous execution."
+    refute prompt =~ "route to `In Review` and wait for an explicit human decision"
+    refute prompt =~ "route to `In Review` and wait for that action."
     assert prompt =~ "`codex.cost_policy`"
     assert prompt =~ "docs/policy/project-contract.md"
     assert prompt =~ "two-layer planning contract"
