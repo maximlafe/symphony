@@ -102,8 +102,30 @@ defmodule SymphonyElixir.HandoffCheck do
       |> maybe_reconcile_workpad_artifacts([], acceptance_matrix_items, required_capabilities)
 
     effective_attachments = effective_proof_contract_attachments(parsed_workpad, opts)
+
+    proof_contract_errors_from_inputs(
+      acceptance_matrix_items,
+      parse_errors,
+      required_capabilities,
+      capability_parse_errors,
+      parsed_workpad,
+      effective_attachments
+    )
+  end
+
+  def proof_contract_errors(_markdown, _opts), do: []
+
+  defp proof_contract_errors_from_inputs(
+         acceptance_matrix_items,
+         parse_errors,
+         required_capabilities,
+         capability_parse_errors,
+         parsed_workpad,
+         effective_attachments
+       ) do
     checked_mappings = checked_proof_mapping_items(parsed_workpad["proof_mapping"] || [])
     mapping_errors = proof_contract_mapping_errors(acceptance_matrix_items, parsed_workpad, checked_mappings)
+    artifact_items = parsed_workpad["artifacts"] || []
 
     {matrix_mapping_errors, proof_signals} =
       proof_contract_matrix_mapping_errors(
@@ -113,19 +135,16 @@ defmodule SymphonyElixir.HandoffCheck do
         effective_attachments
       )
 
-    []
-    |> Kernel.++(capability_parse_errors)
-    |> Kernel.++(parse_errors)
-    |> Kernel.++(mapping_errors)
-    |> Kernel.++(matrix_mapping_errors)
-    |> Kernel.++(
+    combine_proof_contract_errors(
+      capability_parse_errors,
+      parse_errors,
+      mapping_errors,
+      matrix_mapping_errors,
       artifact_manifest_missing_items(
-        parsed_workpad["artifacts"],
+        artifact_items,
         effective_attachments,
         parsed_workpad["artifact_proof_required"] == true
-      )
-    )
-    |> Kernel.++(
+      ),
       required_capability_missing_items(
         required_capabilities,
         parsed_workpad,
@@ -133,10 +152,25 @@ defmodule SymphonyElixir.HandoffCheck do
         proof_signals
       )
     )
-    |> Enum.uniq()
   end
 
-  def proof_contract_errors(_markdown, _opts), do: []
+  defp combine_proof_contract_errors(
+         capability_parse_errors,
+         parse_errors,
+         mapping_errors,
+         matrix_mapping_errors,
+         artifact_errors,
+         required_capability_errors
+       ) do
+    []
+    |> Kernel.++(capability_parse_errors)
+    |> Kernel.++(parse_errors)
+    |> Kernel.++(mapping_errors)
+    |> Kernel.++(matrix_mapping_errors)
+    |> Kernel.++(artifact_errors)
+    |> Kernel.++(required_capability_errors)
+    |> Enum.uniq()
+  end
 
   defp parse_contract_inputs(issue_description) do
     {acceptance_matrix_items, acceptance_matrix_errors} = parse_acceptance_matrix(issue_description)
