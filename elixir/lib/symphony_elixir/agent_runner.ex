@@ -281,41 +281,53 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp maybe_continue_turn(
-         %{max_turns: max_turns},
-         refreshed_issue,
-         turn_number,
-         _consecutive_empty,
-         _empty_turn?
-       )
-       when turn_number >= max_turns do
-    Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+  defp maybe_continue_turn(session_context, refreshed_issue, turn_number, consecutive_empty, empty_turn?) do
+    case turn_continuation_decision(
+           turn_number,
+           session_context.max_turns,
+           consecutive_empty,
+           empty_turn?
+         ) do
+      {:stop, :max_turns, _next_consecutive_empty} ->
+        Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
 
-    :ok
+        :ok
+
+      {:stop, :empty_turn_circuit_breaker, next_consecutive_empty} ->
+        Logger.warning(
+          "Empty turn circuit breaker: #{next_consecutive_empty} consecutive empty turns (<#{@empty_turn_threshold_ms}ms) for #{issue_context(refreshed_issue)}; returning control to orchestrator"
+        )
+
+        :ok
+
+      {:continue, next_consecutive_empty} ->
+        maybe_backoff_empty_turn(
+          refreshed_issue,
+          turn_number,
+          session_context.max_turns,
+          empty_turn?,
+          next_consecutive_empty,
+          session_context.sleep_fn
+        )
+
+        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{session_context.max_turns}")
+
+        do_run_codex_turns(session_context, refreshed_issue, turn_number + 1, next_consecutive_empty)
+    end
   end
 
-  defp maybe_continue_turn(session_context, refreshed_issue, turn_number, consecutive_empty, empty_turn?) do
+  defp turn_continuation_decision(turn_number, max_turns, consecutive_empty, empty_turn?) do
     next_consecutive_empty = next_consecutive_empty_turns(consecutive_empty, empty_turn?)
 
-    if next_consecutive_empty >= @max_consecutive_empty_turns do
-      Logger.warning(
-        "Empty turn circuit breaker: #{next_consecutive_empty} consecutive empty turns (<#{@empty_turn_threshold_ms}ms) for #{issue_context(refreshed_issue)}; returning control to orchestrator"
-      )
+    cond do
+      turn_number >= max_turns ->
+        {:stop, :max_turns, next_consecutive_empty}
 
-      :ok
-    else
-      maybe_backoff_empty_turn(
-        refreshed_issue,
-        turn_number,
-        session_context.max_turns,
-        empty_turn?,
-        next_consecutive_empty,
-        session_context.sleep_fn
-      )
+      next_consecutive_empty >= @max_consecutive_empty_turns ->
+        {:stop, :empty_turn_circuit_breaker, next_consecutive_empty}
 
-      Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{session_context.max_turns}")
-
-      do_run_codex_turns(session_context, refreshed_issue, turn_number + 1, next_consecutive_empty)
+      true ->
+        {:continue, next_consecutive_empty}
     end
   end
 
