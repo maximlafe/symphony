@@ -80,6 +80,10 @@
 - Other ticket-movement surfaces from the broader rewrite plan were not modified in this slice set.
 
 ## Publish ledger
-- Commits: pending
-- Push: pending
-- PR: pending
+- Commits:
+  - `a9b2949` — `controller_finalizer: fail-close explicit changed_files empty fallback`
+  - `979c0a1` — `docs: add ticket movement rewrite execution report`
+- Push:
+  - Branch `codex/ticket-movement-rewrite` pushed to `origin`
+- PR:
+  - `#202` — <https://github.com/maximlafe/symphony/pull/202>
