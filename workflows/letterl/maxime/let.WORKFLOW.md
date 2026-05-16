@@ -17,7 +17,7 @@ tracker:
     - Duplicate
     - Done
 polling:
-  interval_ms: 30000
+  interval_ms: 5000
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 server:
@@ -495,7 +495,7 @@ hooks:
       done
     fi
 agent:
-  max_concurrent_agents: 2
+  max_concurrent_agents: 10
   max_turns: 20
 codex:
   command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=medium --model gpt-5.3-codex app-server
