@@ -40,6 +40,7 @@ defmodule SymphonyElixir.Orchestrator do
   @idle_codex_account_probe_interval_ms 60_000
   @idle_codex_account_full_reconcile_interval_ms 900_000
   @idle_housekeeping_interval_ms 60_000
+  @housekeeping_tracker_error_backoff_ms 60_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @linear_rate_limit_poll_backoff_ms 60_000
@@ -111,6 +112,7 @@ defmodule SymphonyElixir.Orchestrator do
       :last_codex_account_probe_at_ms,
       :last_full_codex_account_probe_at_ms,
       :last_housekeeping_at_ms,
+      :housekeeping_backoff_until_ms,
       :workspace_usage_bytes,
       :workspace_cleanup_ref,
       :workspace_usage_refresh_ref,
@@ -168,6 +170,7 @@ defmodule SymphonyElixir.Orchestrator do
       last_codex_account_probe_at_ms: nil,
       last_full_codex_account_probe_at_ms: nil,
       last_housekeeping_at_ms: nil,
+      housekeeping_backoff_until_ms: nil,
       workspace_usage_bytes: 0,
       workspace_cleanup_ref: nil,
       workspace_usage_refresh_ref: nil,
@@ -892,6 +895,20 @@ defmodule SymphonyElixir.Orchestrator do
   def tracker_fetch_poll_interval_ms_for_test(current_poll_interval_ms, tracker_reason)
       when is_integer(current_poll_interval_ms) and current_poll_interval_ms >= 0 do
     tracker_fetch_poll_interval_ms(current_poll_interval_ms, tracker_reason)
+  end
+
+  @doc false
+  @spec apply_housekeeping_backoff_for_test(term(), term(), atom(), integer()) :: term()
+  def apply_housekeeping_backoff_for_test(%State{} = state, tracker_reason, source, now_ms)
+      when is_atom(source) and is_integer(now_ms) do
+    maybe_apply_housekeeping_backoff(state, tracker_reason, source, now_ms)
+  end
+
+  @doc false
+  @spec should_run_housekeeping_for_test(term(), atom(), integer()) :: boolean()
+  def should_run_housekeeping_for_test(%State{} = state, source, now_ms)
+      when is_atom(source) and is_integer(now_ms) do
+    should_run_workspace_housekeeping(state, source, now_ms)
   end
 
   @doc false
@@ -2889,6 +2906,7 @@ defmodule SymphonyElixir.Orchestrator do
       now_ms = System.monotonic_time(:millisecond)
 
       state
+      |> Map.put(:housekeeping_backoff_until_ms, nil)
       |> maybe_schedule_workspace_usage_refresh(source)
       |> maybe_schedule_terminal_workspace_cleanup(source)
       |> Map.put(:last_housekeeping_at_ms, now_ms)
@@ -2898,8 +2916,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp should_run_workspace_housekeeping?(%State{} = state, source) do
-    source != :poll or active_housekeeping_required?(state) or idle_housekeeping_due?(state)
+    should_run_workspace_housekeeping(state, source, System.monotonic_time(:millisecond))
   end
+
+  defp should_run_workspace_housekeeping(%State{} = state, source, now_ms)
+       when is_atom(source) and is_integer(now_ms) do
+    source != :poll or
+      (housekeeping_backoff_elapsed?(state, now_ms) and
+         (active_housekeeping_required?(state) or idle_housekeeping_due?(state)))
+  end
+
+  defp housekeeping_backoff_elapsed?(%State{housekeeping_backoff_until_ms: nil}, _now_ms), do: true
+
+  defp housekeeping_backoff_elapsed?(%State{housekeeping_backoff_until_ms: until_ms}, now_ms)
+       when is_integer(until_ms) and is_integer(now_ms),
+       do: now_ms >= until_ms
+
+  defp housekeeping_backoff_elapsed?(_state, _now_ms), do: true
 
   defp active_housekeeping_required?(%State{running: running}) when is_map(running) do
     map_size(running) > 0
@@ -3033,7 +3066,7 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         Logger.warning("Skipping terminal workspace cleanup source=#{source}; failed to fetch terminal issues: #{inspect(reason)}")
 
-        :ok
+        {:tracker_error, reason}
     end
   end
 
@@ -3058,7 +3091,7 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         Logger.warning("Skipping terminal workspace cleanup source=#{source}; failed to revalidate terminal issues: #{inspect(reason)}")
 
-        :ok
+        {:tracker_error, reason}
     end
   end
 
@@ -3098,6 +3131,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp apply_workspace_cleanup_result(%State{} = state, :ok, _source), do: state
 
+  defp apply_workspace_cleanup_result(%State{} = state, {:tracker_error, reason}, source) do
+    maybe_apply_housekeeping_backoff(state, reason, source)
+  end
+
   defp apply_workspace_cleanup_result(%State{} = state, cleanup_result, source) do
     Logger.warning("Workspace retention cleanup returned unexpected result source=#{source}: #{inspect(cleanup_result)}")
 
@@ -3111,6 +3148,41 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_background_task_down(state, _ref, _reason), do: {:noreply, state}
+
+  defp maybe_apply_housekeeping_backoff(
+         %State{} = state,
+         tracker_reason,
+         source,
+         now_ms \\ System.monotonic_time(:millisecond)
+       )
+       when is_atom(source) and is_integer(now_ms) do
+    case housekeeping_backoff_ms(tracker_reason) do
+      backoff_ms when source == :poll and is_integer(backoff_ms) and backoff_ms > 0 ->
+        new_until_ms = now_ms + backoff_ms
+
+        updated_until_ms =
+          case state.housekeeping_backoff_until_ms do
+            existing_until_ms when is_integer(existing_until_ms) -> max(existing_until_ms, new_until_ms)
+            _ -> new_until_ms
+          end
+
+        %{state | housekeeping_backoff_until_ms: updated_until_ms}
+
+      _ ->
+        state
+    end
+  end
+
+  defp housekeeping_backoff_ms({:linear_api_status, 429}), do: @linear_rate_limit_poll_backoff_ms
+
+  defp housekeeping_backoff_ms({:linear_api_status, status})
+       when is_integer(status) and status >= 500,
+       do: @housekeeping_tracker_error_backoff_ms
+
+  defp housekeeping_backoff_ms({:linear_api_request, _reason}),
+    do: @housekeeping_tracker_error_backoff_ms
+
+  defp housekeeping_backoff_ms(_tracker_reason), do: nil
 
   defp terminal_cleanup_states do
     states =

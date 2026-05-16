@@ -103,9 +103,213 @@ defmodule SymphonyElixir.Linear.Client do
   }
   """
 
+  @query_assignee_id """
+  query SymphonyLinearPollByAssigneeId($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String, $assigneeId: String!) {
+    issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}, assignee: {id: {eq: $assigneeId}}}, first: $first, after: $after) {
+      nodes {
+        id
+        identifier
+        title
+        description
+        priority
+        project {
+          slugId
+          name
+        }
+        state {
+          name
+        }
+        branchName
+        url
+        assignee {
+          id
+          email
+          name
+        }
+        labels {
+          nodes {
+            name
+          }
+        }
+        inverseRelations(first: $relationFirst) {
+          nodes {
+            type
+            issue {
+              id
+              identifier
+              state {
+                name
+              }
+            }
+          }
+        }
+        createdAt
+        updatedAt
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+  """
+
+  @query_assignee_email """
+  query SymphonyLinearPollByAssigneeEmail($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String, $assigneeEmail: String!) {
+    issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}, assignee: {email: {eq: $assigneeEmail}}}, first: $first, after: $after) {
+      nodes {
+        id
+        identifier
+        title
+        description
+        priority
+        project {
+          slugId
+          name
+        }
+        state {
+          name
+        }
+        branchName
+        url
+        assignee {
+          id
+          email
+          name
+        }
+        labels {
+          nodes {
+            name
+          }
+        }
+        inverseRelations(first: $relationFirst) {
+          nodes {
+            type
+            issue {
+              id
+              identifier
+              state {
+                name
+              }
+            }
+          }
+        }
+        createdAt
+        updatedAt
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+  """
+
   @team_query """
   query SymphonyLinearTeamPoll($teamKey: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
     issues(filter: {team: {key: {eq: $teamKey}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
+      nodes {
+        id
+        identifier
+        title
+        description
+        priority
+        project {
+          slugId
+          name
+        }
+        state {
+          name
+        }
+        branchName
+        url
+        assignee {
+          id
+          email
+          name
+        }
+        labels {
+          nodes {
+            name
+          }
+        }
+        inverseRelations(first: $relationFirst) {
+          nodes {
+            type
+            issue {
+              id
+              identifier
+              state {
+                name
+              }
+            }
+          }
+        }
+        createdAt
+        updatedAt
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+  """
+
+  @team_query_assignee_id """
+  query SymphonyLinearTeamPollByAssigneeId($teamKey: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String, $assigneeId: String!) {
+    issues(filter: {team: {key: {eq: $teamKey}}, state: {name: {in: $stateNames}}, assignee: {id: {eq: $assigneeId}}}, first: $first, after: $after) {
+      nodes {
+        id
+        identifier
+        title
+        description
+        priority
+        project {
+          slugId
+          name
+        }
+        state {
+          name
+        }
+        branchName
+        url
+        assignee {
+          id
+          email
+          name
+        }
+        labels {
+          nodes {
+            name
+          }
+        }
+        inverseRelations(first: $relationFirst) {
+          nodes {
+            type
+            issue {
+              id
+              identifier
+              state {
+                name
+              }
+            }
+          }
+        }
+        createdAt
+        updatedAt
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+  """
+
+  @team_query_assignee_email """
+  query SymphonyLinearTeamPollByAssigneeEmail($teamKey: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String, $assigneeEmail: String!) {
+    issues(filter: {team: {key: {eq: $teamKey}}, state: {name: {in: $stateNames}}, assignee: {email: {eq: $assigneeEmail}}}, first: $first, after: $after) {
       nodes {
         id
         identifier
@@ -435,16 +639,18 @@ defmodule SymphonyElixir.Linear.Client do
   @spec fetch_issues_by_states_for_test(
           {:project, String.t()} | {:team, String.t()},
           [String.t()],
-          (String.t(), map() -> {:ok, map()} | {:error, term()})
+          (String.t(), map() -> {:ok, map()} | {:error, term()}),
+          map() | nil
         ) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_states_for_test(scope, state_names, graphql_fun)
-      when is_list(state_names) and is_function(graphql_fun, 2) do
+  def fetch_issues_by_states_for_test(scope, state_names, graphql_fun, assignee_filter \\ nil)
+      when is_list(state_names) and is_function(graphql_fun, 2) and
+             (is_nil(assignee_filter) or is_map(assignee_filter)) do
     normalized_states = Enum.map(state_names, &to_string/1) |> Enum.uniq()
 
     if normalized_states == [] do
       {:ok, []}
     else
-      do_fetch_by_states(scope, normalized_states, nil, graphql_fun)
+      do_fetch_by_states(scope, normalized_states, assignee_filter, graphql_fun)
     end
   end
 
@@ -490,8 +696,8 @@ defmodule SymphonyElixir.Linear.Client do
   defp do_fetch_by_states_page(scope, state_names, assignee_filter, graphql_fun, after_cursor, acc_issues) do
     with {:ok, body} <-
            graphql_fun.(
-             linear_scope_query(scope),
-             linear_scope_variables(scope, state_names, after_cursor)
+             linear_scope_query(scope, assignee_filter),
+             linear_scope_variables(scope, state_names, after_cursor, assignee_filter)
            ),
          {:ok, issues, page_info} <- decode_linear_page_response(body, assignee_filter) do
       updated_acc = prepend_page_issues(issues, acc_issues)
@@ -509,28 +715,64 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
-  defp linear_scope_query({:project, _project_slug}), do: @query
-  defp linear_scope_query({:team, _team_key}), do: @team_query
+  defp linear_scope_query({:project, _project_slug}, assignee_filter) do
+    case assignee_query_filter(assignee_filter) do
+      {:id, _value} -> @query_assignee_id
+      {:email, _value} -> @query_assignee_email
+      _ -> @query
+    end
+  end
 
-  defp linear_scope_variables({:project, project_slug}, state_names, after_cursor) do
-    %{
+  defp linear_scope_query({:team, _team_key}, assignee_filter) do
+    case assignee_query_filter(assignee_filter) do
+      {:id, _value} -> @team_query_assignee_id
+      {:email, _value} -> @team_query_assignee_email
+      _ -> @team_query
+    end
+  end
+
+  defp linear_scope_variables({:project, project_slug}, state_names, after_cursor, assignee_filter) do
+    base = %{
       projectSlug: project_slug,
       stateNames: state_names,
       first: @issue_page_size,
       relationFirst: @issue_page_size,
       after: after_cursor
     }
+
+    maybe_add_assignee_query_filter(base, assignee_filter)
   end
 
-  defp linear_scope_variables({:team, team_key}, state_names, after_cursor) do
-    %{
+  defp linear_scope_variables({:team, team_key}, state_names, after_cursor, assignee_filter) do
+    base = %{
       teamKey: team_key,
       stateNames: state_names,
       first: @issue_page_size,
       relationFirst: @issue_page_size,
       after: after_cursor
     }
+
+    maybe_add_assignee_query_filter(base, assignee_filter)
   end
+
+  defp maybe_add_assignee_query_filter(variables, assignee_filter) when is_map(variables) do
+    case assignee_query_filter(assignee_filter) do
+      {:id, value} ->
+        Map.put(variables, :assigneeId, value)
+
+      {:email, value} ->
+        Map.put(variables, :assigneeEmail, value)
+
+      _ ->
+        variables
+    end
+  end
+
+  defp assignee_query_filter(%{query_filter: {kind, value}})
+       when kind in [:id, :email] and is_binary(value),
+       do: {kind, value}
+
+  defp assignee_query_filter(_assignee_filter), do: nil
 
   defp prepend_page_issues(issues, acc_issues) when is_list(issues) and is_list(acc_issues) do
     Enum.reverse(issues, acc_issues)
@@ -1037,7 +1279,12 @@ defmodule SymphonyElixir.Linear.Client do
         resolve_viewer_assignee_filter()
 
       normalized ->
-        {:ok, %{configured_assignee: assignee, match_values: MapSet.new([normalized])}}
+        {:ok,
+         %{
+           configured_assignee: assignee,
+           match_values: MapSet.new([normalized]),
+           query_filter: assignee_query_filter_for_value(normalized)
+         }}
     end
   end
 
@@ -1049,7 +1296,12 @@ defmodule SymphonyElixir.Linear.Client do
             {:error, :missing_linear_viewer_identity}
 
           viewer_id ->
-            {:ok, %{configured_assignee: "me", match_values: MapSet.new([viewer_id])}}
+            {:ok,
+             %{
+               configured_assignee: "me",
+               match_values: MapSet.new([viewer_id]),
+               query_filter: {:id, viewer_id}
+             }}
         end
 
       {:ok, _body} ->
@@ -1075,6 +1327,21 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp normalize_assignee_match_value(_value), do: nil
+
+  defp assignee_query_filter_for_value(value) when is_binary(value) do
+    cond do
+      String.contains?(value, "@") ->
+        {:email, value}
+
+      String.match?(value, ~r/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) ->
+        {:id, value}
+
+      true ->
+        nil
+    end
+  end
+
+  defp assignee_query_filter_for_value(_value), do: nil
 
   defp extract_labels(%{"labels" => %{"nodes" => labels}}) when is_list(labels) do
     labels

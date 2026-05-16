@@ -36,6 +36,39 @@ defmodule SymphonyElixir.OrchestratorTrackerEscalationTest do
              )
   end
 
+  test "applies housekeeping backoff on poll cleanup 429 failures" do
+    now_ms = 1_000_000
+
+    state =
+      %Orchestrator.State{
+        running: %{"issue-1" => %{id: "issue-1"}},
+        retry_attempts: %{},
+        last_housekeeping_at_ms: nil,
+        housekeeping_backoff_until_ms: nil
+      }
+      |> Orchestrator.apply_housekeeping_backoff_for_test({:linear_api_status, 429}, :poll, now_ms)
+
+    assert is_integer(state.housekeeping_backoff_until_ms)
+    assert state.housekeeping_backoff_until_ms >= now_ms + 60_000
+    refute Orchestrator.should_run_housekeeping_for_test(state, :poll, now_ms + 1)
+    assert Orchestrator.should_run_housekeeping_for_test(state, :poll, now_ms + 60_000)
+  end
+
+  test "does not apply housekeeping backoff for non-poll cleanup sources" do
+    now_ms = 1_000_000
+
+    state =
+      %Orchestrator.State{
+        running: %{"issue-1" => %{id: "issue-1"}},
+        retry_attempts: %{},
+        last_housekeeping_at_ms: nil,
+        housekeeping_backoff_until_ms: nil
+      }
+      |> Orchestrator.apply_housekeeping_backoff_for_test({:linear_api_status, 429}, :startup, now_ms)
+
+    assert state.housekeeping_backoff_until_ms == nil
+  end
+
   test "deduplicates infra tracker escalation retries within ttl window by fingerprint" do
     issue_id = "issue-123"
     tracker_reason = {:linear_api_status, 502}
