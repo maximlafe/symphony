@@ -1105,6 +1105,53 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert payload.details["proof_diagnostic"]["change_classes"] == ["runtime_contract"]
   end
 
+  test "run/3 fail-closes changed_paths fallback when git diff is empty" do
+    issue = %Issue{id: "issue-proof-empty-diff", identifier: "LET-462-PROOF-EMPTY-DIFF", state: "In Progress"}
+
+    remote_repo = Path.join(System.tmp_dir!(), "controller-finalizer-remote-#{System.unique_integer([:positive])}")
+    File.rm_rf!(remote_repo)
+    File.mkdir_p!(remote_repo)
+    {_output, 0} = System.cmd("git", ["init", "--bare"], cd: remote_repo)
+
+    workspace =
+      create_workspace!(
+        issue.identifier,
+        git_init: true,
+        git_remote: remote_repo,
+        workpad_body: validation_workpad_without_backticks()
+      )
+
+    write_file!(workspace, ".symphony-base-branch", "main\n")
+    prepare_git_history!(workspace, "main")
+
+    checkpoint = %{
+      "head" => "head-proof-empty-diff",
+      "open_pr" => %{"number" => 213, "url" => "https://github.com/acme/symphony/pull/213"},
+      "changed_files" => []
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/213",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run when required proof checks are missing")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "required proof checks are missing before handoff"
+    assert Enum.map(payload.details["proof_diagnostic"]["missing_checks"], & &1["check"]) == ["runtime_smoke"]
+    assert payload.details["proof_diagnostic"]["change_classes"] == ["runtime_contract"]
+  end
+
   test "run/3 defaults empty .symphony-base-branch to main" do
     issue = %Issue{id: "issue-proof-empty-base", identifier: "LET-462-PROOF-EMPTY-BASE", state: "In Progress"}
 
