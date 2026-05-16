@@ -150,10 +150,9 @@ hooks:
       echo "GitHub auth is unavailable. Export GH_TOKEN in /etc/symphony/symphony.env." >&2
       exit 1
     }
-    gh auth setup-git >/dev/null 2>&1 || {
-      echo "Failed to configure git credentials via gh auth setup-git." >&2
-      exit 1
-    }
+    if ! gh auth setup-git >/dev/null 2>&1; then
+      echo "Warning: failed to configure git credentials via gh auth setup-git; continuing with existing git auth." >&2
+    fi
     issue_project_slug=${SYMPHONY_ISSUE_PROJECT_SLUG:-}
     issue_project_name=${SYMPHONY_ISSUE_PROJECT_NAME:-}
     if [ -n "$issue_project_name" ]; then
