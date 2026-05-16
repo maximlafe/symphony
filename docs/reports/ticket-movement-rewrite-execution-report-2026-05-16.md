@@ -4,7 +4,7 @@
 - Base PR: `#201` — <https://github.com/maximlafe/symphony/pull/201>
 - Base branch: `codex/symphony-refactor`
 - Base head verified at start: `9d4fc34937312239d0f9c0055a2332fad7a6fa54`
-- Working branch for this run: `codex/ticket-movement-rewrite`
+- Working branch for this run: `codex/tm-reroute-clean`
 
 ## Linear test issue (required pre-slice gate)
 - `LET-736` — <https://linear.app/letterl/issue/LET-736/ticket-movement-rewrite-smokee2e-test-checklist>
@@ -134,6 +134,6 @@
   - `ed76ef4` — `docs: record slice C dynamic_tool fallback validation`
   - `2b74c64` — `docs: add ticket movement inventory map and slice D evidence`
 - Push:
-  - Branch `codex/ticket-movement-rewrite` pushed to `origin`
+  - Branch `codex/tm-reroute-clean` pushed to `origin`
 - PR:
-  - `#202` — <https://github.com/maximlafe/symphony/pull/202>
+  - pending publication on `codex/tm-reroute-clean`
