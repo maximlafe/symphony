@@ -2,7 +2,7 @@
 tracker:
   kind: linear
   team_key: "LET"
-  assignee: "symphony"
+  assignee: "bbe6bf34-e7d7-469d-b198-54ce978c90da"
   active_states:
     - Todo
     - Spec Prep
@@ -17,7 +17,7 @@ tracker:
     - Duplicate
     - Done
 polling:
-  interval_ms: 5000
+  interval_ms: 30000
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 server:
@@ -495,11 +495,11 @@ hooks:
       done
     fi
 agent:
-  max_concurrent_agents: 10
+  max_concurrent_agents: 2
   max_turns: 20
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=medium --model gpt-5.3-codex app-server
-  command_template: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort={{effort}} --model {{model}} app-server
+  command: /Applications/Codex.app/Contents/Resources/codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=medium --model gpt-5.3-codex app-server
+  command_template: /Applications/Codex.app/Contents/Resources/codex --config shell_environment_policy.inherit=all --config model_reasoning_effort={{effort}} --model {{model}} app-server
   cost_profiles:
     cheap_planning:
       model: gpt-5.4
@@ -531,7 +531,9 @@ codex:
     type: dangerFullAccess
   max_continuation_attempts: 3
   accounts:
-    - id: "furrow.03-offline@icloud.com"
+    - id: primary
+      codex_home: /root/.codex
+    - id: furrow.03-offline@icloud.com
       codex_home: /root/.codex/.codex-furrow
     - id: Deborah
       codex_home: /root/.codex/.codex-deborah

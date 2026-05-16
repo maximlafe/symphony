@@ -16,6 +16,10 @@ defmodule SymphonyElixir.Linear.Client do
   @linear_upload_host "uploads.linear.app"
   @linear_upload_url_regex ~r/https?:\/\/uploads\.linear\.app\/[^\s<>\]\[(){}"']+/u
   @ingested_attachment_body_private_key :symphony_linear_ingested_attachment_body
+  @linear_rate_limit_guard_key {__MODULE__, :linear_rate_limit_guard_until_ms}
+  @linear_rate_limit_default_cooldown_ms 60_000
+  @linear_rate_limit_min_cooldown_ms 5_000
+  @linear_rate_limit_max_cooldown_ms 3_600_000
 
   @text_attachment_extensions MapSet.new([
                                 "csv",
@@ -318,17 +322,27 @@ defmodule SymphonyElixir.Linear.Client do
     payload = build_graphql_payload(query, variables, Keyword.get(opts, :operation_name))
     request_fun = Keyword.get(opts, :request_fun, &post_graphql_request/2)
 
-    with {:ok, headers} <- graphql_headers(),
+    with :ok <- enforce_linear_rate_limit_guard(),
+         {:ok, headers} <- graphql_headers(),
          {:ok, %{status: 200, body: body}} <- request_fun.(payload, headers) do
       {:ok, body}
     else
       {:ok, response} ->
+        normalized_status = normalize_linear_response_status(response)
+        {status, rate_limited_cooldown_ms} = maybe_normalize_linear_rate_limited_status(response, normalized_status)
+
         Logger.error(
-          "Linear GraphQL request failed status=#{response.status}" <>
+          "Linear GraphQL request failed status=#{status}" <>
+            linear_rate_limit_context(rate_limited_cooldown_ms) <>
             linear_error_context(payload, response)
         )
 
-        {:error, {:linear_api_status, response.status}}
+        {:error, {:linear_api_status, status}}
+
+      {:error, {:linear_rate_limited, retry_after_ms}} ->
+        Logger.error("Linear GraphQL request skipped due to active local rate-limit cooldown retry_after_ms=#{retry_after_ms}")
+
+        {:error, {:linear_api_status, 429}}
 
       {:error, reason} ->
         Logger.error("Linear GraphQL request failed: #{inspect(reason)}")
@@ -609,6 +623,183 @@ defmodule SymphonyElixir.Linear.Client do
       |> summarize_error_body()
 
     operation_name <> " body=" <> body
+  end
+
+  defp enforce_linear_rate_limit_guard do
+    case linear_rate_limit_retry_after_ms() do
+      retry_after_ms when is_integer(retry_after_ms) and retry_after_ms > 0 ->
+        {:error, {:linear_rate_limited, retry_after_ms}}
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp linear_rate_limit_retry_after_ms do
+    now_ms = System.system_time(:millisecond)
+
+    case lookup_linear_rate_limit_guard_until_ms() do
+      until_ms when is_integer(until_ms) and until_ms > now_ms ->
+        until_ms - now_ms
+
+      _ ->
+        0
+    end
+  end
+
+  defp maybe_normalize_linear_rate_limited_status(response, status) when is_integer(status) do
+    cooldown_ms = rate_limited_cooldown_ms(response, status)
+
+    if is_integer(cooldown_ms) and cooldown_ms > 0 do
+      activate_linear_rate_limit_guard(cooldown_ms)
+      {429, cooldown_ms}
+    else
+      {status, nil}
+    end
+  end
+
+  defp normalize_linear_response_status(%{status: status}) when is_integer(status), do: status
+  defp normalize_linear_response_status(_response), do: 0
+
+  defp rate_limited_cooldown_ms(response, status) when is_integer(status) do
+    cond do
+      status == 429 ->
+        @linear_rate_limit_default_cooldown_ms
+
+      status in [400, 403] and linear_rate_limited_response?(response) ->
+        response
+        |> linear_rate_limit_duration_ms_from_body()
+        |> clamp_linear_rate_limit_cooldown_ms()
+
+      true ->
+        nil
+    end
+  end
+
+  defp linear_rate_limited_response?(response) do
+    response
+    |> Map.get(:body, %{})
+    |> linear_response_errors()
+    |> Enum.any?(&linear_rate_limited_error_entry?/1)
+  end
+
+  defp linear_response_errors(body) when is_map(body) do
+    case map_value_with_atom_fallback(body, "errors") do
+      errors when is_list(errors) -> errors
+      _ -> []
+    end
+  end
+
+  defp linear_response_errors(_body), do: []
+
+  defp linear_rate_limited_error_entry?(entry) when is_map(entry) do
+    extensions = map_value_with_atom_fallback(entry, "extensions")
+    code = map_string_field(extensions, "code")
+    message = map_string_field(entry, "message")
+
+    status_code =
+      map_integer_field(extensions, "statusCode") ||
+        extensions
+        |> map_value_with_atom_fallback("http")
+        |> map_integer_field("status")
+
+    status_code == 429 ||
+      string_contains_case_insensitive?(code, "ratelimited") ||
+      string_contains_case_insensitive?(message, "rate limit")
+  end
+
+  defp linear_rate_limited_error_entry?(_entry), do: false
+
+  defp linear_rate_limit_duration_ms_from_body(response) do
+    response
+    |> Map.get(:body, %{})
+    |> linear_response_errors()
+    |> Enum.find_value(@linear_rate_limit_default_cooldown_ms, fn entry ->
+      entry
+      |> map_value_with_atom_fallback("extensions")
+      |> map_value_with_atom_fallback("meta")
+      |> map_value_with_atom_fallback("rateLimitResult")
+      |> map_integer_field("duration")
+    end)
+  end
+
+  defp clamp_linear_rate_limit_cooldown_ms(ms) when is_integer(ms) and ms > 0 do
+    ms
+    |> max(@linear_rate_limit_min_cooldown_ms)
+    |> min(@linear_rate_limit_max_cooldown_ms)
+  end
+
+  defp clamp_linear_rate_limit_cooldown_ms(_ms), do: @linear_rate_limit_default_cooldown_ms
+
+  defp activate_linear_rate_limit_guard(cooldown_ms) when is_integer(cooldown_ms) and cooldown_ms > 0 do
+    now_ms = System.system_time(:millisecond)
+    until_ms = now_ms + cooldown_ms
+
+    case lookup_linear_rate_limit_guard_until_ms() do
+      previous_until when is_integer(previous_until) and previous_until > until_ms ->
+        :ok
+
+      _ ->
+        :persistent_term.put(@linear_rate_limit_guard_key, until_ms)
+        :ok
+    end
+  end
+
+  defp activate_linear_rate_limit_guard(_cooldown_ms), do: :ok
+
+  defp lookup_linear_rate_limit_guard_until_ms do
+    case :persistent_term.get(@linear_rate_limit_guard_key, 0) do
+      until_ms when is_integer(until_ms) -> until_ms
+      _ -> 0
+    end
+  end
+
+  defp linear_rate_limit_context(cooldown_ms) when is_integer(cooldown_ms) and cooldown_ms > 0 do
+    " cooldown_ms=#{cooldown_ms}"
+  end
+
+  defp linear_rate_limit_context(_cooldown_ms), do: ""
+
+  defp map_value_with_atom_fallback(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key) || Map.get(map, String.to_atom(key))
+  end
+
+  defp map_value_with_atom_fallback(_map, _key), do: nil
+
+  defp map_string_field(map, key) do
+    case map_value_with_atom_fallback(map, key) do
+      value when is_binary(value) -> value
+      value when is_atom(value) -> Atom.to_string(value)
+      _ -> nil
+    end
+  end
+
+  defp map_integer_field(map, key) do
+    case map_value_with_atom_fallback(map, key) do
+      value when is_integer(value) -> value
+      value when is_binary(value) -> safe_string_to_integer(value)
+      _ -> nil
+    end
+  end
+
+  defp safe_string_to_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, ""} -> integer
+      _ -> nil
+    end
+  end
+
+  defp string_contains_case_insensitive?(value, needle) when is_binary(value) and is_binary(needle) do
+    String.contains?(String.downcase(value), String.downcase(needle))
+  end
+
+  defp string_contains_case_insensitive?(_value, _needle), do: false
+
+  @doc false
+  @spec clear_rate_limit_guard_for_test() :: :ok
+  def clear_rate_limit_guard_for_test do
+    :persistent_term.erase(@linear_rate_limit_guard_key)
+    :ok
   end
 
   defp summarize_error_body(body) when is_binary(body) do

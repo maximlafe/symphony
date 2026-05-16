@@ -42,6 +42,7 @@ defmodule SymphonyElixir.Orchestrator do
   @idle_housekeeping_interval_ms 60_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
+  @linear_rate_limit_poll_backoff_ms 60_000
   @github_pr_snapshot_tool "github_pr_snapshot"
   @github_wait_for_checks_tool "github_wait_for_checks"
   @symphony_handoff_check_tool "symphony_handoff_check"
@@ -670,8 +671,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp verification_guard_failure_context(running_entry, manifest)
        when is_map(running_entry) and is_map(manifest) do
     guard_name = Map.get(running_entry, :validation_guard_name) || manifest["validation_guard_name"] || "contract"
-    summary = Map.get(running_entry, :verification_summary) || manifest["summary"] || "verification guard failed"
     missing_items = normalize_manifest_missing_items(manifest["missing_items"])
+    summary = Map.get(running_entry, :verification_summary) || verification_summary_from_manifest(manifest)
 
     %{
       guard_name: guard_name,
@@ -790,7 +791,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
-        state
+        maybe_apply_tracker_fetch_poll_backoff(state, reason)
 
       false ->
         state
@@ -884,6 +885,13 @@ defmodule SymphonyElixir.Orchestrator do
       tracker_escalation_dedupe_decision(dedupe, issue_id, tracker_reason, context, now_ms)
 
     %{status: status, dedupe: updated_dedupe}
+  end
+
+  @doc false
+  @spec tracker_fetch_poll_interval_ms_for_test(non_neg_integer(), term()) :: non_neg_integer()
+  def tracker_fetch_poll_interval_ms_for_test(current_poll_interval_ms, tracker_reason)
+      when is_integer(current_poll_interval_ms) and current_poll_interval_ms >= 0 do
+    tracker_fetch_poll_interval_ms(current_poll_interval_ms, tracker_reason)
   end
 
   @doc false
@@ -6680,7 +6688,7 @@ defmodule SymphonyElixir.Orchestrator do
     case verification_manifest_from_update(update) do
       {:ok, manifest} ->
         verification_result = if(manifest["passed"] == true, do: "passed", else: "failed")
-        verification_summary = manifest["summary"]
+        verification_summary = verification_summary_from_manifest(manifest)
         validation_guard_name = manifest["validation_guard_name"] || "contract"
 
         Map.merge(running_entry, %{
@@ -6707,8 +6715,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp verification_manifest_from_update(update) when is_map(update) do
     with {:ok, @symphony_handoff_check_tool, _result} <- dynamic_tool_result(update),
-         {:ok, payload} <- parse_dynamic_tool_result_payload(update),
-         manifest when is_map(manifest) <- extract_manifest_payload(payload) do
+         {:ok, payloads} <- parse_dynamic_tool_result_payloads(update),
+         manifest when is_map(manifest) <- extract_manifest_from_payloads(payloads) do
       {:ok, manifest}
     else
       _ -> :error
@@ -6737,12 +6745,70 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_put_ci_wait_result(running_entry, _update), do: running_entry
 
-  defp extract_manifest_payload(%{"manifest" => manifest}) when is_map(manifest), do: manifest
-  defp extract_manifest_payload(manifest) when is_map(manifest), do: manifest
+  defp extract_manifest_payload(%{"manifest" => manifest}) when is_map(manifest) do
+    if handoff_manifest_payload?(manifest), do: manifest
+  end
+
+  defp extract_manifest_payload(manifest) when is_map(manifest) do
+    if handoff_manifest_payload?(manifest), do: manifest
+  end
+
   defp extract_manifest_payload(_payload), do: nil
 
-  defp normalize_manifest_missing_items(items) when is_list(items), do: items
+  defp extract_manifest_from_payloads(payloads) when is_list(payloads) do
+    Enum.find_value(payloads, &extract_manifest_payload/1)
+  end
+
+  defp handoff_manifest_payload?(manifest) when is_map(manifest) do
+    passed =
+      cond do
+        Map.has_key?(manifest, "passed") -> manifest["passed"]
+        Map.has_key?(manifest, :passed) -> manifest[:passed]
+        true -> nil
+      end
+
+    summary =
+      normalize_manifest_summary(Map.get(manifest, "summary") || Map.get(manifest, :summary))
+
+    missing_items =
+      normalize_manifest_missing_items(Map.get(manifest, "missing_items") || Map.get(manifest, :missing_items))
+
+    is_boolean(passed) and
+      (passed == true or is_binary(summary) or missing_items != [])
+  end
+
+  defp normalize_manifest_missing_items(items) when is_list(items) do
+    items
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
   defp normalize_manifest_missing_items(_items), do: []
+
+  defp normalize_manifest_summary(summary) when is_binary(summary) do
+    case String.trim(summary) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_manifest_summary(_summary), do: nil
+
+  defp verification_summary_from_manifest(manifest) when is_map(manifest) do
+    normalize_manifest_summary(Map.get(manifest, "summary") || Map.get(manifest, :summary)) ||
+      derived_verification_summary_from_missing_items(normalize_manifest_missing_items(Map.get(manifest, "missing_items") || Map.get(manifest, :missing_items))) ||
+      "verification guard failed"
+  end
+
+  defp derived_verification_summary_from_missing_items(missing_items) when is_list(missing_items) do
+    missing_items
+    |> Enum.take(3)
+    |> case do
+      [] -> nil
+      items -> "verification contract failed: #{Enum.join(items, "; ")}"
+    end
+  end
 
   defp normalize_pr_snapshot_payload(payload) when is_map(payload) do
     url = payload["url"]
@@ -6798,19 +6864,51 @@ defmodule SymphonyElixir.Orchestrator do
   defp dynamic_tool_result(_update), do: :error
 
   defp parse_dynamic_tool_result_payload(update) when is_map(update) do
-    with {:ok, _tool_name, result} <- dynamic_tool_result(update),
-         text when is_binary(text) <- result_payload_text(result),
-         {:ok, payload} <- Jason.decode(text),
-         true <- is_map(payload) do
+    with {:ok, payloads} <- parse_dynamic_tool_result_payloads(update),
+         [payload | _] <- payloads do
       {:ok, payload}
     else
       _ -> :error
     end
   end
 
-  defp result_payload_text(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text), do: text
-  defp result_payload_text(%{contentItems: [%{text: text} | _]}) when is_binary(text), do: text
-  defp result_payload_text(_result), do: nil
+  defp parse_dynamic_tool_result_payloads(update) when is_map(update) do
+    with {:ok, _tool_name, result} <- dynamic_tool_result(update),
+         texts when is_list(texts) and texts != [] <- result_payload_texts(result),
+         payloads <- decode_result_payload_texts(texts),
+         true <- payloads != [] do
+      {:ok, payloads}
+    else
+      _ -> :error
+    end
+  end
+
+  defp decode_result_payload_texts(texts) when is_list(texts) do
+    Enum.flat_map(texts, fn
+      text when is_binary(text) ->
+        case Jason.decode(text) do
+          {:ok, payload} when is_map(payload) -> [payload]
+          _ -> []
+        end
+
+      _ ->
+        []
+    end)
+  end
+
+  defp result_payload_texts(%{"contentItems" => items}) when is_list(items) do
+    Enum.flat_map(items, &result_content_item_text/1)
+  end
+
+  defp result_payload_texts(%{contentItems: items}) when is_list(items) do
+    Enum.flat_map(items, &result_content_item_text/1)
+  end
+
+  defp result_payload_texts(_result), do: []
+
+  defp result_content_item_text(%{"text" => text}) when is_binary(text), do: [text]
+  defp result_content_item_text(%{text: text}) when is_binary(text), do: [text]
+  defp result_content_item_text(_item), do: []
 
   defp extract_pr_number(url) when is_binary(url) do
     case Regex.run(~r{/pull/(\d+)}, url, capture: :all_but_first) do
@@ -7152,6 +7250,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp record_session_completion_totals(state, _running_entry), do: state
+
+  defp maybe_apply_tracker_fetch_poll_backoff(%State{} = state, tracker_reason) do
+    current_poll_interval_ms = state.poll_interval_ms || 0
+    updated_poll_interval_ms = tracker_fetch_poll_interval_ms(current_poll_interval_ms, tracker_reason)
+
+    %{state | poll_interval_ms: updated_poll_interval_ms}
+  end
+
+  defp tracker_fetch_poll_interval_ms(current_poll_interval_ms, {:linear_api_status, 429})
+       when is_integer(current_poll_interval_ms) and current_poll_interval_ms >= 0 do
+    max(current_poll_interval_ms, @linear_rate_limit_poll_backoff_ms)
+  end
+
+  defp tracker_fetch_poll_interval_ms(current_poll_interval_ms, _tracker_reason)
+       when is_integer(current_poll_interval_ms) and current_poll_interval_ms >= 0 do
+    current_poll_interval_ms
+  end
 
   defp refresh_runtime_config(%State{} = state) do
     config = Config.settings!()

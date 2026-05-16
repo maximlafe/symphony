@@ -35,6 +35,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   }
   @unsupported_linear_comments_resolved_filter_pattern ~r/\bcomments\s*\((?=[^)]*\bfilter\s*:\s*\{[^)]*\bresolved\b)[^)]*\)/s
+  @unsupported_linear_issue_identifier_arg_pattern ~r/\bissue\s*\((?=[^)]*\bidentifier\s*:)[^)]*\)/s
+  @unsupported_linear_issues_filter_identifier_pattern ~r/\bissues\s*\((?=[^)]*\bfilter\s*:\s*\{[^)]*\bidentifier\s*:)[^)]*\)/s
+  @unsupported_linear_team_key_arg_pattern ~r/\bteam\s*\((?=[^)]*\bkey\s*:)[^)]*\)/s
 
   @sync_workpad_tool "sync_workpad"
   @sync_workpad_description "Create or update a workpad comment on a Linear issue. Reads the body from a local file to keep the conversation context small."
@@ -470,6 +473,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
     with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
          :ok <- guard_unsupported_linear_comments_filter(query),
+         :ok <- guard_unsupported_linear_issue_query_patterns(query),
          :ok <- maybe_guard_issue_description_update(query, variables, linear_client, opts),
          :ok <- maybe_guard_review_ready_issue_update(query, variables, linear_client, opts),
          :ok <- maybe_guard_execution_issue_update(query, variables, linear_client, opts),
@@ -2105,6 +2109,22 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
+  defp guard_unsupported_linear_issue_query_patterns(query) when is_binary(query) do
+    cond do
+      Regex.match?(@unsupported_linear_issue_identifier_arg_pattern, query) ->
+        {:error, :unsupported_linear_issue_identifier_arg}
+
+      Regex.match?(@unsupported_linear_issues_filter_identifier_pattern, query) ->
+        {:error, :unsupported_linear_issues_filter_identifier}
+
+      Regex.match?(@unsupported_linear_team_key_arg_pattern, query) ->
+        {:error, :unsupported_linear_team_key_arg}
+
+      true ->
+        :ok
+    end
+  end
+
   defp maybe_put_runner_opt(opts, key, runner) when is_function(runner, 2) do
     Keyword.put(opts, key, runner)
   end
@@ -2395,20 +2415,27 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp graphql_response(response) do
-    tool_response(graphql_response_success?(response), response)
+    success =
+      case response do
+        %{"errors" => errors} when is_list(errors) and errors != [] -> false
+        %{errors: errors} when is_list(errors) and errors != [] -> false
+        _ -> true
+      end
+
+    %{
+      "success" => success,
+      "contentItems" => [
+        %{
+          "type" => "inputText",
+          "text" => encode_payload(response)
+        }
+      ]
+    }
   end
 
   defp success_response(payload) do
-    tool_response(true, payload)
-  end
-
-  defp failure_response(payload) do
-    tool_response(false, payload)
-  end
-
-  defp tool_response(success, payload) when is_boolean(success) do
     %{
-      "success" => success,
+      "success" => true,
       "contentItems" => [
         %{
           "type" => "inputText",
@@ -2418,12 +2445,16 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   end
 
-  defp graphql_response_success?(response) do
-    case response do
-      %{"errors" => errors} when is_list(errors) and errors != [] -> false
-      %{errors: errors} when is_list(errors) and errors != [] -> false
-      _ -> true
-    end
+  defp failure_response(payload) do
+    %{
+      "success" => false,
+      "contentItems" => [
+        %{
+          "type" => "inputText",
+          "text" => encode_payload(payload)
+        }
+      ]
+    }
   end
 
   defp encode_payload(payload) when is_map(payload) or is_list(payload) do
@@ -3639,6 +3670,30 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{
       "error" => %{
         "message" => "`linear_graphql` does not support `comments(filter: {resolved})` on Linear issues. Query comments without the `resolved` filter, for example `comments(first: 20)`."
+      }
+    }
+  end
+
+  defp tool_error_payload(:unsupported_linear_issue_identifier_arg) do
+    %{
+      "error" => %{
+        "message" => "`linear_graphql` does not support `issue(identifier: ...)`. Query the issue by `id`, for example `issue(id: $issueId)`."
+      }
+    }
+  end
+
+  defp tool_error_payload(:unsupported_linear_issues_filter_identifier) do
+    %{
+      "error" => %{
+        "message" => "`linear_graphql` does not support `issues(filter: {identifier: ...})`. Query by `id` (`issue(id: $issueId)`) or use a supported `issues(filter: ...)` predicate."
+      }
+    }
+  end
+
+  defp tool_error_payload(:unsupported_linear_team_key_arg) do
+    %{
+      "error" => %{
+        "message" => "`linear_graphql` does not support `team(key: ...)`. Query teams with `teams(filter: {key: {eq: ...}}, first: 1)`."
       }
     }
   end

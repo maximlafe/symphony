@@ -2306,6 +2306,62 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert log =~ "Variable \\\"$ids\\\" got invalid value"
   end
 
+  test "linear client applies local cooldown after 429 and skips immediate retries" do
+    Client.clear_rate_limit_guard_for_test()
+    on_exit(fn -> Client.clear_rate_limit_guard_for_test() end)
+
+    request_fun = fn _payload, _headers ->
+      send(self(), :linear_request_called)
+      {:ok, %{status: 429, body: %{"errors" => [%{"message" => "rate limited"}]}}}
+    end
+
+    assert {:error, {:linear_api_status, 429}} =
+             Client.graphql("query Viewer { viewer { id } }", %{}, request_fun: request_fun)
+
+    assert_receive :linear_request_called
+
+    assert {:error, {:linear_api_status, 429}} =
+             Client.graphql("query Viewer { viewer { id } }", %{}, request_fun: request_fun)
+
+    refute_receive :linear_request_called
+  end
+
+  test "linear client normalizes RATELIMITED graphql errors to 429 and tracks cooldown" do
+    Client.clear_rate_limit_guard_for_test()
+    on_exit(fn -> Client.clear_rate_limit_guard_for_test() end)
+
+    rate_limited_body = %{
+      "errors" => [
+        %{
+          "message" => "Rate limit exceeded",
+          "extensions" => %{
+            "code" => "RATELIMITED",
+            "meta" => %{"rateLimitResult" => %{"duration" => 120_000}}
+          }
+        }
+      ]
+    }
+
+    request_fun = fn _payload, _headers ->
+      send(self(), :ratelimited_request_called)
+      {:ok, %{status: 400, body: rate_limited_body}}
+    end
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, {:linear_api_status, 429}} =
+                 Client.graphql("query Viewer { viewer { id } }", %{}, request_fun: request_fun)
+      end)
+
+    assert log =~ "Linear GraphQL request failed status=429 cooldown_ms=120000"
+    assert_receive :ratelimited_request_called
+
+    assert {:error, {:linear_api_status, 429}} =
+             Client.graphql("query Viewer { viewer { id } }", %{}, request_fun: request_fun)
+
+    refute_receive :ratelimited_request_called
+  end
+
   test "orchestrator sorts dispatch by priority then oldest created_at" do
     issue_same_priority_older = %Issue{
       id: "issue-old-high",

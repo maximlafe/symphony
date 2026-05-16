@@ -16,6 +16,26 @@ defmodule SymphonyElixir.OrchestratorTrackerEscalationTest do
              Orchestrator.classify_tracker_escalation_reason_for_test({:linear_api_status, 400})
   end
 
+  test "applies poll backoff for tracker 429 failures" do
+    assert 60_000 ==
+             Orchestrator.tracker_fetch_poll_interval_ms_for_test(
+               5_000,
+               {:linear_api_status, 429}
+             )
+
+    assert 120_000 ==
+             Orchestrator.tracker_fetch_poll_interval_ms_for_test(
+               120_000,
+               {:linear_api_status, 429}
+             )
+
+    assert 5_000 ==
+             Orchestrator.tracker_fetch_poll_interval_ms_for_test(
+               5_000,
+               {:linear_api_status, 400}
+             )
+  end
+
   test "deduplicates infra tracker escalation retries within ttl window by fingerprint" do
     issue_id = "issue-123"
     tracker_reason = {:linear_api_status, 502}

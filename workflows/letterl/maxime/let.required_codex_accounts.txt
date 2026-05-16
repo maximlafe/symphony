@@ -1,3 +1,4 @@
-# Required Codex accounts for the production LetterL runner.
+# Required Codex account ids for the production LetterL runner.
+primary
 furrow.03-offline@icloud.com
 Deborah

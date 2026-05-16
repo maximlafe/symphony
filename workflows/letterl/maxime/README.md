@@ -1,12 +1,12 @@
 # LetterL Maxime Workflow
 
-This workflow routes Symphony only to Maxime's tickets in LetterL that are assigned to the Linear user `symphony` (`maximelafe@atomicmail.io`). `let.WORKFLOW.md` is the single team-scoped runner and resolves the target repository from structured Linear metadata instead of a `Repository:` line in the issue description.
+This workflow routes Symphony only to Maxime's tickets in LetterL that are assigned to the Linear user `dbregalwin` (`dbregalwin@gmail.com`). `let.WORKFLOW.md` is the single team-scoped runner and resolves the target repository from structured Linear metadata instead of a `Repository:` line in the issue description.
 
 Linear assignee selector:
 
-- `symphony`
-- email: `maximelafe@atomicmail.io`
-- user id: `ea586937-c12c-465d-b32b-13ac0fb4b28c`
+- `dbregalwin@gmail.com`
+- display name: `dbregalwin`
+- user id: `bbe6bf34-e7d7-469d-b198-54ce978c90da`
 
 Project routing:
 
