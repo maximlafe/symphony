@@ -48,8 +48,12 @@ symphony-bootstrap:
 		echo "\`gh auth status\` failed. Refresh GH_TOKEN or run \`gh auth login -h github.com\`."; \
 		exit 1; \
 	fi
-	@if ! gh auth setup-git >/dev/null 2>&1; then \
-		echo "Failed to configure git credentials via \`gh auth setup-git\`."; \
+	@source_repo_url=$${SYMPHONY_SOURCE_REPO_URL:-$$(git remote get-url origin 2>/dev/null || printf '%s' 'https://github.com/maximlafe/symphony.git')}; \
+	if ! gh auth setup-git >/dev/null 2>&1; then \
+		echo "Warning: failed to configure git credentials via \`gh auth setup-git\`; continuing with existing git auth."; \
+	fi; \
+	if ! git ls-remote --heads "$$source_repo_url" >/dev/null 2>&1; then \
+		echo "Non-interactive git access failed for $$source_repo_url."; \
 		exit 1; \
 	fi
 	@if ! command -v $(MISE) >/dev/null 2>&1; then \
