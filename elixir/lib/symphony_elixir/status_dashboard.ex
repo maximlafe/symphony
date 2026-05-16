@@ -307,23 +307,20 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp snapshot_with_samples(token_samples, now_ms) do
     case snapshot_payload() do
-      {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
-        total_tokens = Map.get(codex_totals, :total_tokens, 0)
+      {:ok, snapshot} ->
+        case project_snapshot_payload(snapshot) do
+          {:ok, projected_snapshot, total_tokens} ->
+            {
+              {:ok, projected_snapshot},
+              update_token_samples(token_samples, now_ms, total_tokens)
+            }
 
-        {
-          {:ok,
-           %{
-             running: running,
-             retrying: retrying,
-             active_codex_account_id: Map.get(snapshot, :active_codex_account_id),
-             codex_accounts: Map.get(snapshot, :codex_accounts, []),
-             codex_totals: codex_totals,
-             rate_limits: Map.get(snapshot, :rate_limits),
-             workspace: Map.get(snapshot, :workspace),
-             polling: Map.get(snapshot, :polling)
-           }},
-          update_token_samples(token_samples, now_ms, total_tokens)
-        }
+          :error ->
+            {
+              :error,
+              prune_samples(token_samples, now_ms)
+            }
+        end
 
       :error ->
         {
@@ -332,6 +329,25 @@ defmodule SymphonyElixir.StatusDashboard do
         }
     end
   end
+
+  defp project_snapshot_payload(%{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot)
+       when is_list(running) and is_list(retrying) and is_map(codex_totals) do
+    total_tokens = Map.get(codex_totals, :total_tokens, 0)
+
+    {:ok,
+     %{
+       running: running,
+       retrying: retrying,
+       active_codex_account_id: Map.get(snapshot, :active_codex_account_id),
+       codex_accounts: Map.get(snapshot, :codex_accounts, []),
+       codex_totals: codex_totals,
+       rate_limits: Map.get(snapshot, :rate_limits),
+       workspace: Map.get(snapshot, :workspace),
+       polling: Map.get(snapshot, :polling)
+     }, total_tokens}
+  end
+
+  defp project_snapshot_payload(_snapshot), do: :error
 
   defp format_snapshot_content(snapshot_data, tps, terminal_columns_override \\ nil) do
     case snapshot_data do
