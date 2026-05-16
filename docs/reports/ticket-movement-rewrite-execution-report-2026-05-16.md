@@ -21,6 +21,17 @@
 5. Service boundary gate: isolated local instance check (`/health`, `/api/dashboard`, crash-loop/port conflict checks).
 6. Broader runtime validation on boundary shift and green-slice cadence: `make symphony-runtime-smoke SCENARIO=all` and `make symphony-validate`.
 
+## Plan step status (artifact-aligned)
+1. Re-scope: completed in source plan artifact (used as execution baseline).
+2. Characterization gate: completed (Slice A named regression proof targets all green).
+3. Inventory and mapping: completed (Slice D artifact `ticket-movement-rewrite-inventory-map-2026-05-16.md`).
+4. Boundary contracts and ownership: completed (Slice D artifact + code anchors for `ValidationGate`/`ExecutionContract`/`HandoffCheck`/`ControllerFinalizer`/`Tracker`).
+5. Canonical pipeline and guard cleanup: accepted as already-present runtime shape from base PR #201; no additional behavior change introduced in this branch.
+6. `changed_paths` fallback semantics: completed via Slice B (`controller_finalizer`) and Slice C (`dynamic_tool`) with explicit fail-closed regression coverage.
+7. Retry/failover simplification with baseline numbers: accepted as already satisfied in base runtime (`ExecutionContract` + `Orchestrator`) and verified through characterization and full validation gates.
+8. Idempotent Linear wrapper: accepted as already present for ticket-movement runtime writes (`Tracker` -> `Linear.Adapter`); no duplicate wrapper introduced.
+9. Validation gate map with named proof targets: completed via Slice A characterization map + targeted slice proofs recorded in this report.
+
 ## Slice ledger
 
 ### Slice A (green)
