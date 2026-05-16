@@ -16,8 +16,10 @@
    - Rollback boundary: rollback only touched files (`controller_finalizer.ex`, `controller_finalizer_test.exs`) if not green in 2 attempts.
 3. Slice C (`changed_paths` fail-closed semantics, dynamic tool path): enforce fail-closed class resolution for empty handoff fallback diff in `symphony_handoff_check` validation context.
    - Rollback boundary: rollback only touched files (`dynamic_tool.ex`, `dynamic_tool_test.exs`) if not green in 2 attempts.
-4. Service boundary gate: isolated local instance check (`/health`, `/api/dashboard`, crash-loop/port conflict checks).
-5. Broader runtime validation on boundary shift: `make symphony-runtime-smoke SCENARIO=all` and `make symphony-validate`.
+4. Slice D (inventory + boundary map artifact): lock concrete lifecycle/guard/Linear-side-effect inventory and `current state -> target state` mapping as execution evidence.
+   - Rollback boundary: rollback only touched docs artifacts if gate sequence does not stay green.
+5. Service boundary gate: isolated local instance check (`/health`, `/api/dashboard`, crash-loop/port conflict checks).
+6. Broader runtime validation on boundary shift and green-slice cadence: `make symphony-runtime-smoke SCENARIO=all` and `make symphony-validate`.
 
 ## Slice ledger
 
@@ -74,6 +76,16 @@
 - Cheap gate:
   - `make symphony-runtime-smoke SCENARIO=workflow_contract` -> `1 test, 0 failures`
 
+### Slice D (green)
+- Type: bounded documentation/inventory slice (plan preconditions evidence)
+- Goal: fix and persist concrete inventory of lifecycle paths, guard paths, Linear side effects, and state mapping against real runtime surfaces.
+- Files changed:
+  - `docs/reports/ticket-movement-rewrite-inventory-map-2026-05-16.md`
+- Proof target (document):
+  - `docs/reports/ticket-movement-rewrite-inventory-map-2026-05-16.md` contains concrete module/function anchors for `Plan -> Execute -> Review -> Done/Blocked`.
+- Cheap gate:
+  - `make symphony-runtime-smoke SCENARIO=workflow_contract` -> `1 test, 0 failures`
+
 ## Broader runtime validation (boundary shifts)
 - After Slice B boundary shift:
   - `make symphony-runtime-smoke SCENARIO=all` -> `5 tests, 0 failures`
@@ -83,12 +95,16 @@
 - After Slice C boundary shift:
   - `make symphony-runtime-smoke SCENARIO=all` -> `5 tests, 0 failures`
   - `make symphony-validate` -> passed fully (`contracts`, `build`, `format`, `lint`, `test --cover`, `dialyzer`).
+- After Slice D (4th consecutive green slice cadence gate):
+  - `make symphony-runtime-smoke SCENARIO=all` -> `5 tests, 0 failures`
+  - `make symphony-validate` -> passed fully (`contracts`, `build`, `format`, `lint`, `test --cover`, `dialyzer`).
 
 ## Changed files
 - `elixir/lib/symphony_elixir/controller_finalizer.ex`
 - `elixir/test/symphony_elixir/controller_finalizer_test.exs`
 - `elixir/lib/symphony_elixir/codex/dynamic_tool.ex`
 - `elixir/test/symphony_elixir/dynamic_tool_test.exs`
+- `docs/reports/ticket-movement-rewrite-inventory-map-2026-05-16.md`
 
 ## Deferred / rollback notes
 - No open deferred slices.
