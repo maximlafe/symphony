@@ -810,7 +810,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     {change_classes, class_errors} =
       case ValidationGate.classify_paths(changed_paths) do
         {:ok, classes} -> {classes, []}
-        {:error, reasons} -> {[], reasons}
+        # Fail closed when changed path classification cannot determine a concrete class.
+        {:error, reasons} -> {["runtime_contract"], reasons}
       end
 
     %{
