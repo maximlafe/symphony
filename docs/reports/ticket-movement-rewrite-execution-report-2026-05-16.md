@@ -122,7 +122,7 @@
 - No hidden carry-over from failed attempt: over-broad first attempt was replaced in-slice by narrowed condition before final green state.
 
 ## Residual risks
-- Scope intentionally limited to `controller_finalizer` pre-handoff fallback semantics and regression coverage.
+- Scope intentionally limited to bounded fallback semantics on `controller_finalizer` and `dynamic_tool` handoff paths plus inventory/report artifacts.
 - Other ticket-movement surfaces from the broader rewrite plan were not modified in this slice set.
 
 ## Publish ledger
@@ -130,6 +130,9 @@
   - `a9b2949` — `controller_finalizer: fail-close explicit changed_files empty fallback`
   - `979c0a1` — `docs: add ticket movement rewrite execution report`
   - `71f866e` — `docs: finalize ticket movement rewrite publish ledger`
+  - `d666c46` — `dynamic_tool: fail-close empty changed_paths to runtime_contract`
+  - `ed76ef4` — `docs: record slice C dynamic_tool fallback validation`
+  - `2b74c64` — `docs: add ticket movement inventory map and slice D evidence`
 - Push:
   - Branch `codex/ticket-movement-rewrite` pushed to `origin`
 - PR:
