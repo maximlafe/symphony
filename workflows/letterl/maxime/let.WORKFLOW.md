@@ -263,6 +263,13 @@ hooks:
     if [ -n "$setup_note" ]; then
       printf '%s\n' "$setup_note" > .symphony-base-branch-note
     fi
+    # Keep mise/mix/hex mutable state inside the workspace for sandboxed runs.
+    export XDG_STATE_HOME="$PWD/.symphony/xdg/state"
+    export XDG_DATA_HOME="$PWD/.symphony/xdg/data"
+    export XDG_CACHE_HOME="$PWD/.symphony/xdg/cache"
+    export HEX_HOME="$PWD/.symphony/hex"
+    export MIX_HOME="$PWD/.symphony/mix"
+    mkdir -p "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$HEX_HOME" "$MIX_HOME"
     rm -f .symphony-bootstrap-error.log
     if ! make -n symphony-bootstrap > .symphony-bootstrap-error.log 2>&1; then
       write_bootstrap_blocker .symphony-bootstrap-error.log

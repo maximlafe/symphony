@@ -100,7 +100,7 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   @query_assignee_id """
-  query SymphonyLinearPollByAssigneeId($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String, $assigneeId: String!) {
+  query SymphonyLinearPollByAssigneeId($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String, $assigneeId: ID!) {
     issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}, assignee: {id: {eq: $assigneeId}}}, first: $first, after: $after) {
       nodes {
         id
@@ -253,7 +253,7 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   @team_query_assignee_id """
-  query SymphonyLinearTeamPollByAssigneeId($teamKey: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String, $assigneeId: String!) {
+  query SymphonyLinearTeamPollByAssigneeId($teamKey: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String, $assigneeId: ID!) {
     issues(filter: {team: {key: {eq: $teamKey}}, state: {name: {in: $stateNames}}, assignee: {id: {eq: $assigneeId}}}, first: $first, after: $after) {
       nodes {
         id
