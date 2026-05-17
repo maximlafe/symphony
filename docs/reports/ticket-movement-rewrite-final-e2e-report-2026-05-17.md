@@ -14,6 +14,11 @@
 - Working branch for this run: `codex/ticket-movement-rewrite-final-e2e`
 - Working branch was created from `origin/codex/ticket-movement-rewrite` (not from PR #201)
 
+## Branch/PR publication
+- Branch: `codex/ticket-movement-rewrite-final-e2e`
+- Latest commit for this pass: `24974a6` (`fix(orchestrator): enforce continuation ceiling for retry-poll failures`)
+- PR: `#204` (draft) <https://github.com/maximlafe/symphony/pull/204>
+
 ## Required new autonomous e2e issue
 - Linear issue: `LET-738`
 - URL: <https://linear.app/letterl/issue/LET-738/ticket-movement-rewrite-final-canonical-e2e-on-pr-202-base>
