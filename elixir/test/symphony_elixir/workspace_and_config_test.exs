@@ -4254,7 +4254,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     lines
     |> Enum.map(&String.trim_trailing/1)
-    |> Enum.map(fn line ->
+    |> Enum.map_join("\n", fn line ->
       if String.trim(line) == "" do
         ""
       else
@@ -4263,7 +4263,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         rest
       end
     end)
-    |> Enum.join("\n")
     |> String.trim()
   end
 

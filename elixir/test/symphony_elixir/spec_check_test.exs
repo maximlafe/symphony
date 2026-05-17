@@ -25,6 +25,32 @@ defmodule SymphonyElixir.SpecCheckTest do
   Required capabilities: runtime_smoke
   """
 
+  @plan_required_before_missing_description """
+  ## Acceptance Matrix
+
+  | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+  | --- | --- | --- | --- | --- | --- |
+  | AM-1 | baseline | baseline gate | test | mix test | run_executed |
+  """
+
+  @plan_required_before_mixed_description """
+  ## Acceptance Matrix
+
+  | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | AM-1 | baseline | baseline gate | test | mix test | run_executed | review |
+  | AM-2 | no-required-before | baseline gate | test | mix test | run_executed |
+  """
+
+  @plan_required_before_explicit_description """
+  ## Acceptance Matrix
+
+  | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | AM-1 | baseline | baseline gate | test | mix test | run_executed | review |
+  | AM-2 | done-proof | post-review validation | runtime_smoke | runtime smoke | runtime_smoke | done |
+  """
+
   test "default helpers and state predicates" do
     assert SpecCheck.default_manifest_path() == ".symphony/verification/spec-manifest.json"
     assert SpecCheck.default_contract_lock_path() == ".symphony/verification/spec-contract.lock.json"
@@ -94,6 +120,76 @@ defmodule SymphonyElixir.SpecCheckTest do
              &(String.contains?(String.downcase(&1), "acceptance matrix") and
                  String.contains?(String.downcase(&1), "mode:plan"))
            )
+  end
+
+  test "evaluate fails mode:plan when acceptance matrix row omits explicit required_before" do
+    assert {:error, manifest} =
+             SpecCheck.evaluate(
+               @plan_required_before_missing_description,
+               labels: ["mode:plan"]
+             )
+
+    assert manifest["passed"] == false
+
+    assert Enum.any?(
+             manifest["missing_items"],
+             &String.contains?(&1, "requires explicit `required_before`")
+           )
+
+    assert Enum.any?(
+             get_in(manifest, ["diagnostics"]) || [],
+             &(&1["reason_code"] == "acceptance_matrix_required_before_explicit_for_plan_mode")
+           )
+  end
+
+  test "evaluate fails mode:plan when mixed matrix rows include missing required_before" do
+    assert {:error, manifest} =
+             SpecCheck.evaluate(
+               @plan_required_before_mixed_description,
+               labels: ["mode:plan"]
+             )
+
+    assert manifest["passed"] == false
+
+    assert Enum.any?(
+             manifest["missing_items"],
+             &String.contains?(&1, "requires explicit `required_before`")
+           )
+
+    assert Enum.any?(
+             get_in(manifest, ["diagnostics"]) || [],
+             &(&1["reason_code"] == "acceptance_matrix_required_before_explicit_for_plan_mode")
+           )
+  end
+
+  test "evaluate passes mode:plan when every acceptance matrix row has explicit required_before" do
+    assert {:ok, manifest} =
+             SpecCheck.evaluate(
+               @plan_required_before_explicit_description,
+               labels: ["mode:plan"]
+             )
+
+    assert manifest["passed"] == true
+    assert manifest["missing_items"] == []
+  end
+
+  test "evaluate allows non-plan acceptance matrix rows without explicit required_before" do
+    assert {:ok, manifest} =
+             SpecCheck.evaluate(
+               @plan_required_before_missing_description,
+               labels: ["mode:research"]
+             )
+
+    assert manifest["passed"] == true
+    assert manifest["missing_items"] == []
+  end
+
+  test "evaluate keeps no-label path unchanged for explicit required_before runtime gate" do
+    assert {:ok, manifest} =
+             SpecCheck.evaluate(@plan_required_before_missing_description)
+
+    assert manifest["passed"] == true
+    assert manifest["missing_items"] == []
   end
 
   test "evaluate allows non-plan specs with Required capabilities only" do

@@ -819,6 +819,10 @@ Instructions:
      semantics; for `mode:plan` and legacy spec-prep path, `Acceptance Matrix`,
      `Proof Mapping`, and `Остаточные риски` are mandatory, while
      `Required capabilities` is additive only;
+   - for `mode:plan`, each `Acceptance Matrix` data row must explicitly include
+     `required_before` with one of `review` or `done`; do not rely on parser defaults;
+   - for `mode:plan`, keep `Acceptance Matrix.proof_type` aligned with `Proof Mapping`
+     reference type (`validation`, `artifact`, or `runtime`) for each matrix item;
    - when an acceptance item requires external infrastructure before execution can complete, add a machine-readable `Required capabilities: ...` line to the final `## Symphony` section. Use only external prerequisite names: `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`; do not include execution-only requirements (`repo_validation`, `pr_publication`, `pr_body_contract`) in this line because they are implicit workflow obligations;
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
    - for `mode:plan` and legacy spec-prep path with gate `planning.swarm_assist_enabled=true`, keep machine-readable lines for `plan_revision`, `artifact_path`, and `artifact_revision` in the normalized plan body; `artifact_revision` must equal `plan_revision`;
@@ -1117,6 +1121,12 @@ For `mode:plan` and legacy spec-prep path, also include mandatory sections:
 `planning.swarm_assist_enabled=true`, include `plan_revision`,
 `artifact_path`, and `artifact_revision` in the short plan body, and keep
 `artifact_revision == plan_revision`.
+
+For `mode:plan`, `Acceptance Matrix` rows must include explicit
+`required_before` values (`review` or `done`) in every data row, and
+`proof_type` must match the referenced proof source type in `Proof Mapping`.
+Use the canonical table header:
+`| id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |`.
 
 Keep `## Symphony` as the last H2 section of the issue description even when repo routing also comes from project metadata or `repo:*` labels.
 `Repo:` must mirror the resolved repository, `Base branch:` must mirror the configured base branch, and `Working branch:` is optional but must mirror the configured exact working-branch name when present.

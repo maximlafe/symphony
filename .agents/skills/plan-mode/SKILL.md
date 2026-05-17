@@ -75,6 +75,11 @@ contour without shipping product code.
 
 - For `mode:plan` and legacy spec-prep path, ensure the description contains
   `Acceptance Matrix`, `Proof Mapping`, and `Остаточные риски`.
+- For `mode:plan`, ensure every `Acceptance Matrix` data row explicitly sets
+  `required_before` to `review` or `done`; do not rely on parser defaults.
+- For `mode:plan`, ensure `Proof Mapping` has exactly one mapping per matrix
+  item and mapping type matches `Acceptance Matrix.proof_type`
+  (`validation`, `artifact`, or `runtime`).
 - In the description, use plain bullets only (`- ...`); do not use markdown
   checkboxes (`- [ ]`, `- [x]`).
 - Keep workpad-only sections out of description: `## Рабочий журнал Codex`,

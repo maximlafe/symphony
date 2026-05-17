@@ -95,7 +95,9 @@ defmodule SymphonyElixir.SpecCheck do
     {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(issue_description)
     acceptance_matrix_errors = HandoffCheck.acceptance_matrix_parse_errors(issue_description)
     spec_contract = HandoffCheck.acceptance_contract_from_issue_description(issue_description)
-    {contract_missing_items, contract_diagnostics} = contract_requirement_findings(spec_contract, issue_labels)
+
+    {contract_missing_items, contract_diagnostics} =
+      contract_requirement_findings(spec_contract, issue_labels, issue_description)
 
     risk_classifier =
       RiskyTaskClassifier.classify(%{
@@ -512,58 +514,178 @@ defmodule SymphonyElixir.SpecCheck do
     end
   end
 
-  defp contract_requirement_findings(spec_contract, issue_labels) do
+  defp contract_requirement_findings(spec_contract, issue_labels, issue_description) do
     acceptance_matrix = get_in(spec_contract, ["payload", "acceptance_matrix"]) || []
     required_capabilities = get_in(spec_contract, ["payload", "required_capabilities"]) || []
+    missing_required_before_rows = acceptance_matrix_rows_missing_required_before(issue_description)
+    mode_plan? = mode_plan_issue?(issue_labels)
 
-    cond do
-      mode_plan_issue?(issue_labels) and acceptance_matrix == [] ->
-        {[
-           "spec contract is missing: `mode:plan` requires non-empty `Acceptance Matrix` in the issue description"
-         ],
-         [
-           %{
-             "reason_code" => "acceptance_matrix_required_for_plan_mode",
-             "reason" => "`mode:plan` cannot pass spec gate without a non-empty `Acceptance Matrix` section",
-             "remediation" => %{
-               "required_section" => "## Acceptance Matrix",
-               "required_fields" => [
-                 "id",
-                 "scenario",
-                 "expected_outcome",
-                 "proof_type",
-                 "proof_target",
-                 "proof_semantic"
-               ],
-               "notes" => [
-                 "Add at least one Acceptance Matrix row.",
-                 "`Required capabilities` remains supplemental and cannot replace Acceptance Matrix for mode:plan."
-               ]
-             }
-           }
-         ]}
+    case contract_requirement_case(
+           mode_plan?,
+           acceptance_matrix,
+           required_capabilities,
+           missing_required_before_rows
+         ) do
+      {:plan_missing_matrix, _missing_rows} ->
+        plan_missing_matrix_contract_findings()
 
-      acceptance_matrix == [] and required_capabilities == [] ->
-        {[
-           "spec contract is missing: add `Acceptance Matrix` and/or `Required capabilities` in the issue description"
-         ],
-         [
-           %{
-             "reason_code" => "spec_contract_missing",
-             "reason" => "spec check requires explicit contract signals before execution",
-             "remediation" => %{
-               "required_section_options" => ["## Acceptance Matrix", "Required capabilities: ..."],
-               "notes" => ["Provide at least one contract signal in issue description."]
-             }
-           }
-         ]}
+      {:plan_missing_required_before, missing_rows} ->
+        plan_missing_required_before_contract_findings(missing_rows)
 
-      true ->
+      {:missing_contract, _missing_rows} ->
+        spec_contract_missing_findings()
+
+      {:ok, _missing_rows} ->
         {[], []}
     end
   end
 
   defp mode_plan_issue?(issue_labels), do: @plan_mode_label in List.wrap(issue_labels)
+
+  defp contract_requirement_case(mode_plan?, acceptance_matrix, required_capabilities, missing_required_before_rows) do
+    cond do
+      mode_plan? and acceptance_matrix == [] ->
+        {:plan_missing_matrix, missing_required_before_rows}
+
+      mode_plan? and missing_required_before_rows != [] ->
+        {:plan_missing_required_before, missing_required_before_rows}
+
+      acceptance_matrix == [] and required_capabilities == [] ->
+        {:missing_contract, missing_required_before_rows}
+
+      true ->
+        {:ok, missing_required_before_rows}
+    end
+  end
+
+  defp plan_missing_matrix_contract_findings do
+    {[
+       "spec contract is missing: `mode:plan` requires non-empty `Acceptance Matrix` in the issue description"
+     ],
+     [
+       %{
+         "reason_code" => "acceptance_matrix_required_for_plan_mode",
+         "reason" => "`mode:plan` cannot pass spec gate without a non-empty `Acceptance Matrix` section",
+         "remediation" => %{
+           "required_section" => "## Acceptance Matrix",
+           "required_fields" => acceptance_matrix_required_fields(),
+           "notes" => [
+             "Add at least one Acceptance Matrix row.",
+             "`Required capabilities` remains supplemental and cannot replace Acceptance Matrix for mode:plan."
+           ]
+         }
+       }
+     ]}
+  end
+
+  defp plan_missing_required_before_contract_findings(missing_rows) when is_list(missing_rows) do
+    {[
+       "spec contract is missing: `mode:plan` requires explicit `required_before` in every `Acceptance Matrix` row"
+     ],
+     [
+       %{
+         "reason_code" => "acceptance_matrix_required_before_explicit_for_plan_mode",
+         "reason" => "`mode:plan` cannot pass spec gate when any `Acceptance Matrix` row omits explicit `required_before`",
+         "details" => %{
+           "rows_missing_required_before" => missing_rows
+         },
+         "remediation" => %{
+           "required_section" => "## Acceptance Matrix",
+           "required_fields" => acceptance_matrix_required_fields(),
+           "notes" => [
+             "Set `required_before` explicitly for every Acceptance Matrix data row.",
+             "Allowed values are `review` and `done`."
+           ]
+         }
+       }
+     ]}
+  end
+
+  defp spec_contract_missing_findings do
+    {[
+       "spec contract is missing: add `Acceptance Matrix` and/or `Required capabilities` in the issue description"
+     ],
+     [
+       %{
+         "reason_code" => "spec_contract_missing",
+         "reason" => "spec check requires explicit contract signals before execution",
+         "remediation" => %{
+           "required_section_options" => ["## Acceptance Matrix", "Required capabilities: ..."],
+           "notes" => ["Provide at least one contract signal in issue description."]
+         }
+       }
+     ]}
+  end
+
+  defp acceptance_matrix_required_fields do
+    [
+      "id",
+      "scenario",
+      "expected_outcome",
+      "proof_type",
+      "proof_target",
+      "proof_semantic",
+      "required_before"
+    ]
+  end
+
+  defp acceptance_matrix_rows_missing_required_before(issue_description) do
+    issue_description
+    |> to_string()
+    |> markdown_h2_section_body("Acceptance Matrix")
+    |> acceptance_matrix_table_rows()
+    |> Enum.drop(1)
+    |> Enum.flat_map(fn row ->
+      cells =
+        row
+        |> String.trim("|")
+        |> String.split("|")
+        |> Enum.map(&String.trim/1)
+
+      required_before = Enum.at(cells, 6)
+
+      if length(cells) < 7 or not explicit_required_before_value?(required_before) do
+        [row]
+      else
+        []
+      end
+    end)
+    |> Enum.uniq()
+  end
+
+  defp markdown_h2_section_body(markdown, heading) when is_binary(markdown) and is_binary(heading) do
+    escaped_heading = Regex.escape(heading)
+    section_regex = ~r/(?:^|\n)##\s+#{escaped_heading}\s*\n(?<body>.*?)(?=\n##\s+|\z)/ms
+
+    case Regex.named_captures(section_regex, markdown) do
+      %{"body" => body} -> String.trim(body)
+      _ -> ""
+    end
+  end
+
+  defp acceptance_matrix_table_rows(section_body) when is_binary(section_body) do
+    section_body
+    |> String.split(~r/\R/u, trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.filter(&String.starts_with?(&1, "|"))
+    |> Enum.reject(&table_separator_row?/1)
+  end
+
+  defp table_separator_row?(row) do
+    row
+    |> String.trim("|")
+    |> String.split("|")
+    |> Enum.map(&String.trim/1)
+    |> Enum.all?(fn cell -> Regex.match?(~r/^:?-{3,}:?$/, cell) end)
+  end
+
+  defp explicit_required_before_value?(value) do
+    value
+    |> to_string()
+    |> String.trim()
+    |> String.downcase()
+    |> then(&(&1 in ["review", "done"]))
+  end
 
   defp summary_for_manifest(true, _missing_items), do: "spec check passed"
   defp summary_for_manifest(false, missing_items), do: "spec check failed (#{length(missing_items)} issue(s))"
