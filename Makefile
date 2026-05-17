@@ -60,7 +60,7 @@ symphony-bootstrap:
 		echo "\`mise\` is required for repo bootstrap."; \
 		exit 1; \
 	fi
-	cd $(ELIXIR_DIR) && MISE_TRUSTED_CONFIG_PATHS="$$PWD" $(MISE) install && MISE_TRUSTED_CONFIG_PATHS="$$PWD" $(MISE) exec -- mix setup
+	cd $(ELIXIR_DIR) && MISE_TRUSTED_CONFIG_PATHS="$$PWD" $(MISE) install && HEX_HOME="$$PWD/.hex" MIX_HOME="$$PWD/.mix" MISE_TRUSTED_CONFIG_PATHS="$$PWD" $(MISE) exec -- mix setup
 
 symphony-dashboard-checks:
 	cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) dashboard
