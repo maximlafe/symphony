@@ -5,6 +5,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
 
+  @let_workflow_path Path.expand("../../../workflows/letterl/maxime/let.WORKFLOW.md", __DIR__)
+
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =
       Path.join(
@@ -471,6 +473,77 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert File.read!(Path.join(workspace, ".symphony-source-repository")) == "maximlafe/lead_status\n"
       assert File.read!(Path.join(workspace, ".symphony-base-branch")) == "feature/symphony-ready\n"
       assert File.read!(Path.join(workspace, ".symphony-working-branch")) == "merge/step-01\n"
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  @tag :parser_contract
+  test "repository hook helpers keep extract_symphony_marker in parity with LET workflow hooks" do
+    {after_create_hook, before_run_hook} = let_workflow_repository_hooks!()
+
+    assert normalize_function_block(extract_symphony_marker_function!(repository_routing_hook())) ==
+             normalize_function_block(extract_symphony_marker_function!(after_create_hook))
+
+    assert normalize_function_block(extract_symphony_marker_function!(repository_retry_hook())) ==
+             normalize_function_block(extract_symphony_marker_function!(before_run_hook))
+  end
+
+  @tag :parser_contract
+  test "repository routing script ignores branch markers after non-marker content in Symphony section" do
+    previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
+    previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
+    previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("TEST_LEAD_STATUS_REPO_URL", previous_lead_status_repo)
+      restore_env("TEST_SYMPHONY_REPO_URL", previous_symphony_repo)
+      restore_env("TEST_TG_LIVE_EXPORT_REPO_URL", previous_tg_live_export_repo)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-routing-parser-stop-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      lead_status_repo = Path.join(test_root, "lead_status")
+      symphony_repo = Path.join(test_root, "symphony")
+      tg_live_export_repo = Path.join(test_root, "tg_live_export")
+      workspace = Path.join(test_root, "workspace")
+
+      create_bootstrap_repo!(lead_status_repo, "lead_status")
+      create_branch_ref!(lead_status_repo, "feature/symphony-ready")
+      create_bootstrap_repo!(symphony_repo, "symphony")
+      create_bootstrap_repo!(tg_live_export_repo, "tg_live_export")
+      File.mkdir_p!(workspace)
+
+      System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
+      System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
+      System.put_env("TEST_TG_LIVE_EXPORT_REPO_URL", tg_live_export_repo)
+
+      description = """
+      ## Symphony
+      Base branch: feature/symphony-ready
+
+      Attachment: https://uploads.linear.app/mock.png
+      Working branch: merge/should-not-be-parsed
+      """
+
+      assert {_output, 0} =
+               System.cmd("sh", ["-lc", repository_routing_hook()],
+                 cd: workspace,
+                 env: [
+                   {"SYMPHONY_ISSUE_PROJECT_NAME", "Извлечение задач"},
+                   {"SYMPHONY_ISSUE_DESCRIPTION", description},
+                   {"SYMPHONY_ISSUE_LABELS", ""}
+                 ]
+               )
+
+      assert File.read!(Path.join(workspace, ".symphony-base-branch")) == "feature/symphony-ready\n"
+      refute File.exists?(Path.join(workspace, ".symphony-working-branch"))
       refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
     after
       File.rm_rf(test_root)
@@ -1052,6 +1125,71 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       refute File.exists?(Path.join(workspace, ".symphony-working-branch"))
       refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
       refute File.exists?(Path.join(workspace, ".symphony-base-branch-note"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  @tag :parser_contract
+  test "repository retry script ignores Working branch marker after non-marker content in Symphony section" do
+    previous_lead_status_repo = System.get_env("TEST_LEAD_STATUS_REPO_URL")
+    previous_symphony_repo = System.get_env("TEST_SYMPHONY_REPO_URL")
+    previous_tg_live_export_repo = System.get_env("TEST_TG_LIVE_EXPORT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("TEST_LEAD_STATUS_REPO_URL", previous_lead_status_repo)
+      restore_env("TEST_SYMPHONY_REPO_URL", previous_symphony_repo)
+      restore_env("TEST_TG_LIVE_EXPORT_REPO_URL", previous_tg_live_export_repo)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-retry-parser-stop-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      lead_status_repo = Path.join(test_root, "lead_status")
+      symphony_repo = Path.join(test_root, "symphony")
+      tg_live_export_repo = Path.join(test_root, "tg_live_export")
+      workspace = Path.join(test_root, "workspace")
+
+      create_bootstrap_repo!(lead_status_repo, "lead_status")
+      create_branch_ref!(lead_status_repo, "release/next")
+      create_bootstrap_repo!(symphony_repo, "symphony")
+      create_bootstrap_repo!(tg_live_export_repo, "tg_live_export")
+
+      System.cmd("git", ["clone", "--depth", "1", lead_status_repo, workspace])
+      File.write!(Path.join(workspace, ".symphony-source-repository"), "maximlafe/lead_status\n")
+      File.write!(Path.join(workspace, ".symphony-base-branch"), "release/42\n")
+      File.write!(Path.join(workspace, ".symphony-working-branch"), "merge/retry-42\n")
+
+      System.put_env("TEST_LEAD_STATUS_REPO_URL", lead_status_repo)
+      System.put_env("TEST_SYMPHONY_REPO_URL", symphony_repo)
+      System.put_env("TEST_TG_LIVE_EXPORT_REPO_URL", tg_live_export_repo)
+
+      description = """
+      ## Symphony
+      Base branch: release/next
+
+      Attachment: https://uploads.linear.app/mock.png
+      Working branch: merge/should-not-be-parsed
+      """
+
+      assert {_output, 0} =
+               System.cmd("sh", ["-lc", repository_retry_hook()],
+                 cd: workspace,
+                 env: [
+                   {"SYMPHONY_ISSUE_DESCRIPTION", description},
+                   {"SYMPHONY_ISSUE_PROJECT_SLUG", "master-komand-dfbe2b1b972e"},
+                   {"SYMPHONY_ISSUE_PROJECT_NAME", "Мастер команд"},
+                   {"SYMPHONY_ISSUE_LABELS", ""}
+                 ]
+               )
+
+      assert File.read!(Path.join(workspace, ".symphony-base-branch")) == "release/next\n"
+      refute File.exists?(Path.join(workspace, ".symphony-working-branch"))
+      refute File.exists?(Path.join(workspace, ".symphony-base-branch-error"))
     after
       File.rm_rf(test_root)
     end
@@ -3635,14 +3773,16 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     extract_symphony_marker() {
       marker_name=$1
       printf '%s\n' "${SYMPHONY_ISSUE_DESCRIPTION:-}" | awk -v marker="$marker_name" '
-        BEGIN { in_section = 0 }
+        BEGIN { in_section = 0; parse_markers = 0 }
         /^[[:space:]]*##[[:space:]]+Symphony[[:space:]]*$/ {
           in_section = 1
+          parse_markers = 1
           next
         }
         in_section && /^[[:space:]]*##[[:space:]]+/ { exit }
-        in_section {
+        in_section && parse_markers {
           prefix = "^[[:space:]]*" marker ":[[:space:]]*"
+          known_prefix = "^[[:space:]]*(Repo|Base branch|Working branch):[[:space:]]*"
           if ($0 ~ prefix) {
             line = $0
             sub(prefix, "", line)
@@ -3652,7 +3792,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
             } else {
               print line
             }
+            next
           }
+          if ($0 ~ /^[[:space:]]*$/) { next }
+          if ($0 ~ known_prefix) { next }
+          parse_markers = 0
         }
       '
     }
@@ -3867,14 +4011,16 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     extract_symphony_marker() {
       marker_name=$1
       printf '%s\n' "${SYMPHONY_ISSUE_DESCRIPTION:-}" | awk -v marker="$marker_name" '
-        BEGIN { in_section = 0 }
+        BEGIN { in_section = 0; parse_markers = 0 }
         /^[[:space:]]*##[[:space:]]+Symphony[[:space:]]*$/ {
           in_section = 1
+          parse_markers = 1
           next
         }
         in_section && /^[[:space:]]*##[[:space:]]+/ { exit }
-        in_section {
+        in_section && parse_markers {
           prefix = "^[[:space:]]*" marker ":[[:space:]]*"
+          known_prefix = "^[[:space:]]*(Repo|Base branch|Working branch):[[:space:]]*"
           if ($0 ~ prefix) {
             line = $0
             sub(prefix, "", line)
@@ -3884,7 +4030,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
             } else {
               print line
             }
+            next
           }
+          if ($0 ~ /^[[:space:]]*$/) { next }
+          if ($0 ~ known_prefix) { next }
+          parse_markers = 0
         }
       '
     }
@@ -4071,5 +4221,53 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       printf '%s\n' "$setup_note" > .symphony-base-branch-note
     fi
     """
+  end
+
+  defp let_workflow_repository_hooks! do
+    case Workflow.load(@let_workflow_path) do
+      {:ok, %{config: %{"hooks" => %{"after_create" => after_create, "before_run" => before_run}}}} ->
+        {after_create, before_run}
+
+      other ->
+        raise "failed to load LET workflow hooks for parser contract parity: #{inspect(other)}"
+    end
+  end
+
+  defp extract_symphony_marker_function!(script) when is_binary(script) do
+    case Regex.run(~r/(?ms)^([ \t]*)extract_symphony_marker\(\) \{\n.*?^\1\}/, script) do
+      [match | _] ->
+        match
+
+      _ ->
+        raise "extract_symphony_marker function not found in script"
+    end
+  end
+
+  defp normalize_function_block(block) when is_binary(block) do
+    lines = String.split(String.replace(block, "\r\n", "\n"), "\n")
+
+    min_indent =
+      lines
+      |> Enum.reject(&(String.trim(&1) == ""))
+      |> Enum.map(&leading_spaces/1)
+      |> Enum.min(fn -> 0 end)
+
+    lines
+    |> Enum.map(&String.trim_trailing/1)
+    |> Enum.map(fn line ->
+      if String.trim(line) == "" do
+        ""
+      else
+        drop = min(min_indent, String.length(line))
+        {_prefix, rest} = String.split_at(line, drop)
+        rest
+      end
+    end)
+    |> Enum.join("\n")
+    |> String.trim()
+  end
+
+  defp leading_spaces(line) when is_binary(line) do
+    byte_size(line) - byte_size(String.trim_leading(line))
   end
 end

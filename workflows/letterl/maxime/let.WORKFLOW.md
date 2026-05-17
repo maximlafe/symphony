@@ -30,14 +30,16 @@ hooks:
     extract_symphony_marker() {
       marker_name=$1
       printf '%s\n' "${SYMPHONY_ISSUE_DESCRIPTION:-}" | awk -v marker="$marker_name" '
-        BEGIN { in_section = 0 }
+        BEGIN { in_section = 0; parse_markers = 0 }
         /^[[:space:]]*##[[:space:]]+Symphony[[:space:]]*$/ {
           in_section = 1
+          parse_markers = 1
           next
         }
         in_section && /^[[:space:]]*##[[:space:]]+/ { exit }
-        in_section {
+        in_section && parse_markers {
           prefix = "^[[:space:]]*" marker ":[[:space:]]*"
+          known_prefix = "^[[:space:]]*(Repo|Base branch|Working branch):[[:space:]]*"
           if ($0 ~ prefix) {
             line = $0
             sub(prefix, "", line)
@@ -47,7 +49,11 @@ hooks:
             } else {
               print line
             }
+            next
           }
+          if ($0 ~ /^[[:space:]]*$/) { next }
+          if ($0 ~ known_prefix) { next }
+          parse_markers = 0
         }
       '
     }
@@ -277,14 +283,16 @@ hooks:
     extract_symphony_marker() {
       marker_name=$1
       printf '%s\n' "${SYMPHONY_ISSUE_DESCRIPTION:-}" | awk -v marker="$marker_name" '
-        BEGIN { in_section = 0 }
+        BEGIN { in_section = 0; parse_markers = 0 }
         /^[[:space:]]*##[[:space:]]+Symphony[[:space:]]*$/ {
           in_section = 1
+          parse_markers = 1
           next
         }
         in_section && /^[[:space:]]*##[[:space:]]+/ { exit }
-        in_section {
+        in_section && parse_markers {
           prefix = "^[[:space:]]*" marker ":[[:space:]]*"
+          known_prefix = "^[[:space:]]*(Repo|Base branch|Working branch):[[:space:]]*"
           if ($0 ~ prefix) {
             line = $0
             sub(prefix, "", line)
@@ -294,7 +302,11 @@ hooks:
             } else {
               print line
             }
+            next
           }
+          if ($0 ~ /^[[:space:]]*$/) { next }
+          if ($0 ~ known_prefix) { next }
+          parse_markers = 0
         }
       '
     }
@@ -636,6 +648,7 @@ Instructions:
 - Never put usernames, worker ids, or full-title transliterations into the branch name. Names like `cycloid-yips0i/...` are invalid for this workflow.
 - When creating or editing a PR, keep the title short and review-friendly in the form `<ISSUE-ID>: <clear shipped outcome>` instead of copying a long noisy issue title verbatim.
 - When normalizing the issue description into a task-spec, preserve or re-add the final `## Symphony` section with machine-readable `Repo:`, `Base branch:`, and optional `Working branch:` lines; treat it as durable routing and audit metadata, not as workpad content.
+- Ownership contract: issue description is task-spec-only (`Проблема`/`Цель`/`Скоуп`/`Критерии приемки` + optional contract sections + final `## Symphony`), while execution progress and runtime state stay in the workpad (`## Рабочий журнал Codex`, `Execution Evidence`, `Checkpoint`, milestone notes).
 - If `.symphony-base-branch-note` exists, translate it into Russian in `Заметки` once and continue without asking a human; the note may describe repo-label fallback for an already bound workspace or default base-branch fallback chosen for this ticket.
 - If `.symphony-base-branch-error` exists, treat it as a routing/configuration blocker: translate the message into Russian in the workpad, fill `Checkpoint` with `checkpoint_type: human-action`, a justified `risk_level`, and a short `summary`, then move the issue to `Blocked` and stop.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as mandatory acceptance input.
@@ -801,19 +814,21 @@ Instructions:
    - always pass the absolute path to local `workpad.md` when calling `sync_workpad`.
 6. Update the issue-description task-spec only when required sections are missing or the task contract materially changed:
    - use canonical Russian headings `Проблема`, `Цель`, `Скоуп`, `Критерии приемки`, and keep a final `## Symphony` section;
-   - for `mode:plan` and other execution/review-oriented tasks, follow
+   - for `mode:plan` and legacy spec-prep path (and other execution/review-oriented tasks), follow
      `docs/policy/project-contract.md` for `Acceptance Matrix` schema and proof
-     semantics; for `mode:plan`, `Acceptance Matrix` is mandatory and
+     semantics; for `mode:plan` and legacy spec-prep path, `Acceptance Matrix`,
+     `Proof Mapping`, and `Остаточные риски` are mandatory, while
      `Required capabilities` is additive only;
    - when an acceptance item requires external infrastructure before execution can complete, add a machine-readable `Required capabilities: ...` line to the final `## Symphony` section. Use only external prerequisite names: `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`; do not include execution-only requirements (`repo_validation`, `pr_publication`, `pr_body_contract`) in this line because they are implicit workflow obligations;
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
-   - for `mode:plan` with gate `planning.swarm_assist_enabled=true`, keep machine-readable lines for `plan_revision`, `artifact_path`, and `artifact_revision` in the normalized plan body so enabled-path checks are auditable;
-   - keep `## Symphony` as the last section with `Repo: <resolved owner/name>`, `Base branch: <configured branch>`, and `Working branch: <configured branch name>` when `.symphony-working-branch` exists;
+   - for `mode:plan` and legacy spec-prep path with gate `planning.swarm_assist_enabled=true`, keep machine-readable lines for `plan_revision`, `artifact_path`, and `artifact_revision` in the normalized plan body; `artifact_revision` must equal `plan_revision`;
+   - keep `## Symphony` as the last H2 section with `Repo: <resolved owner/name>`, `Base branch: <configured branch>`, and `Working branch: <configured branch name>` when `.symphony-working-branch` exists; trailing non-heading uploads/media after this section are allowed and must remain untouched;
    - if `.symphony-source-repository`, `.symphony-base-branch`, or `.symphony-working-branch` exist, treat them as authoritative when repopulating `Repo:`, `Base branch:`, and `Working branch:` during normalization;
    - preserve all material user facts, constraints, and acceptance intent, but allow full reformatting into the canonical sections;
    - preserve user-uploaded files, screenshots, and inline media verbatim; if the current description contains uploads or embeds that would be dropped by normalization, do not rewrite the description and keep the extra structure in the workpad instead;
    - do not remove machine-readable `Repo:`, `Base branch:`, or `Working branch:` lines even when repo routing is also inferred from project metadata or `repo:*` labels;
-   - do not write checklists, managed markers, or workpad-style progress notes into the description.
+   - description lists must be plain bullets only (`- ...`); do not use markdown checkboxes (`- [ ]`, `- [x]`) in the issue description;
+   - do not write managed markers, workpad-style progress notes, `Execution Evidence`, `Checkpoint`, or `## Рабочий журнал Codex` sections into the description.
 7. Maintain the Russian workpad with a compact environment stamp, hierarchical plan, `Критерии приемки`, `Проверка`, `Артефакты`, and `Заметки`.
    - If `Неясности` is non-empty, every bullet must be a concrete decision-blocker written in three parts: what is still unconfirmed, why that blocks execution or acceptance, and which exact repo-controlled signal, artifact, or human input will clear it.
    - Prefer specific nouns such as `production bundle bytes`, `deploy manifest`, `literal copy`, `drawer footer/actions`, `screenshot baseline`, or `Basic auth access`; avoid vague phrasing like `нужно разобраться` without a stated unblock condition.
@@ -975,7 +990,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - For `mode:research`, the description/workpad explicitly separate confirmed findings from remaining hypotheses and recommend the minimal implementation contour.
 - For `mode:plan` and legacy spec-prep tickets, the description/workpad explicitly capture the recommended implementation contour and validation plan.
 - The workpad comment exists and mirrors the resulting spec and detailed plan in Russian.
-- Required `Критерии приемки` and `Проверка` checklists are explicit and reviewable.
+- Required `Критерии приемки` list items in description and `Проверка` checklist items in workpad are explicit and reviewable.
 - Any important reproduction or investigation signal is recorded in the workpad.
 - No product code changes, commits, or PR publication happened during `Spec Prep`.
 - `Spec Review` does not require a classified `Checkpoint`; classified checkpoints begin with execution handoffs to `In Review` or `Blocked`.
@@ -1097,10 +1112,17 @@ Base branch: branch-name
 Working branch: branch-name
 ````
 
-Keep `## Symphony` as the last section of the issue description even when repo routing also comes from project metadata or `repo:*` labels.
-`Repo:` must mirror the resolved repository, `Base branch:` must mirror the configured base branch, and `Working branch:` is optional but must mirror the configured exact working-branch name when present.
+For `mode:plan` and legacy spec-prep path, also include mandatory sections:
+`Acceptance Matrix`, `Proof Mapping`, and `Остаточные риски`. When
+`planning.swarm_assist_enabled=true`, include `plan_revision`,
+`artifact_path`, and `artifact_revision` in the short plan body, and keep
+`artifact_revision == plan_revision`.
 
-Do not use checkboxes, managed markers, or progress logs in the issue description.
+Keep `## Symphony` as the last H2 section of the issue description even when repo routing also comes from project metadata or `repo:*` labels.
+`Repo:` must mirror the resolved repository, `Base branch:` must mirror the configured base branch, and `Working branch:` is optional but must mirror the configured exact working-branch name when present.
+Trailing non-heading uploads/media after `## Symphony` are allowed and must not be relocated or dropped.
+
+Issue description uses plain list items only (`- ...`). Do not use markdown checkboxes (`- [ ]`, `- [x]`), managed markers, progress logs, or workpad-only sections (`## Рабочий журнал Codex`, `Execution Evidence`, `Checkpoint`) there.
 
 ## Workpad template
 

@@ -71,6 +71,22 @@ contour without shipping product code.
 - `In Review`/`Blocked` handoff semantics are consumed by execution stage from
   the same contract.
 
+## Pre-write checklist (before `issueUpdate(description)`)
+
+- For `mode:plan` and legacy spec-prep path, ensure the description contains
+  `Acceptance Matrix`, `Proof Mapping`, and `Остаточные риски`.
+- In the description, use plain bullets only (`- ...`); do not use markdown
+  checkboxes (`- [ ]`, `- [x]`).
+- Keep workpad-only sections out of description: `## Рабочий журнал Codex`,
+  `Execution Evidence`, `Checkpoint`, and progress journal notes.
+- Keep `## Symphony` as the last H2 section; marker lines must form one
+  contiguous block. Trailing non-heading uploads/media are allowed.
+- When gate `planning.swarm_assist_enabled=true`, require
+  `plan_revision`/`artifact_path`/`artifact_revision` and verify
+  `artifact_revision == plan_revision` before handoff.
+- Apply the same invariants to legacy spec-prep path (tickets in `Spec Prep`
+  without `mode:*` labels).
+
 ## Guardrails
 
 - Do not edit product code as a shipped fix.
