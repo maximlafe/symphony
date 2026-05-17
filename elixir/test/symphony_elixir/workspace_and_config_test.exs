@@ -2256,6 +2256,51 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert_receive {:linear_team_scope_query_with_assignee_id, query, ^expected_variables}
     assert query =~ "SymphonyLinearTeamPollByAssigneeId"
+    assert query =~ "$assigneeId: ID!"
+    assert query =~ "assignee: {id: {eq: $assigneeId}}"
+  end
+
+  test "linear client applies assignee id filter directly in project-scope query" do
+    assignee_filter = %{
+      configured_assignee: "bbe6bf34-e7d7-469d-b198-54ce978c90da",
+      match_values: MapSet.new(["bbe6bf34-e7d7-469d-b198-54ce978c90da"]),
+      query_filter: {:id, "bbe6bf34-e7d7-469d-b198-54ce978c90da"}
+    }
+
+    graphql_fun = fn query, variables ->
+      send(self(), {:linear_project_scope_query_with_assignee_id, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issues" => %{
+             "nodes" => [],
+             "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+           }
+         }
+       }}
+    end
+
+    assert {:ok, []} =
+             Client.fetch_issues_by_states_for_test(
+               {:project, "symphony-bd5bc5b51675"},
+               ["Todo"],
+               graphql_fun,
+               assignee_filter
+             )
+
+    expected_variables = %{
+      projectSlug: "symphony-bd5bc5b51675",
+      stateNames: ["Todo"],
+      first: 50,
+      relationFirst: 50,
+      after: nil,
+      assigneeId: "bbe6bf34-e7d7-469d-b198-54ce978c90da"
+    }
+
+    assert_receive {:linear_project_scope_query_with_assignee_id, query, ^expected_variables}
+    assert query =~ "SymphonyLinearPollByAssigneeId"
+    assert query =~ "$assigneeId: ID!"
     assert query =~ "assignee: {id: {eq: $assigneeId}}"
   end
 
