@@ -7015,6 +7015,96 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner treats issue state refresh 429 as continuation handoff instead of worker failure" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-refresh-429-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file=#{inspect(trace_file)}
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-refresh-429"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-refresh-429-1"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server",
+        max_turns: 3
+      )
+
+      parent = self()
+
+      issue_state_fetcher = fn [_issue_id] ->
+        send(parent, {:issue_state_fetch, :linear_429})
+        {:error, {:linear_api_status, 429}}
+      end
+
+      issue = %Issue{
+        id: "issue-refresh-429",
+        identifier: "MT-429",
+        title: "Treat refresh 429 as continuation handoff",
+        description: "Issue state refresh can be temporarily rate-limited",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-429",
+        labels: []
+      }
+
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: issue_state_fetcher)
+      assert_receive {:issue_state_fetch, :linear_429}
+
+      lines = File.read!(trace_file) |> String.split("\n", trim: true)
+
+      turn_payloads =
+        lines
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.filter(&(&1["method"] == "turn/start"))
+
+      assert length(turn_payloads) == 1
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner stops after consecutive empty turns and backs off between them" do
     test_root =
       Path.join(

@@ -376,11 +376,23 @@ defmodule SymphonyElixir.AgentRunner do
         {:done, issue}
 
       {:error, reason} ->
-        {:error, {:issue_state_refresh_failed, reason}}
+        if infra_issue_state_refresh_reason?(reason) do
+          Logger.warning("Issue state refresh temporarily unavailable for #{issue_context(issue)} reason=#{inspect(reason)}; returning control to orchestrator for continuation retry")
+
+          {:done, issue}
+        else
+          {:error, {:issue_state_refresh_failed, reason}}
+        end
     end
   end
 
   defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
+
+  defp infra_issue_state_refresh_reason?({:linear_api_status, status})
+       when is_integer(status),
+       do: status == 429 or status >= 500
+
+  defp infra_issue_state_refresh_reason?(_reason), do: false
 
   defp hydrate_issue_for_execution(%Issue{} = issue, fetcher) when is_function(fetcher, 1) do
     if is_binary(issue_execution_lookup_key(issue)) do

@@ -483,21 +483,9 @@ defmodule SymphonyElixir.Linear.Client do
   def fetch_issues_by_states(state_names) when is_list(state_names) do
     normalized_states = Enum.map(state_names, &to_string/1) |> Enum.uniq()
 
-    if normalized_states == [] do
-      {:ok, []}
-    else
-      tracker = Config.settings!().tracker
-
-      cond do
-        is_nil(tracker.api_key) ->
-          {:error, :missing_linear_api_token}
-
-        is_nil(Config.linear_polling_scope()) ->
-          {:error, :missing_linear_polling_scope}
-
-        true ->
-          do_fetch_by_states(Config.linear_polling_scope(), normalized_states, nil)
-      end
+    case normalized_states do
+      [] -> {:ok, []}
+      states -> fetch_issues_by_states_with_scope(states)
     end
   end
 
@@ -512,6 +500,23 @@ defmodule SymphonyElixir.Linear.Client do
       ids ->
         with {:ok, assignee_filter} <- routing_assignee_filter() do
           do_fetch_issue_states(ids, assignee_filter)
+        end
+    end
+  end
+
+  defp fetch_issues_by_states_with_scope(states) when is_list(states) do
+    tracker = Config.settings!().tracker
+
+    cond do
+      is_nil(tracker.api_key) ->
+        {:error, :missing_linear_api_token}
+
+      is_nil(Config.linear_polling_scope()) ->
+        {:error, :missing_linear_polling_scope}
+
+      true ->
+        with {:ok, assignee_filter} <- routing_assignee_filter() do
+          do_fetch_by_states(Config.linear_polling_scope(), states, assignee_filter)
         end
     end
   end
