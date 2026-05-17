@@ -51,6 +51,12 @@ contour without shipping product code.
   - `plan_revision`
   - `artifact_path` (repo-relative path under `docs/reports/`)
   - `artifact_revision` (must equal `plan_revision` and is copied from it)
+- For enabled mode, require machine-readable fields inside the linked swarm
+  artifact as plain lines:
+  - `plan_revision: <value>`
+  - `artifact_revision: <value>`
+  and keep artifact `artifact_revision` equal to short-plan `plan_revision`.
+  Human-readable-only aliases like `Artifact revision: ...` are not sufficient.
 - Upload the artifact referenced by `artifact_path` as a Linear issue attachment
   before handing off to `Spec Review` (attachment title should match the artifact
   filename or full `artifact_path`).
@@ -80,6 +86,12 @@ contour without shipping product code.
 - For `mode:plan`, ensure `Proof Mapping` has exactly one mapping per matrix
   item and mapping type matches `Acceptance Matrix.proof_type`
   (`validation`, `artifact`, or `runtime`).
+- For `mode:plan`, use only canonical proof-mapping prefixes:
+  - `validation:<label>`
+  - `artifact:<title>`
+  - `runtime:<label>`
+  For `proof_type=runtime_smoke`, use `runtime:runtime smoke` (or another
+  runtime label accepted by the task), never `runtime_smoke:<label>`.
 - In the description, use plain bullets only (`- ...`); do not use markdown
   checkboxes (`- [ ]`, `- [x]`).
 - Keep workpad-only sections out of description: `## Рабочий журнал Codex`,
@@ -89,6 +101,9 @@ contour without shipping product code.
 - When gate `planning.swarm_assist_enabled=true`, require
   `plan_revision`/`artifact_path`/`artifact_revision` and verify
   `artifact_revision == plan_revision` before handoff.
+- When gate `planning.swarm_assist_enabled=true`, verify the linked artifact
+  includes machine-readable `plan_revision:` and `artifact_revision:` lines
+  that align with the short-plan revision pair before handoff.
 - Apply the same invariants to legacy spec-prep path (tickets in `Spec Prep`
   without `mode:*` labels).
 
