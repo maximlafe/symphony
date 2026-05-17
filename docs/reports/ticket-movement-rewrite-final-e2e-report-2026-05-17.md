@@ -31,7 +31,7 @@ Status values follow contract: `missing` / `verified-existing` / `completed-now`
 | 4. Boundary contracts and ownership | `verified-existing` | Plan boundary seam: `elixir/lib/symphony_elixir/codex/dynamic_tool.ex:655`; execution boundary seam: `elixir/lib/symphony_elixir/orchestrator.ex:4140`; review boundary seam: `elixir/lib/symphony_elixir/controller_finalizer.ex:53` and `elixir/lib/symphony_elixir/handoff_check.ex:302`; Linear boundary wrapper: `elixir/lib/symphony_elixir/tracker.ex:35` -> `elixir/lib/symphony_elixir/linear/adapter.ex:53` |
 | 5. Canonical pipeline and guard cleanup | `verified-existing` | Pipeline entry/continuation in `ControllerFinalizer.run/3` (`elixir/lib/symphony_elixir/controller_finalizer.ex:53`) and review contract in `HandoffCheck.evaluate/2` (`elixir/lib/symphony_elixir/handoff_check.ex:302`); fail-closed guard paths proven by `controller_finalizer_test.exs:1108` and `dynamic_tool_test.exs:2266` rerun green |
 | 6. `changed_paths` fallback semantics | `verified-existing` | Fail-closed fallback in review path: `elixir/lib/symphony_elixir/controller_finalizer.ex:744`; fail-closed fallback in handoff validation context: `elixir/lib/symphony_elixir/codex/dynamic_tool.ex:804`; tests: `controller_finalizer_test.exs:1108`, `dynamic_tool_test.exs:2266` (green) |
-| 7. Retry/failover simplification | `verified-existing` | Baseline constants retained: `@max_continuation_attempts_default 3`, `@failure_retry_base_ms 10_000`, `@linear_rate_limit_poll_backoff_ms 60_000`, `@tracker_escalation_infra_dedupe_ttl_ms 300_000`, `@tracker_retry_budget_ttl_ms 300_000` in `elixir/lib/symphony_elixir/orchestrator.ex:39`, `:40`, `:47`, `:54`, `:55`; retry-budget behavior proof at `elixir/test/symphony_elixir/execution_contract_test.exs:117` and `elixir/test/symphony_elixir/core_test.exs:5738` |
+| 7. Retry/failover simplification | `completed-now` | Added per-milestone 429 retry cooldown to stop repeated Linear write attempts while preserving pending milestones: `elixir/lib/symphony_elixir/orchestrator.ex:6822`, `:6829`, `:6854`, `:6881`, `:6896`; regression proof with `orchestrator_status_test.exs: "orchestrator retries milestone commentary after transient tracker failures"` (`elixir/test/symphony_elixir/orchestrator_status_test.exs:862`) and new `orchestrator_status_test.exs: "orchestrator throttles milestone commentary retries after linear 429"` (`elixir/test/symphony_elixir/orchestrator_status_test.exs:1025`) |
 | 8. Idempotent Linear wrapper | `verified-existing` | Single tracker boundary calls: `elixir/lib/symphony_elixir/tracker.ex:35`, `elixir/lib/symphony_elixir/tracker.ex:40`; Linear adapter implementation: `elixir/lib/symphony_elixir/linear/adapter.ex:53`, `elixir/lib/symphony_elixir/linear/adapter.ex:65`; dedupe/idempotent behavior proof by app-server tests `elixir/test/symphony_elixir/app_server_test.exs:1332`, `elixir/test/symphony_elixir/app_server_test.exs:1626` (green) |
 | 9. Validation gate map | `completed-now` | Matrix row updates in `docs/plans/ticket-movement-rewrite-plan.md:250` aligned with actual named tests (including `workspace_and_config_test` assignee-id query tests at `elixir/test/symphony_elixir/workspace_and_config_test.exs:2219` and `:2263`) |
 
@@ -48,6 +48,20 @@ Status values follow contract: `missing` / `verified-existing` / `completed-now`
   - `elixir/test/symphony_elixir/workspace_and_config_test.exs:2219` asserts team-scope query contains `$assigneeId: ID!`
   - `elixir/test/symphony_elixir/workspace_and_config_test.exs:2263` asserts project-scope query contains `$assigneeId: ID!`
   - targeted rerun result: `2 tests, 0 failures`
+
+### Slice: milestone retry throttle for Linear 429
+- Problem observed in live run (`Todo + mode:plan` route): while Linear was globally rate-limited, milestone publishing retried on every runtime update (`code-ready`, `validation-running`) and produced repeated `{:linear_api_status, 429}` write attempts.
+- Files changed:
+  - `elixir/lib/symphony_elixir/orchestrator.ex`
+  - `elixir/test/symphony_elixir/orchestrator_status_test.exs`
+- Code changes:
+  - milestone publish path now checks per-milestone retry cooldown before reattempt: `elixir/lib/symphony_elixir/orchestrator.ex:6822`
+  - 429 failures now mark milestone pending and schedule deferred retry instead of immediate repeated writes: `elixir/lib/symphony_elixir/orchestrator.ex:6881`
+  - backoff source is configurable for tests and defaults to Linear poll backoff: `elixir/lib/symphony_elixir/orchestrator.ex:6896`
+- Regression proof:
+  - existing transient retry behavior preserved: `elixir/test/symphony_elixir/orchestrator_status_test.exs:862`
+  - new 429-specific throttle behavior: `elixir/test/symphony_elixir/orchestrator_status_test.exs:1025`
+  - targeted rerun result: `3 tests, 0 failures`
 
 ## Gate results
 ### Targeted regression suite
@@ -67,33 +81,36 @@ Result:
 ### Cheap and broader gates
 - `make symphony-runtime-smoke SCENARIO=workflow_contract` -> `1 test, 0 failures`
 - `make symphony-runtime-smoke SCENARIO=all` -> `5 tests, 0 failures`
+- `mise exec -- mix test test/symphony_elixir/orchestrator_status_test.exs:720 test/symphony_elixir/orchestrator_status_test.exs:862 test/symphony_elixir/orchestrator_status_test.exs:1025` -> `3 tests, 0 failures`
 - `make symphony-validate`:
-  - first non-escalated attempt failed with sandbox write denial to `~/.hex/cache.ets` (`:eaccess`)
-  - rerun with escalated permissions passed (`contracts`, `build`, `format`, `lint`, `test --cover`, `dialyzer`; test phase `782 tests, 0 failures, 1 skipped`; dialyzer `Total errors: 0`)
+  - earlier non-escalated pass had sandbox write denial in this thread history (`~/.hex/cache.ets`, `:eaccess`) and was rerun with escalation
+  - current rerun after milestone-throttle slice is fully green (`contracts`, `build`, `format`, `lint`, `test --cover`, `dialyzer`; test phase `783 tests, 0 failures, 1 skipped`; dialyzer `Total errors: 0`)
 
 ## Live autonomous e2e on LET-738
 ### Runtime and service boundary
-- Runtime launched with isolated workflow file and isolated port:
+- Runtime launched with isolated workflow file and isolated ports:
   - workflow: `/private/tmp/let738-live.WORKFLOW.md`
-  - port: `4114`
-  - dashboard URL: `http://127.0.0.1:4114/proxy/symphony/`
+  - run A port: `4119`, dashboard URL: `http://127.0.0.1:4119/proxy/symphony/`
+  - run B port: `4120`, dashboard URL: `http://127.0.0.1:4120/proxy/symphony/`
 - Health/API checks:
   - `GET /health` -> `{"status":"ok"}`
   - `GET /api/dashboard` -> `200` with JSON payload
-- No port conflict observed on `4114`.
+- No port conflict observed on `4119` / `4120`.
 
 ### E2E outcome (current)
-- Issue is picked by runtime but autonomous flow does not reach `Done`/`Blocked` because Linear API calls are externally rate-limited.
-- Dashboard proof snapshot (`2026-05-17T09:00:33Z`):
-  - `counts.running=0`, `counts.retrying=1`
-  - retry entry for `LET-738`: `attempt=6`, `error="retry poll failed: {:linear_api_status, 429}"`
-  - `error_signature="failed_to_escalate_let_738_to_blocked_linear_api_status_429"`
-  - next retry scheduled at `due_at="2026-05-17T09:03:44Z"`
+- Routing precondition applied per request: `LET-738` moved to `Todo` and labeled `mode:plan` before rerun.
+- Run A (`4119`) reached active execution (`LET-738` in runtime `Todo / editing`, token growth beyond `500k`), proving route startup through `Todo + mode:plan`.
+- During run A, external Linear quota (`429`) prevented state refresh and milestone writes. Root-cause signal:
+  - `Linear GraphQL request failed status=429 ... "Rate limit exceeded. Only 2500 requests are allowed per 1 hour"` (`/private/tmp/symphony-let738-run-20260517-1/logs/log/symphony.log.1`)
+- After applying milestone retry throttle, run B (`4120`) under the same global quota window no longer entered milestone retry storm; it fail-closed earlier at dispatch with explicit 429 signals:
+  - `Skipping dispatch; issue refresh failed ... {:linear_api_status, 429}`
+  - `Failed to fetch from Linear: {:linear_api_status, 429}`
+- Canonical terminal completion on Linear (`Done`/`Blocked`) is still blocked until quota window recovers.
 
 ## Rollback/defer ledger
 - Rollback: none required in this run.
 - Deferred item:
-  - Live e2e completion for `LET-738` is deferred by external Linear `429` quota state, not by handoff/contract/proof logic.
+  - Live e2e completion for `LET-738` is deferred by external Linear `429` quota state (global hourly window), not by handoff/contract/proof logic.
 - Hidden carry-over:
   - none; all in-progress code edits are explicit in tracked files.
 
@@ -101,9 +118,10 @@ Result:
 - Plan steps 1..9: closed (`verified-existing` or `completed-now`) with proof anchors.
 - Mandatory gates: green after escalated validate rerun.
 - Canonical live e2e `Plan -> Execute -> Review -> Done/Blocked` on new issue `LET-738`: **not yet completed** due external Linear `429` rate limit.
+- `Todo + mode:plan` routing requirement is applied and verified in live runtime startup.
 
 Final status for this run: **NOT DONE** (blocked externally by Linear API rate limiting during live autonomous e2e completion).
 
 ## Residual risks
 - Until Linear quota recovers, runtime may stay in retry loops and cannot prove final autonomous transition on LET-738.
-- No new in-scope behavioral risk introduced by the assignee-id GraphQL type fix; regression tests for both assignee-id query shapes are now explicit.
+- Milestone 429 retry storm risk is reduced by per-milestone cooldown; residual blocker remains upstream Linear quota availability.

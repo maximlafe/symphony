@@ -1022,6 +1022,179 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute_receive {:phase_comment_graphql_called, ^create_comment_query, ^first_variables}, 200
   end
 
+  test "orchestrator throttles milestone commentary retries after linear 429" do
+    previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    previous_recipient = Application.get_env(:symphony_elixir, :phase_comment_linear_recipient)
+    previous_issues = Application.get_env(:symphony_elixir, :phase_comment_linear_issues)
+    previous_results_agent = Application.get_env(:symphony_elixir, :phase_comment_linear_results_agent)
+    previous_retry_backoff = Application.get_env(:symphony_elixir, :orchestrator_milestone_retry_backoff_ms)
+
+    on_exit(fn ->
+      if is_nil(previous_client_module) do
+        Application.delete_env(:symphony_elixir, :linear_client_module)
+      else
+        Application.put_env(:symphony_elixir, :linear_client_module, previous_client_module)
+      end
+
+      if is_nil(previous_recipient) do
+        Application.delete_env(:symphony_elixir, :phase_comment_linear_recipient)
+      else
+        Application.put_env(:symphony_elixir, :phase_comment_linear_recipient, previous_recipient)
+      end
+
+      if is_nil(previous_issues) do
+        Application.delete_env(:symphony_elixir, :phase_comment_linear_issues)
+      else
+        Application.put_env(:symphony_elixir, :phase_comment_linear_issues, previous_issues)
+      end
+
+      if is_nil(previous_results_agent) do
+        Application.delete_env(:symphony_elixir, :phase_comment_linear_results_agent)
+      else
+        Application.put_env(:symphony_elixir, :phase_comment_linear_results_agent, previous_results_agent)
+      end
+
+      if is_nil(previous_retry_backoff) do
+        Application.delete_env(:symphony_elixir, :orchestrator_milestone_retry_backoff_ms)
+      else
+        Application.put_env(:symphony_elixir, :orchestrator_milestone_retry_backoff_ms, previous_retry_backoff)
+      end
+    end)
+
+    {:ok, results_agent} =
+      Agent.start_link(fn ->
+        [
+          {:error, {:linear_api_status, 429}},
+          {:error, {:linear_api_status, 429}},
+          {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}},
+          {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+        ]
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(results_agent) do
+        Agent.stop(results_agent)
+      end
+    end)
+
+    Application.put_env(:symphony_elixir, :linear_client_module, PhaseCommentLinearClient)
+    Application.put_env(:symphony_elixir, :phase_comment_linear_recipient, self())
+    Application.put_env(:symphony_elixir, :phase_comment_linear_results_agent, results_agent)
+    Application.put_env(:symphony_elixir, :orchestrator_milestone_retry_backoff_ms, 50)
+
+    issue_id = "issue-phase-comment-rate-limit"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-PHASE-RATELIMIT",
+      title: "Throttle phase comments after 429",
+      description: "Avoid milestone comment retry storms while Linear is rate-limited",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-PHASE-RATELIMIT"
+    }
+
+    Application.put_env(:symphony_elixir, :phase_comment_linear_issues, [issue])
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
+
+    orchestrator_name = Module.concat(__MODULE__, :RunPhaseCommentRateLimitOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/exec_command_begin",
+           "params" => %{"msg" => %{"command" => "make symphony-validate"}}
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    assert_receive {:phase_comment_graphql_called, create_comment_query, first_variables}, 2_000
+    assert create_comment_query =~ "commentCreate"
+    assert first_variables.issueId == issue_id
+    assert first_variables.body =~ "code-ready"
+
+    assert_receive {:phase_comment_graphql_called, ^create_comment_query, second_variables}, 2_000
+    assert second_variables.issueId == issue_id
+    assert second_variables.body =~ "validation-running"
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/token_count",
+           "params" => %{"msg" => %{"type" => "token_count"}}
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    refute_receive {:phase_comment_graphql_called, ^create_comment_query, _retry_before_backoff}, 30
+
+    Process.sleep(60)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/token_count",
+           "params" => %{"msg" => %{"type" => "token_count"}}
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    assert_receive {:phase_comment_graphql_called, ^create_comment_query, retry_code_ready_variables}, 2_000
+    assert retry_code_ready_variables == first_variables
+
+    assert_receive {:phase_comment_graphql_called, ^create_comment_query, retry_validation_variables}, 2_000
+    assert retry_validation_variables == second_variables
+
+    assert_eventually(fn ->
+      current = :sys.get_state(pid).running[issue_id]
+      pending = current.pending_milestones || MapSet.new()
+      reported = current.reported_milestones || MapSet.new()
+
+      MapSet.member?(reported, :code_ready) and MapSet.member?(reported, :validation_running) and
+        MapSet.size(pending) == 0
+    end)
+  end
+
   test "orchestrator logs warning when workspace usage exceeds threshold" do
     test_root =
       Path.join(

@@ -6817,8 +6817,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp publish_single_milestone(issue_id, running_entry, milestone) do
+    now_ms = System.monotonic_time(:millisecond)
+
+    if milestone_retry_blocked?(running_entry, milestone, now_ms) do
+      RunPhase.mark_milestone_pending(running_entry, milestone)
+    else
+      publish_single_milestone_now(issue_id, running_entry, milestone, now_ms)
+    end
+  end
+
+  defp publish_single_milestone_now(issue_id, running_entry, milestone, now_ms) do
     if RunPhase.milestone_reported?(running_entry, milestone) do
-      RunPhase.clear_pending_milestone(running_entry, milestone)
+      running_entry
+      |> RunPhase.clear_pending_milestone(milestone)
+      |> clear_milestone_retry_after(milestone)
     else
       comment = RunPhase.milestone_comment(milestone, running_entry)
 
@@ -6827,13 +6839,69 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry
           |> RunPhase.clear_pending_milestone(milestone)
           |> RunPhase.mark_milestone_reported(milestone)
+          |> clear_milestone_retry_after(milestone)
 
         {:error, reason} ->
           Logger.warning("Failed to publish run milestone #{RunPhase.milestone_label(milestone)} for issue_id=#{issue_id}: #{inspect(reason)}")
-          RunPhase.mark_milestone_pending(running_entry, milestone)
+
+          running_entry
+          |> RunPhase.mark_milestone_pending(milestone)
+          |> maybe_schedule_milestone_retry(milestone, reason, now_ms)
       end
     end
   end
+
+  defp milestone_retry_blocked?(running_entry, milestone, now_ms)
+       when is_map(running_entry) and is_integer(now_ms) do
+    case milestone_retry_after_for(running_entry, milestone) do
+      retry_after when is_integer(retry_after) and retry_after > now_ms -> true
+      _ -> false
+    end
+  end
+
+  defp milestone_retry_blocked?(_running_entry, _milestone, _now_ms), do: false
+
+  defp milestone_retry_after_for(running_entry, milestone) when is_map(running_entry) do
+    running_entry
+    |> Map.get(:milestone_retry_after_ms, %{})
+    |> normalize_milestone_retry_map()
+    |> Map.get(milestone)
+  end
+
+  defp clear_milestone_retry_after(running_entry, milestone) when is_map(running_entry) do
+    retry_map =
+      running_entry
+      |> Map.get(:milestone_retry_after_ms, %{})
+      |> normalize_milestone_retry_map()
+      |> Map.delete(milestone)
+
+    Map.put(running_entry, :milestone_retry_after_ms, retry_map)
+  end
+
+  defp maybe_schedule_milestone_retry(running_entry, milestone, {:linear_api_status, 429}, now_ms)
+       when is_map(running_entry) and is_integer(now_ms) do
+    retry_at = now_ms + milestone_rate_limit_retry_backoff_ms()
+
+    retry_map =
+      running_entry
+      |> Map.get(:milestone_retry_after_ms, %{})
+      |> normalize_milestone_retry_map()
+      |> Map.put(milestone, retry_at)
+
+    Map.put(running_entry, :milestone_retry_after_ms, retry_map)
+  end
+
+  defp maybe_schedule_milestone_retry(running_entry, _milestone, _reason, _now_ms), do: running_entry
+
+  defp milestone_rate_limit_retry_backoff_ms do
+    case Application.get_env(:symphony_elixir, :orchestrator_milestone_retry_backoff_ms) do
+      value when is_integer(value) and value > 0 -> value
+      _ -> @linear_rate_limit_poll_backoff_ms
+    end
+  end
+
+  defp normalize_milestone_retry_map(%{} = retry_map), do: retry_map
+  defp normalize_milestone_retry_map(_retry_map), do: %{}
 
   defp tool_update_milestones(update) when is_map(update) do
     []
