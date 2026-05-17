@@ -742,6 +742,8 @@ defmodule SymphonyElixir.ControllerFinalizer do
   end
 
   defp pre_handoff_change_classes(workspace, checkpoint) do
+    explicit_changed_files? = checkpoint_has_changed_files_key?(checkpoint)
+
     changed_paths =
       case checkpoint_changed_files(checkpoint) do
         [] -> git_changed_paths(workspace)
@@ -750,9 +752,14 @@ defmodule SymphonyElixir.ControllerFinalizer do
 
     case ValidationGate.classify_paths(changed_paths) do
       {:ok, classes} -> classes
+      # Fail closed for explicit checkpoint path sets when fallback still resolves to empty.
+      {:error, _reasons} when explicit_changed_files? -> ["runtime_contract"]
       {:error, _reasons} -> []
     end
   end
+
+  defp checkpoint_has_changed_files_key?(%{"changed_files" => _value}), do: true
+  defp checkpoint_has_changed_files_key?(_checkpoint), do: false
 
   defp checkpoint_changed_files(%{"changed_files" => files}) when is_list(files) do
     files

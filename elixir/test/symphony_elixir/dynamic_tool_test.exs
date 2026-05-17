@@ -2263,6 +2263,106 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Enum.any?(payload["manifest"]["missing_items"], &String.contains?(&1, "preflight"))
   end
 
+  test "symphony_handoff_check fail-closes empty changed_paths fallback to runtime_contract" do
+    workspace = Path.join(System.tmp_dir!(), "handoff_empty_changed_paths_workspace_#{System.unique_integer([:positive])}")
+
+    workpad_path =
+      write_tmp_file(workspace, "workpad.md", """
+      ## Codex Workpad
+
+      ### Validation
+
+      - [x] preflight: `make symphony-preflight`
+      - [x] targeted tests: `mix test test/symphony_elixir/dynamic_tool_test.exs`
+      - [x] repo validation: `make symphony-validate`
+
+      ### Artifacts
+
+      - [x] uploaded attachment: `proof.txt` -> runtime proof placeholder
+
+      ### Checkpoint
+
+      - `checkpoint_type`: `<human-verify|decision|human-action>` (fill only at handoff)
+      """)
+
+    response =
+      DynamicTool.execute(
+        "symphony_handoff_check",
+        %{
+          "issue_id" => "LET-737",
+          "file_path" => workpad_path,
+          "repo" => "maximlafe/symphony",
+          "pr_number" => 52,
+          "phase" => "review"
+        },
+        workspace: workspace,
+        linear_client: fn query, _variables, _opts ->
+          if query =~ "SymphonyHandoffCheckIssue" do
+            {:ok,
+             %{
+               "data" => %{
+                 "issue" => %{
+                   "id" => "LET-737",
+                   "identifier" => "LET-737",
+                   "state" => %{"name" => "In Progress"},
+                   "labels" => %{"nodes" => []},
+                   "attachments" => %{"nodes" => [%{"title" => "proof.txt", "url" => "https://example.test/proof.txt"}]}
+                 }
+               }
+             }}
+          else
+            flunk("unexpected GraphQL query: #{query}")
+          end
+        end,
+        git_runner: fn
+          ["rev-parse", "HEAD"], _opts -> {:ok, "abc123\n"}
+          ["rev-parse", "HEAD^{tree}"], _opts -> {:ok, "tree123\n"}
+          ["status", "--porcelain", "--untracked-files=no"], _opts -> {:ok, ""}
+          ["diff", "--name-only", "origin/main...HEAD"], _opts -> {:ok, "\n"}
+        end,
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "52", "-R", "maximlafe/symphony", "--json", _] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://example.test/pr/52",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "",
+                 "mergeStateStatus" => "CLEAN",
+                 "statusCheckRollup" => [
+                   %{"name" => "test", "status" => "COMPLETED", "conclusion" => "SUCCESS", "workflowName" => "CI"}
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/symphony/issues/52/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/symphony/pulls/52/reviews?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/symphony/pulls/52/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            _ ->
+              flunk("unexpected gh command: #{inspect(args)}")
+          end
+        end
+      )
+
+    assert response["success"] == false
+    payload = decode_tool_text(response)
+
+    assert payload["error"]["message"] =~ "verification contract failed"
+    assert get_in(payload, ["manifest", "validation_gate", "change_classes"]) == ["runtime_contract"]
+    assert "runtime_smoke" in get_in(payload, ["manifest", "validation_gate", "required_checks"])
+
+    assert Enum.any?(
+             payload["manifest"]["missing_items"],
+             &String.contains?(&1, "runtime smoke")
+           )
+  end
+
   test "symphony_handoff_check enforces acceptance matrix mapping for mode:plan issues" do
     workspace = Path.join(System.tmp_dir!(), "handoff_matrix_workspace_#{System.unique_integer([:positive])}")
 
