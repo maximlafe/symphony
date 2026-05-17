@@ -56,6 +56,9 @@ If a rule must change, update this file first and then align workflows/skills.
 - Swarm artifact rules:
   - durable repo file, normally `docs/reports/<task-slug>-swarm-artifact.md`;
   - additive/subordinate only; it cannot replace plan claims;
+  - must contain machine-readable lines `plan_revision: <value>` and
+    `artifact_revision: <value>`; human-readable aliases such as
+    `Artifact revision: ...` are insufficient for contract validation;
   - must be uploaded to Linear issue attachments before `Spec Review` handoff;
   - attachment title should match either full `artifact_path` or artifact
     filename;
@@ -185,9 +188,13 @@ Rules:
 
 - Every required matrix item must have exactly one checked mapping entry.
 - Mapping type must match matrix `proof_type`.
+- Mapping references must use one of these prefixes only:
+  `validation:<label>`, `artifact:<title>`, `runtime:<label>`.
 - Required `test` + `run_executed` items should map through deterministic
   validation entries (for example `validation:am-<id>` in workpad validation).
-- `runtime_smoke` items map with runtime smoke proof entries.
+- `runtime_smoke` items must map through `runtime:<label>` entries
+  (canonical label: `runtime:runtime smoke`).
+- `runtime_smoke:<label>` is not a valid proof-mapping reference.
 - `artifact` items require both:
   - checked workpad artifact entry;
   - matching Linear attachment with the same title.
