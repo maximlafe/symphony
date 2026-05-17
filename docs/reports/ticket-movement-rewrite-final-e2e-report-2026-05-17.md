@@ -159,25 +159,24 @@ Result:
   - completed agent run: `/private/tmp/symphony-let738-run-20260517-9/logs/log/symphony.log.1:2063`
   - graceful refresh handoff under 429: `/private/tmp/symphony-let738-run-20260517-9/logs/log/symphony.log.1:2065`
   - continuation ceiling now triggers on retry-poll path as designed: `/private/tmp/symphony-let738-run-20260517-9/logs/log/symphony.log.1:2094`, repeated at `:2115`
-  - external 429 still prevents tracker state transition to `Blocked`, producing explicit escalation failure retry: `/private/tmp/symphony-let738-run-20260517-9/logs/log/symphony.log.1:2098`, `:2119`
-- Canonical terminal completion on Linear (`Done`/`Blocked`) is still blocked until quota window recovers.
+  - while 429 remained active, escalation retries were explicit and bounded: `/private/tmp/symphony-let738-run-20260517-9/logs/log/symphony.log.1:2098`, `:2119`
+  - after cooldown window recovery, escalation-only retry completed autonomously and released claim in `Blocked`: `/private/tmp/symphony-let738-run-20260517-9/logs/log/symphony.log.1:2202`
+- Canonical terminal completion on Linear is now confirmed on this issue (`LET-738` status `Blocked`).
 
 ## Rollback/defer ledger
 - Rollback: none required in this run.
-- Deferred item:
-  - Live e2e completion for `LET-738` is deferred by external Linear `429` quota state (global hourly window), not by handoff/contract/proof logic.
+- Deferred item: none.
 - Hidden carry-over:
   - none; all in-progress code edits are explicit in tracked files.
 
 ## Definition-of-done status
 - Plan steps 1..9: closed (`verified-existing` or `completed-now`) with proof anchors.
 - Mandatory gates: green after escalated validate rerun.
-- Canonical live e2e `Plan -> Execute -> Review -> Done/Blocked` on new issue `LET-738`: **not yet completed** due external Linear `429` rate limit.
-- `Todo + mode:plan` routing requirement is applied and verified in live runtime startup.
+- Canonical live e2e `Plan -> Execute -> Review -> Done/Blocked` on new issue `LET-738`: **completed** (terminal state `Blocked` reached autonomously after bounded continuation retries).
+- `Todo + mode:plan` routing requirement is applied and verified in live runtime startup and transition chain.
 
-Final status for this run: **NOT DONE** (blocked externally by Linear API rate limiting during live autonomous e2e completion).
+Final status for this run: **DONE**.
 
 ## Residual risks
-- Until Linear quota recovers, runtime may stay in retry loops and cannot prove final autonomous transition on LET-738.
-- Milestone 429 retry storm risk is reduced by per-milestone cooldown; residual blocker remains upstream Linear quota availability.
-- Continuation ceiling now applies to retry-poll failures; remaining loop is escalation retry under external tracker 429, not hidden continuation growth.
+- Linear API 429 windows can still delay terminal transitions, but retry-poll continuation ceiling and escalation-only retry path now produce bounded autonomous convergence.
+- Milestone 429 retry storm risk remains reduced by per-milestone cooldown; behavior is fail-closed with explicit retry telemetry.
