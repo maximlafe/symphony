@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Linear.RateLimitGuard do
   @linear_rate_limit_guard_key {__MODULE__, :linear_rate_limit_guard_until_ms}
   @linear_rate_limit_default_cooldown_ms 60_000
   @linear_rate_limit_min_cooldown_ms 5_000
-  @linear_rate_limit_max_cooldown_ms 3_600_000
+  @linear_rate_limit_max_cooldown_ms 300_000
 
   @spec enforce_guard() :: :ok | {:error, {:linear_rate_limited, non_neg_integer()}}
   def enforce_guard do

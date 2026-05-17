@@ -64,7 +64,7 @@ defmodule SymphonyElixir.LinearRateLimitGuardTest do
       }
     }
 
-    assert {429, 3_600_000} =
+    assert {429, 300_000} =
              RateLimitGuard.normalize_rate_limited_status(max_duration_response, 400)
   end
 
