@@ -1940,17 +1940,35 @@ defmodule SymphonyElixir.Orchestrator do
           end
         )
 
-        {:noreply,
-         schedule_issue_retry(
-           state,
-           issue_id,
-           next_failure_retry_attempt(attempt, metadata[:delay_type]),
-           Map.merge(metadata, %{
-             error: "retry poll failed: #{inspect(reason)}",
-             error_class: ErrorClassifier.to_string(:transient),
-             delay_type: nil
-           })
-         )}
+        if continuation_poll_retry_limit_exceeded?(attempt, metadata) do
+          {:noreply,
+           handle_continuation_attempt_limit_breach(
+             state,
+             attempt + 1,
+             %{
+               issue_id: issue_id,
+               issue: nil,
+               identifier: identifier,
+               session_id: retry_metadata_session_id(metadata),
+               trace_id: trace_id,
+               continuation_reason: "retry_poll_failed",
+               codex_account_id: metadata[:codex_account_id],
+               resume_checkpoint: metadata[:resume_checkpoint]
+             }
+           )}
+        else
+          {:noreply,
+           schedule_issue_retry(
+             state,
+             issue_id,
+             next_failure_retry_attempt(attempt, metadata[:delay_type]),
+             Map.merge(metadata, %{
+               error: "retry poll failed: #{inspect(reason)}",
+               error_class: ErrorClassifier.to_string(:transient),
+               delay_type: nil
+             })
+           )}
+        end
     end
   end
 
@@ -4493,6 +4511,26 @@ defmodule SymphonyElixir.Orchestrator do
        do: attempt > max_continuation_attempts()
 
   defp continuation_attempt_limit_exceeded?(_attempt), do: false
+
+  defp continuation_poll_retry_limit_exceeded?(attempt, metadata)
+       when is_integer(attempt) and attempt > 0 and is_map(metadata) do
+    continuation_poll_retry?(attempt, metadata) and
+      continuation_attempt_limit_exceeded?(attempt + 1)
+  end
+
+  defp continuation_poll_retry_limit_exceeded?(_attempt, _metadata), do: false
+
+  defp continuation_poll_retry?(attempt, %{delay_type: :continuation})
+       when is_integer(attempt) and attempt > 0,
+       do: true
+
+  defp continuation_poll_retry?(attempt, metadata)
+       when is_integer(attempt) and attempt > 0 and is_map(metadata) do
+    case Map.get(metadata, :error) do
+      <<"retry poll failed:", _::binary>> -> true
+      _ -> false
+    end
+  end
 
   defp max_continuation_attempts do
     case Config.settings!().codex.max_continuation_attempts do

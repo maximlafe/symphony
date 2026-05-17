@@ -1589,7 +1589,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         tracker_kind: "linear",
-        max_retry_backoff_ms: 10
+        max_retry_backoff_ms: 5_000
       )
 
       orchestrator_name = Module.concat(__MODULE__, :Let539FetchErrorRetryOrchestrator)
@@ -1605,7 +1605,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       retry_token =
         install_retry_attempt(pid, issue_id, "LET-539-ERROR",
-          attempt: 3,
+          attempt: 2,
           metadata: %{
             trace_id: "trace-let-539",
             delay_type: :continuation,
@@ -1623,9 +1623,67 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         retry = state.retry_attempts[issue_id]
 
         is_map(retry) and retry.identifier == "LET-539-ERROR" and
+          retry.attempt == 1 and
           retry.trace_id == "trace-let-539" and retry.session_id == "session-let-539" and
           retry.error_class == "transient" and
           retry.error == "retry poll failed: :linear_timeout" and retry.delay_type == nil
+      end)
+    end)
+  end
+
+  @tag :let_539
+  test "retry targeted fetch error at continuation ceiling routes to handoff path" do
+    issue_id = "issue-let-539-ceiling"
+
+    with_phase_comment_linear_client([], fn ->
+      Application.put_env(
+        :symphony_elixir,
+        :phase_comment_linear_fetch_issue_states_result,
+        {:error, :linear_timeout}
+      )
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "linear",
+        max_retry_backoff_ms: 10
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :Let539FetchErrorCeilingOrchestrator)
+
+      {:ok, pid} =
+        Orchestrator.start_link(
+          name: orchestrator_name,
+          start_immediately?: false,
+          run_startup_housekeeping?: false
+        )
+
+      on_exit(fn -> stop_orchestrator(pid) end)
+
+      retry_token =
+        install_retry_attempt(pid, issue_id, "LET-539-CEILING",
+          attempt: 3,
+          metadata: %{
+            trace_id: "trace-let-539-ceiling",
+            delay_type: :continuation,
+            session_id: "session-let-539-ceiling"
+          }
+        )
+
+      flush_mailbox_message(:fetch_candidate_issues)
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      assert_receive {:fetch_issue_states_by_ids, [^issue_id]}, 1_000
+      refute_receive :fetch_candidate_issues, 100
+
+      wait_for_orchestrator_state(pid, fn state ->
+        retry = state.retry_attempts[issue_id]
+        retry_error = if is_map(retry), do: Map.get(retry, :error), else: nil
+
+        is_map(retry) and retry.identifier == "LET-539-CEILING" and retry.attempt == 4 and
+          retry.continuation_reason == "retry_poll_failed" and retry.escalation_only == true and
+          retry.failure_class == "policy_fail" and is_binary(retry_error) and
+          String.contains?(retry_error, "failed to escalate LET-539-CEILING to Blocked") and
+          get_in(retry, [:retry_failover_decision, :selected_rule]) ==
+            "continuation_attempt_limit_exceeded"
       end)
     end)
   end

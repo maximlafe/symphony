@@ -31,7 +31,7 @@ Status values follow contract: `missing` / `verified-existing` / `completed-now`
 | 4. Boundary contracts and ownership | `verified-existing` | Plan boundary seam: `elixir/lib/symphony_elixir/codex/dynamic_tool.ex:655`; execution boundary seam: `elixir/lib/symphony_elixir/orchestrator.ex:4140`; review boundary seam: `elixir/lib/symphony_elixir/controller_finalizer.ex:53` and `elixir/lib/symphony_elixir/handoff_check.ex:302`; Linear boundary wrapper: `elixir/lib/symphony_elixir/tracker.ex:35` -> `elixir/lib/symphony_elixir/linear/adapter.ex:53` |
 | 5. Canonical pipeline and guard cleanup | `verified-existing` | Pipeline entry/continuation in `ControllerFinalizer.run/3` (`elixir/lib/symphony_elixir/controller_finalizer.ex:53`) and review contract in `HandoffCheck.evaluate/2` (`elixir/lib/symphony_elixir/handoff_check.ex:302`); fail-closed guard paths proven by `controller_finalizer_test.exs:1108` and `dynamic_tool_test.exs:2266` rerun green |
 | 6. `changed_paths` fallback semantics | `verified-existing` | Fail-closed fallback in review path: `elixir/lib/symphony_elixir/controller_finalizer.ex:744`; fail-closed fallback in handoff validation context: `elixir/lib/symphony_elixir/codex/dynamic_tool.ex:804`; tests: `controller_finalizer_test.exs:1108`, `dynamic_tool_test.exs:2266` (green) |
-| 7. Retry/failover simplification | `completed-now` | Added per-milestone 429 retry cooldown to stop repeated Linear write attempts while preserving pending milestones: `elixir/lib/symphony_elixir/orchestrator.ex:6822`, `:6829`, `:6854`, `:6881`, `:6896`; plus continuation-safe 429 refresh handoff in `elixir/lib/symphony_elixir/agent_runner.ex:378`, `:391`; plus assignee-filtered state polling scope in `elixir/lib/symphony_elixir/linear/client.ex:482`, `:507`; regression proof with `orchestrator_status_test.exs: "orchestrator retries milestone commentary after transient tracker failures"` (`elixir/test/symphony_elixir/orchestrator_status_test.exs:862`), `orchestrator_status_test.exs: "orchestrator throttles milestone commentary retries after linear 429"` (`elixir/test/symphony_elixir/orchestrator_status_test.exs:1025`), and `core_test.exs: "agent runner treats issue state refresh 429 as continuation handoff instead of worker failure"` (`elixir/test/symphony_elixir/core_test.exs:7018`) |
+| 7. Retry/failover simplification | `completed-now` | Added per-milestone 429 retry cooldown to stop repeated Linear write attempts while preserving pending milestones: `elixir/lib/symphony_elixir/orchestrator.ex:6822`, `:6829`, `:6854`, `:6881`, `:6896`; plus continuation-safe 429 refresh handoff in `elixir/lib/symphony_elixir/agent_runner.ex:378`, `:391`; plus assignee-filtered state polling scope in `elixir/lib/symphony_elixir/linear/client.ex:482`, `:507`; plus retry-poll continuation ceiling path in `elixir/lib/symphony_elixir/orchestrator.ex:1943`, `:4515`; regression proof with `orchestrator_status_test.exs: "orchestrator retries milestone commentary after transient tracker failures"` (`elixir/test/symphony_elixir/orchestrator_status_test.exs:862`), `orchestrator_status_test.exs: "orchestrator throttles milestone commentary retries after linear 429"` (`elixir/test/symphony_elixir/orchestrator_status_test.exs:1025`), `orchestrator_status_test.exs: "retry targeted fetch error at continuation ceiling routes to handoff path"` (`elixir/test/symphony_elixir/orchestrator_status_test.exs:1635`), and `core_test.exs: "agent runner treats issue state refresh 429 as continuation handoff instead of worker failure"` (`elixir/test/symphony_elixir/core_test.exs:7018`) |
 | 8. Idempotent Linear wrapper | `verified-existing` | Single tracker boundary calls: `elixir/lib/symphony_elixir/tracker.ex:35`, `elixir/lib/symphony_elixir/tracker.ex:40`; Linear adapter implementation: `elixir/lib/symphony_elixir/linear/adapter.ex:53`, `elixir/lib/symphony_elixir/linear/adapter.ex:65`; dedupe/idempotent behavior proof by app-server tests `elixir/test/symphony_elixir/app_server_test.exs:1332`, `elixir/test/symphony_elixir/app_server_test.exs:1626` (green) |
 | 9. Validation gate map | `completed-now` | Matrix row updates in `docs/plans/ticket-movement-rewrite-plan.md:250` aligned with actual named tests (including `workspace_and_config_test` assignee-id query tests at `elixir/test/symphony_elixir/workspace_and_config_test.exs:2219` and `:2263`) |
 
@@ -76,6 +76,19 @@ Status values follow contract: `missing` / `verified-existing` / `completed-now`
   - new test `elixir/test/symphony_elixir/core_test.exs:7018`
   - targeted rerun result: `3 tests, 0 failures` (`core_test.exs:7018` + `workspace_and_config_test.exs:2219` + `workspace_and_config_test.exs:2263`)
 
+### Slice: retry-poll continuation ceiling enforcement
+- Problem observed in live run: after `Issue state refresh temporarily unavailable`, retry-poll failures could keep growing attempts and repeatedly reschedule without entering the continuation ceiling handoff path on this branch.
+- Files changed:
+  - `elixir/lib/symphony_elixir/orchestrator.ex`
+  - `elixir/test/symphony_elixir/orchestrator_status_test.exs`
+- Code changes:
+  - targeted retry-poll fetch errors now branch into `handle_continuation_attempt_limit_breach/3` when continuation retry ceiling is exceeded: `elixir/lib/symphony_elixir/orchestrator.ex:1943`
+  - added explicit continuation-poll ceiling predicate and retry-origin detection (`delay_type: :continuation` or `retry poll failed:` metadata): `elixir/lib/symphony_elixir/orchestrator.ex:4515`, `:4523`, `:4527`
+- Regression proof:
+  - updated transient metadata-preservation test at `elixir/test/symphony_elixir/orchestrator_status_test.exs:1580`
+  - new ceiling-handoff regression test at `elixir/test/symphony_elixir/orchestrator_status_test.exs:1635`
+  - targeted rerun result: `73 tests, 0 failures` (`mise exec -- mix test test/symphony_elixir/orchestrator_status_test.exs`)
+
 ## Gate results
 ### Targeted regression suite
 Command:
@@ -102,8 +115,9 @@ Result:
 - `make symphony-runtime-smoke SCENARIO=workflow_contract` -> `1 test, 0 failures`
 - `make symphony-runtime-smoke SCENARIO=all` -> `5 tests, 0 failures`
 - `mise exec -- mix test test/symphony_elixir/orchestrator_status_test.exs:720 test/symphony_elixir/orchestrator_status_test.exs:862 test/symphony_elixir/orchestrator_status_test.exs:1025` -> `3 tests, 0 failures`
+- `mise exec -- mix test test/symphony_elixir/orchestrator_status_test.exs` -> `73 tests, 0 failures`
 - `make symphony-validate`:
-  - final rerun after `agent_runner` and `linear/client` updates is fully green (`contracts`, `build`, `format`, `lint`, `test --cover`, `dialyzer`; test phase `784 tests, 0 failures, 1 skipped`; dialyzer `Total errors: 0`)
+  - final rerun after continuation-ceiling patch is fully green (`contracts`, `build`, `format`, `lint`, `test --cover`, `dialyzer`; test phase `785 tests, 0 failures, 1 skipped`; dialyzer `Total errors: 0`)
 
 ## Live autonomous e2e on LET-738
 ### Runtime and service boundary
@@ -113,10 +127,12 @@ Result:
   - run B port: `4120`, dashboard URL: `http://127.0.0.1:4120/proxy/symphony/`
   - run C workflow: `/private/tmp/let738-live-run6.WORKFLOW.md`
   - run C port: `4124`, dashboard URL: `http://127.0.0.1:4124/proxy/symphony/`
+  - run D workflow: `/private/tmp/let738-live-run8.WORKFLOW.md`
+  - run D port: `4136`, dashboard URL: `http://127.0.0.1:4136/proxy/symphony/`
 - Health/API checks:
   - `GET /health` -> `{"status":"ok"}`
   - `GET /api/dashboard` -> `200` with JSON payload
-- No port conflict observed on `4119` / `4120` / `4124`.
+- No port conflict observed on `4119` / `4120` / `4124` / `4136`.
 
 ### E2E outcome (current)
 - Routing precondition applied per request: `LET-738` moved to `Todo` and labeled `mode:plan` before rerun.
@@ -132,6 +148,13 @@ Result:
   - completed agent run: `/private/tmp/symphony-let738-run-20260517-6/logs/log/symphony.log.1:39`
   - graceful 429 handoff (new behavior): `/private/tmp/symphony-let738-run-20260517-6/logs/log/symphony.log.1:41` (`Issue state refresh temporarily unavailable ... returning control to orchestrator for continuation retry`)
   - retry loop remains bounded/transient under cooldown: `/private/tmp/symphony-let738-run-20260517-6/logs/log/symphony.log.1:54` (retry in 10s), `/private/tmp/symphony-let738-run-20260517-6/logs/log/symphony.log.1:60` (retry in 20s)
+- Run D (`4136`, post-ceiling patch) dispatched `LET-738` from `Todo + mode:plan`, autonomously advanced it into `Spec Prep`, uploaded plan artifact attachment, and completed a long Codex turn (>1.2M tokens) without handoff/contract/proof blocker signatures:
+  - dispatch + run start: `/private/tmp/symphony-let738-run-20260517-9/logs/log/symphony.log.1:506`, `:507`
+  - codex session completed: `/private/tmp/symphony-let738-run-20260517-9/logs/log/symphony.log.1:2062`
+  - completed agent run: `/private/tmp/symphony-let738-run-20260517-9/logs/log/symphony.log.1:2063`
+  - graceful refresh handoff under 429: `/private/tmp/symphony-let738-run-20260517-9/logs/log/symphony.log.1:2065`
+  - continuation ceiling now triggers on retry-poll path as designed: `/private/tmp/symphony-let738-run-20260517-9/logs/log/symphony.log.1:2094`, repeated at `:2115`
+  - external 429 still prevents tracker state transition to `Blocked`, producing explicit escalation failure retry: `/private/tmp/symphony-let738-run-20260517-9/logs/log/symphony.log.1:2098`, `:2119`
 - Canonical terminal completion on Linear (`Done`/`Blocked`) is still blocked until quota window recovers.
 
 ## Rollback/defer ledger
@@ -152,3 +175,4 @@ Final status for this run: **NOT DONE** (blocked externally by Linear API rate l
 ## Residual risks
 - Until Linear quota recovers, runtime may stay in retry loops and cannot prove final autonomous transition on LET-738.
 - Milestone 429 retry storm risk is reduced by per-milestone cooldown; residual blocker remains upstream Linear quota availability.
+- Continuation ceiling now applies to retry-poll failures; remaining loop is escalation retry under external tracker 429, not hidden continuation growth.
