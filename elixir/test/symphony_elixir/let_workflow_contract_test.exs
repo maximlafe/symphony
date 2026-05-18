@@ -99,6 +99,15 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert {:ok, %{prompt: prompt}} = Workflow.load(@let_workflow_path)
 
     assert prompt =~ "Backend-only changes: run targeted tests for the touched modules and at least `make symphony-validate`."
+    assert prompt =~ "checked `targeted tests` for the touched module"
+    assert prompt =~ "checked label `targeted tests`"
+    assert prompt =~ "any extra proof explanation belongs in that row text, not in the label"
+    assert prompt =~ "checked `runtime smoke`"
+    assert prompt =~ "Do not add capabilities or matrix rows solely to force this proof."
+    assert prompt =~ "Не перечисляй pull request"
+    assert prompt =~ "PR-доказательства остаются"
+    assert prompt =~ "Не объединяй"
+    assert prompt =~ "`revision_pair.plan_revision` и `revision_pair.artifact_revision`"
     assert prompt =~ "- [ ] repo validation: `make symphony-validate`"
     assert prompt =~ "Use `docs/policy/project-contract.md` as the canonical definition for:"
     refute prompt =~ "make test-unit"
@@ -119,6 +128,10 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "docs/policy/project-contract.md"
     assert prompt =~ "two-layer planning contract"
     assert prompt =~ "`artifact_revision` must match `plan_revision`"
+    assert prompt =~ "checked label `targeted tests`"
+    assert prompt =~ "Do not add capabilities or"
+    assert prompt =~ "PR evidence stays"
+    assert prompt =~ "Do not combine"
   end
 
   test "LET workflow keeps secondary codex homes under the mounted primary CODEX_HOME" do

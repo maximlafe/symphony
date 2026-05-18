@@ -2101,12 +2101,10 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp parse_issue_description_proof_mapping_line(line) when is_binary(line) do
-    cond do
-      Regex.match?(~r/^[*-]\s+\[[ xX]\]\s+/, line) ->
-        {:error, "proof mapping entry must not use checkbox bullets in issue description"}
-
-      true ->
-        parse_issue_description_proof_mapping_bullet(line)
+    if Regex.match?(~r/^[*-]\s+\[[ xX]\]\s+/, line) do
+      {:error, "proof mapping entry must not use checkbox bullets in issue description"}
+    else
+      parse_issue_description_proof_mapping_bullet(line)
     end
   end
 

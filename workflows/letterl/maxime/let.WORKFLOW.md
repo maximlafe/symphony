@@ -866,10 +866,10 @@ Execution requirements in this workflow:
 
 | Change class | Cheap gate | Final gate | When final gate is mandatory |
 | -- | -- | -- | -- |
-| Backend-only / pure logic | targeted unit/integration tests or deterministic reproducer for the touched module | cheap gate on the same `HEAD` + repo validation | before the first push, every code-changing re-push, and review-ready handoff |
+| Backend-only / pure logic | checked `targeted tests` for the touched module | cheap gate on the same `HEAD` + repo validation | before the first push, every code-changing re-push, and review-ready handoff |
 | DB/schema/stateful | targeted tests + stateful or migration proof for the touched path | cheap gate on the same `HEAD` + mandatory stateful/migration proof + repo validation | before any push |
 | Hosted UI / frontend | targeted UI test or local runtime/visual proof for the touched flow | cheap gate on the same `HEAD` + UI runtime proof + repo validation + visual artifact | before publish for human review and after code-changing rework |
-| Runtime / infra / workflow-contract / handoff | parser/unit smoke for the changed contract + focused reproducer for the failure point | cheap gate on the same `HEAD` + repo validation + targeted runtime smoke | before any push |
+| Runtime / infra / workflow-contract / handoff | parser/unit smoke for the changed contract + focused reproducer for the failure point | cheap gate on the same `HEAD` + repo validation + checked `runtime smoke` | before any push |
 | Docs/prose-only without executable workflow/config contract | spell/format/manual review when repo-owned command exists | local full gate is not required when shipped code/config did not change | not required; executable workflow/config changes are runtime/contract changes |
 | Mixed changes | union of all affected cheap gates | union of final requirements with the strictest affected class | use the strictest affected class; never downgrade mixed/runtime-critical changes |
 
@@ -879,6 +879,7 @@ Runtime contract:
 - `change_classes` is a non-empty list, not a downgraded `mixed` class. Deterministic path-based inference must fail closed to runtime/contract risk for unknown shipped paths.
 - `required_checks` is the union of class requirements; `passed_checks` records the proof kinds actually present in the workpad.
 - The final handoff manifest must include `validation_gate.gate`, `validation_gate.change_classes`, `validation_gate.required_checks`, `validation_gate.passed_checks`, `git.head_sha`, `git.tree_sha`, and `git.worktree_clean`.
+- Use the checked `runtime smoke` row when the validation gate classifies the diff as `runtime_contract`, when the issue already declares `Required capabilities: runtime_smoke`, or when an existing Acceptance Matrix row requires `proof_type=runtime_smoke`. Do not add capabilities or matrix rows solely to force this proof.
 
 Invalidation and rerun policy:
 
@@ -939,7 +940,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - run `make symphony-acceptance-preflight` when the task-spec declares `Required capabilities`;
    - apply the validation matrix above instead of picking tests heuristically;
    - execute every ticket-provided validation/test-plan requirement when present;
-   - prefer targeted proof for the changed behavior;
+   - mark changed-behavior validation with the checked label `targeted tests`; any extra proof explanation belongs in that row text, not in the label;
    - revert every temporary proof edit before commit or push;
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, attach a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
@@ -1167,6 +1168,9 @@ and checkpoint semantics come from `docs/policy/project-contract.md`.
 - [ ] вложение: `<title>` -> <что подтверждает>
 - [ ] ожидаемый, но не созданный артефакт: `<name>` -> <почему не был получен>
 
+Не перечисляй pull request, номера PR или GitHub PR URL как `вложение`. PR-доказательства остаются
+в linked PR / GitHub PR snapshot канале.
+
 ### Execution Evidence
 
 - `status`: `<passed|blocked>` (для `mode:plan` + `planning.swarm_assist_enabled=true`)
@@ -1176,6 +1180,9 @@ and checkpoint semantics come from `docs/policy/project-contract.md`.
 - `revision_pair.artifact_revision`: `<value>`
 - `consumed_sections`: `<section1, section2>`
 - `note`: `artifact is secondary, short plan is canonical`
+
+Каждое machine-readable поле `Execution Evidence` должно быть отдельной строкой. Не объединяй
+`revision_pair.plan_revision` и `revision_pair.artifact_revision` в одну строку.
 
 ### Checkpoint
 

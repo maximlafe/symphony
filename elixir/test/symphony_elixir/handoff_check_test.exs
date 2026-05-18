@@ -171,6 +171,79 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "validation checklist is missing a checked `docs review` item" in manifest["missing_items"]
   end
 
+  test "evaluate does not count targeted proof as targeted tests validation evidence" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted proof: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Non-canonical targeted proof label must not satisfy targeted tests.
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-743",
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata()
+             )
+
+    assert "validation checklist is missing a checked `targeted tests` item" in manifest["missing_items"]
+    assert get_in(manifest, ["validation_gate", "required_checks"]) == ["preflight", "targeted_tests", "repo_validation"]
+    assert get_in(manifest, ["validation_gate", "passed_checks"]) == ["preflight", "repo_validation"]
+  end
+
+  test "evaluate requires runtime smoke for runtime-contract validation gate changes" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Runtime-contract proof is missing.
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-743",
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert "validation checklist is missing a checked `runtime smoke` item" in manifest["missing_items"]
+
+    assert get_in(manifest, ["validation_gate", "required_checks"]) == [
+             "preflight",
+             "targeted_tests",
+             "runtime_smoke",
+             "repo_validation"
+           ]
+
+    assert get_in(manifest, ["validation_gate", "passed_checks"]) == [
+             "preflight",
+             "targeted_tests",
+             "repo_validation"
+           ]
+  end
+
   test "default accessors expose the verification contract and default evaluate fails closed" do
     assert HandoffCheck.default_review_ready_states() == ["In Review", "Human Review"]
     assert HandoffCheck.default_manifest_path() == ".symphony/verification/handoff-manifest.json"
@@ -1380,7 +1453,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     ### Artifacts
 
-    - [x] uploaded attachment: `GitHub PR #180` -> manual note from operator
+    - [x] uploaded attachment: `PR #207` -> manual note from operator
 
     ### Checkpoint
 
@@ -1391,8 +1464,8 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     attachments = [
       %{
-        "title" => "GitHub PR #180",
-        "url" => "https://github.com/maximlafe/symphony/pull/180",
+        "title" => "PR #207",
+        "url" => "https://github.com/maximlafe/symphony/pull/207",
         "source_type" => "github",
         "metadata" => %{"kind" => "pull_request"}
       }
@@ -2231,6 +2304,48 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert Enum.any?(
              missing_revision_manifest["missing_items"],
+             &String.contains?(&1, "missing machine-readable `artifact_revision`")
+           )
+
+    combined_revision_relative_path = "docs/reports/combined-revision-artifact.md"
+    combined_revision_artifact_path = Path.join(workspace, combined_revision_relative_path)
+    File.mkdir_p!(Path.dirname(combined_revision_artifact_path))
+
+    File.write!(
+      combined_revision_artifact_path,
+      """
+      # LET-504 Swarm Artifact
+
+      plan_revision/artifact_revision: `plan-rev-1`
+      """
+    )
+
+    assert {:error, combined_revision_manifest} =
+             HandoffCheck.evaluate(
+               mode_plan_runtime_workpad(),
+               issue_id: "LET-504",
+               labels: ["mode:plan", "verification:runtime"],
+               issue_description:
+                 two_layer_acceptance_matrix_description(
+                   combined_revision_relative_path,
+                   "plan-rev-1",
+                   "plan-rev-1",
+                   "review-ready"
+                 ),
+               workpad_path: workpad_path,
+               workspace: workspace,
+               swarm_assist_enabled: true,
+               attachments: [
+                 %{"title" => "runtime-proof.log"},
+                 %{"title" => "combined-revision-artifact.md"}
+               ],
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["runtime_contract"],
+               git: git_metadata()
+             )
+
+    assert Enum.any?(
+             combined_revision_manifest["missing_items"],
              &String.contains?(&1, "missing machine-readable `artifact_revision`")
            )
 

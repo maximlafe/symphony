@@ -362,11 +362,7 @@ defmodule SymphonyElixir.AgentRunner do
 
       case issue_state_fetcher.([issue_id]) do
         {:ok, [%Issue{} = refreshed_issue | _]} ->
-          if active_issue_state?(refreshed_issue.state) do
-            {:continue, refreshed_issue, refreshed_context}
-          else
-            {:done, refreshed_issue, refreshed_context}
-          end
+          continue_with_refreshed_issue(refreshed_issue, refreshed_context)
 
         {:ok, []} ->
           {:done, issue, refreshed_context}
@@ -381,6 +377,14 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp continue_with_issue?(issue, session_context), do: {:done, issue, session_context}
+
+  defp continue_with_refreshed_issue(%Issue{} = refreshed_issue, refreshed_context) do
+    if active_issue_state?(refreshed_issue.state) do
+      {:continue, refreshed_issue, refreshed_context}
+    else
+      {:done, refreshed_issue, refreshed_context}
+    end
+  end
 
   defp issue_state_refresh_due?(
          %{

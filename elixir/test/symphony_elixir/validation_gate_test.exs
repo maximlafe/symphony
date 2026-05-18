@@ -48,6 +48,24 @@ defmodule SymphonyElixir.ValidationGateTest do
              ])
   end
 
+  test "classifies workflow and handoff authoring surfaces as runtime-contract" do
+    assert {:ok, ["runtime_contract"]} =
+             ValidationGate.classify_paths([
+               "workflows/letterl/maxime/let.WORKFLOW.md",
+               ".agents/skills/execute-mode/SKILL.md",
+               "elixir/lib/symphony_elixir/handoff_check.ex"
+             ])
+
+    assert {:ok, final} = ValidationGate.requirements(["runtime_contract"], "final")
+
+    assert final["required_checks"] == [
+             "preflight",
+             "targeted_tests",
+             "runtime_smoke",
+             "repo_validation"
+           ]
+  end
+
   test "computes cheap and final requirements for backend-only changes" do
     assert {:ok, cheap} = ValidationGate.requirements(["backend_only"], "cheap")
 
