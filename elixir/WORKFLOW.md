@@ -140,6 +140,9 @@ Relevant attachments:
   {% endif %}
 {% endfor %}
 {% endif %}
+Attachment excerpts are prompt context only. Do not treat `attachment.content_text`
+as machine-readable authority for revision fields, proof mapping, artifact
+content correctness, or PR verification status.
 
 {% if issue.comments != empty %}
 Recent issue comments:
@@ -215,6 +218,9 @@ Instructions:
 - In enabled mode, require a two-layer planning contract: canonical short plan
   remains SSOT, swarm artifact is linked via `artifact_path`, and
   `artifact_revision` must match `plan_revision`.
+- Artifact file body and Linear `attachment.content_text` are supporting
+  context only; guards must not require `plan_revision` / `artifact_revision`
+  inside artifact body text.
 - In enabled mode, require the swarm artifact referenced by `artifact_path` to
   be uploaded to Linear issue attachments (title match by full path or
   filename) before planning handoff is considered complete.
@@ -291,8 +297,9 @@ Instructions:
 4. Before code edits, run the `pull` skill to sync with latest `origin/main`, then record the result in `Notes` with merge source, outcome (`clean` or `conflicts resolved`), and resulting short SHA.
 5. For `mode:plan` with `planning.swarm_assist_enabled=true`, run two-layer execution preflight before code edits:
    - read issue `plan_revision`, `artifact_path`, `artifact_revision`;
-   - verify artifact file/attachment/revision alignment;
-   - consume artifact as supporting-only source (risk/rollback/diagnostics), never as scope authority;
+   - verify issue revision equality, artifact file readability, and matching Linear attachment presence;
+   - do not require `plan_revision` / `artifact_revision` fields inside the artifact file body;
+   - consume artifact as supporting-only source (risk/rollback/diagnostics), never as scope, revision, proof-mapping, artifact-correctness, or PR-verification authority;
    - write `Execution Evidence` section in workpad with required runtime-owned fields;
    - if preflight is blocked/partial/stale/divergent, fail closed with classified blocker handoff to `Blocked` and stop.
 6. Implement against the checklist, keep completed items checked, and sync the live workpad only after milestone transitions or before handoff.
@@ -302,6 +309,7 @@ Instructions:
    - run `make symphony-preflight` before concluding that auth or tooling is missing for the current task;
    - execute all ticket-provided validation/test-plan requirements when present;
    - mark changed-behavior validation with the checked label `targeted tests`; any extra proof explanation belongs in that row text, not in the label;
+   - when issue `## Proof Mapping` uses an AM-specific target such as `validation:am-1`, add and check the matching validation row `am-1`; generic `targeted tests` does not satisfy that AM-specific target;
    - revert every temporary proof edit before commit or push;
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, include a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
@@ -495,7 +503,7 @@ validation/proof/checkpoint semantics are defined in
 
 ### Proof Mapping
 
-- [ ] `AM-<id>` -> `validation:targeted tests`
+- [ ] `AM-<id>` -> `validation:am-<id>`
 
 ### Artifacts
 

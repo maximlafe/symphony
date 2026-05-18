@@ -1553,8 +1553,6 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp validate_two_layer_artifact_link(contract, workspace_root) when is_map(contract) do
     artifact_path = contract["artifact_path"]
-    plan_revision = contract["plan_revision"]
-    artifact_revision = contract["artifact_revision"]
 
     if placeholder_value?(artifact_path) do
       {[], unresolved_artifact_details(nil)}
@@ -1563,18 +1561,14 @@ defmodule SymphonyElixir.HandoffCheck do
 
       validate_two_layer_artifact_file(
         normalized_path,
-        workspace_root,
-        plan_revision,
-        artifact_revision
+        workspace_root
       )
     end
   end
 
   defp validate_two_layer_artifact_file(
          normalized_path,
-         workspace_root,
-         plan_revision,
-         artifact_revision
+         workspace_root
        ) do
     case validate_two_layer_artifact_path(normalized_path, workspace_root) do
       {[_ | _] = path_errors, artifact_file_path} ->
@@ -1582,32 +1576,12 @@ defmodule SymphonyElixir.HandoffCheck do
 
       {[], artifact_file_path} ->
         case File.read(artifact_file_path) do
-          {:ok, artifact_body} ->
-            artifact_contract = parse_two_layer_plan_contract_fields(artifact_body)
-
-            artifact_contract_errors =
-              []
-              |> maybe_require_plan_contract_field(
-                artifact_contract["artifact_revision"],
-                "linked swarm artifact `#{normalized_path}` is missing machine-readable `artifact_revision`"
-              )
-              |> maybe_require_artifact_revision_alignment(
-                artifact_contract["artifact_revision"],
-                artifact_revision,
-                normalized_path
-              )
-              |> maybe_require_artifact_plan_revision_alignment(
-                artifact_contract["plan_revision"],
-                plan_revision,
-                normalized_path
-              )
-
-            {artifact_contract_errors,
+          {:ok, _artifact_body} ->
+            {[],
              %{
                "artifact_file_path" => artifact_file_path,
                "artifact_file_exists" => true,
-               "artifact_file_readable" => true,
-               "artifact_fields" => artifact_contract
+               "artifact_file_readable" => true
              }}
 
           {:error, :enoent} ->
@@ -1625,42 +1599,6 @@ defmodule SymphonyElixir.HandoffCheck do
       "artifact_file_exists" => false,
       "artifact_file_readable" => false
     }
-  end
-
-  defp maybe_require_artifact_revision_alignment(
-         errors,
-         artifact_file_revision,
-         expected_artifact_revision,
-         artifact_path
-       ) do
-    if non_empty_binary?(artifact_file_revision) and
-         non_empty_binary?(expected_artifact_revision) and
-         artifact_file_revision != expected_artifact_revision do
-      errors ++
-        [
-          "linked swarm artifact `#{artifact_path}` revision mismatch: artifact file `artifact_revision` must match issue `artifact_revision`"
-        ]
-    else
-      errors
-    end
-  end
-
-  defp maybe_require_artifact_plan_revision_alignment(
-         errors,
-         artifact_file_plan_revision,
-         expected_plan_revision,
-         artifact_path
-       ) do
-    if non_empty_binary?(artifact_file_plan_revision) and
-         non_empty_binary?(expected_plan_revision) and
-         artifact_file_plan_revision != expected_plan_revision do
-      errors ++
-        [
-          "linked swarm artifact `#{artifact_path}` plan revision mismatch: artifact file `plan_revision` must match issue `plan_revision`"
-        ]
-    else
-      errors
-    end
   end
 
   defp validate_two_layer_artifact_path(artifact_path, workspace_root) when is_binary(artifact_path) do

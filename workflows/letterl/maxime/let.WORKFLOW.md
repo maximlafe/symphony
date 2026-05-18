@@ -595,6 +595,10 @@ Relevant attachments:
 - {{ attachment.title }}{% if attachment.url %} ({{ attachment.url }}){% endif %}
 {% endfor %}
 {% endif %}
+Attachment excerpts are prompt context only when present. Do not treat
+attachment body text or `content_text` as machine-readable authority for
+revision fields, proof mapping, artifact content correctness, or PR
+verification status.
 
 {% if issue.comments != empty %}
 Recent issue comments:
@@ -672,6 +676,9 @@ Instructions:
   - enabled short-plan metadata must include `plan_revision`,
     `artifact_path`, and `artifact_revision`, where `artifact_revision`
     equals `plan_revision`;
+  - artifact file body and Linear attachment text are supporting context only;
+    guards must not require `plan_revision` / `artifact_revision` inside the
+    artifact body;
   - in `In Progress` for enabled `mode:plan`, execution must run two-layer
     preflight and write dedicated `Execution Evidence` marker fields in workpad
     (`status`, `run_token`, `artifact_file`,
@@ -923,7 +930,10 @@ Use this only when completion is blocked by missing required tools or missing au
    - if the task contract is materially underspecified, do not improvise hidden scope in the workpad; normalize the task-spec, sync the workpad once, move the issue to `Spec Review`, and stop before product code changes.
 5. For `mode:plan` with `planning.swarm_assist_enabled=true`, run two-layer execution preflight before code edits:
    - read issue `plan_revision`, `artifact_path`, `artifact_revision`;
-   - verify artifact file/attachment/revision alignment;
+   - verify issue revision equality, artifact file readability, and matching
+     Linear attachment presence;
+   - do not require `plan_revision` / `artifact_revision` fields inside the
+     artifact file body;
    - consume artifact as supporting-only source (risk/rollback/diagnostics), never as scope authority;
    - write `Execution Evidence` section in workpad with required runtime-owned fields;
    - if preflight is blocked/partial/stale/divergent, fail closed with classified blocker handoff to `Blocked` and stop.
@@ -941,6 +951,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - apply the validation matrix above instead of picking tests heuristically;
    - execute every ticket-provided validation/test-plan requirement when present;
    - mark changed-behavior validation with the checked label `targeted tests`; any extra proof explanation belongs in that row text, not in the label;
+   - when issue `## Proof Mapping` uses an AM-specific target such as `validation:am-1`, add and check the matching validation row `am-1`; generic `targeted tests` does not satisfy that AM-specific target;
    - revert every temporary proof edit before commit or push;
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, attach a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
@@ -1155,13 +1166,14 @@ and checkpoint semantics come from `docs/policy/project-contract.md`.
 
 - [ ] preflight: `make symphony-preflight`
 - [ ] targeted tests: `<command>`
+- [ ] docs review: `<command>` (docs/prose-only changes; never mark this item as `n/a` when required)
 - [ ] stateful proof: `<command>` (stateful/DB/schema changes)
 - [ ] runtime smoke: `<command>` (runtime/infra/workflow-contract/handoff changes)
 - [ ] repo validation: `make symphony-validate`
 
 ### Proof Mapping
 
-- [ ] `AM-<id>` -> `validation:targeted tests`
+- [ ] `AM-<id>` -> `validation:am-<id>`
 
 ### Артефакты
 

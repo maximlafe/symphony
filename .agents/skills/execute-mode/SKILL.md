@@ -23,8 +23,11 @@ or produce a classified blocker handoff to `Blocked`.
    - read machine-readable `plan_revision`, `artifact_path`, and
      `artifact_revision` from issue description;
    - read the artifact at `artifact_path` as supporting-only context (residual
-     risks, rollback/failure modes, diagnostics expansion), never as scope
+     risks, rollback/failure modes, diagnostics expansion), never as scope,
+     revision, proof-mapping, artifact-correctness, or PR-verification
      authority;
+   - do not require `plan_revision` / `artifact_revision` fields inside the
+     artifact file body;
    - write a dedicated `Execution Evidence` workpad section with runtime-owned
      fields:
      - `status` (`passed` or `blocked`)
@@ -44,6 +47,11 @@ or produce a classified blocker handoff to `Blocked`.
 6. Run required cheap/final gate sequence for the touched change class.
 7. Keep `Acceptance Matrix` and `Proof Mapping` internally consistent before
    handoff.
+   - issue `## Proof Mapping` is canonical;
+   - checked workpad `### Proof Mapping` confirms execution against the same
+     targets and must not redefine them;
+   - PR evidence stays in linked PR / `github_wait_for_checks` /
+     `github_pr_snapshot`, never in uploaded artifact rows.
 8. Publish/update PR only after repo PR contract is satisfied.
 
 ## Contract hooks

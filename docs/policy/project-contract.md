@@ -39,7 +39,7 @@ If a rule must change, update this file first and then align workflows/skills.
   explicit compatibility fallback to legacy `plan-mode`.
 - In enabled mode, plan output has two layers:
   1. canonical short plan (single source of truth, reviewer-facing);
-  2. linked swarm artifact (supporting analysis only).
+  2. linked swarm artifact (supporting context only).
 - The short plan must stay standalone and keep canonical task-spec fields:
   `Document Spec`, `Verification Plan`, `Residual Risks`, and for
   execution/review-oriented work also `Acceptance Matrix` and `Proof Mapping`.
@@ -55,11 +55,15 @@ If a rule must change, update this file first and then align workflows/skills.
     closed before review-ready handoff.
 - Swarm artifact rules:
   - durable repo file, normally `docs/reports/<task-slug>-swarm-artifact.md`;
-  - additive/subordinate only; it cannot replace plan claims;
+  - additive/subordinate only; agents may read it for context, but guards must
+    not parse its body as machine-readable authority;
   - must be uploaded to Linear issue attachments before `Spec Review` handoff;
   - attachment title should match either full `artifact_path` or artifact
     filename;
   - if artifact and short plan diverge, short plan is authoritative.
+- Linear attachment `content_text` and artifact file body are prompt context
+  only. They never establish revision correctness, proof-mapping correctness,
+  artifact-content correctness, or PR verification status.
 - Minimum loop for enabled `mode:plan` path:
   1. run `swarm-iterate` as the planning critique/repair orchestrator
      (default: three critique/repair rounds);
@@ -108,6 +112,8 @@ If a rule must change, update this file first and then align workflows/skills.
   4. confirm matching Linear attachment exists (title match by full path or
      filename);
   5. consume supporting sections only and keep short plan canonical.
+- Execution preflight and handoff checks must not require `plan_revision` or
+  `artifact_revision` inside the artifact file body.
 - Required workpad section: `Execution Evidence`.
 - Runtime-owned `Execution Evidence` fields:
   - `status` (`passed` or `blocked`);

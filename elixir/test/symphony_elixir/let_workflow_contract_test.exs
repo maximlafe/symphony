@@ -90,6 +90,10 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "issue-description mapping is a spec contract reservation and does not"
     assert prompt =~ "For `mode:plan` with `planning.swarm_assist_enabled=true`, run two-layer execution preflight before code edits"
     assert prompt =~ "`Execution Evidence` section in workpad"
+    assert prompt =~ "artifact file body and Linear attachment text are supporting context only"
+    assert prompt =~ "generic `targeted tests` does not satisfy that AM-specific target"
+    assert prompt =~ "- [ ] `AM-<id>` -> `validation:am-<id>`"
+    assert prompt =~ "- [ ] docs review: `<command>`"
     refute prompt =~ "continue without blocking"
     refute prompt =~ ".agents/skills/plan-swarm-mode/SKILL.md"
     refute prompt =~ "make test-unit"
@@ -132,6 +136,9 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "Do not add capabilities or"
     assert prompt =~ "PR evidence stays"
     assert prompt =~ "Do not combine"
+    assert prompt =~ "Attachment excerpts are prompt context only"
+    assert prompt =~ "Artifact file body and Linear `attachment.content_text` are supporting"
+    assert prompt =~ "- [ ] `AM-<id>` -> `validation:am-<id>`"
   end
 
   test "LET workflow keeps secondary codex homes under the mounted primary CODEX_HOME" do
@@ -180,6 +187,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert plan_skill =~ "`planning.swarm_assist_enabled`"
     assert plan_skill =~ "`swarm-iterate`"
     assert plan_skill =~ "owned by this stage"
+    assert plan_skill =~ "issue description metadata"
+    assert plan_skill =~ "artifact file body; artifact body is supporting context only"
     assert plan_skill =~ "Guarded swarm-assisted path"
     assert plan_skill =~ "emit a two-layer plan"
     assert plan_skill =~ "`plan_revision`"
@@ -200,6 +209,10 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert execute_skill =~ "Blocked"
     assert execute_skill =~ "`planning.swarm_assist_enabled=true`"
     assert execute_skill =~ "Execution Evidence"
+    assert execute_skill =~ "never as scope,"
+    assert execute_skill =~ "do not require `plan_revision` / `artifact_revision` fields inside the"
+    assert execute_skill =~ "issue `## Proof Mapping` is canonical"
+    assert execute_skill =~ "PR evidence stays in linked PR"
   end
 
   test "worker method skills exist and setup lives outside worker bundle" do
@@ -232,6 +245,9 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert project_contract =~ "Execution-Time Secondary Artifact Contract"
     assert project_contract =~ "`Execution Evidence`"
     assert project_contract =~ "`run_token`"
+    assert project_contract =~ "Linear attachment `content_text` and artifact file body are prompt context"
+    assert project_contract =~ "must not require `plan_revision` or"
+    assert project_contract =~ "`artifact_revision` inside the artifact file body"
 
     refute File.exists?(Path.expand("../../../.agents/skills/plan-swarm-mode/SKILL.md", __DIR__))
     refute File.exists?(@worker_setup_skill_path)

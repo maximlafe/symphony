@@ -2003,7 +2003,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert {:ok, manifest} =
              HandoffCheck.evaluate(
-               mode_plan_runtime_workpad(),
+               mode_plan_runtime_workpad(artifact_path: artifact_relative_path),
                issue_id: "LET-504",
                labels: ["mode:plan", "verification:runtime"],
                issue_description: issue_description,
@@ -2046,7 +2046,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert {:error, mismatch_manifest} =
              HandoffCheck.evaluate(
-               mode_plan_runtime_workpad(),
+               mode_plan_runtime_workpad(artifact_path: artifact_relative_path),
                issue_id: "LET-504",
                labels: ["mode:plan", "verification:runtime"],
                issue_description: two_layer_acceptance_matrix_description(artifact_relative_path, "plan-rev-1", "plan-rev-2", "review-ready"),
@@ -2055,20 +2055,16 @@ defmodule SymphonyElixir.HandoffCheckTest do
                attachments: [%{"title" => "runtime-proof.log"}],
                pr_snapshot: green_pr_snapshot(),
                change_classes: ["runtime_contract"],
+               execution_evidence_run_token: "run-token-1",
                git: git_metadata()
              )
 
     assert "two-layer plan contract mismatch: `artifact_revision` must equal `plan_revision`" in mismatch_manifest["missing_items"]
     assert "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation" in mismatch_manifest["missing_items"]
 
-    assert Enum.any?(
-             mismatch_manifest["missing_items"],
-             &String.contains?(&1, "linked swarm artifact `docs/reports/let-504-swarm-artifact.md` revision mismatch")
-           )
-
     assert {:error, provisional_manifest} =
              HandoffCheck.evaluate(
-               mode_plan_runtime_workpad(),
+               mode_plan_runtime_workpad(artifact_path: artifact_relative_path),
                issue_id: "LET-504",
                labels: ["mode:plan", "verification:runtime"],
                issue_description: two_layer_acceptance_matrix_description(artifact_relative_path, "plan-rev-1", "plan-rev-1", "provisional"),
@@ -2077,6 +2073,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
                attachments: [%{"title" => "runtime-proof.log"}],
                pr_snapshot: green_pr_snapshot(),
                change_classes: ["runtime_contract"],
+               execution_evidence_run_token: "run-token-1",
                git: git_metadata()
              )
 
@@ -2244,9 +2241,9 @@ defmodule SymphonyElixir.HandoffCheckTest do
       """
     )
 
-    assert {:error, plan_revision_mismatch_manifest} =
+    assert {:ok, plan_revision_mismatch_manifest} =
              HandoffCheck.evaluate(
-               mode_plan_runtime_workpad(),
+               mode_plan_runtime_workpad(artifact_path: mismatch_relative_path),
                issue_id: "LET-504",
                labels: ["mode:plan", "verification:runtime"],
                issue_description:
@@ -2258,16 +2255,15 @@ defmodule SymphonyElixir.HandoffCheckTest do
                  ),
                workpad_path: workpad_path,
                swarm_assist_enabled: true,
-               attachments: [%{"title" => "runtime-proof.log"}],
+               attachments: [%{"title" => "runtime-proof.log"}, %{"title" => "mismatch-plan-revision-artifact.md"}],
                pr_snapshot: green_pr_snapshot(),
                change_classes: ["runtime_contract"],
+               execution_evidence_run_token: "run-token-1",
                git: git_metadata()
              )
 
-    assert Enum.any?(
-             plan_revision_mismatch_manifest["missing_items"],
-             &String.contains?(&1, "plan revision mismatch")
-           )
+    assert get_in(plan_revision_mismatch_manifest, ["issue", "two_layer_plan_contract", "artifact_file_readable"]) == true
+    refute Enum.any?(plan_revision_mismatch_manifest["missing_items"], &String.contains?(&1, "plan revision mismatch"))
 
     missing_revision_relative_path = "docs/reports/missing-revision-artifact.md"
     missing_revision_artifact_path = Path.join(workspace, missing_revision_relative_path)
@@ -2282,9 +2278,9 @@ defmodule SymphonyElixir.HandoffCheckTest do
       """
     )
 
-    assert {:error, missing_revision_manifest} =
+    assert {:ok, missing_revision_manifest} =
              HandoffCheck.evaluate(
-               mode_plan_runtime_workpad(),
+               mode_plan_runtime_workpad(artifact_path: missing_revision_relative_path),
                issue_id: "LET-504",
                labels: ["mode:plan", "verification:runtime"],
                issue_description:
@@ -2296,16 +2292,15 @@ defmodule SymphonyElixir.HandoffCheckTest do
                  ),
                workpad_path: workpad_path,
                swarm_assist_enabled: true,
-               attachments: [%{"title" => "runtime-proof.log"}],
+               attachments: [%{"title" => "runtime-proof.log"}, %{"title" => "missing-revision-artifact.md"}],
                pr_snapshot: green_pr_snapshot(),
                change_classes: ["runtime_contract"],
+               execution_evidence_run_token: "run-token-1",
                git: git_metadata()
              )
 
-    assert Enum.any?(
-             missing_revision_manifest["missing_items"],
-             &String.contains?(&1, "missing machine-readable `artifact_revision`")
-           )
+    assert get_in(missing_revision_manifest, ["issue", "two_layer_plan_contract", "artifact_file_readable"]) == true
+    refute Enum.any?(missing_revision_manifest["missing_items"], &String.contains?(&1, "missing machine-readable `artifact_revision`"))
 
     combined_revision_relative_path = "docs/reports/combined-revision-artifact.md"
     combined_revision_artifact_path = Path.join(workspace, combined_revision_relative_path)
@@ -2320,9 +2315,9 @@ defmodule SymphonyElixir.HandoffCheckTest do
       """
     )
 
-    assert {:error, combined_revision_manifest} =
+    assert {:ok, combined_revision_manifest} =
              HandoffCheck.evaluate(
-               mode_plan_runtime_workpad(),
+               mode_plan_runtime_workpad(artifact_path: combined_revision_relative_path),
                issue_id: "LET-504",
                labels: ["mode:plan", "verification:runtime"],
                issue_description:
@@ -2341,13 +2336,12 @@ defmodule SymphonyElixir.HandoffCheckTest do
                ],
                pr_snapshot: green_pr_snapshot(),
                change_classes: ["runtime_contract"],
+               execution_evidence_run_token: "run-token-1",
                git: git_metadata()
              )
 
-    assert Enum.any?(
-             combined_revision_manifest["missing_items"],
-             &String.contains?(&1, "missing machine-readable `artifact_revision`")
-           )
+    assert get_in(combined_revision_manifest, ["issue", "two_layer_plan_contract", "artifact_file_readable"]) == true
+    refute Enum.any?(combined_revision_manifest["missing_items"], &String.contains?(&1, "missing machine-readable `artifact_revision`"))
 
     assert {:error, unknown_workspace_manifest} =
              HandoffCheck.evaluate(

@@ -38,7 +38,9 @@ contour without shipping product code.
    - short plan remains SSOT and fully standalone;
    - swarm output is linked as supporting artifact only;
    - `plan_revision` is owned by this stage and must be copied into
-     `artifact_revision` for the linked artifact.
+     `artifact_revision` in the issue description metadata.
+   - do not require or add `plan_revision` / `artifact_revision` fields inside
+     the artifact file body; artifact body is supporting context only.
 
 ## Guarded swarm-assisted path
 
@@ -51,6 +53,9 @@ contour without shipping product code.
   - `plan_revision`
   - `artifact_path` (repo-relative path under `docs/reports/`)
   - `artifact_revision` (must equal `plan_revision` and is copied from it)
+- Treat the short plan issue description as the only machine-readable revision
+  authority. Linear attachment excerpts and artifact file body text are context
+  only and must not redefine revision or proof status.
 - Upload the artifact referenced by `artifact_path` as a Linear issue attachment
   before handing off to `Spec Review` (attachment title should match the artifact
   filename or full `artifact_path`).
