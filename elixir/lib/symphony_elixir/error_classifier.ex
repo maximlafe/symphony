@@ -78,6 +78,9 @@ defmodule SymphonyElixir.ErrorClassifier do
     "repo bootstrap",
     "acceptance capability preflight failed",
     "acceptance_matrix_parse_error",
+    "material spec change detected during execution",
+    "material_spec_change",
+    "spec_manifest_stale",
     "missing required auth",
     "missing required permissions",
     "missing required tools"

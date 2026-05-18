@@ -221,6 +221,61 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["success"] == false
   end
 
+  test "linear_graphql treats duplicate attachmentLinkGitHubPR errors as success no-op" do
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => "mutation($issueId: String!, $url: String!, $title: String) { attachmentLinkGitHubPR(issueId: $issueId, url: $url, title: $title, linkKind: links) { success } }",
+          "variables" => %{
+            "issueId" => "issue-123",
+            "url" => "https://github.com/acme/symphony/pull/42",
+            "title" => "LET-999: sample"
+          }
+        },
+        linear_client: fn _query, _variables, _opts ->
+          {:ok,
+           %{
+             "data" => nil,
+             "errors" => [
+               %{
+                 "message" => "Duplicate attachment for duplicate url",
+                 "extensions" => %{
+                   "userPresentableMessage" => "An attachment with the same URL already exists."
+                 }
+               }
+             ]
+           }}
+        end
+      )
+
+    assert response["success"] == true
+
+    assert [
+             %{
+               "type" => "inputText",
+               "text" => text
+             }
+           ] = response["contentItems"]
+
+    assert Jason.decode!(text) == %{
+             "operation" => "attachmentLinkGitHubPR",
+             "reason" => "GitHub PR attachment already exists for this issue URL",
+             "result" => "noop",
+             "response" => %{
+               "data" => nil,
+               "errors" => [
+                 %{
+                   "extensions" => %{
+                     "userPresentableMessage" => "An attachment with the same URL already exists."
+                   },
+                   "message" => "Duplicate attachment for duplicate url"
+                 }
+               ]
+             }
+           }
+  end
+
   test "linear_graphql validates required arguments before calling Linear" do
     response =
       DynamicTool.execute(

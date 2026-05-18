@@ -677,14 +677,22 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp validate_manifest_identity(manifest, issue_id, state_name) do
     manifest_issue_id = get_in(manifest, ["issue", "id"])
+    manifest_issue_identifier = get_in(manifest, ["issue", "identifier"])
     manifest_target_state = manifest["target_state"]
 
     cond do
       manifest["passed"] != true ->
         {:error, :handoff_manifest_failed, %{"reason" => "manifest does not record a successful handoff check", "manifest" => manifest}}
 
-      manifest_issue_id not in [issue_id, nil] ->
-        {:error, :handoff_manifest_invalid, %{"reason" => "manifest belongs to a different issue", "manifest" => manifest}}
+      not issue_identity_matches?(issue_id, manifest_issue_id, manifest_issue_identifier) ->
+        {:error, :handoff_manifest_invalid,
+         %{
+           "reason" => "manifest belongs to a different issue",
+           "issue_id" => issue_id,
+           "manifest_issue_id" => manifest_issue_id,
+           "manifest_issue_identifier" => manifest_issue_identifier,
+           "manifest" => manifest
+         }}
 
       (is_binary(state_name) and state_name != "" and state_name != manifest_target_state) &&
           manifest_target_state not in [nil, state_name] ->
@@ -694,6 +702,26 @@ defmodule SymphonyElixir.HandoffCheck do
         :ok
     end
   end
+
+  defp issue_identity_matches?(issue_id, manifest_issue_id, manifest_issue_identifier) do
+    requested = normalize_issue_identity(issue_id)
+
+    candidates =
+      [manifest_issue_id, manifest_issue_identifier]
+      |> Enum.map(&normalize_issue_identity/1)
+      |> Enum.reject(&is_nil/1)
+
+    candidates == [] or requested in candidates
+  end
+
+  defp normalize_issue_identity(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> String.downcase(normalized)
+    end
+  end
+
+  defp normalize_issue_identity(_value), do: nil
 
   defp validate_manifest_workpad(manifest, expected_workpad_path) do
     manifest_workpad_path = get_in(manifest, ["workpad", "file_path"])

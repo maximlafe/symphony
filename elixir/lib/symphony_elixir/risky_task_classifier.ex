@@ -7,14 +7,20 @@ defmodule SymphonyElixir.RiskyTaskClassifier do
   @risky_capabilities MapSet.new([@stateful_capability, "vps_ssh"])
   @stateful_label_fragments ["migration", "stateful", "schema", "database", "db"]
   @risky_label_fragments ["migration", "stateful", "security", "auth", "destructive", "data-risk", "risk:high"]
-  @stateful_description_pattern ~r/\b(?:stateful|migration|migrate|schema|database|alembic|backfill|ddl)\b/i
-  @risky_description_pattern ~r/\b(?:destructive|irreversible|drop\s+table|truncate|data\s+loss|security|auth)\b/i
+  @stateful_description_pattern ~r/\b(?:stateful|migration|migrate|alembic|backfill|ddl|schema\s+change|db\s+migration|database\s+migration)\b/i
+  @risky_description_pattern ~r/\b(?:destructive|irreversible|drop\s+table|truncate|data\s+loss|delete\s+from|privilege\s+escalation)\b/i
+  @noise_section_heading_pattern ~r/^\s*##\s*(?:workpad|execution evidence|notes|artifacts|comments|рабочий журнал|заметки|артефакты|комментарии)\b/i
 
   @spec classify(map() | keyword()) :: map()
   def classify(input) when is_list(input), do: input |> Map.new() |> classify()
 
   def classify(input) when is_map(input) do
-    description = input |> map_get_any([:description, "description"]) |> normalize_text()
+    description =
+      input
+      |> map_get_any([:description, "description"])
+      |> normalize_text()
+      |> classifier_description_scope()
+
     labels = input |> map_get_any([:labels, "labels"]) |> normalize_labels()
     required_capabilities = input |> map_get_any([:required_capabilities, "required_capabilities"]) |> normalize_capabilities()
 
@@ -76,6 +82,22 @@ defmodule SymphonyElixir.RiskyTaskClassifier do
 
   defp normalize_text(value) when is_binary(value), do: value
   defp normalize_text(_value), do: ""
+
+  defp classifier_description_scope(description) when is_binary(description) do
+    description
+    |> String.split("\n")
+    |> Enum.reduce_while([], fn line, acc ->
+      if Regex.match?(@noise_section_heading_pattern, line) do
+        {:halt, acc}
+      else
+        {:cont, [line | acc]}
+      end
+    end)
+    |> Enum.reverse()
+    |> Enum.join("\n")
+  end
+
+  defp classifier_description_scope(_description), do: ""
 
   defp normalize_labels(labels) when is_list(labels) do
     labels

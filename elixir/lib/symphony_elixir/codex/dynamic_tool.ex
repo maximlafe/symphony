@@ -474,7 +474,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
          :ok <- maybe_guard_review_ready_issue_update(query, variables, linear_client, opts),
          :ok <- maybe_guard_execution_issue_update(query, variables, linear_client, opts),
          {:ok, response} <- linear_client.(query, variables, []) do
-      graphql_response(response)
+      graphql_response(response, query)
     else
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
@@ -1161,7 +1161,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
            normalize_optional_string_arg(arguments, "phase", :symphony_handoff_check),
          {:ok, manifest_path} <-
            normalize_workspace_manifest_path(
-             get_argument(arguments, "manifest_path") || verification.manifest_path,
+             verification.manifest_path,
              workspace,
              :symphony_handoff_check
            ),
@@ -1875,7 +1875,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
             "reason_code" => "material_spec_change",
             "issue_id" => issue_id,
             "current_state" => current_state,
-            "required_state" => "Spec Review"
+            "required_state" => "Spec Review",
+            "retryable" => false,
+            "retry_condition" => "retry only when the same issueUpdate transitions the issue to `Spec Review`",
+            "allowed_journal_path" => "record non-spec execution notes in comments/workpad instead of issue description updates"
           }}}
     end
   end
@@ -2433,7 +2436,17 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp graphql_response(response) do
+  defp graphql_response(response, query) when is_binary(query) do
+    case duplicate_github_pr_attachment_noop(response, query) do
+      {:ok, noop_payload} ->
+        success_response(noop_payload)
+
+      :continue ->
+        graphql_response(response, nil)
+    end
+  end
+
+  defp graphql_response(response, _query) do
     success =
       case response do
         %{"errors" => errors} when is_list(errors) and errors != [] -> false
@@ -2451,6 +2464,61 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       ]
     }
   end
+
+  defp duplicate_github_pr_attachment_noop(response, query)
+       when is_binary(query) and is_map(response) do
+    if github_pr_attachment_link_query?(query) do
+      errors = graphql_errors(response)
+
+      if errors != [] and Enum.all?(errors, &duplicate_github_pr_attachment_error?/1) do
+        {:ok,
+         %{
+           "result" => "noop",
+           "operation" => "attachmentLinkGitHubPR",
+           "reason" => "GitHub PR attachment already exists for this issue URL",
+           "response" => response
+         }}
+      else
+        :continue
+      end
+    else
+      :continue
+    end
+  end
+
+  defp duplicate_github_pr_attachment_noop(_response, _query), do: :continue
+
+  defp github_pr_attachment_link_query?(query) when is_binary(query) do
+    Regex.match?(~r/\battachmentLinkGitHubPR\b/, query)
+  end
+
+  defp graphql_errors(%{"errors" => errors}) when is_list(errors), do: errors
+  defp graphql_errors(%{errors: errors}) when is_list(errors), do: errors
+  defp graphql_errors(_response), do: []
+
+  defp duplicate_github_pr_attachment_error?(error) when is_map(error) do
+    message =
+      error
+      |> get_argument("message")
+      |> to_string()
+      |> String.downcase()
+
+    user_presentable_message =
+      error
+      |> get_argument("extensions")
+      |> case do
+        %{} = extensions -> get_argument(extensions, "userPresentableMessage")
+        _ -> nil
+      end
+      |> to_string()
+      |> String.downcase()
+
+    String.contains?(message, "duplicate attachment") or
+      String.contains?(message, "duplicate url") or
+      String.contains?(user_presentable_message, "same url already exists")
+  end
+
+  defp duplicate_github_pr_attachment_error?(_error), do: false
 
   defp success_response(payload) do
     %{
@@ -3618,7 +3686,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
     %{
       "error" => %{
-        "message" => "material spec change detected during execution; move the issue to `Spec Review` in the same update.",
+        "message" => "material spec change detected during execution; move the issue to `Spec Review` in the same update and do not retry the same blocked mutation.",
         "details" => enriched_details
       }
     }

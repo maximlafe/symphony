@@ -1142,11 +1142,19 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp attachment_duplicate?(attachment, attachments)
        when is_map(attachment) and is_list(attachments) do
-    candidate_url = normalize_optional_string(attachment["url"])
+    candidate_url =
+      attachment["url"]
+      |> normalize_optional_string()
+      |> canonical_attachment_url()
+
     candidate_title = normalize_optional_string(attachment["title"])
 
     Enum.any?(attachments, fn existing ->
-      existing_url = normalize_optional_string(existing["url"])
+      existing_url =
+        existing["url"]
+        |> normalize_optional_string()
+        |> canonical_attachment_url()
+
       existing_title = normalize_optional_string(existing["title"])
 
       cond do
@@ -1163,6 +1171,35 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp attachment_duplicate?(_attachment, _attachments), do: false
+
+  defp canonical_attachment_url(url) when is_binary(url) do
+    case canonical_pull_request_url(url) do
+      canonical when is_binary(canonical) -> canonical
+      _ -> url
+    end
+  end
+
+  defp canonical_attachment_url(_url), do: nil
+
+  defp canonical_pull_request_url(url) when is_binary(url) do
+    normalized =
+      url
+      |> String.trim()
+      |> String.replace_suffix("/", "")
+
+    case Regex.named_captures(
+           ~r{^https://github\.com/(?<owner>[^/\s]+)/(?<repo>[^/\s]+)/pull/(?<number>\d+)(?:[/?#].*)?$}i,
+           normalized
+         ) do
+      %{"owner" => owner, "repo" => repo, "number" => number} ->
+        "https://github.com/#{owner}/#{repo}/pull/#{number}"
+
+      _ ->
+        nil
+    end
+  end
+
+  defp canonical_pull_request_url(_url), do: nil
 
   defp attachment_extension(url) when is_binary(url) do
     url

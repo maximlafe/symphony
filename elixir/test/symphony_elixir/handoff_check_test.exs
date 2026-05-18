@@ -4084,6 +4084,39 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert details["reason"] =~ "does not point to a workpad file"
   end
 
+  test "review_ready_transition_allowed? accepts manifest issue identifier when transition uses ticket key" do
+    workpad_path = Path.join(System.tmp_dir!(), "handoff-check-identifier-workpad-#{System.unique_integer([:positive])}.md")
+    manifest_path = Path.join(System.tmp_dir!(), "handoff-check-identifier-#{System.unique_integer([:positive])}.json")
+    issue_uuid = "ffe6f8db-4873-4c41-906c-6a420d6a66aa"
+
+    File.write!(workpad_path, "unchanged")
+
+    manifest =
+      Map.merge(
+        %{
+          "passed" => true,
+          "target_state" => "In Review",
+          "issue" => %{"id" => issue_uuid, "identifier" => "LET-416"},
+          "workpad" => %{
+            "file_path" => workpad_path,
+            "sha256" => sha256("unchanged")
+          }
+        },
+        valid_gate_manifest_fields()
+      )
+
+    assert {:ok, _path} = HandoffCheck.write_manifest(manifest, manifest_path)
+
+    assert :ok =
+             HandoffCheck.review_ready_transition_allowed?(
+               manifest_path,
+               "LET-416",
+               "In Review",
+               nil,
+               git_runner: git_runner()
+             )
+  end
+
   test "review_ready_transition_allowed? blocks missing or stale validation gate metadata" do
     workpad_path = Path.join(System.tmp_dir!(), "handoff-check-gate-workpad-#{System.unique_integer([:positive])}.md")
     missing_gate_manifest_path = Path.join(System.tmp_dir!(), "handoff-check-missing-gate-#{System.unique_integer([:positive])}.json")
