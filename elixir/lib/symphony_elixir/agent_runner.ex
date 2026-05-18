@@ -23,6 +23,7 @@ defmodule SymphonyElixir.AgentRunner do
   @empty_turn_threshold_ms 5_000
   @max_consecutive_empty_turns 3
   @empty_turn_backoff_base_ms 2_000
+  @issue_state_refresh_min_interval_ms 12_000
   @type error_class :: ErrorClassifier.error_class()
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
@@ -187,6 +188,7 @@ defmodule SymphonyElixir.AgentRunner do
     codex_account = Keyword.get(opts, :codex_account)
     monotonic_time_ms = Keyword.get(opts, :monotonic_time_ms, &default_monotonic_time_ms/0)
     sleep_fn = Keyword.get(opts, :sleep_fn, &Process.sleep/1)
+    issue_state_refresh_interval_ms = issue_state_refresh_interval_ms(opts)
     trace_id = trace_id(issue, opts)
     execution_attempt_token = execution_attempt_token(opts)
 
@@ -205,6 +207,8 @@ defmodule SymphonyElixir.AgentRunner do
         codex_update_recipient: codex_update_recipient,
         opts: opts,
         issue_state_fetcher: issue_state_fetcher,
+        issue_state_refresh_interval_ms: issue_state_refresh_interval_ms,
+        last_issue_state_refresh_at_ms: nil,
         max_turns: max_turns,
         monotonic_time_ms: monotonic_time_ms,
         sleep_fn: sleep_fn,
@@ -263,17 +267,17 @@ defmodule SymphonyElixir.AgentRunner do
       "Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{session_context.workspace} turn=#{turn_number}/#{session_context.max_turns} elapsed_ms=#{turn_elapsed_ms}"
     )
 
-    case continue_with_issue?(issue, session_context.issue_state_fetcher) do
-      {:continue, refreshed_issue} ->
+    case continue_with_issue?(issue, session_context) do
+      {:continue, refreshed_issue, updated_session_context} ->
         maybe_continue_turn(
-          session_context,
+          updated_session_context,
           refreshed_issue,
           turn_number,
           consecutive_empty,
           empty_turn?
         )
 
-      {:done, _refreshed_issue} ->
+      {:done, _refreshed_issue, _updated_session_context} ->
         :ok
 
       {:error, reason} ->
@@ -351,24 +355,55 @@ defmodule SymphonyElixir.AgentRunner do
     """
   end
 
-  defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
-    case issue_state_fetcher.([issue_id]) do
-      {:ok, [%Issue{} = refreshed_issue | _]} ->
-        if active_issue_state?(refreshed_issue.state) do
-          {:continue, refreshed_issue}
-        else
-          {:done, refreshed_issue}
-        end
+  defp continue_with_issue?(%Issue{id: issue_id} = issue, session_context) when is_binary(issue_id) do
+    if issue_state_refresh_due?(session_context) do
+      issue_state_fetcher = session_context.issue_state_fetcher
+      refreshed_context = mark_issue_state_refresh_attempt(session_context)
 
-      {:ok, []} ->
-        {:done, issue}
+      case issue_state_fetcher.([issue_id]) do
+        {:ok, [%Issue{} = refreshed_issue | _]} ->
+          if active_issue_state?(refreshed_issue.state) do
+            {:continue, refreshed_issue, refreshed_context}
+          else
+            {:done, refreshed_issue, refreshed_context}
+          end
 
-      {:error, reason} ->
-        {:error, {:issue_state_refresh_failed, reason}}
+        {:ok, []} ->
+          {:done, issue, refreshed_context}
+
+        {:error, reason} ->
+          {:error, {:issue_state_refresh_failed, reason}}
+      end
+    else
+      Logger.debug("Skipping issue state refresh due to debounce window for #{issue_context(issue)}")
+      {:continue, issue, session_context}
     end
   end
 
-  defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
+  defp continue_with_issue?(issue, session_context), do: {:done, issue, session_context}
+
+  defp issue_state_refresh_due?(
+         %{
+           issue_state_refresh_interval_ms: interval_ms,
+           last_issue_state_refresh_at_ms: last_refresh_at_ms
+         } = session_context
+       )
+       when is_integer(interval_ms) and interval_ms > 0 and is_integer(last_refresh_at_ms) do
+    monotonic_time_ms(session_context) - last_refresh_at_ms >= interval_ms
+  end
+
+  defp issue_state_refresh_due?(_session_context), do: true
+
+  defp mark_issue_state_refresh_attempt(session_context) do
+    Map.put(session_context, :last_issue_state_refresh_at_ms, monotonic_time_ms(session_context))
+  end
+
+  defp issue_state_refresh_interval_ms(opts) do
+    case Keyword.get(opts, :issue_state_refresh_min_interval_ms, @issue_state_refresh_min_interval_ms) do
+      interval_ms when is_integer(interval_ms) and interval_ms >= 0 -> interval_ms
+      _ -> @issue_state_refresh_min_interval_ms
+    end
+  end
 
   defp hydrate_issue_for_execution(%Issue{} = issue, fetcher) when is_function(fetcher, 1) do
     if is_binary(issue_execution_lookup_key(issue)) do

@@ -40,6 +40,7 @@ defmodule SymphonyElixir.Orchestrator do
   @idle_codex_account_probe_interval_ms 60_000
   @idle_codex_account_full_reconcile_interval_ms 900_000
   @idle_housekeeping_interval_ms 60_000
+  @terminal_cleanup_poll_interval_ms 600_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @github_pr_snapshot_tool "github_pr_snapshot"
@@ -110,6 +111,7 @@ defmodule SymphonyElixir.Orchestrator do
       :last_codex_account_probe_at_ms,
       :last_full_codex_account_probe_at_ms,
       :last_housekeeping_at_ms,
+      :last_terminal_cleanup_at_ms,
       :workspace_usage_bytes,
       :workspace_cleanup_ref,
       :workspace_usage_refresh_ref,
@@ -167,6 +169,7 @@ defmodule SymphonyElixir.Orchestrator do
       last_codex_account_probe_at_ms: nil,
       last_full_codex_account_probe_at_ms: nil,
       last_housekeeping_at_ms: nil,
+      last_terminal_cleanup_at_ms: nil,
       workspace_usage_bytes: 0,
       workspace_cleanup_ref: nil,
       workspace_usage_refresh_ref: nil,
@@ -2994,15 +2997,38 @@ defmodule SymphonyElixir.Orchestrator do
        do: state
 
   defp maybe_schedule_terminal_workspace_cleanup(%State{} = state, source) do
-    busy_issue_ids = busy_issue_ids_for_cleanup(state)
-    orchestrator = self()
+    if should_run_terminal_workspace_cleanup?(state, source) do
+      busy_issue_ids = busy_issue_ids_for_cleanup(state)
+      orchestrator = self()
+      scheduled_at_ms = monotonic_time_ms(state)
 
-    task =
-      Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
-        {:workspace_cleanup_completed, source, run_terminal_workspace_cleanup(orchestrator, source, busy_issue_ids)}
-      end)
+      task =
+        Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
+          {:workspace_cleanup_completed, source, run_terminal_workspace_cleanup(orchestrator, source, busy_issue_ids)}
+        end)
 
-    %{state | workspace_cleanup_ref: task.ref}
+      %{
+        state
+        | workspace_cleanup_ref: task.ref,
+          last_terminal_cleanup_at_ms: scheduled_at_ms
+      }
+    else
+      state
+    end
+  end
+
+  defp should_run_terminal_workspace_cleanup?(%State{} = _state, source) when source != :poll, do: true
+
+  defp should_run_terminal_workspace_cleanup?(%State{last_terminal_cleanup_at_ms: nil}, :poll), do: true
+
+  defp should_run_terminal_workspace_cleanup?(%State{} = state, :poll) do
+    case state.last_terminal_cleanup_at_ms do
+      last_cleanup_at_ms when is_integer(last_cleanup_at_ms) ->
+        monotonic_time_ms(state) - last_cleanup_at_ms >= @terminal_cleanup_poll_interval_ms
+
+      _ ->
+        true
+    end
   end
 
   defp run_terminal_workspace_cleanup(orchestrator, source, busy_issue_ids)

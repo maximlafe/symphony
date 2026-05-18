@@ -6976,7 +6976,12 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: state_fetcher,
+                 issue_state_refresh_min_interval_ms: 0
+               )
+
       assert_receive {:issue_state_fetch, 1}
       assert_receive {:issue_state_fetch, 2}
 
@@ -7101,6 +7106,7 @@ defmodule SymphonyElixir.CoreTest do
       assert :ok =
                AgentRunner.run(issue, nil,
                  issue_state_fetcher: state_fetcher,
+                 issue_state_refresh_min_interval_ms: 0,
                  monotonic_time_ms: fn -> 1_000 end,
                  sleep_fn: fn backoff_ms -> send(parent, {:empty_turn_backoff, backoff_ms}) end
                )
@@ -7113,6 +7119,117 @@ defmodule SymphonyElixir.CoreTest do
       assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 3
       assert_receive {:empty_turn_backoff, 2_000}
       assert_receive {:empty_turn_backoff, 4_000}
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner debounces issue state refresh between quick continuation turns by default" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-state-refresh-debounce-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-debounce"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-debounce-1"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          5)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-debounce-2"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server",
+        max_turns: 2
+      )
+
+      parent = self()
+
+      state_fetcher = fn [_issue_id] ->
+        attempt = Process.get(:agent_debounce_fetch_count, 0) + 1
+        Process.put(:agent_debounce_fetch_count, attempt)
+        send(parent, {:issue_state_fetch_debounced, attempt})
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-debounce",
+             identifier: "MT-250",
+             title: "Debounce issue state refresh",
+             description: "Stay active until max turns",
+             state: "In Progress"
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-debounce",
+        identifier: "MT-250",
+        title: "Debounce issue state refresh",
+        description: "Stay active until max turns",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-250",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: state_fetcher,
+                 max_turns: 2,
+                 monotonic_time_ms: fn -> 1_000 end,
+                 sleep_fn: fn _backoff_ms -> :ok end
+               )
+
+      assert_receive {:issue_state_fetch_debounced, 1}
+      refute_receive {:issue_state_fetch_debounced, 2}, 100
+
+      trace = File.read!(trace_file)
+      assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 2
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
