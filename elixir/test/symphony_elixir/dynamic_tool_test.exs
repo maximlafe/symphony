@@ -3039,8 +3039,36 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
           "variables" => %{"id" => "LET-652", "input" => %{"description" => malformed_description}}
         },
-        linear_client: fn _query, _variables, _opts ->
-          flunk("issueUpdate should not execute when Acceptance Matrix rows are malformed")
+        linear_client: fn query, _variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => "LET-652",
+                     "identifier" => "LET-652",
+                     "description" => "## Existing description",
+                     "state" => %{"name" => "Spec Review"},
+                     "labels" => %{"nodes" => []},
+                     "inverseRelations" => %{"nodes" => []},
+                     "team" => %{
+                       "states" => %{
+                         "nodes" => [
+                           %{"id" => "spec-review-state-id", "name" => "Spec Review"}
+                         ]
+                       }
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              flunk("issueUpdate should not execute when Acceptance Matrix rows are malformed")
+
+            true ->
+              flunk("unexpected GraphQL query in malformed matrix guard test: #{query}")
+          end
         end
       )
 
@@ -3155,80 +3183,122 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Process.get(:context_lookup_calls) == 1
   end
 
-  test "linear_graphql blocks issueUpdate(description) when artifact proof maps to validation evidence" do
+  test "linear_graphql blocks mode:plan issueUpdate(description) with noncanonical proof mapping prefix" do
     invalid_description = """
     ## Acceptance Matrix
 
-    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
-    | --- | --- | --- | --- | --- | --- |
-    | AM-1 | wrong mapping type | artifact proof must use uploaded attachment mapping | artifact | runtime-proof.log | run_executed |
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | AM-1 | noncanonical prefix | mode:plan mapping must use canonical prefixes | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed | review |
 
-    ### Validation
+    ## Proof Mapping
 
-    - [x] targeted tests: `mix test test/symphony_elixir/dynamic_tool_test.exs`
-
-    ### Artifacts
-
-    - [x] uploaded attachment: `runtime-proof.log` -> runtime proof log
-
-    ### Proof Mapping
-
-    - [x] `AM-1` -> `validation:targeted tests`
+    - AM-1 -> test:file list diff
     """
+
+    issue_id = "LET-657"
 
     blocked =
       DynamicTool.execute(
         "linear_graphql",
         %{
           "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
-          "variables" => %{"id" => "LET-657", "input" => %{"description" => invalid_description}}
+          "variables" => %{"id" => issue_id, "input" => %{"description" => invalid_description}}
         },
-        linear_client: fn _query, _variables, _opts ->
-          flunk("issueUpdate should not execute when proof contract uses artifact->validation drift")
+        linear_client: fn query, _variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => issue_id,
+                     "identifier" => issue_id,
+                     "description" => "## Existing",
+                     "state" => %{"name" => "Spec Review"},
+                     "labels" => %{"nodes" => [%{"name" => "mode:plan"}]},
+                     "inverseRelations" => %{"nodes" => []},
+                     "team" => %{
+                       "states" => %{
+                         "nodes" => [
+                           %{"id" => "spec-review-state-id", "name" => "Spec Review"}
+                         ]
+                       }
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              flunk("issueUpdate should not execute for noncanonical mode:plan proof mapping")
+
+            true ->
+              flunk("unexpected GraphQL query in mode:plan noncanonical mapping test: #{query}")
+          end
         end
       )
 
     assert blocked["success"] == false
     payload = decode_tool_text(blocked)
-    assert payload["error"]["details"]["reason_code"] == "proof_contract_error"
+    assert payload["error"]["details"]["reason_code"] == "proof_mapping_contract_error"
 
-    assert "acceptance matrix item `AM-1` expects artifact mapping `artifact:<title>`" in payload["error"]["details"]["proof_contract_errors"]
+    assert "proof mapping entry is malformed: - AM-1 -> test:file list diff" in payload["error"]["details"]["proof_contract_errors"]
   end
 
-  test "linear_graphql blocks issueUpdate(description) when uploaded attachment claim is a placeholder" do
-    invalid_description = """
+  test "linear_graphql allows non-plan issueUpdate(description) with acceptance matrix but without proof mapping" do
+    description_without_mapping = """
     ## Acceptance Matrix
 
-    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
-    | --- | --- | --- | --- | --- | --- |
-    | AM-1 | placeholder attachment claim | artifact proof needs concrete claim | artifact | runtime-proof.log | run_executed |
-
-    ### Artifacts
-
-    - [x] uploaded attachment: `runtime-proof.log` -> n/a
-
-    ### Proof Mapping
-
-    - [x] `AM-1` -> `artifact:runtime-proof.log`
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | AM-1 | non-plan contract | missing description mapping is allowed for non-plan issues | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed | review |
     """
 
-    blocked =
+    issue_id = "LET-660"
+
+    allowed =
       DynamicTool.execute(
         "linear_graphql",
         %{
           "query" => "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
-          "variables" => %{"id" => "LET-660", "input" => %{"description" => invalid_description}}
+          "variables" => %{"id" => issue_id, "input" => %{"description" => description_without_mapping}}
         },
-        linear_client: fn _query, _variables, _opts ->
-          flunk("issueUpdate should not execute when uploaded attachment proof is a placeholder")
+        linear_client: fn query, variables, _opts ->
+          cond do
+            query =~ "SymphonyHandoffCheckState" ->
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => issue_id,
+                     "identifier" => issue_id,
+                     "description" => "## Existing",
+                     "state" => %{"name" => "Spec Review"},
+                     "labels" => %{"nodes" => [%{"name" => "mode:research"}]},
+                     "inverseRelations" => %{"nodes" => []},
+                     "team" => %{
+                       "states" => %{
+                         "nodes" => [
+                           %{"id" => "spec-review-state-id", "name" => "Spec Review"}
+                         ]
+                       }
+                     }
+                   }
+                 }
+               }}
+
+            query =~ "issueUpdate" ->
+              send(self(), {:non_plan_description_issue_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+            true ->
+              flunk("unexpected GraphQL query in non-plan mapping allowance test: #{query}")
+          end
         end
       )
 
-    assert blocked["success"] == false
-    payload = decode_tool_text(blocked)
-    assert payload["error"]["details"]["reason_code"] == "proof_contract_error"
-
-    assert "uploaded attachment `runtime-proof.log` is missing a concrete proof claim" in payload["error"]["details"]["proof_contract_errors"]
+    assert allowed["success"] == true
+    assert_received {:non_plan_description_issue_update, %{"id" => "LET-660", "input" => %{"description" => ^description_without_mapping}}}
   end
 
   test "linear_graphql allows issueUpdate(description) when acceptance matrix rows are valid" do
@@ -3279,9 +3349,13 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     valid_description = """
     ## Acceptance Matrix
 
-    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
-    | --- | --- | --- | --- | --- | --- |
-    | AM-1 | LET-728 valid plan contract | mode:plan accepts complete matrix | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed |
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | AM-1 | LET-728 valid plan contract | mode:plan accepts canonical mapping | test | mix test test/symphony_elixir/dynamic_tool_test.exs | run_executed | review |
+
+    ## Proof Mapping
+
+    - AM-1 -> validation:am-1
     """
 
     issue_id = "LET-728"

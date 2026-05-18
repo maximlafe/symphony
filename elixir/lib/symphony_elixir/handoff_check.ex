@@ -87,6 +87,53 @@ defmodule SymphonyElixir.HandoffCheck do
 
   def acceptance_matrix_parse_errors(_issue_description), do: []
 
+  @spec issue_description_proof_mapping_errors(String.t() | nil) :: [String.t()]
+  def issue_description_proof_mapping_errors(issue_description) do
+    issue_description_proof_mapping_errors(issue_description, [])
+  end
+
+  @spec issue_description_proof_mapping_errors(String.t() | nil, keyword()) :: [String.t()]
+  def issue_description_proof_mapping_errors(issue_description, opts)
+      when is_binary(issue_description) and is_list(opts) do
+    {acceptance_matrix_items, matrix_errors} = parse_acceptance_matrix(issue_description)
+    require_mapping = Keyword.get(opts, :require_mapping, acceptance_matrix_items != []) == true
+
+    proof_mapping_section =
+      markdown_h2_section_body_any(issue_description, ["Proof Mapping", "Маппинг доказательств"])
+
+    {proof_mapping_items, mapping_parse_errors} =
+      parse_issue_description_proof_mapping_items(proof_mapping_section)
+
+    matrix_ids = MapSet.new(Enum.map(acceptance_matrix_items, & &1["id"]))
+    mapping_groups = Enum.group_by(proof_mapping_items, & &1["matrix_item_id"])
+
+    []
+    |> Kernel.++(matrix_errors)
+    |> Kernel.++(
+      description_missing_mapping_section_errors(
+        acceptance_matrix_items,
+        proof_mapping_items,
+        proof_mapping_section,
+        require_mapping
+      )
+    )
+    |> Kernel.++(mapping_parse_errors)
+    |> Kernel.++(unknown_matrix_mapping_errors(proof_mapping_items, matrix_ids))
+    |> Kernel.++(duplicate_reference_errors(proof_mapping_items))
+    |> Kernel.++(duplicate_matrix_mapping_errors(mapping_groups))
+    |> Kernel.++(
+      description_mapping_completeness_errors(
+        acceptance_matrix_items,
+        proof_mapping_items,
+        require_mapping
+      )
+    )
+    |> Kernel.++(description_proof_mapping_type_pairing_errors(acceptance_matrix_items, mapping_groups))
+    |> Enum.uniq()
+  end
+
+  def issue_description_proof_mapping_errors(_issue_description, _opts), do: []
+
   @spec proof_contract_errors(String.t() | nil) :: [String.t()]
   def proof_contract_errors(markdown), do: proof_contract_errors(markdown, [])
 
@@ -182,6 +229,85 @@ defmodule SymphonyElixir.HandoffCheck do
       {matrix_item_id, [_first, _second | _rest]} ->
         ["acceptance matrix item `#{matrix_item_id}` has multiple proof mapping entries; exactly one is required"]
     end)
+  end
+
+  defp description_missing_mapping_section_errors(
+         acceptance_matrix_items,
+         proof_mapping_items,
+         proof_mapping_section,
+         require_mapping
+       )
+       when is_list(acceptance_matrix_items) and is_list(proof_mapping_items) and
+              is_binary(proof_mapping_section) and is_boolean(require_mapping) do
+    if require_mapping and acceptance_matrix_items != [] and
+         String.trim(proof_mapping_section) == "" and proof_mapping_items == [] do
+      ["proof mapping section is missing or empty in issue description for `mode:plan` spec contract"]
+    else
+      []
+    end
+  end
+
+  defp description_mapping_completeness_errors(acceptance_matrix_items, proof_mapping_items, require_mapping)
+       when is_list(acceptance_matrix_items) and is_list(proof_mapping_items) and
+              is_boolean(require_mapping) do
+    if require_mapping and acceptance_matrix_items != [] do
+      matrix_ids =
+        acceptance_matrix_items
+        |> Enum.map(& &1["id"])
+        |> Enum.reject(&placeholder_value?/1)
+        |> MapSet.new()
+
+      mapped_ids =
+        proof_mapping_items
+        |> Enum.map(& &1["matrix_item_id"])
+        |> Enum.reject(&placeholder_value?/1)
+        |> MapSet.new()
+
+      missing_ids =
+        matrix_ids
+        |> MapSet.difference(mapped_ids)
+        |> MapSet.to_list()
+        |> Enum.sort()
+
+      maybe_append_diff_diagnostic([], missing_ids, "description AM->Proof mapping is incomplete; missing matrix ids")
+    else
+      []
+    end
+  end
+
+  defp description_proof_mapping_type_pairing_errors(acceptance_matrix_items, mapping_groups)
+       when is_list(acceptance_matrix_items) and is_map(mapping_groups) do
+    Enum.flat_map(acceptance_matrix_items, fn matrix_item ->
+      case Map.get(mapping_groups, matrix_item["id"], []) do
+        [mapping] ->
+          description_proof_mapping_type_pairing_error(matrix_item, mapping)
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp description_proof_mapping_type_pairing_error(matrix_item, mapping)
+       when is_map(matrix_item) and is_map(mapping) do
+    {expected_prefix, expected_shape} =
+      case matrix_item["proof_type"] do
+        "artifact" -> {"artifact", "artifact:<title>"}
+        "runtime_smoke" -> {"runtime", "runtime:<label>"}
+        _ -> {"validation", "validation:<label>"}
+      end
+
+    actual_prefix = mapping["reference_type"]
+    matrix_item_id = matrix_item["id"]
+    matrix_type = matrix_item["proof_type"]
+
+    if actual_prefix == expected_prefix do
+      []
+    else
+      [
+        "acceptance matrix item `#{matrix_item_id}` with proof_type `#{matrix_type}` must map to `#{expected_shape}` in issue description"
+      ]
+    end
   end
 
   defp mapping_completeness_errors(acceptance_matrix_items, checked_mappings, enforce?)
@@ -1945,6 +2071,75 @@ defmodule SymphonyElixir.HandoffCheck do
     case Regex.named_captures(section_regex, markdown) do
       %{"body" => body} -> String.trim(body)
       _ -> ""
+    end
+  end
+
+  defp markdown_h2_section_body_any(markdown, headings) when is_binary(markdown) and is_list(headings) do
+    Enum.find_value(headings, "", fn heading ->
+      case markdown_h2_section_body(markdown, heading) do
+        "" -> nil
+        body -> body
+      end
+    end)
+  end
+
+  defp parse_issue_description_proof_mapping_items(section_body) when is_binary(section_body) do
+    section_body
+    |> String.split(~r/\R/u, trim: true)
+    |> Enum.reduce({[], []}, fn raw_line, {items, errors} ->
+      line = String.trim(raw_line)
+
+      case parse_issue_description_proof_mapping_line(line) do
+        {:ok, item} ->
+          {[item | items], errors}
+
+        {:error, reason} ->
+          {items, [reason | errors]}
+      end
+    end)
+    |> then(fn {items, errors} -> {Enum.reverse(items), Enum.reverse(errors)} end)
+  end
+
+  defp parse_issue_description_proof_mapping_line(line) when is_binary(line) do
+    cond do
+      Regex.match?(~r/^\*\s+/, line) ->
+        {:error, "proof mapping entry uses noncanonical `*` bullet; use `- AM-<id> -> <prefix>:<value>`"}
+
+      Regex.match?(~r/^- \[[ xX]\]\s+/, line) ->
+        {:error, "proof mapping entry must not use checkbox bullets in issue description"}
+
+      true ->
+        parse_issue_description_proof_mapping_bullet(line)
+    end
+  end
+
+  defp parse_issue_description_proof_mapping_bullet(line) when is_binary(line) do
+    case Regex.run(~r/^-\s+`?([^`\s]+)`?\s*->\s*(validation|artifact|runtime)\s*:\s*(.+)$/i, line) do
+      [_, matrix_item_id, reference_type, reference_value] ->
+        normalized_matrix_item_id = matrix_item_id |> String.trim() |> strip_wrapping_backticks()
+        normalized_reference_type = reference_type |> String.trim() |> String.downcase()
+        normalized_reference_value = reference_value |> String.trim() |> strip_wrapping_backticks()
+
+        if placeholder_value?(normalized_matrix_item_id) or placeholder_value?(normalized_reference_value) do
+          {:error, "proof mapping entry is malformed: #{line}"}
+        else
+          {:ok,
+           %{
+             "checked" => true,
+             "text" => line,
+             "matrix_item_id" => normalized_matrix_item_id,
+             "reference_type" => normalized_reference_type,
+             "reference_value" => normalized_reference_value,
+             "reference" => "#{normalized_reference_type}:#{normalized_reference_value}"
+           }}
+        end
+
+      _ ->
+        if String.starts_with?(line, "-") do
+          {:error, "proof mapping entry is malformed: #{line}"}
+        else
+          {:error, "proof mapping section contains non-mapping content: #{line}"}
+        end
     end
   end
 

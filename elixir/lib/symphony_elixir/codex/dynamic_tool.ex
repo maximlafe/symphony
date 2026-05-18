@@ -1781,12 +1781,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp guard_issue_description_change(query, variables, description, linear_client, opts) do
     issue_id = review_ready_issue_id(query, variables)
+    issue_context_result = issue_state_context_result(issue_id, linear_client)
 
-    case guard_proof_contract_description(description, issue_id) do
+    case guard_plan_mode_acceptance_matrix_presence(description, issue_id, issue_context_result) do
       :ok ->
-        issue_context_result = issue_state_context_result(issue_id, linear_client)
-
-        case guard_plan_mode_acceptance_matrix_presence(description, issue_id, issue_context_result) do
+        case guard_proof_contract_description(description, issue_id, issue_context_result) do
           :ok ->
             maybe_guard_material_spec_change_update(
               query,
@@ -1881,9 +1880,42 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp guard_proof_contract_description(description, issue_id) when is_binary(description) do
-    if Regex.match?(~r/(?:^|\n)##\s+Acceptance Matrix\b/m, description) do
-      case HandoffCheck.proof_contract_errors(description) do
+  defp guard_proof_contract_description(description, issue_id, issue_context_result)
+       when is_binary(description) do
+    acceptance_matrix_errors =
+      if Regex.match?(~r/(?:^|\n)##\s+Acceptance Matrix\b/m, description) do
+        HandoffCheck.acceptance_matrix_parse_errors(description)
+      else
+        []
+      end
+
+    case acceptance_matrix_errors do
+      [] ->
+        guard_mode_plan_description_proof_mapping(description, issue_id, issue_context_result)
+
+      errors ->
+        {:error,
+         {:issue_description_update_blocked,
+          %{
+            "reason" => "issueUpdate(description) contains malformed `Acceptance Matrix`; update blocked before write",
+            "reason_code" => "proof_contract_error",
+            "issue_id" => issue_id,
+            "proof_contract_errors" => errors,
+            "remediation" => %{
+              "required_section" => "## Acceptance Matrix",
+              "next_steps" => [
+                "Fix malformed matrix rows before retrying `issueUpdate(description)`.",
+                "Retry only after acceptance matrix rows parse cleanly."
+              ]
+            }
+          }}}
+    end
+  end
+
+  defp guard_mode_plan_description_proof_mapping(description, issue_id, issue_context_result)
+       when is_binary(description) do
+    if mode_plan_issue_context?(issue_context_result) do
+      case HandoffCheck.issue_description_proof_mapping_errors(description, require_mapping: true) do
         [] ->
           :ok
 
@@ -1891,15 +1923,16 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           {:error,
            {:issue_description_update_blocked,
             %{
-              "reason" => "issueUpdate(description) contains invalid proof contract; update blocked before write",
-              "reason_code" => "proof_contract_error",
+              "reason" => "issueUpdate(description) contains invalid `Proof Mapping` for `mode:plan`; update blocked before write",
+              "reason_code" => "proof_mapping_contract_error",
               "issue_id" => issue_id,
               "proof_contract_errors" => errors,
               "remediation" => %{
-                "required_section" => "## Acceptance Matrix",
+                "required_section" => "## Proof Mapping",
+                "required_format" => "- AM-<id> -> validation|artifact|runtime:<value>",
                 "next_steps" => [
-                  "Fix malformed matrix rows and proof mapping diagnostics from `proof_contract_errors`.",
-                  "Retry `issueUpdate(description)` after the proof contract parses cleanly."
+                  "Fix malformed or incomplete description mapping entries.",
+                  "Do not use `*` bullets, checkbox bullets, `test:*`, or `runtime_smoke:*`."
                 ]
               }
             }}}
@@ -1908,6 +1941,12 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       :ok
     end
   end
+
+  defp mode_plan_issue_context?({:ok, issue_context}) when is_map(issue_context) do
+    plan_mode_issue?(Map.get(issue_context, "issue_labels", []))
+  end
+
+  defp mode_plan_issue_context?(_issue_context_result), do: false
 
   defp guard_plan_mode_acceptance_matrix_presence(description, issue_id, issue_context_result)
        when is_binary(description) do

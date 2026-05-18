@@ -94,8 +94,20 @@ defmodule SymphonyElixir.SpecCheck do
     blocked_by = normalize_blockers(Keyword.get(opts, :blocked_by, []))
     {required_capabilities, capability_parse_errors} = AcceptanceCapability.required_capabilities(issue_description)
     acceptance_matrix_errors = HandoffCheck.acceptance_matrix_parse_errors(issue_description)
+
+    description_proof_mapping_errors =
+      if mode_plan_issue?(issue_labels) do
+        HandoffCheck.issue_description_proof_mapping_errors(
+          issue_description,
+          require_mapping: true
+        )
+      else
+        []
+      end
+
     spec_contract = HandoffCheck.acceptance_contract_from_issue_description(issue_description)
     {contract_missing_items, contract_diagnostics} = contract_requirement_findings(spec_contract, issue_labels)
+    proof_mapping_diagnostics = description_proof_mapping_diagnostics(description_proof_mapping_errors)
 
     risk_classifier =
       RiskyTaskClassifier.classify(%{
@@ -111,6 +123,7 @@ defmodule SymphonyElixir.SpecCheck do
       []
       |> Kernel.++(contract_missing_items)
       |> Kernel.++(acceptance_matrix_errors)
+      |> Kernel.++(description_proof_mapping_errors)
       |> Kernel.++(capability_parse_errors)
       |> Kernel.++(dependency_conflicts)
       |> Enum.uniq()
@@ -139,7 +152,7 @@ defmodule SymphonyElixir.SpecCheck do
         "required_capabilities" => required_capabilities
       },
       "missing_items" => missing_items,
-      "diagnostics" => contract_diagnostics
+      "diagnostics" => contract_diagnostics ++ proof_mapping_diagnostics
     }
 
     if passed, do: {:ok, manifest}, else: {:error, manifest}
@@ -564,6 +577,26 @@ defmodule SymphonyElixir.SpecCheck do
   end
 
   defp mode_plan_issue?(issue_labels), do: @plan_mode_label in List.wrap(issue_labels)
+
+  defp description_proof_mapping_diagnostics([]), do: []
+
+  defp description_proof_mapping_diagnostics(errors) when is_list(errors) do
+    [
+      %{
+        "reason_code" => "proof_mapping_contract_error",
+        "reason" => "`mode:plan` issue description contains invalid `Proof Mapping` contract entries",
+        "details" => errors,
+        "remediation" => %{
+          "required_section" => "## Proof Mapping",
+          "required_format" => "- AM-<id> -> validation|artifact|runtime:<value>",
+          "notes" => [
+            "Use hyphen bullets only in issue description.",
+            "Do not use `*` bullets, checkbox bullets, `test:*`, or `runtime_smoke:*`."
+          ]
+        }
+      }
+    ]
+  end
 
   defp summary_for_manifest(true, _missing_items), do: "spec check passed"
   defp summary_for_manifest(false, missing_items), do: "spec check failed (#{length(missing_items)} issue(s))"

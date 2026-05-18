@@ -347,6 +347,158 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert HandoffCheck.proof_contract_errors(nil, attachments: [%{"title" => "proof.log"}]) == []
   end
 
+  test "issue_description_proof_mapping_errors parses canonical plain-bullet mapping" do
+    description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | AM-1 | parser baseline | canonical mapping parses | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed | review |
+    | AM-2 | runtime baseline | runtime label stays canonical | runtime_smoke | runtime smoke | runtime_smoke | review |
+
+    ## Proof Mapping
+
+    - AM-1 -> validation:am-1
+    - AM-2 -> runtime:runtime smoke
+    """
+
+    assert HandoffCheck.issue_description_proof_mapping_errors(description, require_mapping: true) == []
+  end
+
+  test "issue_description_proof_mapping_errors rejects missing or malformed description mapping" do
+    missing_mapping = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | AM-1 | missing mapping | should fail closed | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed | review |
+    """
+
+    missing_errors = HandoffCheck.issue_description_proof_mapping_errors(missing_mapping, require_mapping: true)
+
+    assert "proof mapping section is missing or empty in issue description for `mode:plan` spec contract" in missing_errors
+    assert "description AM->Proof mapping is incomplete; missing matrix ids: AM-1" in missing_errors
+
+    malformed_mapping = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | AM-1 | malformed mapping | noncanonical rows are rejected | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed | review |
+
+    ## Proof Mapping
+
+    * AM-1 -> test:file list diff
+    """
+
+    malformed_errors =
+      HandoffCheck.issue_description_proof_mapping_errors(malformed_mapping, require_mapping: true)
+
+    assert "proof mapping entry uses noncanonical `*` bullet; use `- AM-<id> -> <prefix>:<value>`" in malformed_errors
+    assert "description AM->Proof mapping is incomplete; missing matrix ids: AM-1" in malformed_errors
+  end
+
+  test "issue_description_proof_mapping_errors rejects duplicate, unknown, and type-mismatched rows" do
+    description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | AM-1 | duplicate row | exactly one mapping is required | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed | review |
+    | AM-2 | runtime row | runtime smoke must map to runtime prefix | runtime_smoke | runtime smoke | runtime_smoke | review |
+    | AM-3 | artifact row | artifact must map to attachment title | artifact | proof.log | run_executed | review |
+
+    ## Proof Mapping
+
+    - AM-1 -> validation:am-1
+    - AM-1 -> validation:am-1
+    - AM-2 -> validation:runtime smoke
+    - AM-3 -> runtime:proof.log
+    - AM-UNKNOWN -> validation:am-unknown
+    """
+
+    errors = HandoffCheck.issue_description_proof_mapping_errors(description, require_mapping: true)
+
+    assert "acceptance matrix item `AM-1` has multiple proof mapping entries; exactly one is required" in errors
+    assert "proof mapping references unknown acceptance matrix item `AM-UNKNOWN`" in errors
+
+    assert "acceptance matrix item `AM-2` with proof_type `runtime_smoke` must map to `runtime:<label>` in issue description" in errors
+
+    assert "acceptance matrix item `AM-3` with proof_type `artifact` must map to `artifact:<title>` in issue description" in errors
+  end
+
+  test "issue_description_proof_mapping_errors wrapper and invalid-input fallback stay stable" do
+    description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | AM-1 | wrapper path | arity-1 wrapper delegates to canonical checker | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed | review |
+
+    ## Proof Mapping
+
+    - AM-1 -> validation:am-1
+    """
+
+    assert HandoffCheck.issue_description_proof_mapping_errors(description) == []
+    assert HandoffCheck.issue_description_proof_mapping_errors(nil, :invalid_opts_shape) == []
+  end
+
+  test "issue_description_proof_mapping_errors flags placeholder and non-mapping lines" do
+    placeholder_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | AM-1 | placeholder mapping | placeholder reference is malformed | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed | review |
+
+    ## Proof Mapping
+
+    - AM-1 -> validation:<label>
+    """
+
+    placeholder_errors =
+      HandoffCheck.issue_description_proof_mapping_errors(placeholder_description, require_mapping: true)
+
+    assert "proof mapping entry is malformed: - AM-1 -> validation:<label>" in placeholder_errors
+
+    prose_description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | -- | -- | -- | -- | -- | -- | -- |
+    | AM-1 | prose line | non-mapping prose is rejected | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed | review |
+
+    ## Proof Mapping
+
+    - AM-1 -> validation:am-1
+    note: this line is invalid inside proof mapping
+    """
+
+    prose_errors = HandoffCheck.issue_description_proof_mapping_errors(prose_description, require_mapping: true)
+    assert "proof mapping section contains non-mapping content: note: this line is invalid inside proof mapping" in prose_errors
+  end
+
+  test "proof_contract_errors derives effective attachments from checked uploaded artifact rows when attachments are omitted" do
+    markdown = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+    | -- | -- | -- | -- | -- | -- |
+    | AM-1 | derived attachment path | checked uploaded artifact row supplies attachment title | artifact | runtime-proof.log | run_executed |
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `runtime-proof.log` -> concrete runtime proof artifact
+
+    ### Proof Mapping
+
+    - [x] `AM-1` -> `artifact:runtime-proof.log`
+    """
+
+    assert HandoffCheck.proof_contract_errors(markdown) == []
+  end
+
   test "proof_contract_errors validates placeholder attachment claims with explicit attachments" do
     markdown = """
     ## Acceptance Matrix

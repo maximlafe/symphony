@@ -96,6 +96,47 @@ defmodule SymphonyElixir.SpecCheckTest do
            )
   end
 
+  test "evaluate rejects mode:plan description with noncanonical proof mapping prefixes" do
+    description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | AM-1 | LET-741 regression | noncanonical mapping should fail | test | mix test test/symphony_elixir/spec_check_test.exs | run_executed | review |
+
+    ## Proof Mapping
+
+    - AM-1 -> test:file list diff
+    """
+
+    assert {:error, manifest} = SpecCheck.evaluate(description, labels: ["mode:plan"])
+
+    assert manifest["passed"] == false
+    assert Enum.any?(manifest["missing_items"], &String.contains?(&1, "proof mapping entry is malformed"))
+    assert Enum.any?(manifest["missing_items"], &String.contains?(&1, "description AM->Proof mapping is incomplete"))
+    assert Enum.any?(manifest["diagnostics"], &(&1["reason_code"] == "proof_mapping_contract_error"))
+  end
+
+  test "evaluate accepts mode:plan canonical plain-bullet proof mapping without workpad evidence" do
+    description = """
+    ## Acceptance Matrix
+
+    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | AM-1 | canonical mapping | plan contract is valid | test | mix test test/symphony_elixir/spec_check_test.exs | run_executed | review |
+    | AM-2 | runtime mapping | runtime proof prefix is explicit | runtime_smoke | runtime smoke | runtime_smoke | review |
+
+    ## Proof Mapping
+
+    - AM-1 -> validation:am-1
+    - AM-2 -> runtime:runtime smoke
+    """
+
+    assert {:ok, manifest} = SpecCheck.evaluate(description, labels: ["mode:plan"])
+    assert manifest["passed"] == true
+    assert manifest["missing_items"] == []
+  end
+
   test "evaluate allows non-plan specs with Required capabilities only" do
     assert {:ok, manifest} =
              SpecCheck.evaluate(
