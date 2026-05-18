@@ -804,6 +804,14 @@ Instructions:
      `docs/policy/project-contract.md` for `Acceptance Matrix` schema and proof
      semantics; for `mode:plan`, `Acceptance Matrix` is mandatory and
      `Required capabilities` is additive only;
+   - for `mode:plan` issue description, keep canonical `## Proof Mapping` as
+     hyphen bullets only (`- AM-1 -> validation:am-1`), not `*` bullets and not
+     checkbox bullets;
+   - for `mode:plan`, in issue-description mapping allow only `validation:`,
+     `artifact:`, `runtime:` prefixes; never use `test:` or
+     `runtime_smoke:` prefixes;
+   - issue-description mapping is a spec contract reservation and does not
+     replace checked execution evidence in the workpad;
    - when an acceptance item requires external infrastructure before execution can complete, add a machine-readable `Required capabilities: ...` line to the final `## Symphony` section. Use only external prerequisite names: `stateful_db`, `runtime_smoke`, `ui_runtime`, `vps_ssh`, and `artifact_upload`; do not include execution-only requirements (`repo_validation`, `pr_publication`, `pr_body_contract`) in this line because they are implicit workflow obligations;
    - add `Вне скоупа`, `Зависимости`, `Заметки` only when they materially help the task contract;
    - for `mode:plan` with gate `planning.swarm_assist_enabled=true`, keep machine-readable lines for `plan_revision`, `artifact_path`, and `artifact_revision` in the normalized plan body so enabled-path checks are auditable;
@@ -1078,6 +1086,18 @@ checkpoint schema) are defined only in
 - Критерий 1
 - Критерий 2
 
+## Acceptance Matrix
+
+| id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+| --- | --- | --- | --- | --- | --- | --- |
+| AM-1 | <scenario> | <expected outcome> | test | <named test or command> | run_executed | review |
+| AM-2 | <scenario> | <expected outcome> | runtime_smoke | <runtime label> | runtime_smoke | review |
+
+## Proof Mapping
+
+- AM-1 -> validation:am-1
+- AM-2 -> runtime:runtime smoke
+
 ## Вне скоупа
 
 - Добавляй только если есть явные non-goals
@@ -1096,6 +1116,10 @@ Repo: owner/name
 Base branch: branch-name
 Working branch: branch-name
 ````
+
+For `mode:plan`, `## Proof Mapping` in issue description must use hyphen bullets
+only and allowed prefixes only (`validation:`, `artifact:`, `runtime:`). Do not
+use `*` bullets, checkbox bullets, `test:*`, or `runtime_smoke:*`.
 
 Keep `## Symphony` as the last section of the issue description even when repo routing also comes from project metadata or `repo:*` labels.
 `Repo:` must mirror the resolved repository, `Base branch:` must mirror the configured base branch, and `Working branch:` is optional but must mirror the configured exact working-branch name when present.

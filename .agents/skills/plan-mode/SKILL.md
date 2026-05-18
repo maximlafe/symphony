@@ -76,3 +76,35 @@ contour without shipping product code.
 - Do not edit product code as a shipped fix.
 - Do not commit, push, or publish a PR.
 - Update Linear in Russian with the planning result and current task-spec state.
+
+## Pre-write checklist for `mode:plan` description
+
+Before the first persisted write of the issue description, ensure it contains a
+copyable canonical proof contract block:
+
+```md
+## Acceptance Matrix
+
+| id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+| --- | --- | --- | --- | --- | --- | --- |
+| AM-1 | <scenario> | <expected outcome> | test | <named test or command> | run_executed | review |
+| AM-2 | <scenario> | <expected outcome> | runtime_smoke | <runtime label> | runtime_smoke | review |
+
+## Proof Mapping
+
+- AM-1 -> validation:am-1
+- AM-2 -> runtime:runtime smoke
+```
+
+Rules for `## Proof Mapping` in issue description:
+
+- Use hyphen bullets only: `- AM-n -> <prefix>:<value>`.
+- Do not use `*` bullets or checkbox bullets (`- [x]`).
+- Allowed prefixes are only: `validation:`, `artifact:`, `runtime:`.
+- Do not use `test:` or `runtime_smoke:` as mapping prefixes.
+- `proof_type=test` must map to `validation:<label>`.
+- `proof_type=runtime_smoke` must map to `runtime:<label>`.
+- `proof_type=artifact` must map to `artifact:<title>`.
+- Each Acceptance Matrix id must have exactly one description mapping line.
+- Description mapping labels reserve future proof targets and are not checked
+  execution evidence yet.
