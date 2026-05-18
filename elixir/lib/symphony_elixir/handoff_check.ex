@@ -2102,10 +2102,7 @@ defmodule SymphonyElixir.HandoffCheck do
 
   defp parse_issue_description_proof_mapping_line(line) when is_binary(line) do
     cond do
-      Regex.match?(~r/^\*\s+/, line) ->
-        {:error, "proof mapping entry uses noncanonical `*` bullet; use `- AM-<id> -> <prefix>:<value>`"}
-
-      Regex.match?(~r/^- \[[ xX]\]\s+/, line) ->
+      Regex.match?(~r/^[*-]\s+\[[ xX]\]\s+/, line) ->
         {:error, "proof mapping entry must not use checkbox bullets in issue description"}
 
       true ->
@@ -2114,7 +2111,7 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp parse_issue_description_proof_mapping_bullet(line) when is_binary(line) do
-    case Regex.run(~r/^-\s+`?([^`\s]+)`?\s*->\s*(validation|artifact|runtime)\s*:\s*(.+)$/i, line) do
+    case Regex.run(~r/^[*-]\s+`?([^`\s]+)`?\s*->\s*(validation|artifact|runtime)\s*:\s*(.+)$/i, line) do
       [_, matrix_item_id, reference_type, reference_value] ->
         normalized_matrix_item_id = matrix_item_id |> String.trim() |> strip_wrapping_backticks()
         normalized_reference_type = reference_type |> String.trim() |> String.downcase()
@@ -2135,7 +2132,7 @@ defmodule SymphonyElixir.HandoffCheck do
         end
 
       _ ->
-        if String.starts_with?(line, "-") do
+        if String.starts_with?(line, "-") or String.starts_with?(line, "*") do
           {:error, "proof mapping entry is malformed: #{line}"}
         else
           {:error, "proof mapping section contains non-mapping content: #{line}"}

@@ -588,10 +588,10 @@ defmodule SymphonyElixir.SpecCheck do
         "details" => errors,
         "remediation" => %{
           "required_section" => "## Proof Mapping",
-          "required_format" => "- AM-<id> -> validation|artifact|runtime:<value>",
+          "required_format" => "AM-<id> -> validation|artifact|runtime:<value> with plain markdown bullets (`-` preferred; `*` accepted)",
           "notes" => [
-            "Use hyphen bullets only in issue description.",
-            "Do not use `*` bullets, checkbox bullets, `test:*`, or `runtime_smoke:*`."
+            "Use plain markdown bullets in issue description; hyphen bullets are preferred.",
+            "Do not use checkbox bullets, `test:*`, or `runtime_smoke:*`."
           ]
         }
       }

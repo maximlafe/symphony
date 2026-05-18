@@ -1929,10 +1929,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
               "proof_contract_errors" => errors,
               "remediation" => %{
                 "required_section" => "## Proof Mapping",
-                "required_format" => "- AM-<id> -> validation|artifact|runtime:<value>",
+                "required_format" => "AM-<id> -> validation|artifact|runtime:<value> with plain markdown bullets (`-` preferred; `*` accepted)",
                 "next_steps" => [
                   "Fix malformed or incomplete description mapping entries.",
-                  "Do not use `*` bullets, checkbox bullets, `test:*`, or `runtime_smoke:*`."
+                  "Do not use checkbox bullets, `test:*`, or `runtime_smoke:*`."
                 ]
               }
             }}}

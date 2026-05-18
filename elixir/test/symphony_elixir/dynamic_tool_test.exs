@@ -3345,7 +3345,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert_received {:description_issue_update, %{"id" => "LET-652", "input" => %{"description" => ^valid_description}}}
   end
 
-  test "linear_graphql allows mode:plan issueUpdate(description) when Acceptance Matrix is valid" do
+  test "linear_graphql allows mode:plan issueUpdate(description) when Acceptance Matrix and plain-bullet mapping are valid" do
     valid_description = """
     ## Acceptance Matrix
 
@@ -3355,7 +3355,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     ## Proof Mapping
 
-    - AM-1 -> validation:am-1
+    * AM-1 -> validation:am-1
     """
 
     issue_id = "LET-728"

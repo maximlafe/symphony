@@ -117,7 +117,7 @@ defmodule SymphonyElixir.SpecCheckTest do
     assert Enum.any?(manifest["diagnostics"], &(&1["reason_code"] == "proof_mapping_contract_error"))
   end
 
-  test "evaluate accepts mode:plan canonical plain-bullet proof mapping without workpad evidence" do
+  test "evaluate accepts mode:plan canonical plain-bullet proof mapping with hyphen and asterisk bullets" do
     description = """
     ## Acceptance Matrix
 
@@ -129,7 +129,7 @@ defmodule SymphonyElixir.SpecCheckTest do
     ## Proof Mapping
 
     - AM-1 -> validation:am-1
-    - AM-2 -> runtime:runtime smoke
+    * AM-2 -> runtime:runtime smoke
     """
 
     assert {:ok, manifest} = SpecCheck.evaluate(description, labels: ["mode:plan"])

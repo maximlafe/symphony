@@ -347,7 +347,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert HandoffCheck.proof_contract_errors(nil, attachments: [%{"title" => "proof.log"}]) == []
   end
 
-  test "issue_description_proof_mapping_errors parses canonical plain-bullet mapping" do
+  test "issue_description_proof_mapping_errors parses canonical plain-bullet mapping with hyphen and asterisk bullets" do
     description = """
     ## Acceptance Matrix
 
@@ -359,7 +359,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     ## Proof Mapping
 
     - AM-1 -> validation:am-1
-    - AM-2 -> runtime:runtime smoke
+    * AM-2 -> runtime:runtime smoke
     """
 
     assert HandoffCheck.issue_description_proof_mapping_errors(description, require_mapping: true) == []
@@ -394,7 +394,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     malformed_errors =
       HandoffCheck.issue_description_proof_mapping_errors(malformed_mapping, require_mapping: true)
 
-    assert "proof mapping entry uses noncanonical `*` bullet; use `- AM-<id> -> <prefix>:<value>`" in malformed_errors
+    assert "proof mapping entry is malformed: * AM-1 -> test:file list diff" in malformed_errors
     assert "description AM->Proof mapping is incomplete; missing matrix ids: AM-1" in malformed_errors
   end
 
