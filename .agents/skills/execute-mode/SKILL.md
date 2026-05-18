@@ -45,6 +45,10 @@ or produce a classified blocker handoff to `Blocked`.
 5. When runtime failure signal is unclear or flaky, run
    [`diagnose`](../diagnose/SKILL.md) before speculative fixes.
 6. Run required cheap/final gate sequence for the touched change class.
+   - For docs/prose-only diffs, including root-level `.md` smoke artifacts,
+     add and check the canonical `docs review` validation row with the concrete
+     review/format/content command that was run. `repo validation` and
+     AM-specific rows do not replace `docs review` for this change class.
 7. Keep `Acceptance Matrix` and `Proof Mapping` internally consistent before
    handoff.
    - issue `## Proof Mapping` is canonical;

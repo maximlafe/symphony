@@ -877,7 +877,7 @@ Execution requirements in this workflow:
 | DB/schema/stateful | targeted tests + stateful or migration proof for the touched path | cheap gate on the same `HEAD` + mandatory stateful/migration proof + repo validation | before any push |
 | Hosted UI / frontend | targeted UI test or local runtime/visual proof for the touched flow | cheap gate on the same `HEAD` + UI runtime proof + repo validation + visual artifact | before publish for human review and after code-changing rework |
 | Runtime / infra / workflow-contract / handoff | parser/unit smoke for the changed contract + focused reproducer for the failure point | cheap gate on the same `HEAD` + repo validation + checked `runtime smoke` | before any push |
-| Docs/prose-only without executable workflow/config contract | spell/format/manual review when repo-owned command exists | local full gate is not required when shipped code/config did not change | not required; executable workflow/config changes are runtime/contract changes |
+| Docs/prose-only without executable workflow/config contract | checked `docs review` with the concrete review/format/content command | local full gate is not required when shipped code/config did not change | not required; executable workflow/config changes are runtime/contract changes |
 | Mixed changes | union of all affected cheap gates | union of final requirements with the strictest affected class | use the strictest affected class; never downgrade mixed/runtime-critical changes |
 
 Runtime contract:
@@ -952,6 +952,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - execute every ticket-provided validation/test-plan requirement when present;
    - mark changed-behavior validation with the checked label `targeted tests`; any extra proof explanation belongs in that row text, not in the label;
    - when issue `## Proof Mapping` uses an AM-specific target such as `validation:am-1`, add and check the matching validation row `am-1`; generic `targeted tests` does not satisfy that AM-specific target;
+   - when the shipped diff is docs/prose-only, including a root-level `.md` smoke artifact, add and check the canonical validation row `docs review` with the concrete review/format/content command that was run; `repo validation` and AM-specific rows do not replace `docs review` for this change class;
    - revert every temporary proof edit before commit or push;
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, attach a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;

@@ -92,6 +92,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "`Execution Evidence` section in workpad"
     assert prompt =~ "artifact file body and Linear attachment text are supporting context only"
     assert prompt =~ "generic `targeted tests` does not satisfy that AM-specific target"
+    assert prompt =~ "root-level `.md` smoke artifact"
+    assert prompt =~ "AM-specific rows do not replace `docs review`"
     assert prompt =~ "- [ ] `AM-<id>` -> `validation:am-<id>`"
     assert prompt =~ "- [ ] docs review: `<command>`"
     refute prompt =~ "continue without blocking"

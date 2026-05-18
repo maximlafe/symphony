@@ -310,6 +310,7 @@ Instructions:
    - execute all ticket-provided validation/test-plan requirements when present;
    - mark changed-behavior validation with the checked label `targeted tests`; any extra proof explanation belongs in that row text, not in the label;
    - when issue `## Proof Mapping` uses an AM-specific target such as `validation:am-1`, add and check the matching validation row `am-1`; generic `targeted tests` does not satisfy that AM-specific target;
+   - when the shipped diff is docs/prose-only, including a root-level `.md` smoke artifact, add and check the canonical validation row `docs review` with the concrete review/format/content command that was run; `repo validation` and AM-specific rows do not replace `docs review` for this change class;
    - revert every temporary proof edit before commit or push;
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, include a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
@@ -328,7 +329,7 @@ Use deterministic change classes and the strictest affected class. `mixed` is no
 | Stateful / DB / schema | `targeted tests` + stateful or migration proof | cheap proof on the same `HEAD` + mandatory stateful/migration proof + `make symphony-validate` | before any push |
 | Hosted UI / frontend | targeted UI or local runtime/visual proof | cheap proof on the same `HEAD` + UI runtime proof + `make symphony-validate` + visual artifact | before publish for human review and after any code-changing rework |
 | Runtime / infra / workflow-contract / handoff | parser/unit smoke for the changed contract + focused reproducer | cheap proof on the same `HEAD` + checked `runtime smoke` + `make symphony-validate` | before any push |
-| Docs/prose-only without executable workflow/config contract | docs review or repo-owned format/spell check when present | local full gate is not required when shipped code/config did not change | not required |
+| Docs/prose-only without executable workflow/config contract | checked `docs review` with the concrete review/format/content command | local full gate is not required when shipped code/config did not change | not required |
 
 `runtime smoke` is the first runtime proof for runtime/infra/workflow-contract/handoff changes, not
 the last one. If the same change also touches an external contract, add the smallest matching live
