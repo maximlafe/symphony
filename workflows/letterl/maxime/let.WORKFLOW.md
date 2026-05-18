@@ -651,6 +651,7 @@ Instructions:
   is present.
 - Run `make symphony-preflight` before treating auth/env/tooling gaps as blockers, and use the validation matrix below instead of ad-hoc test selection.
 - Do not reread skill bodies in straightforward runs unless the workflow does not cover the needed behavior.
+- Do not reread injected issue description/comments/attachments unless you can name the exact missing, stale, or contradictory fact and the smallest source that can resolve it.
 - Move state only when the matching quality bar is satisfied.
 
 ## Hegemonikon policy integration
@@ -887,6 +888,7 @@ Runtime contract:
 - `required_checks` is the union of class requirements; `passed_checks` records the proof kinds actually present in the workpad.
 - The final handoff manifest must include `validation_gate.gate`, `validation_gate.change_classes`, `validation_gate.required_checks`, `validation_gate.passed_checks`, `git.head_sha`, `git.tree_sha`, and `git.worktree_clean`.
 - Use the checked `runtime smoke` row when the validation gate classifies the diff as `runtime_contract`, when the issue already declares `Required capabilities: runtime_smoke`, or when an existing Acceptance Matrix row requires `proof_type=runtime_smoke`. Do not add capabilities or matrix rows solely to force this proof.
+- For docs/markdown smoke commands, prefer POSIX shell checks (`test`, `grep`, `cmp`, `diff`) and avoid bare `python`; only use an interpreter when it is explicitly required and discovered in the current runtime.
 
 Invalidation and rerun policy:
 

@@ -49,6 +49,9 @@ or produce a classified blocker handoff to `Blocked`.
      add and check the canonical `docs review` validation row with the concrete
      review/format/content command that was run. `repo validation` and
      AM-specific rows do not replace `docs review` for this change class.
+   - For markdown/docs smoke proof commands, prefer POSIX checks (`test`,
+     `grep`, `cmp`, `diff`) and avoid bare `python`; use an interpreter only
+     when it is explicitly needed and available in the current runtime.
 7. Keep `Acceptance Matrix` and `Proof Mapping` internally consistent before
    handoff.
    - issue `## Proof Mapping` is canonical;
