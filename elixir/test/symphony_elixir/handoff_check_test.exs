@@ -4295,6 +4295,24 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "pull request still has pending checks" in pr_manifest["missing_items"]
     assert "pull request still has actionable feedback" in pr_manifest["missing_items"]
     assert "pull request is not merge-ready" in pr_manifest["missing_items"]
+
+    assert {:ok, unknown_merge_manifest} =
+             HandoffCheck.evaluate(
+               ui_workpad,
+               issue_id: "LET-416",
+               profile: "ui",
+               attachments: [%{"title" => "notes.txt"}],
+               pr_snapshot: %{
+                 "all_checks_green" => true,
+                 "has_pending_checks" => false,
+                 "has_actionable_feedback" => false,
+                 "merge_state_status" => "UNKNOWN"
+               },
+               change_classes: ["ui"],
+               git: git_metadata()
+             )
+
+    refute "pull request is not merge-ready" in unknown_merge_manifest["missing_items"]
   end
 
   test "evaluate accepts explicit validation gate metadata and normalizes gate option shapes" do

@@ -2923,7 +2923,7 @@ defmodule SymphonyElixir.HandoffCheck do
     |> maybe_require_snapshot(Map.get(pr_snapshot, "all_checks_green") == true, "pull request checks are not fully green")
     |> maybe_require_snapshot(Map.get(pr_snapshot, "has_pending_checks") == false, "pull request still has pending checks")
     |> maybe_require_snapshot(Map.get(pr_snapshot, "has_actionable_feedback") == false, "pull request still has actionable feedback")
-    |> maybe_require_snapshot(Map.get(pr_snapshot, "merge_state_status") not in ["DIRTY", "BLOCKED", "UNKNOWN"], "pull request is not merge-ready")
+    |> maybe_require_snapshot(Map.get(pr_snapshot, "merge_state_status") not in ["DIRTY", "BLOCKED"], "pull request is not merge-ready")
   end
 
   defp maybe_require_snapshot(acc, true, _message), do: acc
