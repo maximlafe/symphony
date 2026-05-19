@@ -1453,7 +1453,16 @@ defmodule SymphonyElixir.Orchestrator do
        ) do
     resolved_resume_checkpoint = resolve_resume_checkpoint(issue, resume_checkpoint)
     trace_id = dispatch_trace_id(issue, trace_id)
-    execution_attempt_token = dispatch_execution_attempt_token(issue, attempt, trace_id)
+
+    execution_attempt_token =
+      dispatch_execution_attempt_token(
+        issue,
+        attempt,
+        trace_id,
+        retry_delay_type,
+        retry_metadata,
+        resolved_resume_checkpoint
+      )
 
     execution_head =
       issue
@@ -1784,6 +1793,9 @@ defmodule SymphonyElixir.Orchestrator do
     replacement_session_id =
       pick_retry_optional_string(previous_retry, metadata, :replacement_session_id)
 
+    execution_attempt_token =
+      pick_retry_optional_string(previous_retry, metadata, :execution_attempt_token)
+
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
     end
@@ -1812,6 +1824,7 @@ defmodule SymphonyElixir.Orchestrator do
             turn_id: turn_id,
             replacement_of_session_id: replacement_of_session_id,
             replacement_session_id: replacement_session_id,
+            execution_attempt_token: execution_attempt_token,
             error: error,
             error_class: error_class,
             delay_type: metadata[:delay_type],
@@ -1860,6 +1873,7 @@ defmodule SymphonyElixir.Orchestrator do
           turn_id: Map.get(retry_entry, :turn_id),
           replacement_of_session_id: Map.get(retry_entry, :replacement_of_session_id),
           replacement_session_id: Map.get(retry_entry, :replacement_session_id),
+          execution_attempt_token: Map.get(retry_entry, :execution_attempt_token),
           error: Map.get(retry_entry, :error),
           error_class: Map.get(retry_entry, :error_class),
           delay_type: Map.get(retry_entry, :delay_type),
@@ -3666,6 +3680,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp checkpoint_resume_fallback_reason(_checkpoint), do: nil
 
+  defp checkpoint_execution_attempt_token(%{} = checkpoint) do
+    normalize_optional_string(map_any(checkpoint, [:execution_attempt_token, "execution_attempt_token"]))
+  end
+
+  defp checkpoint_execution_attempt_token(_checkpoint), do: nil
+
   defp retry_failover_metadata(%RetryFailoverDecision{} = decision) do
     %{
       retry_failover_decision: RetryFailoverDecision.metadata(decision)
@@ -4733,6 +4753,10 @@ defmodule SymphonyElixir.Orchestrator do
       :workspace_diff_fingerprint,
       retry_workspace_diff_fingerprint(source, resume_checkpoint)
     )
+    |> maybe_put_retry_metadata(
+      :execution_attempt_token,
+      retry_execution_attempt_token(source, resume_checkpoint)
+    )
   end
 
   defp retry_execution_metadata(_source, _resume_checkpoint), do: %{}
@@ -4757,6 +4781,14 @@ defmodule SymphonyElixir.Orchestrator do
       _ -> checkpoint_head(resume_checkpoint)
     end
   end
+
+  defp retry_execution_attempt_token(source, resume_checkpoint) when is_map(source) do
+    normalize_optional_string(map_any(source, [:execution_attempt_token, "execution_attempt_token"])) ||
+      checkpoint_execution_attempt_token(resume_checkpoint)
+  end
+
+  defp retry_execution_attempt_token(_source, resume_checkpoint),
+    do: checkpoint_execution_attempt_token(resume_checkpoint)
 
   defp retry_session_id(source) when is_map(source) do
     source
@@ -7063,8 +7095,21 @@ defmodule SymphonyElixir.Orchestrator do
     Ecto.UUID.generate()
   end
 
-  defp dispatch_execution_attempt_token(_issue, _attempt, _trace_id) do
-    new_execution_attempt_token()
+  defp dispatch_execution_attempt_token(
+         _issue,
+         _attempt,
+         _trace_id,
+         retry_delay_type,
+         retry_metadata,
+         resume_checkpoint
+       ) do
+    continuation_token =
+      if retry_delay_type == :continuation do
+        normalize_optional_string(map_any(retry_metadata, [:execution_attempt_token, "execution_attempt_token"])) ||
+          checkpoint_execution_attempt_token(resume_checkpoint)
+      end
+
+    continuation_token || new_execution_attempt_token()
   end
 
   defp new_execution_attempt_token do

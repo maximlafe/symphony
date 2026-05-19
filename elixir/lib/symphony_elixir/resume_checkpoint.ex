@@ -40,7 +40,8 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     "external_step" => :external_step,
     "validation_bundle_fingerprint" => :validation_bundle_fingerprint,
     "wait_state" => :wait_state,
-    "result_ref" => :result_ref
+    "result_ref" => :result_ref,
+    "execution_attempt_token" => :execution_attempt_token
   }
 
   @spec manifest_path(map() | nil, keyword()) :: String.t() | nil
@@ -69,6 +70,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
         |> Map.put("head", git_trimmed(workspace, ["rev-parse", "HEAD"]))
         |> Map.put("changed_files", git_changed_files(workspace))
         |> Map.put("workspace_diff_fingerprint", git_workspace_diff_fingerprint(workspace))
+        |> Map.put("execution_attempt_token", execution_attempt_token_from_running_entry(running_entry))
         |> Map.put("workpad_ref", read_trimmed(Path.join(workspace, @workpad_ref_path)))
         |> Map.put("workpad_digest", sha256_file(Path.join(workspace, @workpad_path)))
         |> merge_pr_context(running_entry)
@@ -157,6 +159,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     |> Map.put("open_pr", normalize_open_pr(Map.get(checkpoint, "open_pr")))
     |> Map.put("feedback_digest", normalize_optional_string(Map.get(checkpoint, "feedback_digest")))
     |> Map.put("workspace_diff_fingerprint", normalize_optional_string(Map.get(checkpoint, "workspace_diff_fingerprint")))
+    |> Map.put("execution_attempt_token", normalize_optional_string(Map.get(checkpoint, "execution_attempt_token")))
     |> normalize_boolean("pending_checks")
     |> normalize_boolean("open_feedback")
   end
@@ -469,6 +472,14 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     |> Map.take(@routing_checkpoint_fields)
   end
 
+  defp execution_attempt_token_from_running_entry(running_entry) when is_map(running_entry) do
+    running_entry
+    |> Map.get(:execution_attempt_token)
+    |> normalize_optional_string()
+  end
+
+  defp execution_attempt_token_from_running_entry(_running_entry), do: nil
+
   defp normalize_boolean(%{} = checkpoint, key) do
     value = Map.get(checkpoint, key)
 
@@ -679,6 +690,7 @@ defmodule SymphonyElixir.ResumeCheckpoint do
       "head" => nil,
       "changed_files" => [],
       "workspace_diff_fingerprint" => nil,
+      "execution_attempt_token" => nil,
       "active_validation_snapshot" => nil,
       "last_validation_status" => %{
         "result" => "unknown",

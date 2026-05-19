@@ -30,6 +30,7 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
       verification_result: "passed",
       verification_summary: "handoff check passed",
       verification_checked_at: DateTime.utc_now(),
+      execution_attempt_token: "run-token-resume-checkpoint",
       validation_guard_name: "contract",
       validation_guard_result: "passed",
       validation_guard_reason: "handoff check passed",
@@ -52,6 +53,7 @@ defmodule SymphonyElixir.ResumeCheckpointTest do
     assert is_binary(checkpoint["workspace_diff_fingerprint"])
     assert checkpoint["workpad_ref"] == "comment-123"
     assert is_binary(checkpoint["workpad_digest"])
+    assert checkpoint["execution_attempt_token"] == "run-token-resume-checkpoint"
     assert checkpoint["last_validation_status"]["result"] == "passed"
     assert checkpoint["open_pr"]["number"] == 77
     assert checkpoint["pending_checks"] == false
