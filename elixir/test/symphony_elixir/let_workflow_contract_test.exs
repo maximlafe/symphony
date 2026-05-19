@@ -82,6 +82,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "if workflow gate `planning.swarm_assist_enabled` is `true`, additionally run `swarm-iterate`"
     assert prompt =~ "if the gate is `true` but `swarm-iterate` is unavailable, fail closed"
     assert prompt =~ "blocking divergence"
+    assert prompt =~ ~r/metadata-only boilerplate stubs\s+are invalid/
     assert prompt =~ "keep machine-readable lines for `plan_revision`, `artifact_path`, and `artifact_revision`"
     assert prompt =~ "for `mode:plan` issue description, keep canonical `## Proof Mapping` as"
     assert prompt =~ "hyphen bullets only (`- AM-1 -> validation:am-1`), not `*` bullets and not"
@@ -93,6 +94,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "artifact file body and Linear attachment text are supporting context only"
     assert prompt =~ "generic `targeted tests` does not satisfy that AM-specific target"
     assert prompt =~ "root-level `.md` smoke artifact"
+    assert prompt =~ "upload that file to Linear attachments"
     assert prompt =~ "AM-specific rows do not replace `docs review`"
     assert prompt =~ "- [ ] `AM-<id>` -> `validation:am-<id>`"
     assert prompt =~ "- [ ] docs review: `<command>`"
@@ -198,6 +200,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert plan_skill =~ "`artifact_revision`"
     assert plan_skill =~ "`provisional`"
     assert plan_skill =~ "`blocking divergence`"
+    assert plan_skill =~ ~r/[Mm]etadata-only boilerplate stubs\s+are invalid/
     refute plan_skill =~ "plan-swarm-mode"
 
     assert execute_skill =~ "name: execute-mode"
@@ -215,6 +218,7 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert execute_skill =~ "do not require `plan_revision` / `artifact_revision` fields inside the"
     assert execute_skill =~ "issue `## Proof Mapping` is canonical"
     assert execute_skill =~ "PR evidence stays in linked PR"
+    assert execute_skill =~ "upload that `.md` file to Linear"
   end
 
   test "worker method skills exist and setup lives outside worker bundle" do
@@ -244,12 +248,14 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert project_contract =~ "`artifact_revision`"
     assert project_contract =~ "`plan_revision`"
     assert project_contract =~ "`blocking divergence`"
+    assert project_contract =~ ~r/metadata-only boilerplate stubs\s+are invalid/
     assert project_contract =~ "Execution-Time Secondary Artifact Contract"
     assert project_contract =~ "`Execution Evidence`"
     assert project_contract =~ "`run_token`"
     assert project_contract =~ "Linear attachment `content_text` and artifact file body are prompt context"
     assert project_contract =~ "must not require `plan_revision` or"
     assert project_contract =~ "`artifact_revision` inside the artifact file body"
+    assert project_contract =~ "root-level `.md` artifact"
 
     refute File.exists?(Path.expand("../../../.agents/skills/plan-swarm-mode/SKILL.md", __DIR__))
     refute File.exists?(@worker_setup_skill_path)

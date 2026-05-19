@@ -59,6 +59,9 @@ contour without shipping product code.
 - Upload the artifact referenced by `artifact_path` as a Linear issue attachment
   before handing off to `Spec Review` (attachment title should match the artifact
   filename or full `artifact_path`).
+- Keep the linked swarm artifact substantive, not template-only: include concrete
+  task-specific decision deltas, risk/rollback notes, and evidence anchors.
+  Metadata-only boilerplate stubs are invalid for the enabled path.
 - Enabled path stays `provisional` until short plan + linked artifact validate
   together. `provisional` is never review-ready.
 - If artifact is missing, stale, or contradicts short plan, classify it as

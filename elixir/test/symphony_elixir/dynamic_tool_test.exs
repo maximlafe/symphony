@@ -1002,6 +1002,76 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            }
   end
 
+  test "github_pr_snapshot collapses superseded check runs by check identity" do
+    response =
+      DynamicTool.execute(
+        "github_pr_snapshot",
+        %{"repo" => "maximlafe/lead_status", "pr_number" => 62},
+        gh_runner: fn args, _opts ->
+          case args do
+            ["pr", "view", "62", "-R", "maximlafe/lead_status", "--json", "state,url,labels,reviewDecision,mergeStateStatus,statusCheckRollup"] ->
+              {:ok,
+               Jason.encode!(%{
+                 "state" => "OPEN",
+                 "url" => "https://github.com/maximlafe/lead_status/pull/62",
+                 "labels" => [%{"name" => "symphony"}],
+                 "reviewDecision" => "",
+                 "mergeStateStatus" => "CLEAN",
+                 "statusCheckRollup" => [
+                   %{
+                     "name" => "pr-contract",
+                     "status" => "COMPLETED",
+                     "conclusion" => "FAILURE",
+                     "workflowName" => "ci",
+                     "detailsUrl" => "https://example.test/check/old",
+                     "completedAt" => "2026-05-19T04:36:21Z"
+                   },
+                   %{
+                     "name" => "pr-contract",
+                     "status" => "COMPLETED",
+                     "conclusion" => "SUCCESS",
+                     "workflowName" => "ci",
+                     "detailsUrl" => "https://example.test/check/new",
+                     "completedAt" => "2026-05-19T04:39:52Z"
+                   },
+                   %{
+                     "name" => "lint",
+                     "status" => "COMPLETED",
+                     "conclusion" => "SUCCESS",
+                     "workflowName" => "ci",
+                     "detailsUrl" => "https://example.test/check/lint",
+                     "completedAt" => "2026-05-19T04:39:52Z"
+                   }
+                 ]
+               })}
+
+            ["api", "repos/maximlafe/lead_status/issues/62/comments?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/lead_status/pulls/62/reviews?per_page=100"] ->
+              {:ok, "[]"}
+
+            ["api", "repos/maximlafe/lead_status/pulls/62/comments?per_page=100"] ->
+              {:ok, "[]"}
+          end
+        end
+      )
+
+    assert response["success"] == true
+    payload = decode_tool_text(response)
+
+    assert payload["all_checks_green"] == true
+    assert payload["has_pending_checks"] == false
+
+    pr_contract_checks =
+      Enum.filter(payload["checks"], fn check ->
+        check["name"] == "pr-contract"
+      end)
+
+    assert length(pr_contract_checks) == 1
+    assert hd(pr_contract_checks)["conclusion"] == "SUCCESS"
+  end
+
   test "github_pr_snapshot returns normalized actionable feedback details when requested" do
     response =
       DynamicTool.execute(

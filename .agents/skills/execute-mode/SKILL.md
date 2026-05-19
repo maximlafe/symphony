@@ -49,6 +49,9 @@ or produce a classified blocker handoff to `Blocked`.
      add and check the canonical `docs review` validation row with the concrete
      review/format/content command that was run. `repo validation` and
      AM-specific rows do not replace `docs review` for this change class.
+   - When a docs/prose smoke task creates a new root-level `.md` artifact (for
+     example `hello-world-smoke.md`), upload that `.md` file to Linear and add
+     a checked uploaded-attachment artifact row with a concrete claim.
    - For markdown/docs smoke proof commands, prefer POSIX checks (`test`,
      `grep`, `cmp`, `diff`) and avoid bare `python`; use an interpreter only
      when it is explicitly needed and available in the current runtime.

@@ -57,6 +57,9 @@ If a rule must change, update this file first and then align workflows/skills.
   - durable repo file, normally `docs/reports/<task-slug>-swarm-artifact.md`;
   - additive/subordinate only; agents may read it for context, but guards must
     not parse its body as machine-readable authority;
+  - artifact body must be substantive and task-specific (decision deltas,
+    risk/rollback notes, and evidence anchors); metadata-only boilerplate stubs
+    are invalid;
   - must be uploaded to Linear issue attachments before `Spec Review` handoff;
   - attachment title should match either full `artifact_path` or artifact
     filename;
@@ -244,6 +247,9 @@ Rules:
 - Keep one persistent live workpad comment per issue.
 - Use local `workpad.md` as source and sync at milestones, not after every edit.
 - Upload durable evidence artifacts to Linear attachments.
+- For docs/prose smoke tasks that create a new root-level `.md` artifact (for
+  example `hello-world-smoke.md`), upload that `.md` file itself and add a
+  checked uploaded-attachment row with a concrete claim in `### Artifacts`.
 - Do not treat raw transient upload URLs as final evidence.
 - PR references stay in linked PR context; attachments are for durable artifacts.
 

@@ -2735,18 +2735,72 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp normalize_checks(checks) when is_list(checks) do
-    Enum.map(checks, fn check ->
+    checks
+    |> Enum.with_index()
+    |> Enum.map(fn {check, index} ->
       %{
         "name" => pick_first(check, ["name", "context"]) || "unknown",
         "status" => normalize_check_status(pick_first(check, ["status"])),
         "conclusion" => normalize_check_status(pick_first(check, ["conclusion", "state"])),
         "workflow_name" => pick_first(check, ["workflowName"]),
-        "details_url" => pick_first(check, ["detailsUrl", "targetUrl"])
+        "details_url" => pick_first(check, ["detailsUrl", "targetUrl"]),
+        "__sort_timestamp_ms" => check_sort_timestamp_ms(check),
+        "__sort_index" => index
       }
     end)
+    |> dedupe_check_runs_by_identity()
+    |> Enum.sort_by(&Map.get(&1, "__sort_index", 0))
+    |> Enum.map(&Map.drop(&1, ["__sort_timestamp_ms", "__sort_index"]))
   end
 
   defp normalize_checks(_checks), do: []
+
+  defp dedupe_check_runs_by_identity(checks) when is_list(checks) do
+    checks
+    |> Enum.group_by(&check_identity/1)
+    |> Enum.map(fn {_identity, runs} ->
+      Enum.max_by(runs, fn run ->
+        {
+          Map.get(run, "__sort_timestamp_ms", 0),
+          Map.get(run, "__sort_index", 0)
+        }
+      end)
+    end)
+  end
+
+  defp check_identity(check) when is_map(check) do
+    {
+      Map.get(check, "name") || "unknown",
+      Map.get(check, "workflow_name")
+    }
+  end
+
+  defp check_sort_timestamp_ms(check) when is_map(check) do
+    check
+    |> pick_first([
+      ["completedAt"],
+      ["completed_at"],
+      ["startedAt"],
+      ["started_at"],
+      ["updatedAt"],
+      ["updated_at"],
+      ["createdAt"],
+      ["created_at"]
+    ])
+    |> parse_timestamp_ms()
+  end
+
+  defp check_sort_timestamp_ms(_check), do: 0
+
+  defp parse_timestamp_ms(value) when is_binary(value) do
+    with {:ok, dt, _offset} <- DateTime.from_iso8601(String.trim(value)) do
+      DateTime.to_unix(dt, :millisecond)
+    else
+      _ -> 0
+    end
+  end
+
+  defp parse_timestamp_ms(_value), do: 0
 
   defp normalize_top_level_feedback(comments) when is_list(comments) do
     comments

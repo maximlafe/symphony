@@ -794,6 +794,7 @@ Instructions:
      - if workflow gate `planning.swarm_assist_enabled` is `true`, additionally run `swarm-iterate` (prefer repo-local `.agents/skills/swarm-iterate/SKILL.md`; fallback `$CODEX_HOME/skills/swarm-iterate/SKILL.md`);
      - with gate `true`, keep the short plan as SSOT and require linked artifact metadata (`plan_revision`, `artifact_path`, `artifact_revision`) before finalizing `Spec Prep`;
      - with gate `true`, upload the referenced swarm artifact to Linear attachments before `Spec Review`; attachment title must match the artifact filename or full `artifact_path`;
+     - with gate `true`, keep the swarm artifact substantive (task-specific decision deltas, risk/rollback notes, evidence anchors); metadata-only boilerplate stubs are invalid;
      - if the gate is `true` but `swarm-iterate` is unavailable, fail closed: record this as `blocking divergence` in `Заметки`, fill `Checkpoint` with `checkpoint_type: human-action`, move the issue to `Blocked`, and stop (or disable the gate and rerun `Spec Prep`);
      - if the gate is `false`, keep legacy `plan-mode` path unchanged as compatibility baseline;
      - if both labels exist, `mode:research` wins;
@@ -955,6 +956,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - mark changed-behavior validation with the checked label `targeted tests`; any extra proof explanation belongs in that row text, not in the label;
    - when issue `## Proof Mapping` uses an AM-specific target such as `validation:am-1`, add and check the matching validation row `am-1`; generic `targeted tests` does not satisfy that AM-specific target;
    - when the shipped diff is docs/prose-only, including a root-level `.md` smoke artifact, add and check the canonical validation row `docs review` with the concrete review/format/content command that was run; `repo validation` and AM-specific rows do not replace `docs review` for this change class;
+   - when docs/prose smoke work creates a new root-level `.md` artifact (for example `hello-world-smoke.md`), upload that file to Linear attachments and add a checked uploaded-attachment row with a concrete claim in `### Artifacts`;
    - revert every temporary proof edit before commit or push;
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, attach a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;

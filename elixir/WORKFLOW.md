@@ -224,6 +224,9 @@ Instructions:
 - In enabled mode, require the swarm artifact referenced by `artifact_path` to
   be uploaded to Linear issue attachments (title match by full path or
   filename) before planning handoff is considered complete.
+- In enabled mode, swarm artifact body must stay substantive and task-specific
+  (decision deltas, risk/rollback notes, evidence anchors); metadata-only
+  boilerplate stubs are invalid.
 - In enabled `mode:plan` execution, require two-layer preflight before code
   edits and a dedicated `Execution Evidence` marker in workpad with runtime
   fields: `status`, `run_token`, `artifact_file`,
@@ -311,6 +314,7 @@ Instructions:
    - mark changed-behavior validation with the checked label `targeted tests`; any extra proof explanation belongs in that row text, not in the label;
    - when issue `## Proof Mapping` uses an AM-specific target such as `validation:am-1`, add and check the matching validation row `am-1`; generic `targeted tests` does not satisfy that AM-specific target;
    - when the shipped diff is docs/prose-only, including a root-level `.md` smoke artifact, add and check the canonical validation row `docs review` with the concrete review/format/content command that was run; `repo validation` and AM-specific rows do not replace `docs review` for this change class;
+   - when docs/prose smoke work creates a new root-level `.md` artifact (for example `hello-world-smoke.md`), upload that file to Linear attachments and add a checked uploaded-attachment row with a concrete claim in `### Artifacts`;
    - revert every temporary proof edit before commit or push;
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
    - if the change affects a UI or operator-facing flow, include a visual artifact (`screenshot`, `gif`, recording) as the primary proof when a still image is insufficient;
