@@ -14,7 +14,7 @@ Onboarding/meta setup guidance lives in
 
 ## This Repo As A Target Repo
 
-`maximlafe/symphony` is also configured as a standalone target repo for Symphony itself. The repo-local workflow lives at `elixir/WORKFLOW.md` and now points at the dedicated LetterL Linear project `Symphony` (`symphony-bd5bc5b51675`) instead of the shared platform bucket.
+`maximlafe/symphony` is also configured as a standalone target repo for Symphony itself. The canonical workflow lives at `workflows/letterl/maxime/let.WORKFLOW.md` and points at the dedicated LetterL Linear project `Symphony` (`symphony-bd5bc5b51675`) instead of the shared platform bucket.
 
 Fresh worker clones use the contract that lives in this repo:
 
@@ -73,7 +73,7 @@ open `infra-pass-diagnostics` and rerun `make symphony-validate` locally before 
 
 Symphony polls a Linear project or team for active tickets. Each ticket gets an isolated workspace clone and a Codex agent. The agent reads the ticket, writes a plan, implements, validates, and opens a PR. You review PRs and move tickets through states — the agents handle the rest.
 
-The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatter for config and a prompt body that defines agent behavior. Hot-reloads in under a second, no restart needed.
+The state machine lives in the configured workflow file (for this repo: `workflows/letterl/maxime/let.WORKFLOW.md`) — a markdown file with YAML frontmatter for config and a prompt body that defines agent behavior. Hot-reloads in under a second, no restart needed.
 
 ## What's different from upstream
 
@@ -90,10 +90,10 @@ The state machine lives in `WORKFLOW.md` — a markdown file with YAML frontmatt
 ## Manual setup
 
 1. Build: `git clone https://github.com/odysseus0/symphony && cd symphony && make symphony-bootstrap && cd elixir && mise exec -- mix build`
-2. Install worker skills: `npx skills add odysseus0/symphony -a codex -s linear land commit push pull debug zoom-out diagnose tdd --copy -y` and copy `elixir/WORKFLOW.md` to your repo
-3. In `WORKFLOW.md`, set exactly one Linear polling scope: `tracker.project_slug` or `tracker.team_key`, plus `hooks.after_create` (clone your repo + setup commands). Hooks also receive issue metadata in env vars like `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_DESCRIPTION`, `SYMPHONY_ISSUE_BRANCH_NAME`, `SYMPHONY_ISSUE_PROJECT_SLUG`, and `SYMPHONY_ISSUE_LABELS` if you need structured per-issue bootstrap behavior.
+2. Install worker skills: `npx skills add odysseus0/symphony -a codex -s linear land commit push pull debug zoom-out diagnose tdd --copy -y` and copy `workflows/letterl/maxime/let.WORKFLOW.md` to your repo as your workflow baseline
+3. In your workflow file (for this repo: `workflows/letterl/maxime/let.WORKFLOW.md`), set exactly one Linear polling scope: `tracker.project_slug` or `tracker.team_key`, plus `hooks.after_create` (clone your repo + setup commands). Hooks also receive issue metadata in env vars like `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_DESCRIPTION`, `SYMPHONY_ISSUE_BRANCH_NAME`, `SYMPHONY_ISSUE_PROJECT_SLUG`, and `SYMPHONY_ISSUE_LABELS` if you need structured per-issue bootstrap behavior.
 4. Add **Rework**, **In Review**, **Merging** as custom states in Linear (Team Settings → Workflow)
-5. Commit, push, then: `mise exec -- ./bin/symphony /path/to/your-repo/WORKFLOW.md`
+5. Commit, push, then: `mise exec -- ./bin/symphony /path/to/your-repo/workflows/letterl/maxime/let.WORKFLOW.md`
 
 For this repository's own self-hosted target flow, use the repo root targets first:
 
@@ -101,7 +101,7 @@ For this repository's own self-hosted target flow, use the repo root targets fir
 make symphony-preflight
 make symphony-bootstrap
 make symphony-validate
-cd elixir && mise exec -- ./bin/symphony ./WORKFLOW.md --port 4101
+cd elixir && mise exec -- ./bin/symphony ../workflows/letterl/maxime/let.WORKFLOW.md --port 4101
 ```
 
 `make symphony-bootstrap` is the unattended repo-root bootstrap contract Symphony workers use in a

@@ -71,6 +71,20 @@ defmodule SymphonyElixir.RiskyTaskClassifierTest do
     assert classification["cost_signals"] == []
   end
 
+  test "classify treats non-binary description as empty scope" do
+    classification =
+      RiskyTaskClassifier.classify(%{
+        "description" => 123,
+        "labels" => [],
+        "required_capabilities" => []
+      })
+
+    assert classification["risky_task"] == false
+    assert classification["stateful_migration"] == false
+    assert classification["cost_signals"] == []
+    assert classification["reasons"] == []
+  end
+
   test "risky_task? and stateful_migration? cover map and non-map branches" do
     assert RiskyTaskClassifier.risky_task?(%{"risky_task" => "yes"})
     refute RiskyTaskClassifier.risky_task?(:invalid)

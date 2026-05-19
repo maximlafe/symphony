@@ -198,7 +198,7 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
   end
 
-  test "current WORKFLOW.md file is valid and complete" do
+  test "current canonical workflow file is valid and complete" do
     original_workflow_path = Workflow.workflow_file_path()
     on_exit(fn -> Workflow.set_workflow_file_path(original_workflow_path) end)
     Workflow.clear_workflow_file_path()
@@ -209,7 +209,8 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert Map.get(tracker, "project_slug") == "symphony-bd5bc5b51675"
+    assert Map.get(tracker, "team_key") == "LET"
+    assert Map.get(tracker, "assignee") == "symphony"
     assert is_list(Map.get(tracker, "active_states"))
     assert Map.get(tracker, "manual_intervention_state") == "Blocked"
     assert is_list(Map.get(tracker, "terminal_states"))
@@ -218,7 +219,7 @@ defmodule SymphonyElixir.CoreTest do
     assert is_map(hooks)
     assert Map.get(hooks, "after_create") =~ "export GIT_TERMINAL_PROMPT=0"
     assert Map.get(hooks, "after_create") =~ "git clone --depth 1"
-    assert Map.get(hooks, "after_create") =~ "SYMPHONY_SOURCE_REPO_URL"
+    assert Map.get(hooks, "after_create") =~ "SYMPHONY_ISSUE_PROJECT_SLUG"
     assert Map.get(hooks, "after_create") =~ "https://github.com/maximlafe/symphony.git"
     assert Map.get(hooks, "after_create") =~ "make symphony-bootstrap"
     assert Map.get(hooks, "before_remove") =~ "gh pr list --head \"$branch\" --state open --json number"
@@ -292,7 +293,7 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.settings!().tracker.assignee == env_assignee
   end
 
-  test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
+  test "workflow file path defaults to canonical LET workflow when app env is unset" do
     original_workflow_path = Workflow.workflow_file_path()
 
     on_exit(fn ->
@@ -301,7 +302,22 @@ defmodule SymphonyElixir.CoreTest do
 
     Workflow.clear_workflow_file_path()
 
-    assert Workflow.workflow_file_path() == Path.join(File.cwd!(), "WORKFLOW.md")
+    assert Workflow.workflow_file_path() ==
+             Path.expand("../workflows/letterl/maxime/let.WORKFLOW.md", File.cwd!())
+  end
+
+  test "default workflow path falls back to local WORKFLOW.md when canonical file is absent" do
+    original_cwd = File.cwd!()
+    temp_root = Path.join(System.tmp_dir!(), "workflow-default-fallback-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(temp_root)
+
+    on_exit(fn ->
+      File.cd!(original_cwd)
+    end)
+
+    File.cd!(temp_root)
+
+    assert Workflow.default_workflow_path() == Path.join(File.cwd!(), "WORKFLOW.md")
   end
 
   test "workflow file path resolves from app env when set" do
@@ -6000,6 +6016,7 @@ defmodule SymphonyElixir.CoreTest do
 
   defp create_non_behind_mismatch_workspace!(workspace_root, issue_identifier, execution_branch) do
     workspace = init_workspace_repo!(workspace_root, issue_identifier)
+    File.write!(Path.join(workspace, "Makefile"), "symphony-preflight:\n\t@echo ok\n")
 
     git_ok!(workspace, ["checkout", "-b", execution_branch])
     File.write!(Path.join(workspace, "tracked.txt"), "expected head\n")
@@ -6373,9 +6390,9 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "in-repo WORKFLOW.md renders correctly" do
+  test "in-repo canonical workflow renders correctly" do
     workflow_path = Workflow.workflow_file_path()
-    Workflow.set_workflow_file_path(Path.expand("WORKFLOW.md", File.cwd!()))
+    Workflow.set_workflow_file_path(Path.expand("../workflows/letterl/maxime/let.WORKFLOW.md", File.cwd!()))
 
     issue = %Issue{
       identifier: "MT-616",
@@ -6406,22 +6423,16 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
     assert prompt =~ "Relevant attachments:"
     assert prompt =~ "capture.png"
-    assert prompt =~ "Excerpt: Screenshot OCR: failing step occurs after attachment ingest."
+    assert prompt =~ "Attachment excerpts are prompt context only when present."
     assert prompt =~ "Recent issue comments:"
     assert prompt =~ "Operator: Latest reviewer context"
     assert prompt =~ "This is an unattended orchestration session."
     assert prompt =~ "Only stop early for a true blocker or an explicitly classified handoff"
     assert prompt =~ "Do not include \"next steps for user\""
-    assert prompt =~ "use the `land` skill and do not call `gh pr merge` directly"
     assert prompt =~ "`delivery:tdd`"
     assert prompt =~ "docs/policy/project-contract.md"
-    assert prompt =~ "never delete, rewrite away, or relocate them when updating issue text"
     assert prompt =~ "`github_pr_snapshot`"
     assert prompt =~ "`github_wait_for_checks`"
-    assert prompt =~ "`exec_background`"
-    assert prompt =~ "`exec_wait`"
-    assert prompt =~ "background_required"
-    assert prompt =~ "do not retry the same command in foreground"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
     assert prompt =~ "making a classified `decision`/`human-action` handoff"
@@ -6430,10 +6441,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "`human-verify`"
     assert prompt =~ "`decision`"
     assert prompt =~ "`human-action`"
-    assert prompt =~ "every bullet must be an actionable blocker in three parts"
-    assert prompt =~ "why it blocks execution or acceptance"
     assert prompt =~ "`low-context`"
-    assert prompt =~ "Limit yourself to 2 auto-fix attempts"
   end
 
   test "prompt builder adds continuation guidance for retries" do

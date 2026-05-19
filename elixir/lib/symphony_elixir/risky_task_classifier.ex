@@ -97,8 +97,6 @@ defmodule SymphonyElixir.RiskyTaskClassifier do
     |> Enum.join("\n")
   end
 
-  defp classifier_description_scope(_description), do: ""
-
   defp normalize_labels(labels) when is_list(labels) do
     labels
     |> Enum.map(fn

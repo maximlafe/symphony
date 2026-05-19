@@ -1199,8 +1199,6 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
-  defp canonical_pull_request_url(_url), do: nil
-
   defp attachment_extension(url) when is_binary(url) do
     url
     |> URI.parse()

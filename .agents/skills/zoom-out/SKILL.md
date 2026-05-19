@@ -2,7 +2,7 @@
 name: zoom-out
 description: Map an unfamiliar code area before deep work. Use when a task
   touches an unknown subsystem and the agent needs a quick module/caller map
-  before research, planning, or execution.
+  during Spec Prep, or as bounded helper context under execute-mode.
 ---
 
 # Zoom Out

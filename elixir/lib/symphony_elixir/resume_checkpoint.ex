@@ -478,8 +478,6 @@ defmodule SymphonyElixir.ResumeCheckpoint do
     |> normalize_optional_string()
   end
 
-  defp execution_attempt_token_from_running_entry(_running_entry), do: nil
-
   defp normalize_boolean(%{} = checkpoint, key) do
     value = Map.get(checkpoint, key)
 

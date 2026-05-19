@@ -32,13 +32,13 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    [Harness engineering](https://openai.com/index/harness-engineering/).
 2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
    set it as the `LINEAR_API_KEY` environment variable.
-3. Copy this directory's `WORKFLOW.md` to your repo.
+3. Copy `../workflows/letterl/maxime/let.WORKFLOW.md` to your repo (or pass it directly as the startup workflow path).
 4. Copy any repo-local worker skills your workflow depends on to `.agents/skills/`.
    - Symphony bundles the generic `commit`, `push`, `pull`, `land`, `linear`, and `debug` skills,
      and syncs them into every configured `codex.accounts[*].codex_home` on startup.
    - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
      operations such as comment editing or upload flows.
-5. Customize the copied `WORKFLOW.md` file for your project.
+5. Customize the workflow file for your project.
    - Set exactly one Linear polling scope: `tracker.project_slug` for project-scoped polling or
      `tracker.team_key` for team-scoped polling.
    - `tracker.assignee` is optional and narrows dispatch to issues assigned to a specific Linear
@@ -103,7 +103,7 @@ cd symphony
 make symphony-bootstrap
 cd elixir
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise exec -- ./bin/symphony ../workflows/letterl/maxime/let.WORKFLOW.md
 ```
 
 `make symphony-bootstrap` is the repo-root unattended bootstrap contract for this repository. It is
@@ -115,17 +115,19 @@ after a successful run.
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
 
 ```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
+./bin/symphony /path/to/custom/workflow.md
 ```
 
-If no path is passed, Symphony defaults to `./WORKFLOW.md`.
+If no path is passed, Symphony defaults to the canonical LET workflow path:
+`../workflows/letterl/maxime/let.WORKFLOW.md` (resolved from the current working
+directory by searching parent directories).
 
 Optional flags:
 
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
 - `--port` also starts the Phoenix observability service (default: disabled)
 
-The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
+The workflow file uses YAML front matter for configuration, plus a Markdown body used as the
 Codex session prompt.
 
 Minimal example:
@@ -290,7 +292,7 @@ codex:
   `codex_accounts`, and `codex_account_id` on each running session. The top-level `rate_limits`
   field remains the active account's current snapshot for backward compatibility.
 
-- If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
+- If the configured workflow file is missing or has invalid YAML at startup, Symphony does not boot.
 - If a later reload fails, Symphony keeps running with the last known good workflow and logs the
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
@@ -337,7 +339,7 @@ the HTTP path rewrite plus websocket upgrade flow.
 
 - `lib/`: application code and Mix tasks
 - `test/`: ExUnit coverage for runtime behavior
-- `WORKFLOW.md`: in-repo workflow contract used by local runs
+- `../workflows/letterl/maxime/let.WORKFLOW.md`: in-repo canonical workflow contract used by local runs
 - `../.codex/`: repository-local Codex skills and setup helpers
 
 ## Testing

@@ -43,9 +43,9 @@ defmodule SymphonyElixir.CLITest do
     refute_received :started
   end
 
-  test "defaults to WORKFLOW.md when workflow path is missing" do
+  test "defaults to canonical LET workflow when workflow path is missing" do
     deps = %{
-      file_regular?: fn path -> Path.basename(path) == "WORKFLOW.md" end,
+      file_regular?: fn path -> String.ends_with?(path, "workflows/letterl/maxime/let.WORKFLOW.md") end,
       set_workflow_file_path: fn _path -> :ok end,
       set_logs_root: fn _path -> :ok end,
       set_server_port_override: fn _port -> :ok end,

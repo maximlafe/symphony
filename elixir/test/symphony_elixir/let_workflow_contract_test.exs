@@ -4,7 +4,6 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
   alias SymphonyElixir.Workflow
 
   @let_workflow_path Path.expand("../../../workflows/letterl/maxime/let.WORKFLOW.md", __DIR__)
-  @default_workflow_path Path.expand("../../WORKFLOW.md", __DIR__)
   @project_contract_path Path.expand("../../../docs/policy/project-contract.md", __DIR__)
   @research_skill_path Path.expand("../../../.agents/skills/research-mode/SKILL.md", __DIR__)
   @plan_skill_path Path.expand("../../../.agents/skills/plan-mode/SKILL.md", __DIR__)
@@ -122,27 +121,10 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     refute prompt =~ "<repo-owned final validation command>"
   end
 
-  test "default workflow documents the same stage-aware cost profile contract" do
-    assert {:ok, %{config: config, prompt: prompt}} = Workflow.load(@default_workflow_path)
-
-    assert get_in(config, ["codex", "command_template"]) =~ "{{effort}}"
-    assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "model"]) == "gpt-5.4"
-    assert get_in(config, ["codex", "cost_profiles", "cheap_planning", "effort"]) == "xhigh"
-    assert get_in(config, ["codex", "cost_profiles", "cheap_implementation", "effort"]) == "medium"
-    assert get_in(config, ["planning", "swarm_assist_enabled"]) == true
-    assert get_in(config, ["codex", "max_continuation_attempts"]) == 3
-    refute non_planning_default_profiles_have_xhigh?(get_in(config, ["codex", "cost_profiles"]))
-    assert prompt =~ "`codex.cost_policy`"
-    assert prompt =~ "docs/policy/project-contract.md"
-    assert prompt =~ "two-layer planning contract"
-    assert prompt =~ "`artifact_revision` must match `plan_revision`"
-    assert prompt =~ "checked label `targeted tests`"
-    assert prompt =~ "Do not add capabilities or"
-    assert prompt =~ "PR evidence stays"
-    assert prompt =~ "Do not combine"
-    assert prompt =~ "Attachment excerpts are prompt context only"
-    assert prompt =~ "Artifact file body and Linear `attachment.content_text` are supporting"
-    assert prompt =~ "- [ ] `AM-<id>` -> `validation:am-<id>`"
+  test "default workflow path resolves to canonical LET workflow" do
+    assert Workflow.default_workflow_path() == @let_workflow_path
+    assert File.regular?(@let_workflow_path)
+    refute File.exists?(Path.expand("../../WORKFLOW.md", __DIR__))
   end
 
   test "LET workflow keeps secondary codex homes under the mounted primary CODEX_HOME" do

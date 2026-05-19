@@ -452,7 +452,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert Jason.decode!(missing_token_text) == %{
              "error" => %{
-               "message" => "Symphony is missing Linear auth. Set `linear.api_key` in `WORKFLOW.md` or export `LINEAR_API_KEY`."
+               "message" => "Symphony is missing Linear auth. Set `linear.api_key` in the workflow file or export `LINEAR_API_KEY`."
              }
            }
 
@@ -2445,7 +2445,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
                    | --- | --- | --- | --- | --- | --- |
                    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
-                   | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+                   | AM-2 | Runtime smoke path | Runtime smoke proof exists | runtime_smoke | runtime smoke | runtime_smoke |
                    | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
                    """,
                    "labels" => %{"nodes" => [%{"name" => "mode:plan"}, %{"name" => "verification:runtime"}]},
@@ -2553,7 +2553,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
                    | --- | --- | --- | --- | --- | --- |
                    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
-                   | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+                   | AM-2 | Runtime smoke path | Runtime smoke proof exists | runtime_smoke | runtime smoke | runtime_smoke |
                    | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
                    """,
                    "labels" => %{"nodes" => [%{"name" => "mode:plan"}, %{"name" => "verification:runtime"}]},
@@ -2686,7 +2686,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
                    | --- | --- | --- | --- | --- | --- |
                    | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
-                   | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+                   | AM-2 | Runtime smoke path | Runtime smoke proof exists | runtime_smoke | runtime smoke | runtime_smoke |
                    | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
 
                    ## Two-Layer Plan Contract

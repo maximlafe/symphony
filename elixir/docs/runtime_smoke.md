@@ -42,7 +42,7 @@ the full repo validation layer. On GitHub, the required check contexts for `main
 - `hooks_stall_guard`: long `before_run` hook still completes cleanly under a low local stall budget in direct agent smoke. This is the cheap local hook-path baseline before any stricter orchestrator-specific false-stall regression is added.
 - `retry_reconcile`: stalled worker restart produces the expected retry entry and exposes the retry lifecycle in orchestrator snapshot output.
 - `resume_checkpoint`: retry reload prefers a loaded workspace checkpoint over stale queued fallback data.
-- `workflow_contract`: updating `WORKFLOW.md` and forcing reload changes future hook execution and runtime config without touching live Linear.
+- `workflow_contract`: updating the canonical workflow file (`workflows/letterl/maxime/let.WORKFLOW.md`) and forcing reload changes future hook execution and runtime config without touching live Linear.
 
 ## Scenario Mapping
 

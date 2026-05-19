@@ -1,16 +1,27 @@
 defmodule SymphonyElixir.Workflow do
   @moduledoc """
-  Loads workflow configuration and prompt from WORKFLOW.md.
+  Loads workflow configuration and prompt from the canonical workflow file.
   """
 
   alias SymphonyElixir.WorkflowStore
 
   @workflow_file_name "WORKFLOW.md"
+  @canonical_workflow_segments ["workflows", "letterl", "maxime", "let.WORKFLOW.md"]
+
+  @spec default_workflow_path() :: Path.t()
+  def default_workflow_path do
+    cwd = File.cwd!()
+
+    case locate_canonical_workflow(cwd) do
+      nil -> Path.expand(Path.join(cwd, @workflow_file_name))
+      path -> path
+    end
+  end
 
   @spec workflow_file_path() :: Path.t()
   def workflow_file_path do
     Application.get_env(:symphony_elixir, :workflow_file_path) ||
-      Path.join(File.cwd!(), @workflow_file_name)
+      default_workflow_path()
   end
 
   @spec set_workflow_file_path(Path.t()) :: :ok
@@ -119,5 +130,21 @@ defmodule SymphonyElixir.Workflow do
     end
 
     :ok
+  end
+
+  defp locate_canonical_workflow(dir) do
+    candidate = Path.join([dir | @canonical_workflow_segments])
+
+    if File.regular?(candidate) do
+      candidate
+    else
+      parent = Path.dirname(dir)
+
+      if parent == dir do
+        nil
+      else
+        locate_canonical_workflow(parent)
+      end
+    end
   end
 end

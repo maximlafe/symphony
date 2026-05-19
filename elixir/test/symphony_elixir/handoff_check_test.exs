@@ -1800,7 +1800,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
 
     assert manifest["missing_items"] == []
     assert get_in(manifest, ["proof_signals", "acceptance_matrix_covered"]) == true
-    assert get_in(manifest, ["proof_signals", "proof_surface_exists"]) == true
+    assert get_in(manifest, ["proof_signals", "runtime_smoke"]) == true
     assert get_in(manifest, ["proof_signals", "proof_run_executed"]) == true
   end
 
@@ -2370,7 +2370,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
     | --- | --- | --- | --- | --- | --- |
     | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
-    | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+    | AM-2 | Runtime smoke path | Runtime smoke proof exists | runtime_smoke | runtime smoke | runtime_smoke |
     | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
 
     ## Two-Layer Plan Contract
@@ -2407,7 +2407,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
     | --- | --- | --- | --- | --- | --- |
     | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
-    | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+    | AM-2 | Runtime smoke path | Runtime smoke proof exists | runtime_smoke | runtime smoke | runtime_smoke |
     | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
 
     ## Two-Layer Plan Contract
@@ -2494,7 +2494,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
     | --- | --- | --- | --- | --- | --- |
     | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
-    | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+    | AM-2 | Runtime smoke path | Runtime smoke proof exists | runtime_smoke | runtime smoke | runtime_smoke |
     | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
 
     ## Two-Layer Plan Contract
@@ -2554,7 +2554,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
     | --- | --- | --- | --- | --- | --- |
     | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
-    | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+    | AM-2 | Runtime smoke path | Runtime smoke proof exists | runtime_smoke | runtime smoke | runtime_smoke |
     | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
 
     ## Two-Layer Plan Contract
@@ -4117,6 +4117,38 @@ defmodule SymphonyElixir.HandoffCheckTest do
              )
   end
 
+  test "review_ready_transition_allowed? ignores blank manifest issue id when identifier matches" do
+    workpad_path = Path.join(System.tmp_dir!(), "handoff-check-blank-id-workpad-#{System.unique_integer([:positive])}.md")
+    manifest_path = Path.join(System.tmp_dir!(), "handoff-check-blank-id-#{System.unique_integer([:positive])}.json")
+
+    File.write!(workpad_path, "unchanged")
+
+    manifest =
+      Map.merge(
+        %{
+          "passed" => true,
+          "target_state" => "In Review",
+          "issue" => %{"id" => "   ", "identifier" => "LET-416"},
+          "workpad" => %{
+            "file_path" => workpad_path,
+            "sha256" => sha256("unchanged")
+          }
+        },
+        valid_gate_manifest_fields()
+      )
+
+    assert {:ok, _path} = HandoffCheck.write_manifest(manifest, manifest_path)
+
+    assert :ok =
+             HandoffCheck.review_ready_transition_allowed?(
+               manifest_path,
+               "LET-416",
+               "In Review",
+               nil,
+               git_runner: git_runner()
+             )
+  end
+
   test "review_ready_transition_allowed? blocks missing or stale validation gate metadata" do
     workpad_path = Path.join(System.tmp_dir!(), "handoff-check-gate-workpad-#{System.unique_integer([:positive])}.md")
     missing_gate_manifest_path = Path.join(System.tmp_dir!(), "handoff-check-missing-gate-#{System.unique_integer([:positive])}.json")
@@ -4592,13 +4624,17 @@ defmodule SymphonyElixir.HandoffCheckTest do
     | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
     | --- | --- | --- | --- | --- | --- |
     | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
-    | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+    | AM-2 | Runtime smoke path | Runtime smoke proof exists | runtime_smoke | runtime smoke | runtime_smoke |
     | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
     """
   end
 
   defp acceptance_matrix_description_run_executed_runtime do
-    String.replace(acceptance_matrix_description(), "surface_exists", "run_executed")
+    String.replace(
+      acceptance_matrix_description(),
+      "| AM-2 | Runtime smoke path | Runtime smoke proof exists | runtime_smoke | runtime smoke | runtime_smoke |",
+      "| AM-2 | Runtime smoke path | Runtime smoke proof exists | runtime_smoke | runtime smoke | run_executed |"
+    )
   end
 
   defp phase_acceptance_matrix_description do
@@ -4619,7 +4655,7 @@ defmodule SymphonyElixir.HandoffCheckTest do
     | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
     | --- | --- | --- | --- | --- | --- |
     | AM-1 | Positive path | Canonical proof passes | test | mix test test/symphony_elixir/handoff_check_test.exs | run_executed |
-    | AM-2 | Runner surface check | Surface exists signal is present | runtime_smoke | scripts/proof_runner --help | surface_exists |
+    | AM-2 | Runtime smoke path | Runtime smoke proof exists | runtime_smoke | runtime smoke | runtime_smoke |
     | AM-3 | Runner execution proof | Artifact is generated and uploaded | artifact | runtime-proof.log | run_executed |
 
     ## Two-Layer Plan Contract

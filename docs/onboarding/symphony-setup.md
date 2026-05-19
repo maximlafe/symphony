@@ -8,7 +8,7 @@ under `.agents/skills/`.
 
 - prepare host machine and auth prerequisites;
 - install worker runtime skills into the target repo;
-- copy and configure `WORKFLOW.md`;
+- copy and configure the workflow file;
 - run first local Symphony launch and sanity checks.
 
 ## Preflight
@@ -41,14 +41,14 @@ mise exec -- mix build
 npx skills add odysseus0/symphony -a codex -s linear land commit push pull debug zoom-out diagnose tdd --copy -y
 ```
 
-2. Copy `elixir/WORKFLOW.md` to the target repo as `WORKFLOW.md`.
-3. Configure routing in `WORKFLOW.md` (`tracker.project_slug` or
+2. Copy `workflows/letterl/maxime/let.WORKFLOW.md` to the target repo as your workflow baseline.
+3. Configure routing in the workflow file (`tracker.project_slug` or
    `tracker.team_key`, plus `hooks.after_create`).
 4. Ensure Linear workflow states required by your workflow are present.
 
 ## Contract References
 
-- Workflow/state-machine contract: `WORKFLOW.md`
+- Workflow/state-machine contract: `workflows/letterl/maxime/let.WORKFLOW.md`
 - Canonical delivery/proof/handoff contract:
   `docs/policy/project-contract.md`
 - Worker runtime skills: `.agents/skills/`
@@ -57,7 +57,7 @@ npx skills add odysseus0/symphony -a codex -s linear land commit push pull debug
 
 ```bash
 cd elixir
-mise exec -- ./bin/symphony ./WORKFLOW.md --port 4101
+mise exec -- ./bin/symphony ../workflows/letterl/maxime/let.WORKFLOW.md --port 4101
 ```
 
 Use local test tickets first. Do not rely on this onboarding doc as a runtime

@@ -25,8 +25,8 @@ contour without shipping product code.
    - reject/defer alternatives with rationale.
 3. Build execution-ready decomposition using vertical slices, not horizontal
    layer splits.
-4. Produce or normalize required spec sections, including `Acceptance Matrix`
-   when execution/review handoff is expected.
+4. Produce or normalize required spec sections; for `mode:plan`,
+   `Acceptance Matrix` and `Proof Mapping` are mandatory.
 5. Define minimum validation plan and evidence mapping expectations.
 6. Decide `delivery:tdd` add/remove based on deterministic failing proof
    feasibility.

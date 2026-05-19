@@ -19,7 +19,7 @@ services:
       SYMPHONY_SERVER_HOST: ${SYMPHONY_SERVER_HOST:-0.0.0.0}
       SYMPHONY_SERVER_PATH: ${SYMPHONY_SERVER_PATH:-/proxy/symphony}
       POETRY_VIRTUALENVS_IN_PROJECT: "true"
-      WORKFLOW_PATH: ${SYMPHONY_WORKFLOW_PATH:-/srv/symphony/workflows/WORKFLOW.md}
+      WORKFLOW_PATH: ${SYMPHONY_WORKFLOW_PATH:-/srv/symphony/workflows/letterl/maxime/let.WORKFLOW.md}
       SYMPHONY_PORT: ${SYMPHONY_PORT:-4101}
       SYMPHONY_WORKSPACE_ROOT: ${SYMPHONY_WORKSPACE_ROOT:?Set SYMPHONY_WORKSPACE_ROOT to the in-container workspace path.}
       SYMPHONY_LOGS_ROOT: ${SYMPHONY_LOGS_ROOT:?Set SYMPHONY_LOGS_ROOT to the in-container logs path.}

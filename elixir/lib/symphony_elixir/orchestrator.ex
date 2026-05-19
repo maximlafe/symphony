@@ -4787,9 +4787,6 @@ defmodule SymphonyElixir.Orchestrator do
       checkpoint_execution_attempt_token(resume_checkpoint)
   end
 
-  defp retry_execution_attempt_token(_source, resume_checkpoint),
-    do: checkpoint_execution_attempt_token(resume_checkpoint)
-
   defp retry_session_id(source) when is_map(source) do
     source
     |> map_any([:session_id, "session_id"])

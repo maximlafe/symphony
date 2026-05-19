@@ -802,7 +802,7 @@ Instructions:
    - before finalizing the spec, decide whether execution should carry `delivery:tdd` and нормализовать `delivery:tdd` через `linear_graphql`;
    - read the issue body, only the relevant comments and PR context, and inspect the codebase;
    - capture a reproduction or investigation signal only when it materially sharpens the task-spec.
-5. Keep local `workpad.md` as the spec-prep source of truth:
+5. Keep local `workpad.md` as the spec-prep working draft:
    - bootstrap the live workpad once if missing;
    - after bootstrap, keep spec-prep edits local until the final spec is ready;
    - sync the live workpad at most one final time before `Spec Review`;

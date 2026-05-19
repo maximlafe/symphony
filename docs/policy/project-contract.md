@@ -26,10 +26,12 @@ semantics used by workflow, stage skills, and ops skills.
 When guidance differs:
 
 1. this file (`docs/policy/project-contract.md`)
-2. repo-local stage and ops skills under `.agents/skills/`
-3. workflow prose examples
+2. workflow routing/template canon in `workflows/letterl/maxime/let.WORKFLOW.md`
+3. repo-local stage and ops skills under `.agents/skills/`
 
 If a rule must change, update this file first and then align workflows/skills.
+Skills operationalize the contract and workflow, but must not redefine or
+override canonical semantics from items (1) and (2).
 
 ## Spec Prep Planning Contract (Two-Layer, Swarm-Assisted)
 

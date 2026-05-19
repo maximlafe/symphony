@@ -2793,9 +2793,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp check_sort_timestamp_ms(_check), do: 0
 
   defp parse_timestamp_ms(value) when is_binary(value) do
-    with {:ok, dt, _offset} <- DateTime.from_iso8601(String.trim(value)) do
-      DateTime.to_unix(dt, :millisecond)
-    else
+    case DateTime.from_iso8601(String.trim(value)) do
+      {:ok, dt, _offset} -> DateTime.to_unix(dt, :millisecond)
       _ -> 0
     end
   end
@@ -3818,7 +3817,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp tool_error_payload(:missing_linear_api_token) do
     %{
       "error" => %{
-        "message" => "Symphony is missing Linear auth. Set `linear.api_key` in `WORKFLOW.md` or export `LINEAR_API_KEY`."
+        "message" => "Symphony is missing Linear auth. Set `linear.api_key` in the workflow file or export `LINEAR_API_KEY`."
       }
     }
   end
