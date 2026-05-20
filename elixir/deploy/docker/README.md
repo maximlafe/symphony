@@ -96,3 +96,17 @@ Rollback is the same deployment path with an older contract:
    `image_digest`.
 3. The workflow reuses the same SSH, Compose, and health-check path, so rollback is auditable and
    symmetric with forward deploys.
+
+## Shared VPS staging
+
+If `staging` and `production` share one VPS, use an isolated staging stack with:
+
+- separate compose env file (`/etc/symphony-staging/compose.env`)
+- separate runtime env file (`/etc/symphony-staging/symphony.env`)
+- separate compose project/container name
+- separate host paths under `/srv/symphony-staging`
+- separate port/path (`4102`, `/proxy/symphony-staging`)
+
+Reference:
+`docs/onboarding/staging-shared-vps-setup.md` and
+`elixir/deploy/docker/compose.staging.env.example`.
