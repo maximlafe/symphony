@@ -1,14 +1,21 @@
-name: deploy-production
+name: deploy-staging
 
 on:
+  workflow_run:
+    workflows:
+      - release-image
+    types:
+      - completed
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       image_tag:
-        description: Immutable image tag to deploy or roll back to.
+        description: Immutable image tag to deploy to staging.
         required: true
         type: string
       image_digest:
-        description: Immutable image digest to deploy or roll back to.
+        description: Immutable image digest to deploy to staging.
         required: true
         type: string
 
@@ -18,7 +25,7 @@ permissions:
   deployments: write
 
 concurrency:
-  group: deploy-production
+  group: deploy-staging
   cancel-in-progress: false
 
 env:
@@ -26,6 +33,7 @@ env:
 
 jobs:
   resolve-contract:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -34,12 +42,25 @@ jobs:
       image_tag: ${{ steps.contract.outputs.image_tag }}
 
     steps:
+      - name: Download published image contract
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p contract
+          gh run download "${{ github.event.workflow_run.id }}" --repo "${{ github.repository }}" --name production-image-contract --dir contract
+
       - name: Resolve deploy contract
         id: contract
         shell: bash
         run: |
-          image_tag='${{ inputs.image_tag }}'
-          image_digest='${{ inputs.image_digest }}'
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            image_tag='${{ inputs.image_tag }}'
+            image_digest='${{ inputs.image_digest }}'
+          else
+            image_tag=$(python3 -c 'import json, pathlib; print(json.loads(pathlib.Path("contract/production-image-contract.json").read_text())["image_tag"])')
+            image_digest=$(python3 -c 'import json, pathlib; print(json.loads(pathlib.Path("contract/production-image-contract.json").read_text())["image_digest"])')
+          fi
 
           {
             echo "image_tag=${image_tag}"
@@ -47,13 +68,14 @@ jobs:
             echo "image_ref=${IMAGE_REPOSITORY}@${image_digest}"
           } >> "$GITHUB_OUTPUT"
 
-  deploy-production:
+  deploy-staging:
+    if: github.event_name == 'workflow_dispatch' || vars.SYMPHONY_DEPLOY_ENABLED == 'true'
     needs:
       - resolve-contract
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
-      name: production
+      name: staging
       url: ${{ vars.SYMPHONY_DEPLOY_PUBLIC_URL }}
 
     steps:
@@ -71,7 +93,7 @@ jobs:
           printf '%s\n' "$SYMPHONY_DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/known_hosts ~/.ssh/id_ed25519
 
-      - name: Deploy production contract
+      - name: Deploy staging contract
         shell: bash
         env:
           SYMPHONY_DEPLOY_COMPOSE_FILE: ${{ vars.SYMPHONY_DEPLOY_COMPOSE_FILE }}
@@ -94,12 +116,12 @@ jobs:
             --compose-file elixir/deploy/docker/docker-compose.yml \
             --workflow-file workflows/letterl/maxime/let.WORKFLOW.md \
             --required-codex-accounts-file workflows/letterl/maxime/let.required_codex_accounts.txt \
-            2>&1 | tee ci-artifacts/deploy-production.log
+            2>&1 | tee ci-artifacts/deploy-staging.log
 
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: deploy-production-diagnostics
+          name: deploy-staging-diagnostics
           if-no-files-found: ignore
-          path: ci-artifacts/deploy-production.log
+          path: ci-artifacts/deploy-staging.log
