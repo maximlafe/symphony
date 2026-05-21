@@ -70,8 +70,6 @@ hooks:
             print "maximlafe/symphony"
           } else if (label == "repo:tg_live_export") {
             print "maximlafe/tg_live_export"
-          } else if (label == "repo:conductor") {
-            print "maximlafe/conductor"
           }
         }
       '
@@ -206,7 +204,7 @@ hooks:
           if [ -n "$repo_override" ]; then
             source_repository=$repo_override
           else
-            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, repo:tg_live_export, or repo:conductor."
+            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, or repo:tg_live_export."
           fi
           ;;
         *)
@@ -323,8 +321,6 @@ hooks:
             print "maximlafe/symphony"
           } else if (label == "repo:tg_live_export") {
             print "maximlafe/tg_live_export"
-          } else if (label == "repo:conductor") {
-            print "maximlafe/conductor"
           }
         }
       '
@@ -432,7 +428,7 @@ hooks:
             source_repository=$current_repository
             append_note "Repo label is missing; reusing the bound repository $current_repository."
           else
-            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, repo:tg_live_export, or repo:conductor."
+            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, or repo:tg_live_export."
           fi
           ;;
         *)

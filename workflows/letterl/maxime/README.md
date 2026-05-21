@@ -19,7 +19,6 @@ Project routing:
   - `repo:lead_status`
   - `repo:symphony`
   - `repo:tg_live_export`
-  - `repo:conductor`
 
 Notes:
 
@@ -31,7 +30,7 @@ Notes:
     - `Telegram Full Export v2` -> `maximlafe/tg_live_export`
     - `Conductor` -> `maximlafe/conductor`
   - ambiguous project:
-    - `Платформа и интеграция` requires exactly one repo label on the issue: `repo:lead_status`, `repo:symphony`, `repo:tg_live_export`, or `repo:conductor`;
+    - `Платформа и интеграция` requires exactly one repo label on the issue: `repo:lead_status`, `repo:symphony`, or `repo:tg_live_export`;
   - conflicting fixed-project mapping and repo label move the task into the blocker path;
   - unknown projects also move the task into the blocker path.
 - `let.WORKFLOW.md` still supports per-issue base-branch routing from the Linear issue description:
@@ -117,7 +116,7 @@ Repo: maximlafe/lead_status
 Base branch: feature/task-routing
 ```
 
-Use that when the issue belongs to `Извлечение задач`, `Мастер команд`, `Telegram Full Export v2`, or `Conductor` and the project mapping is sufficient.
+Use that as a template when project mapping is sufficient, but keep `Repo:` equal to the repository resolved from project metadata (`maximlafe/lead_status`, `maximlafe/tg_live_export`, `maximlafe/symphony`, or `maximlafe/conductor`).
 
 ```md
 Labels:

@@ -993,7 +993,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                )
 
       assert File.read!(Path.join(workspace, ".symphony-base-branch-error")) ==
-               "Project 'Платформа и интеграция' requires one repo label: repo:lead_status, repo:symphony, repo:tg_live_export, or repo:conductor.\n"
+               "Project 'Платформа и интеграция' requires one repo label: repo:lead_status, repo:symphony, or repo:tg_live_export.\n"
 
       refute File.exists?(Path.join(workspace, ".git"))
     after
@@ -3543,8 +3543,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
             print "maximlafe/symphony"
           } else if (label == "repo:tg_live_export") {
             print "maximlafe/tg_live_export"
-          } else if (label == "repo:conductor") {
-            print "maximlafe/conductor"
           }
         }
       '
@@ -3659,7 +3657,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         if [ -n "$repo_override" ]; then
           source_repository=$repo_override
         else
-          printf "Project '%s' requires one repo label: repo:lead_status, repo:symphony, repo:tg_live_export, or repo:conductor.\n" "$project_display" > .symphony-base-branch-error
+          printf "Project '%s' requires one repo label: repo:lead_status, repo:symphony, or repo:tg_live_export.\n" "$project_display" > .symphony-base-branch-error
           exit 0
         fi
         ;;
@@ -3780,8 +3778,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
             print "maximlafe/symphony"
           } else if (label == "repo:tg_live_export") {
             print "maximlafe/tg_live_export"
-          } else if (label == "repo:conductor") {
-            print "maximlafe/conductor"
           }
         }
       '
@@ -3883,7 +3879,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
             source_repository=$current_repository
             append_note "Repo label is missing; reusing the bound repository $current_repository."
           else
-            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, repo:tg_live_export, or repo:conductor."
+            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, or repo:tg_live_export."
           fi
           ;;
         *)
