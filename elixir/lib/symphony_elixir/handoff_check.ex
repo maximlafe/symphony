@@ -505,15 +505,6 @@ defmodule SymphonyElixir.HandoffCheck do
 
     acceptance_contract = acceptance_contract(acceptance_matrix_items, required_capabilities)
 
-    {validation_gate, git_metadata, validation_gate_errors} =
-      resolve_validation_gate(parsed_workpad, opts)
-
-    validation_context = %{
-      "gate" => validation_gate,
-      "git" => git_metadata,
-      "errors" => validation_gate_errors
-    }
-
     {proof_signals, acceptance_matrix_missing_items, deferred_proofs} =
       acceptance_matrix_missing_items(
         acceptance_matrix_items,
@@ -523,6 +514,15 @@ defmodule SymphonyElixir.HandoffCheck do
         acceptance_matrix_errors,
         phase
       )
+
+    {validation_gate, git_metadata, validation_gate_errors} =
+      resolve_validation_gate(parsed_workpad, opts, proof_signals)
+
+    validation_context = %{
+      "gate" => validation_gate,
+      "git" => git_metadata,
+      "errors" => validation_gate_errors
+    }
 
     capability_context = %{
       required_capabilities: required_capabilities,
@@ -541,7 +541,7 @@ defmodule SymphonyElixir.HandoffCheck do
         capability_context
       )
       |> Kernel.++(two_layer_plan_missing_items)
-      |> Enum.uniq()
+      |> dedupe_missing_items()
 
     passed = missing_items == []
     handoff_failure = classify_handoff_failure(passed, missing_items)
@@ -2367,6 +2367,7 @@ defmodule SymphonyElixir.HandoffCheck do
     %{
       "proof_surface_exists" => false,
       "proof_run_executed" => false,
+      "targeted_tests" => false,
       "runtime_smoke" => runtime_smoke_checked?,
       "acceptance_matrix_covered" => true
     }
@@ -2602,12 +2603,17 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp validate_validation_match(validation_match, _reference_value, matrix_item_id, _matrix_type, "run_executed", errors, signals)
+  defp validate_validation_match(validation_match, _reference_value, matrix_item_id, matrix_type, "run_executed", errors, signals)
        when is_map(validation_match) do
     if surface_only_command?(validation_match["command"]) do
       {errors ++ ["acceptance matrix item `#{matrix_item_id}` requires executed proof; mapped validation command looks surface-only (`--help`)"], signals}
     else
-      {errors, signals |> mark_matrix_semantic("run_executed")}
+      updated_signals =
+        signals
+        |> mark_matrix_semantic("run_executed")
+        |> mark_targeted_tests_signal(matrix_type)
+
+      {errors, updated_signals}
     end
   end
 
@@ -2682,10 +2688,14 @@ defmodule SymphonyElixir.HandoffCheck do
   defp mark_runtime_smoke_signal(signals, "runtime_smoke"), do: Map.put(signals, "runtime_smoke", true)
   defp mark_runtime_smoke_signal(signals, _), do: signals
 
+  defp mark_targeted_tests_signal(signals, "test"), do: Map.put(signals, "targeted_tests", true)
+  defp mark_targeted_tests_signal(signals, _), do: signals
+
   defp initial_proof_signals(runtime_smoke_checked?) do
     %{
       "proof_surface_exists" => false,
       "proof_run_executed" => false,
+      "targeted_tests" => false,
       "runtime_smoke" => runtime_smoke_checked?,
       "acceptance_matrix_covered" => false
     }
@@ -2716,7 +2726,14 @@ defmodule SymphonyElixir.HandoffCheck do
     []
     |> Kernel.++(Map.get(capability_context, :capability_parse_errors, []))
     |> Kernel.++(validation_context["errors"])
-    |> Kernel.++(validation_missing_items(parsed_workpad["validation"], issue_labels, validation_context["gate"]))
+    |> Kernel.++(
+      validation_missing_items(
+        parsed_workpad["validation"],
+        issue_labels,
+        validation_context["gate"],
+        Map.get(capability_context, :proof_signals, %{})
+      )
+    )
     |> Kernel.++(validation_gate_missing_items(validation_context["gate"], validation_context["git"]))
     |> Kernel.++(checkpoint_missing_items(parsed_workpad["checkpoint"]))
     |> Kernel.++(
@@ -2739,8 +2756,124 @@ defmodule SymphonyElixir.HandoffCheck do
     |> Enum.uniq()
   end
 
-  defp validation_missing_items(validation_items, issue_labels, validation_gate) do
-    checked_checks = ValidationGate.checked_validation_checks(validation_items)
+  defp dedupe_missing_items(items) when is_list(items) do
+    normalized_items =
+      items
+      |> Enum.map(&to_string/1)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+
+    strongest_priority_by_key =
+      normalized_items
+      |> Enum.map(&missing_item_priority_key/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.reduce(%{}, fn {priority, key}, acc ->
+        Map.update(acc, key, priority, &min(&1, priority))
+      end)
+
+    Enum.filter(normalized_items, fn item ->
+      case missing_item_priority_key(item) do
+        nil ->
+          true
+
+        {priority, key} ->
+          priority == Map.get(strongest_priority_by_key, key)
+      end
+    end)
+  end
+
+  defp dedupe_missing_items(_items), do: []
+
+  defp missing_item_priority_key(message) when is_binary(message) do
+    cond do
+      String.starts_with?(message, "acceptance matrix") ->
+        acceptance_matrix_priority_key(message)
+
+      Regex.match?(~r/^required capability `[^`]+` is missing /, message) ->
+        required_capability_priority_key(message)
+
+      Regex.match?(~r/^validation checklist is missing a checked `[^`]+` item$/, message) ->
+        checklist_priority_key(message)
+
+      String.starts_with?(message, "validation gate final proof invalid: ") ->
+        final_proof_priority_key(message)
+
+      true ->
+        nil
+    end
+  end
+
+  defp missing_item_priority_key(_message), do: nil
+
+  defp acceptance_matrix_priority_key(message) do
+    case Regex.run(~r/^acceptance matrix item `[^`]+` maps to validation `([^`]+)` that is not checked$/, message) do
+      [_, label] -> acceptance_matrix_validation_priority_key(label)
+      _ -> acceptance_matrix_runtime_priority_key(message)
+    end
+  end
+
+  defp acceptance_matrix_runtime_priority_key(message) do
+    if Regex.match?(~r/^acceptance matrix item `[^`]+` with proof_type `runtime_smoke` must map to `runtime smoke` validation entry$/, message) do
+      {1, "check:runtime_smoke"}
+    end
+  end
+
+  defp acceptance_matrix_validation_priority_key(label) do
+    case canonical_check_key(label) do
+      nil -> nil
+      key -> {1, key}
+    end
+  end
+
+  defp required_capability_priority_key(message) do
+    case Regex.run(~r/^required capability `([^`]+)` is missing /, message) do
+      [_, "runtime_smoke"] -> {2, "check:runtime_smoke"}
+      [_, capability] -> {2, "capability:" <> capability}
+      _ -> nil
+    end
+  end
+
+  defp checklist_priority_key(message) do
+    case Regex.run(~r/^validation checklist is missing a checked `([^`]+)` item$/, message) do
+      [_, label] ->
+        case canonical_check_key(label) do
+          nil -> nil
+          key -> {3, key}
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp final_proof_priority_key(message) do
+    case Regex.run(
+           ~r/^validation gate final proof invalid: validation gate final proof is missing (?:passed|required) check `([^`]+)`$/,
+           message
+         ) do
+      [_, label] ->
+        case canonical_check_key(label) do
+          nil -> nil
+          key -> {4, key}
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp canonical_check_key(label) when is_binary(label) do
+    case ValidationGate.normalize_check(label) do
+      normalized when is_binary(normalized) -> "check:" <> normalized
+      _ -> nil
+    end
+  end
+
+  defp canonical_check_key(_label), do: nil
+
+  defp validation_missing_items(validation_items, issue_labels, validation_gate, proof_signals) do
+    checked_checks = effective_checked_checks(validation_items || [], proof_signals)
     change_classes = validation_gate_change_classes(validation_gate)
 
     required_gate_checks =
@@ -2749,15 +2882,9 @@ defmodule SymphonyElixir.HandoffCheck do
       |> Enum.reject(&(&1 in checked_checks))
       |> Enum.map(&"validation checklist is missing a checked `#{human_check_label(&1)}` item")
 
-    proof_check_diagnostic =
-      ValidationGate.missing_required_proof_checks(
-        validation_items,
-        issue_labels,
-        change_classes
-      )
-
     required_proof_checks =
-      proof_check_diagnostic["missing_checks"]
+      ValidationGate.required_proof_checks(issue_labels, change_classes)
+      |> Enum.reject(fn requirement -> requirement["check"] in checked_checks end)
       |> Enum.map(fn requirement ->
         "validation checklist is missing a checked `#{requirement["label"]}` item"
       end)
@@ -3203,7 +3330,7 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp resolve_validation_gate(parsed_workpad, opts) do
+  defp resolve_validation_gate(parsed_workpad, opts, proof_signals) do
     explicit_errors = normalize_validation_gate_errors(Keyword.get(opts, :validation_gate_errors, []))
     git_metadata = normalize_git_metadata(Keyword.get(opts, :git, %{}))
     explicit_gate = Keyword.get(opts, :validation_gate)
@@ -3213,7 +3340,7 @@ defmodule SymphonyElixir.HandoffCheck do
         {Map.drop(explicit_gate, ["git"]), normalize_git_metadata(Map.get(explicit_gate, "git") || git_metadata), explicit_errors}
 
       Keyword.has_key?(opts, :change_classes) ->
-        passed_checks = passed_validation_checks(parsed_workpad["validation"])
+        passed_checks = effective_checked_checks(parsed_workpad["validation"] || [], proof_signals)
 
         case ValidationGate.final_proof(Keyword.get(opts, :change_classes), passed_checks, git_metadata) do
           {:ok, proof} -> {Map.drop(proof, ["git"]), Map.get(proof, "git"), explicit_errors}
@@ -3225,9 +3352,31 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp passed_validation_checks(validation_items) when is_list(validation_items) do
-    ValidationGate.checked_validation_checks(validation_items)
+  defp effective_checked_checks(validation_items, proof_signals) when is_list(validation_items) do
+    inferred_checks = inferred_validation_checks_from_proof_signals(proof_signals)
+
+    validation_items
+    |> ValidationGate.checked_validation_checks()
+    |> Kernel.++(inferred_checks)
+    |> ValidationGate.normalize_checks()
   end
+
+  defp effective_checked_checks(_validation_items, proof_signals) do
+    proof_signals
+    |> inferred_validation_checks_from_proof_signals()
+    |> ValidationGate.normalize_checks()
+  end
+
+  defp inferred_validation_checks_from_proof_signals(proof_signals) when is_map(proof_signals) do
+    []
+    |> maybe_add_inferred_check(Map.get(proof_signals, "targeted_tests") == true, "targeted_tests")
+    |> maybe_add_inferred_check(Map.get(proof_signals, "runtime_smoke") == true, "runtime_smoke")
+  end
+
+  defp inferred_validation_checks_from_proof_signals(_proof_signals), do: []
+
+  defp maybe_add_inferred_check(acc, true, check), do: acc ++ [check]
+  defp maybe_add_inferred_check(acc, false, _check), do: acc
 
   defp normalize_validation_gate_errors(errors) when is_list(errors) do
     errors
