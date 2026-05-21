@@ -13,12 +13,34 @@ defmodule SymphonyElixir.WorkspaceCapability do
   @pr_tail_required_tools ["git", "gh"]
   @supported_approval_policies ["untrusted", "on-failure", "on-request", "never"]
   @validation_entrypoints [
-    {"preflight", "symphony-preflight"},
-    {"repo_validation", "symphony-validate"},
-    {"handoff_check", "symphony-handoff-check"}
+    %{
+      id: "preflight",
+      target: "symphony-preflight",
+      fallback_command: "bash scripts/check.sh",
+      fallback_path: "scripts/check.sh",
+      fallback_tool: "bash"
+    },
+    %{
+      id: "repo_validation",
+      target: "symphony-validate",
+      fallback_command: "bash scripts/check.sh",
+      fallback_path: "scripts/check.sh",
+      fallback_tool: "bash"
+    },
+    %{
+      id: "handoff_check",
+      target: "symphony-handoff-check",
+      fallback_command: "bash scripts/check.sh",
+      fallback_path: "scripts/check.sh",
+      fallback_tool: "bash"
+    }
   ]
 
-  @tool_inventory Enum.sort(Enum.uniq(["make" | @runtime_required_tools ++ @pr_tail_required_tools]))
+  @fallback_tools @validation_entrypoints
+                  |> Enum.map(&Map.fetch!(&1, :fallback_tool))
+                  |> Enum.uniq()
+
+  @tool_inventory Enum.sort(Enum.uniq(["make" | @runtime_required_tools ++ @pr_tail_required_tools ++ @fallback_tools]))
 
   @type manifest :: map()
   @type rejection_reason :: map()
@@ -80,7 +102,7 @@ defmodule SymphonyElixir.WorkspaceCapability do
               "exists" => is_binary(makefile_body),
               "targets" => make_targets |> MapSet.to_list() |> Enum.sort()
             },
-            "validation_entrypoints" => validation_entrypoints(make_targets, tool_paths)
+            "validation_entrypoints" => validation_entrypoints(make_targets, tool_paths, repo_root)
           }
 
         _ = write_cached_manifest(cache_path, manifest)
@@ -114,22 +136,24 @@ defmodule SymphonyElixir.WorkspaceCapability do
   end
 
   defp ensure_validation_class(manifest) do
-    case first_missing_tool(manifest, ["make"]) do
+    case missing_validation_entrypoint(manifest) do
       nil ->
-        case missing_validation_entrypoint(manifest) do
-          nil ->
-            :ok
+        :ok
 
-          %{id: id, target: target} ->
-            {:error,
-             rejection(manifest, :validation, :missing_make_target, %{
-               entrypoint: id,
-               target: target
-             })}
-        end
+      %{id: id, missing_reason: "missing_tool", required_tool: tool}
+      when is_binary(tool) ->
+        {:error,
+         rejection(manifest, :validation, :missing_tool, %{
+           entrypoint: id,
+           tool: tool
+         })}
 
-      missing_tool ->
-        {:error, rejection(manifest, :validation, :missing_tool, %{tool: missing_tool})}
+      %{id: id, target: target} ->
+        {:error,
+         rejection(manifest, :validation, :missing_make_target, %{
+           entrypoint: id,
+           target: target
+         })}
     end
   end
 
@@ -206,8 +230,13 @@ defmodule SymphonyElixir.WorkspaceCapability do
       %{"available" => true} ->
         nil
 
-      %{"id" => id, "required_target" => target} when is_binary(id) and is_binary(target) ->
-        %{id: id, target: target}
+      %{"id" => id, "required_target" => target} = entry when is_binary(id) and is_binary(target) ->
+        %{
+          id: id,
+          target: target,
+          missing_reason: Map.get(entry, "missing_reason"),
+          required_tool: Map.get(entry, "required_tool")
+        }
 
       _entry ->
         nil
@@ -381,27 +410,62 @@ defmodule SymphonyElixir.WorkspaceCapability do
     end
   end
 
-  defp validation_entrypoints(make_targets, tool_paths) do
+  defp validation_entrypoints(make_targets, tool_paths, repo_root) do
     make_available = is_binary(Map.get(tool_paths, "make"))
 
-    Enum.map(@validation_entrypoints, fn {id, target} ->
-      target_available = MapSet.member?(make_targets, target)
-      available = make_available and target_available
-
-      %{
-        "id" => id,
-        "command" => "make #{target}",
-        "required_tool" => "make",
-        "required_target" => target,
-        "available" => available,
-        "missing_reason" =>
-          cond do
-            available -> nil
-            not make_available -> "missing_tool"
-            true -> "missing_make_target"
-          end
-      }
+    Enum.map(@validation_entrypoints, fn entry ->
+      build_validation_entrypoint(entry, make_available, make_targets, tool_paths, repo_root)
     end)
+  end
+
+  defp build_validation_entrypoint(entry, make_available, make_targets, tool_paths, repo_root)
+       when is_map(entry) do
+    id = Map.fetch!(entry, :id)
+    target = Map.fetch!(entry, :target)
+    fallback_tool = Map.fetch!(entry, :fallback_tool)
+    fallback_command = Map.fetch!(entry, :fallback_command)
+    fallback_path = Map.fetch!(entry, :fallback_path)
+
+    target_available = make_available and MapSet.member?(make_targets, target)
+    fallback_available = fallback_available?(repo_root, tool_paths, fallback_tool, fallback_path)
+    available = target_available or fallback_available
+
+    %{
+      "id" => id,
+      "command" => validation_command(target, target_available, fallback_command, fallback_available),
+      "required_tool" => validation_required_tool(make_available, target_available, fallback_available, fallback_tool),
+      "required_target" => target,
+      "fallback_command" => fallback_command,
+      "fallback_path" => fallback_path,
+      "available" => available,
+      "missing_reason" => validation_missing_reason(make_available, available)
+    }
+  end
+
+  defp validation_command(target, true, _fallback_command, _fallback_available), do: "make #{target}"
+  defp validation_command(_target, false, fallback_command, true), do: fallback_command
+  defp validation_command(target, false, _fallback_command, false), do: "make #{target}"
+
+  defp validation_required_tool(_make_available, true, _fallback_available, _fallback_tool), do: "make"
+  defp validation_required_tool(_make_available, false, true, fallback_tool), do: fallback_tool
+  defp validation_required_tool(true, false, false, _fallback_tool), do: "make"
+  defp validation_required_tool(false, false, false, fallback_tool), do: fallback_tool
+
+  defp validation_missing_reason(_make_available, true), do: nil
+  defp validation_missing_reason(true, false), do: "missing_make_target"
+  defp validation_missing_reason(false, false), do: "missing_tool"
+
+  defp fallback_available?(repo_root, tool_paths, fallback_tool, fallback_path)
+       when is_binary(repo_root) and is_map(tool_paths) and is_binary(fallback_tool) and
+              is_binary(fallback_path) do
+    with true <- is_binary(Map.get(tool_paths, fallback_tool)),
+         path <- Path.join(repo_root, fallback_path),
+         {:ok, stat} <- File.stat(path),
+         true <- stat.type == :regular do
+      true
+    else
+      _ -> false
+    end
   end
 
   defp tool_statuses(tool_paths) when is_map(tool_paths) do

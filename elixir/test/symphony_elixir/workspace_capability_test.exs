@@ -163,7 +163,7 @@ defmodule SymphonyElixir.WorkspaceCapabilityTest do
 
       assert details.reason == :missing_tool
       assert details.command_class == :validation
-      assert details.tool == "make"
+      assert details.tool == "bash"
     after
       File.rm_rf(test_root)
     end
@@ -228,6 +228,34 @@ defmodule SymphonyElixir.WorkspaceCapabilityTest do
                )
 
       assert unreadable_details.reason == :missing_make_target
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "prelaunch gate accepts script fallback validation when Makefile targets are absent" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-capability-script-fallback-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-505-fallback")
+
+      File.mkdir_p!(Path.join(workspace, ".git"))
+      File.mkdir_p!(Path.join(workspace, "scripts"))
+      File.write!(Path.join(workspace, "scripts/check.sh"), "#!/usr/bin/env bash\nset -euo pipefail\necho ok\n")
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, manifest} =
+               WorkspaceCapability.prelaunch_gate(workspace, tool_probe: &always_available_tool/1)
+
+      assert manifest["mode"] == "repo_workspace"
+      assert Enum.all?(manifest["validation_entrypoints"], &(&1["available"] == true))
+      assert Enum.any?(manifest["validation_entrypoints"], &(&1["command"] == "bash scripts/check.sh"))
     after
       File.rm_rf(test_root)
     end
