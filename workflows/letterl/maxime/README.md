@@ -14,6 +14,7 @@ Project routing:
 - `izvlechenie-zadach-8209c2018e76` -> `maximlafe/lead_status`
 - `master-komand-dfbe2b1b972e` -> `maximlafe/lead_status`
 - `telegram-full-export-v2-a6212aeb565c` -> `maximlafe/tg_live_export`
+- `conductor-fe8b7043bcd2` -> `maximlafe/conductor`
 - `platforma-i-integraciya-448570ee6438` -> requires one explicit repo label on the Linear issue:
   - `repo:lead_status`
   - `repo:symphony`
@@ -27,6 +28,7 @@ Notes:
     - `Извлечение задач` -> `maximlafe/lead_status`
     - `Мастер команд` -> `maximlafe/lead_status`
     - `Telegram Full Export v2` -> `maximlafe/tg_live_export`
+    - `Conductor` -> `maximlafe/conductor`
   - ambiguous project:
     - `Платформа и интеграция` requires exactly one repo label on the issue: `repo:lead_status`, `repo:symphony`, or `repo:tg_live_export`;
   - conflicting fixed-project mapping and repo label move the task into the blocker path;
@@ -79,7 +81,7 @@ Required `/etc/symphony/symphony.env` contract for these workers:
 Suggested preflight before launch:
 
 - `gh auth status`
-- verify `git clone`/`git ls-remote` for all three allowlisted GitHub repos work without prompts
+- verify `git clone`/`git ls-remote` for all four allowlisted GitHub repos work without prompts
 - run `make symphony-bootstrap` in a fresh clone of each allowlisted repo and confirm reruns stay unattended and leave no tracked changes
 - verify Linear triage can apply the `repo:*` labels for `Платформа и интеграция`
 - confirm `DATABASE_URL` points to reachable PostgreSQL
@@ -114,7 +116,7 @@ Repo: maximlafe/lead_status
 Base branch: feature/task-routing
 ```
 
-Use that when the issue belongs to `Извлечение задач`, `Мастер команд`, or `Telegram Full Export v2` and the project mapping is sufficient.
+Use that as a template when project mapping is sufficient, but keep `Repo:` equal to the repository resolved from project metadata (`maximlafe/lead_status`, `maximlafe/tg_live_export`, `maximlafe/symphony`, or `maximlafe/conductor`).
 
 ```md
 Labels:
