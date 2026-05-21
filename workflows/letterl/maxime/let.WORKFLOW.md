@@ -56,6 +56,7 @@ hooks:
         maximlafe/lead_status) printf '%s\n' "https://github.com/maximlafe/lead_status.git" ;;
         maximlafe/symphony) printf '%s\n' "https://github.com/maximlafe/symphony.git" ;;
         maximlafe/tg_live_export) printf '%s\n' "https://github.com/maximlafe/tg_live_export.git" ;;
+        maximlafe/conductor) printf '%s\n' "https://github.com/maximlafe/conductor.git" ;;
         *) return 1 ;;
       esac
     }
@@ -69,6 +70,8 @@ hooks:
             print "maximlafe/symphony"
           } else if (label == "repo:tg_live_export") {
             print "maximlafe/tg_live_export"
+          } else if (label == "repo:conductor") {
+            print "maximlafe/conductor"
           }
         }
       '
@@ -79,12 +82,14 @@ hooks:
       case "$project_slug" in
         symphony-bd5bc5b51675) printf '%s\n' "maximlafe/symphony"; return 0 ;;
         a6212aeb565c|telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export"; return 0 ;;
+        fe8b7043bcd2|conductor-fe8b7043bcd2) printf '%s\n' "maximlafe/conductor"; return 0 ;;
         dfbe2b1b972e|master-komand-dfbe2b1b972e|8209c2018e76|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status"; return 0 ;;
         448570ee6438|platforma-i-integraciya-448570ee6438) return 2 ;;
       esac
       case "$project_name" in
         "Symphony") printf '%s\n' "maximlafe/symphony" ;;
         "Telegram Full Export v2") printf '%s\n' "maximlafe/tg_live_export" ;;
+        "Conductor") printf '%s\n' "maximlafe/conductor" ;;
         "Мастер команд"|"Извлечение задач") printf '%s\n' "maximlafe/lead_status" ;;
         "Платформа и интеграция") return 2 ;;
         *) return 1 ;;
@@ -201,7 +206,7 @@ hooks:
           if [ -n "$repo_override" ]; then
             source_repository=$repo_override
           else
-            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, or repo:tg_live_export."
+            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, repo:tg_live_export, or repo:conductor."
           fi
           ;;
         *)
@@ -304,6 +309,7 @@ hooks:
         maximlafe/lead_status) printf '%s\n' "https://github.com/maximlafe/lead_status.git" ;;
         maximlafe/symphony) printf '%s\n' "https://github.com/maximlafe/symphony.git" ;;
         maximlafe/tg_live_export) printf '%s\n' "https://github.com/maximlafe/tg_live_export.git" ;;
+        maximlafe/conductor) printf '%s\n' "https://github.com/maximlafe/conductor.git" ;;
         *) return 1 ;;
       esac
     }
@@ -317,6 +323,8 @@ hooks:
             print "maximlafe/symphony"
           } else if (label == "repo:tg_live_export") {
             print "maximlafe/tg_live_export"
+          } else if (label == "repo:conductor") {
+            print "maximlafe/conductor"
           }
         }
       '
@@ -327,12 +335,14 @@ hooks:
       case "$project_slug" in
         symphony-bd5bc5b51675) printf '%s\n' "maximlafe/symphony"; return 0 ;;
         a6212aeb565c|telegram-full-export-v2-a6212aeb565c) printf '%s\n' "maximlafe/tg_live_export"; return 0 ;;
+        fe8b7043bcd2|conductor-fe8b7043bcd2) printf '%s\n' "maximlafe/conductor"; return 0 ;;
         dfbe2b1b972e|master-komand-dfbe2b1b972e|8209c2018e76|izvlechenie-zadach-8209c2018e76) printf '%s\n' "maximlafe/lead_status"; return 0 ;;
         448570ee6438|platforma-i-integraciya-448570ee6438) return 2 ;;
       esac
       case "$project_name" in
         "Symphony") printf '%s\n' "maximlafe/symphony" ;;
         "Telegram Full Export v2") printf '%s\n' "maximlafe/tg_live_export" ;;
+        "Conductor") printf '%s\n' "maximlafe/conductor" ;;
         "Мастер команд"|"Извлечение задач") printf '%s\n' "maximlafe/lead_status" ;;
         "Платформа и интеграция") return 2 ;;
         *) return 1 ;;
@@ -422,7 +432,7 @@ hooks:
             source_repository=$current_repository
             append_note "Repo label is missing; reusing the bound repository $current_repository."
           else
-            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, or repo:tg_live_export."
+            base_branch_error="Project '$project_display' requires one repo label: repo:lead_status, repo:symphony, repo:tg_live_export, or repo:conductor."
           fi
           ;;
         *)
