@@ -257,6 +257,42 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert get_in(manifest, ["proof_signals", "proof_run_executed"]) == true
   end
 
+  test "evaluate preserves non-canonical checklist and final-proof messages without crashing" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: Non-canonical external validation errors should stay diagnostic-only.
+    """
+
+    checklist_error = "validation checklist is missing a checked `noncanonical check` item"
+
+    final_proof_error =
+      "validation gate final proof invalid: validation gate final proof is missing passed check `noncanonical check`"
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-754",
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["backend_only"],
+               git: git_metadata(),
+               validation_gate_errors: [checklist_error, final_proof_error]
+             )
+
+    assert checklist_error in manifest["missing_items"]
+    assert final_proof_error in manifest["missing_items"]
+  end
+
   test "evaluate requires runtime smoke for runtime-contract validation gate changes" do
     workpad = """
     ## Codex Workpad

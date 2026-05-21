@@ -2688,8 +2688,13 @@ defmodule SymphonyElixir.HandoffCheck do
   defp mark_runtime_smoke_signal(signals, "runtime_smoke"), do: Map.put(signals, "runtime_smoke", true)
   defp mark_runtime_smoke_signal(signals, _), do: signals
 
-  defp mark_targeted_tests_signal(signals, "test"), do: Map.put(signals, "targeted_tests", true)
-  defp mark_targeted_tests_signal(signals, _), do: signals
+  defp mark_targeted_tests_signal(signals, proof_type) do
+    Map.put(
+      signals,
+      "targeted_tests",
+      Map.get(signals, "targeted_tests", false) or proof_type == "test"
+    )
+  end
 
   defp initial_proof_signals(runtime_smoke_checked?) do
     %{
@@ -2783,8 +2788,6 @@ defmodule SymphonyElixir.HandoffCheck do
     end)
   end
 
-  defp dedupe_missing_items(_items), do: []
-
   defp missing_item_priority_key(message) when is_binary(message) do
     cond do
       String.starts_with?(message, "acceptance matrix") ->
@@ -2803,8 +2806,6 @@ defmodule SymphonyElixir.HandoffCheck do
         nil
     end
   end
-
-  defp missing_item_priority_key(_message), do: nil
 
   defp acceptance_matrix_priority_key(message) do
     case Regex.run(~r/^acceptance matrix item `[^`]+` maps to validation `([^`]+)` that is not checked$/, message) do
@@ -2827,23 +2828,20 @@ defmodule SymphonyElixir.HandoffCheck do
   end
 
   defp required_capability_priority_key(message) do
-    case Regex.run(~r/^required capability `([^`]+)` is missing /, message) do
-      [_, "runtime_smoke"] -> {2, "check:runtime_smoke"}
-      [_, capability] -> {2, "capability:" <> capability}
-      _ -> nil
+    [_, capability] = Regex.run(~r/^required capability `([^`]+)` is missing /, message)
+
+    case capability do
+      "runtime_smoke" -> {2, "check:runtime_smoke"}
+      _ -> {2, "capability:" <> capability}
     end
   end
 
   defp checklist_priority_key(message) do
-    case Regex.run(~r/^validation checklist is missing a checked `([^`]+)` item$/, message) do
-      [_, label] ->
-        case canonical_check_key(label) do
-          nil -> nil
-          key -> {3, key}
-        end
+    [_, label] = Regex.run(~r/^validation checklist is missing a checked `([^`]+)` item$/, message)
 
-      _ ->
-        nil
+    case canonical_check_key(label) do
+      nil -> nil
+      key -> {3, key}
     end
   end
 
@@ -2869,8 +2867,6 @@ defmodule SymphonyElixir.HandoffCheck do
       _ -> nil
     end
   end
-
-  defp canonical_check_key(_label), do: nil
 
   defp validation_missing_items(validation_items, issue_labels, validation_gate, proof_signals) do
     checked_checks = effective_checked_checks(validation_items || [], proof_signals)
@@ -3361,19 +3357,11 @@ defmodule SymphonyElixir.HandoffCheck do
     |> ValidationGate.normalize_checks()
   end
 
-  defp effective_checked_checks(_validation_items, proof_signals) do
-    proof_signals
-    |> inferred_validation_checks_from_proof_signals()
-    |> ValidationGate.normalize_checks()
-  end
-
   defp inferred_validation_checks_from_proof_signals(proof_signals) when is_map(proof_signals) do
     []
     |> maybe_add_inferred_check(Map.get(proof_signals, "targeted_tests") == true, "targeted_tests")
     |> maybe_add_inferred_check(Map.get(proof_signals, "runtime_smoke") == true, "runtime_smoke")
   end
-
-  defp inferred_validation_checks_from_proof_signals(_proof_signals), do: []
 
   defp maybe_add_inferred_check(acc, true, check), do: acc ++ [check]
   defp maybe_add_inferred_check(acc, false, _check), do: acc
