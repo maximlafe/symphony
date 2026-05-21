@@ -101,7 +101,7 @@ defmodule SymphonyElixir.ValidationGate do
     "runtime_smoke" => "Run the runtime smoke command for the changed contract path and mark the `runtime smoke` validation item."
   }
 
-  @runtime_contract_prefixes ["workflows/", ".agents/", ".github/", "elixir/config/"]
+  @runtime_contract_prefixes ["workflows/", ".agents/", ".github/"]
   @runtime_contract_suffixes ["workflow.md", "workflows.md", "makefile"]
   @runtime_contract_fragments [
     "/handoff_check",
@@ -109,7 +109,7 @@ defmodule SymphonyElixir.ValidationGate do
     "/run_phase",
     "/validation_gate",
     "/workflow",
-    "/symphony_elixir/config"
+    "/config"
   ]
   @ui_path_prefixes ["assets/", "frontend/"]
   @ui_path_fragments ["_web/", "/web/"]

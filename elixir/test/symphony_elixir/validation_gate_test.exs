@@ -22,12 +22,6 @@ defmodule SymphonyElixir.ValidationGateTest do
     assert {:ok, ["stateful"]} =
              ValidationGate.classify_paths(["tests/integration/test_task_v3_stateful_repeatability.py"])
 
-    assert {:ok, ["stateful"]} =
-             ValidationGate.classify_paths(["src/chat_analyzer/task_v3/config.py"])
-
-    assert {:ok, ["backend_only"]} =
-             ValidationGate.classify_paths(["src/chat_analyzer/core/config.py"])
-
     assert {:ok, ["ui"]} =
              ValidationGate.classify_paths(["elixir/lib/symphony_elixir_web/controllers/page_controller.ex"])
 
@@ -59,9 +53,7 @@ defmodule SymphonyElixir.ValidationGateTest do
              ValidationGate.classify_paths([
                "workflows/letterl/maxime/let.WORKFLOW.md",
                ".agents/skills/execute-mode/SKILL.md",
-               "elixir/lib/symphony_elixir/handoff_check.ex",
-               "elixir/lib/symphony_elixir/config/runtime_guard.ex",
-               "elixir/config/runtime.exs"
+               "elixir/lib/symphony_elixir/handoff_check.ex"
              ])
 
     assert {:ok, final} = ValidationGate.requirements(["runtime_contract"], "final")

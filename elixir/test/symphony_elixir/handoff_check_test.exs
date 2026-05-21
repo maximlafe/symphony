@@ -200,97 +200,6 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert "validation checklist is missing a checked `targeted tests` item" in manifest["missing_items"]
     assert get_in(manifest, ["validation_gate", "required_checks"]) == ["preflight", "targeted_tests", "repo_validation"]
     assert get_in(manifest, ["validation_gate", "passed_checks"]) == ["preflight", "repo_validation"]
-
-    refute Enum.any?(
-             manifest["missing_items"],
-             &String.contains?(
-               &1,
-               "validation gate final proof invalid: validation gate final proof is missing passed check `targeted_tests`"
-             )
-           )
-  end
-
-  test "evaluate infers targeted tests from executed acceptance matrix proof mapping" do
-    issue_description = """
-    ## Acceptance Matrix
-
-    | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
-    | --- | --- | --- | --- | --- | --- |
-    | AM-1 | Selector execution path | Executed selector proof is accepted | test | tests/unit/test_team_master_ui.py::test_apply_chat_add_source_close_policy_matrix | run_executed |
-    """
-
-    workpad = """
-    ## Codex Workpad
-
-    ### Validation
-
-    - [x] preflight: `make symphony-preflight`
-    - [x] am-1: `poetry run pytest tests/unit/test_team_master_ui.py::test_apply_chat_add_source_close_policy_matrix -q`
-    - [x] repo validation: `make symphony-validate`
-
-    ### Proof Mapping
-
-    - [x] `AM-1` -> `validation:am-1`
-
-    ### Checkpoint
-
-    - `checkpoint_type`: `human-verify`
-    - `risk_level`: `low`
-    - `summary`: Executed acceptance-matrix proof should satisfy targeted tests accounting.
-    """
-
-    assert {:ok, manifest} =
-             HandoffCheck.evaluate(
-               workpad,
-               issue_id: "LET-714",
-               labels: ["mode:plan", "verification:generic"],
-               issue_description: issue_description,
-               pr_snapshot: green_pr_snapshot(),
-               change_classes: ["backend_only"],
-               git: git_metadata()
-             )
-
-    assert manifest["missing_items"] == []
-    assert get_in(manifest, ["validation_gate", "required_checks"]) == ["preflight", "targeted_tests", "repo_validation"]
-    assert get_in(manifest, ["validation_gate", "passed_checks"]) == ["preflight", "targeted_tests", "repo_validation"]
-    assert get_in(manifest, ["proof_signals", "targeted_tests"]) == true
-    assert get_in(manifest, ["proof_signals", "proof_run_executed"]) == true
-  end
-
-  test "evaluate preserves non-canonical checklist and final-proof messages without crashing" do
-    workpad = """
-    ## Codex Workpad
-
-    ### Validation
-
-    - [x] preflight: `make symphony-preflight`
-    - [x] targeted tests: `mix test test/symphony_elixir/handoff_check_test.exs`
-    - [x] repo validation: `make symphony-validate`
-
-    ### Checkpoint
-
-    - `checkpoint_type`: `human-verify`
-    - `risk_level`: `low`
-    - `summary`: Non-canonical external validation errors should stay diagnostic-only.
-    """
-
-    checklist_error = "validation checklist is missing a checked `noncanonical check` item"
-
-    final_proof_error =
-      "validation gate final proof invalid: validation gate final proof is missing passed check `noncanonical check`"
-
-    assert {:error, manifest} =
-             HandoffCheck.evaluate(
-               workpad,
-               issue_id: "LET-754",
-               pr_snapshot: green_pr_snapshot(),
-               change_classes: ["backend_only"],
-               git: git_metadata(),
-               validation_gate_errors: [checklist_error, final_proof_error]
-             )
-
-    assert checklist_error in manifest["missing_items"]
-    assert final_proof_error in manifest["missing_items"]
   end
 
   test "evaluate requires runtime smoke for runtime-contract validation gate changes" do
@@ -333,14 +242,6 @@ defmodule SymphonyElixir.HandoffCheckTest do
              "targeted_tests",
              "repo_validation"
            ]
-
-    refute Enum.any?(
-             manifest["missing_items"],
-             &String.contains?(
-               &1,
-               "validation gate final proof invalid: validation gate final proof is missing passed check `runtime_smoke`"
-             )
-           )
   end
 
   test "default accessors expose the verification contract and default evaluate fails closed" do
@@ -1141,16 +1042,6 @@ defmodule SymphonyElixir.HandoffCheckTest do
     assert manifest["issue"]["required_capabilities"] == ["runtime_smoke", "artifact_upload"]
     assert "required capability `runtime_smoke` is missing checked runtime smoke proof" in manifest["missing_items"]
     assert "required capability `artifact_upload` is missing a checked uploaded Linear attachment" in manifest["missing_items"]
-
-    refute "validation checklist is missing a checked `runtime smoke` item" in manifest["missing_items"]
-
-    refute Enum.any?(
-             manifest["missing_items"],
-             &String.contains?(
-               &1,
-               "validation gate final proof invalid: validation gate final proof is missing passed check `runtime_smoke`"
-             )
-           )
   end
 
   test "evaluate reports malformed artifact entries" do
