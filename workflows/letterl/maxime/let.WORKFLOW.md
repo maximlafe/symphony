@@ -559,8 +559,6 @@ codex:
   accounts:
     - id: "furrow.03-offline@icloud.com"
       codex_home: /root/.codex/.codex-furrow
-    - id: Deborah
-      codex_home: /root/.codex/.codex-deborah
   minimum_remaining_percent: 5
   monitored_windows_mins: [300, 10080]
 planning:
