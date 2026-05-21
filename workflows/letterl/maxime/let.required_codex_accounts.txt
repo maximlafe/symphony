@@ -1,3 +1,2 @@
 # Required Codex accounts for the production LetterL runner.
 furrow.03-offline@icloud.com
-Deborah

@@ -110,6 +110,7 @@ hooks:
         setup_note=$(printf '%s\n%s' "$setup_note" "$1")
       fi
     }
+    bootstrap_command="make symphony-bootstrap"
     summarize_bootstrap_failure() {
       failure_log=$1
       awk '
@@ -130,15 +131,21 @@ hooks:
     }
     write_bootstrap_blocker() {
       failure_log=$1
-      if grep -Fq "No rule to make target" "$failure_log" &&
+      if [ "$bootstrap_command" = "make symphony-bootstrap" ] &&
+         grep -Fq "No rule to make target" "$failure_log" &&
          grep -Fq "symphony-bootstrap" "$failure_log"; then
-        printf "Base branch '%s' in %s does not define make symphony-bootstrap.\n" "$base_branch" "$source_repository" > .symphony-base-branch-error
+        if [ -f scripts/bootstrap.sh ]; then
+          bootstrap_command="bash scripts/bootstrap.sh"
+          append_note "make symphony-bootstrap is missing; using scripts/bootstrap.sh."
+          return 2
+        fi
+        printf "Base branch '%s' in %s does not define make symphony-bootstrap or scripts/bootstrap.sh.\n" "$base_branch" "$source_repository" > .symphony-base-branch-error
       else
         failure_summary=$(summarize_bootstrap_failure "$failure_log")
         if [ -z "$failure_summary" ]; then
           failure_summary="unknown bootstrap failure"
         fi
-        printf "Base branch '%s' in %s failed make symphony-bootstrap: %s\n" "$base_branch" "$source_repository" "$failure_summary" > .symphony-base-branch-error
+        printf "Base branch '%s' in %s failed %s: %s\n" "$base_branch" "$source_repository" "$bootstrap_command" "$failure_summary" > .symphony-base-branch-error
       fi
     }
     if [ -z "${GH_TOKEN:-}" ]; then
@@ -268,14 +275,27 @@ hooks:
       printf '%s\n' "$setup_note" > .symphony-base-branch-note
     fi
     rm -f .symphony-bootstrap-error.log
-    if ! make -n symphony-bootstrap > .symphony-bootstrap-error.log 2>&1; then
-      write_bootstrap_blocker .symphony-bootstrap-error.log
-      exit 0
-    fi
-    if ! make symphony-bootstrap > .symphony-bootstrap-error.log 2>&1; then
-      write_bootstrap_blocker .symphony-bootstrap-error.log
-      exit 0
-    fi
+    while :; do
+      if [ "$bootstrap_command" = "make symphony-bootstrap" ]; then
+        if ! make -n symphony-bootstrap > .symphony-bootstrap-error.log 2>&1; then
+          write_bootstrap_blocker .symphony-bootstrap-error.log
+          rc=$?
+          if [ "$rc" -eq 2 ]; then
+            continue
+          fi
+          exit 0
+        fi
+      fi
+      if ! env SYMPHONY_BOOTSTRAP_COMMAND="$bootstrap_command" sh -c 'eval "$SYMPHONY_BOOTSTRAP_COMMAND"' > .symphony-bootstrap-error.log 2>&1; then
+        write_bootstrap_blocker .symphony-bootstrap-error.log
+        rc=$?
+        if [ "$rc" -eq 2 ]; then
+          continue
+        fi
+        exit 0
+      fi
+      break
+    done
     rm -f .symphony-bootstrap-error.log
   before_run: |
     extract_symphony_marker() {
@@ -539,8 +559,6 @@ codex:
   accounts:
     - id: "furrow.03-offline@icloud.com"
       codex_home: /root/.codex/.codex-furrow
-    - id: Deborah
-      codex_home: /root/.codex/.codex-deborah
   minimum_remaining_percent: 5
   monitored_windows_mins: [300, 10080]
 planning:
