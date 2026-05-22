@@ -1195,7 +1195,9 @@ and checkpoint semantics come from `docs/policy/project-contract.md`.
 ### Validation
 
 - [ ] preflight: `make symphony-preflight`
+- [ ] red proof: `<failing command>` (`delivery:tdd` only; required when the issue has label `delivery:tdd`)
 - [ ] targeted tests: `<command>`
+- [ ] am-<id>: `<command proving AM-<id>>` (repeat one checked row for each issue `Proof Mapping` target like `validation:am-<id>`)
 - [ ] docs review: `<command>` (docs/prose-only changes; never mark this item as `n/a` when required)
 - [ ] stateful proof: `<command>` (stateful/DB/schema changes)
 - [ ] runtime smoke: `<command>` (runtime/infra/workflow-contract/handoff changes)

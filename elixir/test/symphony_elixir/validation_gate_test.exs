@@ -33,6 +33,24 @@ defmodule SymphonyElixir.ValidationGateTest do
     assert {:error, ["changed_paths must be a non-empty list"]} = ValidationGate.classify_paths([])
   end
 
+  test "classifies checked-in test fixtures with backend code instead of runtime contract" do
+    assert {:ok, ["backend_only"]} =
+             ValidationGate.classify_paths([
+               "lib/conductor/source_adapters/team_master.ex",
+               "test/conductor/team_master_scope_resolver_test.exs",
+               "test/fixtures/conductor/team_master_seed_presence.json"
+             ])
+
+    assert {:ok, final} =
+             ValidationGate.classify_paths([
+               "apps/conductor/test/fixtures/source_registry/team_master_seed_presence.json"
+             ])
+             |> then(fn {:ok, classes} -> ValidationGate.requirements(classes, "final") end)
+
+    assert final["required_checks"] == ["preflight", "targeted_tests", "repo_validation"]
+    refute "runtime_smoke" in final["required_checks"]
+  end
+
   test "classifies ambiguous TypeScript and JavaScript paths by location" do
     assert {:ok, ["backend_only"]} =
              ValidationGate.classify_paths(["scripts/sync_issue.ts", "lib/domain/rule.ts"])

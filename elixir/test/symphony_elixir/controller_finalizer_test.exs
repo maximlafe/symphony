@@ -884,6 +884,49 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert Enum.map(payload.details["proof_diagnostic"]["missing_checks"], & &1["check"]) == ["red_proof", "runtime_smoke"]
   end
 
+  test "run/3 keeps LET-759 fixture-backed backend changes from requiring runtime smoke" do
+    issue = %Issue{
+      id: "issue-let-759",
+      identifier: "LET-759",
+      state: "In Progress",
+      labels: ["delivery:tdd"]
+    }
+
+    _workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())
+
+    checkpoint = %{
+      "head" => "head-let-759",
+      "open_pr" => %{"number" => 5, "url" => "https://github.com/maximlafe/conductor/pull/5"},
+      "changed_files" => [
+        "lib/conductor/source_adapters/team_master.ex",
+        "test/conductor/team_master_scope_resolver_test.exs",
+        "test/fixtures/conductor/team_master_seed_presence.json"
+      ]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/maximlafe/conductor/pull/5",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run while red proof is missing")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "required proof checks are missing before handoff"
+    assert payload.details["proof_diagnostic"]["change_classes"] == ["backend_only"]
+    assert Enum.map(payload.details["proof_diagnostic"]["missing_checks"], & &1["check"]) == ["red_proof"]
+    assert payload.details["proof_diagnostic"]["missing_final_checks"] == []
+  end
+
   test "run/3 fails fast before handoff when final validation gate checks are missing" do
     issue = %Issue{id: "issue-proof-final-gate", identifier: "LET-462-PROOF-FINAL-GATE", state: "In Progress"}
 
