@@ -82,6 +82,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Override workflow assignee for staging
+        shell: bash
+        env:
+          SYMPHONY_STAGING_WORKFLOW_ASSIGNEE: dbregalwin@gmail.com
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          assignee = os.environ["SYMPHONY_STAGING_WORKFLOW_ASSIGNEE"]
+          path = Path("workflows/letterl/maxime/let.WORKFLOW.md")
+          text = path.read_text()
+
+          if not text.startswith("---\n"):
+            raise SystemExit("Workflow file has no YAML front matter")
+
+          front_matter, rest = text[4:].split("\n---\n", 1)
+          lines = front_matter.splitlines()
+
+          replaced = False
+          for idx, line in enumerate(lines):
+            if line.strip().startswith("assignee:"):
+              indent = line[: len(line) - len(line.lstrip())]
+              lines[idx] = f'{indent}assignee: "{assignee}"'
+              replaced = True
+              break
+
+          if not replaced:
+            raise SystemExit("Could not find tracker assignee in front matter")
+
+          path.write_text("---\n" + "\n".join(lines) + "\n---\n" + rest)
+          print(f"staging workflow assignee overridden to {assignee}")
+          PY
+
       - name: Prepare SSH material
         env:
           SYMPHONY_DEPLOY_KNOWN_HOSTS: ${{ secrets.SYMPHONY_DEPLOY_KNOWN_HOSTS }}
