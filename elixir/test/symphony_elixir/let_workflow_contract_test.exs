@@ -92,6 +92,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "`Execution Evidence` section in workpad"
     assert prompt =~ "artifact file body and Linear attachment text are supporting context only"
     assert prompt =~ "generic `targeted tests` does not satisfy that AM-specific target"
+    assert prompt =~ "canonical validation row `stateful proof`"
+    assert prompt =~ "AM-specific rows do not replace `stateful proof`"
     assert prompt =~ "root-level `.md` smoke artifact"
     assert prompt =~ "upload that file to Linear attachments"
     assert prompt =~ "AM-specific rows do not replace `docs review`"
@@ -199,6 +201,8 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert execute_skill =~ "do not require `plan_revision` / `artifact_revision` fields inside the"
     assert execute_skill =~ "issue `## Proof Mapping` is canonical"
     assert execute_skill =~ "PR evidence stays in linked PR"
+    assert execute_skill =~ "canonical `stateful proof`"
+    assert execute_skill =~ "AM-specific rows do not replace"
     assert execute_skill =~ "upload that `.md` file to Linear"
   end
 

@@ -244,6 +244,50 @@ defmodule SymphonyElixir.HandoffCheckTest do
            ]
   end
 
+  test "evaluate classifies missing stateful proof as recoverable handoff drift" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `mix test test/conductor/runtime_repository_test.exs`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Stateful implementation proof row is missing.
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-758",
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["stateful"],
+               git: git_metadata()
+             )
+
+    assert manifest["missing_items"] == ["validation checklist is missing a checked `stateful proof` item"]
+    assert get_in(manifest, ["handoff_failure", "kind"]) == "recoverable_drift"
+    assert get_in(manifest, ["handoff_failure", "hard_items"]) == []
+
+    assert get_in(manifest, ["validation_gate", "required_checks"]) == [
+             "preflight",
+             "targeted_tests",
+             "stateful_proof",
+             "repo_validation"
+           ]
+
+    assert get_in(manifest, ["validation_gate", "passed_checks"]) == [
+             "preflight",
+             "targeted_tests",
+             "repo_validation"
+           ]
+  end
+
   test "default accessors expose the verification contract and default evaluate fails closed" do
     assert HandoffCheck.default_review_ready_states() == ["In Review", "Human Review"]
     assert HandoffCheck.default_manifest_path() == ".symphony/verification/handoff-manifest.json"

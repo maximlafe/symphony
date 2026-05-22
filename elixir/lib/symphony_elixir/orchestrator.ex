@@ -21,6 +21,7 @@ defmodule SymphonyElixir.Orchestrator do
     ErrorClassifier,
     ExecutionContract,
     ExecutionRollout,
+    HandoffFailure,
     ResumeCheckpoint,
     RetryFailoverDecision,
     RunPhase,
@@ -67,18 +68,6 @@ defmodule SymphonyElixir.Orchestrator do
   @tracker_infra_breaker_trip_threshold 3
   @tracker_infra_breaker_cooldown_sec 300
   @tracker_infra_breaker_resume_success_threshold 2
-  @verification_recoverable_drift_patterns [
-    ~r/^acceptance matrix contains duplicate id `/,
-    ~r/^acceptance matrix item `[^`]+` has multiple proof mapping entries; exactly one is required$/,
-    ~r/^proof mapping references unknown acceptance matrix item `/,
-    ~r/^proof mapping reference `[^`]+` is reused by multiple acceptance matrix items:/,
-    ~r/^acceptance matrix item `[^`]+` maps to validation `[^`]+` that is not checked$/,
-    ~r/^artifact manifest is missing a checked uploaded attachment entry$/,
-    ~r/^required capability `artifact_upload` is missing a checked uploaded Linear attachment$/,
-    ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not checked in `Artifacts`$/,
-    ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not uploaded in Linear attachments$/,
-    ~r/^acceptance matrix item `[^`]+` mapping drift: use canonical validation label /
-  ]
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -568,7 +557,7 @@ defmodule SymphonyElixir.Orchestrator do
        when is_map(running_entry) and is_map(manifest) do
     context = verification_guard_failure_context(running_entry, manifest)
 
-    if verification_guard_recoverable_drift?(manifest) do
+    if HandoffFailure.recoverable_manifest?(manifest) do
       recoverable_verification_guard_decision(context, failure_attempt)
     else
       hard_verification_guard_decision(
@@ -578,26 +567,6 @@ defmodule SymphonyElixir.Orchestrator do
       )
     end
   end
-
-  defp verification_guard_recoverable_drift?(manifest) when is_map(manifest) do
-    case get_in(manifest, ["handoff_failure", "kind"]) do
-      "recoverable_drift" ->
-        true
-
-      "hard_contract_failure" ->
-        false
-
-      _ ->
-        missing_items = normalize_manifest_missing_items(manifest["missing_items"])
-        missing_items != [] and Enum.all?(missing_items, &recoverable_verification_drift_item?/1)
-    end
-  end
-
-  defp recoverable_verification_drift_item?(item) when is_binary(item) do
-    Enum.any?(@verification_recoverable_drift_patterns, &Regex.match?(&1, item))
-  end
-
-  defp recoverable_verification_drift_item?(_item), do: false
 
   defp apply_verification_guard_failure_decision(
          state,
@@ -2217,15 +2186,10 @@ defmodule SymphonyElixir.Orchestrator do
           |> Map.merge(retry_execution_metadata(running_entry, checkpoint))
         )
 
-      {:fallback, %{checkpoint: checkpoint, reason: reason}} ->
+      {:fallback, %{checkpoint: checkpoint, reason: reason} = payload} ->
         Logger.info("Controller finalizer returned action-required fallback for issue_id=#{issue_id} issue_identifier=#{identifier}: #{reason}")
 
-        state
-        |> complete_issue(issue_id)
-        |> maybe_store_finalizer_checkpoint(issue_id, checkpoint)
-        |> schedule_failure_retry_or_dedupe_hit(
-          issue,
-          fallback_attempt,
+        metadata =
           %{
             identifier: identifier,
             trace_id: trace_id,
@@ -2234,8 +2198,42 @@ defmodule SymphonyElixir.Orchestrator do
             error: reason,
             error_class: ErrorClassifier.to_string(:transient)
           }
+          |> Map.merge(controller_finalizer_failure_metadata(payload))
           |> Map.merge(retry_execution_metadata(running_entry, checkpoint))
-        )
+
+        decision = RetryFailoverDecision.decide(Map.get(metadata, :retry_failover_signals, %{}))
+
+        state =
+          state
+          |> complete_issue(issue_id)
+          |> maybe_store_finalizer_checkpoint(issue_id, checkpoint)
+
+        if decision.selected_action == :stop_with_classified_handoff do
+          escalate_issue_for_retry_failover_handoff(
+            state,
+            issue,
+            decision,
+            fallback_attempt,
+            %{
+              issue_id: issue_id,
+              identifier: identifier,
+              trace_id: trace_id,
+              codex_account_id: Map.get(running_entry, :codex_account_id),
+              error_class: Map.get(metadata, :error_class, ErrorClassifier.to_string(:permanent)),
+              failure_class: Map.get(metadata, :failure_class, "controller_finalizer_handoff_failed"),
+              retry_action: :stop,
+              resume_checkpoint: checkpoint
+            }
+          )
+        else
+          schedule_retry_with_retry_failover_decision(
+            state,
+            issue,
+            fallback_attempt,
+            metadata,
+            decision
+          )
+        end
 
       {:not_applicable, _payload} ->
         Logger.info("Controller finalizer returned not_applicable for issue_id=#{issue_id} issue_identifier=#{identifier}; falling back to agent run")
@@ -2307,6 +2305,51 @@ defmodule SymphonyElixir.Orchestrator do
     else
       state
     end
+  end
+
+  defp controller_finalizer_failure_metadata(%{details: %{"handoff_failure" => handoff_failure}})
+       when is_map(handoff_failure) do
+    if HandoffFailure.recoverable_manifest?(%{"handoff_failure" => handoff_failure}) do
+      controller_finalizer_recoverable_failure_metadata(handoff_failure)
+    else
+      controller_finalizer_hard_failure_metadata(handoff_failure)
+    end
+  end
+
+  defp controller_finalizer_failure_metadata(_payload), do: %{}
+
+  defp controller_finalizer_recoverable_failure_metadata(handoff_failure) do
+    %{
+      failure_class: "verification_recoverable_drift",
+      retry_failover_signals: %{
+        recoverable_drift: %{
+          reason: Map.get(handoff_failure, "reason", "controller finalizer recoverable handoff drift"),
+          log_fields: %{
+            handoff_failure_kind: "recoverable_drift",
+            recoverable_items: Enum.join(Map.get(handoff_failure, "recoverable_items", []), ", ")
+          }
+        }
+      }
+    }
+  end
+
+  defp controller_finalizer_hard_failure_metadata(handoff_failure) do
+    hard_items = Map.get(handoff_failure, "hard_items", [])
+
+    %{
+      failure_class: "verification_guard_failed",
+      retry_failover_signals: %{
+        validation_env_mismatch: %{
+          reason: Map.get(handoff_failure, "reason", "controller finalizer hard handoff failure"),
+          checkpoint_type: "human-action",
+          risk_level: "high",
+          log_fields: %{
+            handoff_failure_kind: Map.get(handoff_failure, "kind", "hard_contract_failure"),
+            hard_items: Enum.join(hard_items, ", ")
+          }
+        }
+      }
+    }
   end
 
   defp maybe_dispatch_controller_finalizer(

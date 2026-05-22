@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
   """
 
   alias SymphonyElixir.Codex.DynamicTool
-  alias SymphonyElixir.{Config, HandoffCheck, ValidationGate}
+  alias SymphonyElixir.{Config, HandoffCheck, HandoffFailure, ValidationGate}
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Tracker
 
@@ -196,6 +196,8 @@ defmodule SymphonyElixir.ControllerFinalizer do
       run_handoff_check(context, checkpoint, snapshot, opts)
     else
       reason = pre_handoff_guard_reason(proof_diagnostic)
+      missing_items = pre_handoff_missing_items(proof_diagnostic)
+      handoff_failure = HandoffFailure.classify(false, missing_items)
 
       fallback_checkpoint =
         checkpoint_status(
@@ -209,7 +211,11 @@ defmodule SymphonyElixir.ControllerFinalizer do
        %{
          checkpoint: fallback_checkpoint,
          reason: reason,
-         details: %{"proof_diagnostic" => proof_diagnostic}
+         details: %{
+           "proof_diagnostic" => proof_diagnostic,
+           "missing_items" => missing_items,
+           "handoff_failure" => handoff_failure
+         }
        }}
     end
   end
@@ -274,6 +280,26 @@ defmodule SymphonyElixir.ControllerFinalizer do
   defp pre_handoff_guard_reason(%{"missing_final_checks" => [_ | _]}) do
     "required validation gate checks are missing before handoff"
   end
+
+  defp pre_handoff_missing_items(proof_diagnostic) when is_map(proof_diagnostic) do
+    []
+    |> Kernel.++(Map.get(proof_diagnostic, "proof_contract_errors", []))
+    |> Kernel.++(required_proof_missing_items(Map.get(proof_diagnostic, "missing_checks", [])))
+    |> Kernel.++(final_check_missing_items(Map.get(proof_diagnostic, "missing_final_checks", [])))
+    |> Enum.uniq()
+  end
+
+  defp required_proof_missing_items(missing_checks) when is_list(missing_checks) do
+    Enum.map(missing_checks, fn
+      %{"label" => label} when is_binary(label) -> "validation checklist is missing a checked `#{label}` item"
+    end)
+  end
+
+  defp final_check_missing_items(missing_checks) when is_list(missing_checks) do
+    Enum.map(missing_checks, &"validation checklist is missing a checked `#{human_check_label(&1)}` item")
+  end
+
+  defp human_check_label(check) when is_binary(check), do: String.replace(check, "_", " ")
 
   defp pre_handoff_final_gate_checks(_validation_items, _change_classes, workpad_body)
        when not is_binary(workpad_body),

@@ -3,7 +3,7 @@ defmodule SymphonyElixir.HandoffCheck do
   Evaluates the review-ready handoff contract and writes a machine-readable manifest.
   """
 
-  alias SymphonyElixir.{AcceptanceCapability, TelemetrySchema, ValidationGate}
+  alias SymphonyElixir.{AcceptanceCapability, HandoffFailure, TelemetrySchema, ValidationGate}
 
   @allowed_checkpoint_types ["human-verify", "decision", "human-action"]
   @allowed_risk_levels ["low", "medium", "high"]
@@ -38,18 +38,6 @@ defmodule SymphonyElixir.HandoffCheck do
   @default_matrix_required_before "review"
   @matrix_required_before MapSet.new(["review", "done"])
   @acceptance_contract_version 1
-  @recoverable_drift_patterns [
-    ~r/^acceptance matrix contains duplicate id `/,
-    ~r/^acceptance matrix item `[^`]+` has multiple proof mapping entries; exactly one is required$/,
-    ~r/^proof mapping references unknown acceptance matrix item `/,
-    ~r/^proof mapping reference `[^`]+` is reused by multiple acceptance matrix items:/,
-    ~r/^acceptance matrix item `[^`]+` maps to validation `[^`]+` that is not checked$/,
-    ~r/^artifact manifest is missing a checked uploaded attachment entry$/,
-    ~r/^required capability `artifact_upload` is missing a checked uploaded Linear attachment$/,
-    ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not checked in `Artifacts`$/,
-    ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not uploaded in Linear attachments$/,
-    ~r/^acceptance matrix item `[^`]+` mapping drift: use canonical validation label /
-  ]
   @pull_request_evidence_patterns [
     ~r/\bpr\s*#\d+\b/i,
     ~r|github\.com/[^/\s]+/[^/\s]+/pull/\d+|i,
@@ -544,7 +532,7 @@ defmodule SymphonyElixir.HandoffCheck do
       |> Enum.uniq()
 
     passed = missing_items == []
-    handoff_failure = classify_handoff_failure(passed, missing_items)
+    handoff_failure = HandoffFailure.classify(passed, missing_items)
 
     manifest =
       %{
@@ -2713,11 +2701,19 @@ defmodule SymphonyElixir.HandoffCheck do
          validation_context,
          capability_context
        ) do
+    validation_missing_items = validation_missing_items(parsed_workpad["validation"], issue_labels, validation_context["gate"])
+
     []
     |> Kernel.++(Map.get(capability_context, :capability_parse_errors, []))
     |> Kernel.++(validation_context["errors"])
-    |> Kernel.++(validation_missing_items(parsed_workpad["validation"], issue_labels, validation_context["gate"]))
-    |> Kernel.++(validation_gate_missing_items(validation_context["gate"], validation_context["git"]))
+    |> Kernel.++(validation_missing_items)
+    |> Kernel.++(
+      validation_gate_missing_items(
+        validation_context["gate"],
+        validation_context["git"],
+        validation_missing_items
+      )
+    )
     |> Kernel.++(checkpoint_missing_items(parsed_workpad["checkpoint"]))
     |> Kernel.++(
       artifact_manifest_missing_items(
@@ -2789,13 +2785,26 @@ defmodule SymphonyElixir.HandoffCheck do
     end
   end
 
-  defp validation_gate_missing_items(validation_gate, git_metadata) do
+  defp validation_gate_missing_items(validation_gate, git_metadata, existing_missing_items) do
     case ValidationGate.validate_final_proof(%{"validation_gate" => validation_gate, "git" => git_metadata}, git_metadata) do
       :ok ->
         []
 
       {:error, reasons} ->
-        Enum.map(reasons, &"validation gate final proof invalid: #{&1}")
+        reasons
+        |> Enum.reject(&duplicate_missing_passed_check?(&1, existing_missing_items))
+        |> Enum.map(&"validation gate final proof invalid: #{&1}")
+    end
+  end
+
+  defp duplicate_missing_passed_check?(reason, existing_missing_items) do
+    case Regex.run(~r/^validation gate final proof is missing passed check `([^`]+)`$/, reason) do
+      [_, check] ->
+        label = human_check_label(check)
+        "validation checklist is missing a checked `#{label}` item" in existing_missing_items
+
+      _ ->
+        false
     end
   end
 
@@ -2962,40 +2971,6 @@ defmodule SymphonyElixir.HandoffCheck do
     payload
     |> :erlang.term_to_binary()
     |> sha256()
-  end
-
-  defp classify_handoff_failure(true, _missing_items) do
-    %{
-      "kind" => "none",
-      "recoverable" => false,
-      "reason" => "verification passed",
-      "recoverable_items" => [],
-      "hard_items" => []
-    }
-  end
-
-  defp classify_handoff_failure(false, missing_items) when is_list(missing_items) do
-    {recoverable_items, hard_items} =
-      Enum.split_with(missing_items, &recoverable_drift_item?/1)
-
-    {kind, reason} =
-      if missing_items != [] and hard_items == [] do
-        {"recoverable_drift", "metadata/proof sync drift detected"}
-      else
-        {"hard_contract_failure", "required handoff contract evidence is missing or invalid"}
-      end
-
-    %{
-      "kind" => kind,
-      "recoverable" => kind == "recoverable_drift",
-      "reason" => reason,
-      "recoverable_items" => recoverable_items,
-      "hard_items" => hard_items
-    }
-  end
-
-  defp recoverable_drift_item?(item) when is_binary(item) do
-    Enum.any?(@recoverable_drift_patterns, &Regex.match?(&1, item))
   end
 
   defp attachment_present?(attachments, title) when is_binary(title) do

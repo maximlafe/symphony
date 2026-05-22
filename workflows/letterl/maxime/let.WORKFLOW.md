@@ -979,6 +979,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - execute every ticket-provided validation/test-plan requirement when present;
    - mark changed-behavior validation with the checked label `targeted tests`; any extra proof explanation belongs in that row text, not in the label;
    - when issue `## Proof Mapping` uses an AM-specific target such as `validation:am-1`, add and check the matching validation row `am-1`; generic `targeted tests` does not satisfy that AM-specific target;
+   - when the shipped diff is DB/schema/stateful, add and check the canonical validation row `stateful proof` with the concrete migration/repository command that was run; `repo validation` and AM-specific rows do not replace `stateful proof` for this change class;
    - when the shipped diff is docs/prose-only, including a root-level `.md` smoke artifact, add and check the canonical validation row `docs review` with the concrete review/format/content command that was run; `repo validation` and AM-specific rows do not replace `docs review` for this change class;
    - when docs/prose smoke work creates a new root-level `.md` artifact (for example `hello-world-smoke.md`), upload that file to Linear attachments and add a checked uploaded-attachment row with a concrete claim in `### Artifacts`;
    - revert every temporary proof edit before commit or push;
