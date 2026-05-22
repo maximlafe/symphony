@@ -559,6 +559,7 @@ defmodule SymphonyElixir.ValidationGate do
     normalized = path |> String.replace("\\", "/") |> String.downcase()
 
     cond do
+      test_fixture_path?(normalized) -> "backend_only"
       runtime_contract_path?(normalized) -> "runtime_contract"
       stateful_path?(normalized) -> "stateful"
       ui_path?(normalized) -> "ui"
@@ -566,6 +567,11 @@ defmodule SymphonyElixir.ValidationGate do
       backend_path?(normalized) -> "backend_only"
       true -> "runtime_contract"
     end
+  end
+
+  defp test_fixture_path?(path) do
+    String.starts_with?(path, "test/fixtures/") or
+      String.contains?(path, "/test/fixtures/")
   end
 
   defp runtime_contract_path?(path) do

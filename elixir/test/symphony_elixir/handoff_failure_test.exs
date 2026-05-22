@@ -24,6 +24,25 @@ defmodule SymphonyElixir.HandoffFailureTest do
            } = HandoffFailure.classify(false, missing)
   end
 
+  test "classify treats LET-759 proof row drift as recoverable" do
+    missing = [
+      "validation checklist is missing a checked `red proof` item",
+      "acceptance matrix item `AM-1` maps to validation `am-1` that is not checked",
+      "acceptance matrix item `AM-1` mapping drift: use canonical validation label `am-1` in `Validation` and map via `validation:am-1`",
+      "acceptance matrix item `AM-5` maps to validation `am-5` that is not checked",
+      "acceptance matrix item `AM-5` mapping drift: use canonical validation label `am-5` in `Validation` and map via `validation:am-5`"
+    ]
+
+    assert %{
+             "kind" => "recoverable_drift",
+             "recoverable" => true,
+             "recoverable_items" => ^missing,
+             "hard_items" => []
+           } = HandoffFailure.classify(false, missing)
+
+    assert HandoffFailure.recoverable_manifest?(%{"missing_items" => missing})
+  end
+
   test "classify keeps mixed hard and recoverable items hard" do
     recoverable = "validation checklist is missing a checked `stateful proof` item"
     hard = "blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation"
