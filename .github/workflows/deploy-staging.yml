@@ -82,18 +82,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Override workflow assignee for staging
+      - name: Build staging workflow contract
         shell: bash
         env:
           SYMPHONY_STAGING_WORKFLOW_ASSIGNEE: dbregalwin@gmail.com
+          SYMPHONY_WORKFLOW_SOURCE_FILE: workflows/letterl/maxime/let.WORKFLOW.md
+          SYMPHONY_WORKFLOW_STAGING_FILE: workflows/letterl/maxime/let.WORKFLOW.staging.md
         run: |
           python3 - <<'PY'
           import os
           from pathlib import Path
 
           assignee = os.environ["SYMPHONY_STAGING_WORKFLOW_ASSIGNEE"]
-          path = Path("workflows/letterl/maxime/let.WORKFLOW.md")
-          text = path.read_text()
+          source_path = Path(os.environ["SYMPHONY_WORKFLOW_SOURCE_FILE"])
+          staging_path = Path(os.environ["SYMPHONY_WORKFLOW_STAGING_FILE"])
+          text = source_path.read_text()
 
           if not text.startswith("---\n"):
             raise SystemExit("Workflow file has no YAML front matter")
@@ -112,8 +115,8 @@ jobs:
           if not replaced:
             raise SystemExit("Could not find tracker assignee in front matter")
 
-          path.write_text("---\n" + "\n".join(lines) + "\n---\n" + rest)
-          print(f"staging workflow assignee overridden to {assignee}")
+          staging_path.write_text("---\n" + "\n".join(lines) + "\n---\n" + rest)
+          print(f"staging workflow contract written to {staging_path}")
           PY
 
       - name: Prepare SSH material
@@ -140,6 +143,7 @@ jobs:
           SYMPHONY_DEPLOY_USER: ${{ vars.SYMPHONY_DEPLOY_USER }}
           SYMPHONY_REGISTRY_PASSWORD: ${{ secrets.SYMPHONY_REGISTRY_PASSWORD }}
           SYMPHONY_REGISTRY_USERNAME: ${{ secrets.SYMPHONY_REGISTRY_USERNAME }}
+          SYMPHONY_WORKFLOW_STAGING_FILE: workflows/letterl/maxime/let.WORKFLOW.staging.md
         run: |
           mkdir -p ci-artifacts
           set -o pipefail
@@ -148,7 +152,7 @@ jobs:
             --image-tag "${{ needs.resolve-contract.outputs.image_tag }}" \
             --image-digest "${{ needs.resolve-contract.outputs.image_digest }}" \
             --compose-file elixir/deploy/docker/docker-compose.yml \
-            --workflow-file workflows/letterl/maxime/let.WORKFLOW.md \
+            --workflow-file "${SYMPHONY_WORKFLOW_STAGING_FILE}" \
             --required-codex-accounts-file workflows/letterl/maxime/let.required_codex_accounts.txt \
             2>&1 | tee ci-artifacts/deploy-staging.log
 
