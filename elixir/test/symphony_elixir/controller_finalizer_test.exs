@@ -926,6 +926,53 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert payload.details["proof_diagnostic"]["missing_final_checks"] == ["repo_validation"]
   end
 
+  test "run/3 marks missing stateful proof as recoverable before handoff without transitioning" do
+    issue = %Issue{id: "issue-proof-stateful", identifier: "LET-758-PROOF-STATEFUL", state: "In Progress"}
+
+    _workspace =
+      create_workspace!(
+        issue.identifier,
+        workpad_body: """
+        ## Codex Workpad
+
+        ### Validation
+        - [x] preflight: `make symphony-preflight`
+        - [x] targeted tests: `mix test test/conductor/runtime_repository_test.exs`
+        - [x] repo validation: `make symphony-validate`
+        """
+      )
+
+    checkpoint = %{
+      "head" => "head-proof-stateful",
+      "open_pr" => %{"number" => 2058, "url" => "https://github.com/acme/symphony/pull/2058"},
+      "changed_files" => ["priv/repo/migrations/20260522094400_create_iscandar_runtime_skeleton.exs"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/2058",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run when stateful proof is missing before handoff")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "required validation gate checks are missing before handoff"
+    assert payload.details["proof_diagnostic"]["missing_final_checks"] == ["stateful_proof"]
+    assert payload.details["missing_items"] == ["validation checklist is missing a checked `stateful proof` item"]
+    assert payload.details["handoff_failure"]["kind"] == "recoverable_drift"
+
+    refute_received {:tracker_state_update, "issue-proof-stateful", "In Review"}
+  end
+
   test "run/3 keeps backend-only scenario unblocked when proof checks are not required" do
     issue = %Issue{id: "issue-proof-backend", identifier: "LET-462-PROOF-BACKEND", state: "In Progress"}
     _workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())

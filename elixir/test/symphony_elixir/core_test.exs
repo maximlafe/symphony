@@ -5751,6 +5751,179 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "missing stateful proof handoff failure schedules bounded retry instead of immediate Blocked" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-verification-stateful-proof-drift"
+    issue = %Issue{id: issue_id, identifier: "LET-758", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      state =
+        base_dispatch_state("primary")
+        |> Map.put(:running, %{
+          issue_id => %{
+            pid: worker_pid,
+            ref: make_ref(),
+            identifier: issue.identifier,
+            issue: issue,
+            trace_id: "trace-verification-stateful-proof",
+            session_id: "thread-verification-stateful-proof",
+            codex_account_id: "primary",
+            run_phase: :editing,
+            started_at: DateTime.utc_now()
+          }
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+
+      update =
+        handoff_check_tool_update(%{
+          "passed" => false,
+          "summary" => "validation checklist is missing a checked `stateful proof` item",
+          "missing_items" => ["validation checklist is missing a checked `stateful proof` item"],
+          "checked_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        })
+
+      assert {:noreply, updated_state} =
+               Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+      assert %{^issue_id => retry_entry} = updated_state.retry_attempts
+      assert retry_entry.attempt == 1
+      assert retry_entry.error_class == "transient"
+      assert retry_entry.failure_class == "verification_recoverable_drift"
+      assert retry_entry.retry_failover_decision[:selected_rule] == "recoverable_drift"
+      assert retry_entry.retry_failover_decision[:selected_action] == "allow_retry"
+      refute Map.has_key?(updated_state.running, issue_id)
+      refute MapSet.member?(updated_state.claimed, issue_id)
+      refute Process.alive?(worker_pid)
+      refute_received {:memory_tracker_state_update, ^issue_id, "Blocked"}
+      refute_received {:memory_tracker_comment, ^issue_id, _comment}
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end
+  end
+
+  test "recoverable controller finalizer fallback schedules bounded retry" do
+    issue_id = "issue-controller-finalizer-recoverable"
+    issue = %Issue{id: issue_id, identifier: "LET-758-FINALIZER", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end)
+
+    state =
+      base_dispatch_state("primary")
+      |> Map.put(:running, %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: make_ref(),
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-controller-finalizer-recoverable",
+          worker_kind: :controller_finalizer,
+          resume_checkpoint: %{"head" => "head-finalizer-recoverable"},
+          started_at: DateTime.utc_now()
+        }
+      })
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+
+    result =
+      {:fallback,
+       %{
+         checkpoint: %{"head" => "head-finalizer-recoverable"},
+         reason: "required validation gate checks are missing before handoff",
+         details: %{
+           "handoff_failure" => %{
+             "kind" => "recoverable_drift",
+             "reason" => "metadata/proof sync drift detected",
+             "recoverable_items" => ["validation checklist is missing a checked `stateful proof` item"],
+             "hard_items" => []
+           }
+         }
+       }}
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:controller_finalizer_result, issue_id, result}, state)
+
+    assert %{^issue_id => retry_entry} = updated_state.retry_attempts
+    assert retry_entry.failure_class == "verification_recoverable_drift"
+    assert retry_entry.retry_failover_decision[:selected_rule] == "recoverable_drift"
+    assert retry_entry.retry_failover_decision[:selected_action] == "allow_retry"
+    refute Map.has_key?(updated_state.running, issue_id)
+    assert MapSet.member?(updated_state.claimed, issue_id)
+  end
+
+  test "hard controller finalizer fallback keeps hard items and stops with classified handoff" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-controller-finalizer-hard"
+    issue = %Issue{id: issue_id, identifier: "LET-758-FINALIZER-HARD", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      state =
+        base_dispatch_state("primary")
+        |> Map.put(:running, %{
+          issue_id => %{
+            pid: worker_pid,
+            ref: make_ref(),
+            identifier: issue.identifier,
+            issue: issue,
+            trace_id: "trace-controller-finalizer-hard",
+            worker_kind: :controller_finalizer,
+            resume_checkpoint: %{"head" => "head-finalizer-hard"},
+            started_at: DateTime.utc_now()
+          }
+        })
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+
+      result =
+        {:fallback,
+         %{
+           checkpoint: %{"head" => "head-finalizer-hard"},
+           reason: "proof contract is inconsistent before handoff",
+           details: %{
+             "handoff_failure" => %{
+               "kind" => "hard_contract_failure",
+               "reason" => "required handoff contract evidence is missing or invalid",
+               "recoverable_items" => ["validation checklist is missing a checked `stateful proof` item"],
+               "hard_items" => ["blocking divergence: enabled mode:plan two-layer contract failed fail-closed validation"]
+             }
+           }
+         }}
+
+      assert {:noreply, updated_state} =
+               Orchestrator.handle_info({:controller_finalizer_result, issue_id, result}, state)
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "selected_rule: `validation_env_mismatch`"
+      assert blocker_body =~ "selected_action: `stop_with_classified_handoff`"
+      assert blocker_body =~ "required handoff contract evidence is missing or invalid"
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+
+      refute Map.has_key?(updated_state.retry_attempts, issue_id)
+      refute Map.has_key?(updated_state.running, issue_id)
+      refute MapSet.member?(updated_state.claimed, issue_id)
+    after
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end
+  end
+
   test "recoverable symphony_handoff_check drift escalates after bounded retry budget is exhausted" do
     previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
     issue_id = "issue-verification-recoverable-budget-exhausted"
