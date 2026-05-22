@@ -1,0 +1,5 @@
+{
+  "issue": "LET-759",
+  "purpose": "backend-only validation gate fixture path regression",
+  "expected_change_class": "backend_only"
+}
