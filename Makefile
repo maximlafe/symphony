@@ -105,7 +105,7 @@ symphony-handoff-check: symphony-follow-up-policy-check
 		echo "\`PR_NUMBER\` must be set."; \
 		exit 1; \
 	fi
-	cd $(ELIXIR_DIR) && $(MISE) exec -- mix handoff.check --issue "$$ISSUE_ID" --workpad "$$WORKPAD_FILE" --repo "$$REPO" --pr "$$PR_NUMBER" $(if $(MANIFEST_FILE),--manifest "$(MANIFEST_FILE)",)
+	cd $(ELIXIR_DIR) && $(MISE) exec -- mix handoff.check --issue "$$ISSUE_ID" --workpad "$$WORKPAD_FILE" --repo "$$REPO" --pr "$$PR_NUMBER" $(if $(MANIFEST_FILE),--manifest "$(MANIFEST_FILE)",) $(if $(EXECUTION_EVIDENCE_RUN_TOKEN),--execution-run-token "$(EXECUTION_EVIDENCE_RUN_TOKEN)",)
 
 symphony-nginx-proxy-contract:
 	python3 scripts/symphony_nginx_proxy_smoke.py --contract-only
