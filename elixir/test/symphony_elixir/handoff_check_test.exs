@@ -288,6 +288,120 @@ defmodule SymphonyElixir.HandoffCheckTest do
            ]
   end
 
+  test "evaluate classifies missing UI runtime proof as recoverable handoff drift" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `make team-master-ui-e2e`
+    - [x] visual artifact: `screenshot.png`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `screenshot.png` -> screenshot of the verified UI flow
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: UI runtime proof row is missing.
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-771",
+               pr_snapshot: green_pr_snapshot(),
+               attachments: [%{"title" => "screenshot.png"}],
+               change_classes: ["ui"],
+               git: git_metadata()
+             )
+
+    assert manifest["missing_items"] == ["validation checklist is missing a checked `ui runtime proof` item"]
+    assert get_in(manifest, ["handoff_failure", "kind"]) == "recoverable_drift"
+    assert get_in(manifest, ["handoff_failure", "hard_items"]) == []
+  end
+
+  test "evaluate classifies missing visual artifact as recoverable handoff drift" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `make team-master-ui-e2e`
+    - [x] ui runtime proof: `make team-master-ui-e2e`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `medium`
+    - `summary`: Visual artifact row is missing.
+    """
+
+    assert {:error, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-771",
+               pr_snapshot: green_pr_snapshot(),
+               change_classes: ["ui"],
+               git: git_metadata()
+             )
+
+    assert manifest["missing_items"] == ["validation checklist is missing a checked `visual artifact` item"]
+    assert get_in(manifest, ["handoff_failure", "kind"]) == "recoverable_drift"
+    assert get_in(manifest, ["handoff_failure", "hard_items"]) == []
+  end
+
+  test "evaluate accepts UI handoff when canonical UI proof rows are checked" do
+    workpad = """
+    ## Codex Workpad
+
+    ### Validation
+
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `make team-master-ui-e2e`
+    - [x] ui runtime proof: `make team-master-ui-e2e`
+    - [x] visual artifact: `screenshot.png`
+    - [x] repo validation: `make symphony-validate`
+
+    ### Artifacts
+
+    - [x] uploaded attachment: `screenshot.png` -> screenshot of the verified UI flow
+
+    ### Checkpoint
+
+    - `checkpoint_type`: `human-verify`
+    - `risk_level`: `low`
+    - `summary`: UI runtime and visual proof are complete.
+    """
+
+    assert {:ok, manifest} =
+             HandoffCheck.evaluate(
+               workpad,
+               issue_id: "LET-771",
+               pr_snapshot: green_pr_snapshot(),
+               attachments: [%{"title" => "screenshot.png"}],
+               change_classes: ["ui"],
+               git: git_metadata()
+             )
+
+    assert manifest["passed"]
+    assert manifest["missing_items"] == []
+
+    assert get_in(manifest, ["validation_gate", "required_checks"]) == [
+             "preflight",
+             "targeted_tests",
+             "ui_runtime_proof",
+             "visual_artifact",
+             "repo_validation"
+           ]
+  end
+
   test "default accessors expose the verification contract and default evaluate fails closed" do
     assert HandoffCheck.default_review_ready_states() == ["In Review", "Human Review"]
     assert HandoffCheck.default_manifest_path() == ".symphony/verification/handoff-manifest.json"

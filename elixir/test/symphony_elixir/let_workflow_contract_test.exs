@@ -94,11 +94,19 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert prompt =~ "generic `targeted tests` does not satisfy that AM-specific target"
     assert prompt =~ "canonical validation row `stateful proof`"
     assert prompt =~ "AM-specific rows do not replace `stateful proof`"
+    assert prompt =~ "checked `ui runtime proof` plus `visual artifact` validation rows"
+    assert prompt =~ "canonical validation rows `ui runtime proof` and `visual artifact`"
+
+    assert prompt =~
+             "`repo validation`, `targeted tests`, and AM-specific rows do not replace `ui runtime proof` or `visual artifact`"
+
     assert prompt =~ "root-level `.md` smoke artifact"
     assert prompt =~ "upload that file to Linear attachments"
     assert prompt =~ "AM-specific rows do not replace `docs review`"
     assert prompt =~ "- [ ] `AM-<id>` -> `validation:am-<id>`"
     assert prompt =~ "- [ ] docs review: `<command>`"
+    assert prompt =~ "- [ ] ui runtime proof: `<command>`"
+    assert prompt =~ "- [ ] visual artifact: `<artifact title or path>`"
     refute prompt =~ "continue without blocking"
     refute prompt =~ ".agents/skills/plan-swarm-mode/SKILL.md"
     refute prompt =~ "make test-unit"
@@ -203,6 +211,10 @@ defmodule SymphonyElixir.LetWorkflowContractTest do
     assert execute_skill =~ "PR evidence stays in linked PR"
     assert execute_skill =~ "canonical `stateful proof`"
     assert execute_skill =~ "AM-specific rows do not replace"
+    assert execute_skill =~ "canonical `ui runtime proof` and `visual artifact` validation rows"
+    assert execute_skill =~ "`repo validation`, `targeted tests`,"
+    assert execute_skill =~ "and AM-specific rows do not replace `ui runtime proof` or"
+    assert execute_skill =~ "`visual artifact` for this change class"
     assert execute_skill =~ "upload that `.md` file to Linear"
   end
 

@@ -847,6 +847,100 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
              hd(payload.details["proof_diagnostic"]["missing_checks"])
   end
 
+  test "run/3 classifies missing UI runtime proof row as recoverable pre-handoff drift" do
+    issue = %Issue{id: "issue-proof-ui-runtime", identifier: "LET-771-UI-RUNTIME", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier, workpad_body: ui_workpad_without_runtime_proof())
+
+    checkpoint = %{
+      "head" => "head-proof-ui-runtime",
+      "open_pr" => %{"number" => 206, "url" => "https://github.com/acme/symphony/pull/206"},
+      "changed_files" => ["elixir/lib/symphony_elixir_web/controllers/page_controller.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/206",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run when UI runtime proof is missing")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "required validation gate checks are missing before handoff"
+    assert payload.details["missing_items"] == ["validation checklist is missing a checked `ui runtime proof` item"]
+    assert payload.details["handoff_failure"]["kind"] == "recoverable_drift"
+    assert payload.details["handoff_failure"]["hard_items"] == []
+  end
+
+  test "run/3 classifies missing visual artifact row as recoverable pre-handoff drift" do
+    issue = %Issue{id: "issue-proof-ui-visual", identifier: "LET-771-UI-VISUAL", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier, workpad_body: ui_workpad_without_visual_artifact())
+
+    checkpoint = %{
+      "head" => "head-proof-ui-visual",
+      "open_pr" => %{"number" => 208, "url" => "https://github.com/acme/symphony/pull/208"},
+      "changed_files" => ["elixir/lib/symphony_elixir_web/controllers/page_controller.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/208",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, _opts ->
+        flunk("handoff check should not run when visual artifact proof is missing")
+      end
+    }
+
+    assert {:fallback, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.reason == "required validation gate checks are missing before handoff"
+    assert payload.details["missing_items"] == ["validation checklist is missing a checked `visual artifact` item"]
+    assert payload.details["handoff_failure"]["kind"] == "recoverable_drift"
+    assert payload.details["handoff_failure"]["hard_items"] == []
+  end
+
+  test "run/3 allows handoff check when canonical UI proof rows are checked" do
+    issue = %Issue{id: "issue-proof-ui-complete", identifier: "LET-771-UI-COMPLETE", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier, workpad_body: ui_workpad_with_proof_rows())
+
+    checkpoint = %{
+      "head" => "head-proof-ui-complete",
+      "open_pr" => %{"number" => 209, "url" => "https://github.com/acme/symphony/pull/209"},
+      "changed_files" => ["elixir/lib/symphony_elixir_web/controllers/page_controller.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/209",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => {:ok, %{"manifest" => %{"passed" => true, "manifest_path" => ".symphony/verification/handoff-manifest.json"}}}
+    }
+
+    assert {:ok, payload} = run_finalizer(issue, checkpoint, script)
+    assert payload.checkpoint["controller_finalizer"]["status"] == "succeeded"
+  end
+
   test "run/3 fails fast with both proof requirements when both are missing" do
     issue = %Issue{
       id: "issue-proof-both",
@@ -1916,6 +2010,43 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     ### Validation
     - [x] preflight: `make symphony-preflight`
     - [x] targeted tests: `mix test test/symphony_elixir/controller_finalizer_test.exs`
+    - [x] repo validation: `make symphony-validate`
+    """
+  end
+
+  defp ui_workpad_without_runtime_proof do
+    """
+    ## Codex Workpad
+
+    ### Validation
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `make team-master-ui-e2e`
+    - [x] visual artifact: `screenshot.png`
+    - [x] repo validation: `make symphony-validate`
+    """
+  end
+
+  defp ui_workpad_without_visual_artifact do
+    """
+    ## Codex Workpad
+
+    ### Validation
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `make team-master-ui-e2e`
+    - [x] ui runtime proof: `make team-master-ui-e2e`
+    - [x] repo validation: `make symphony-validate`
+    """
+  end
+
+  defp ui_workpad_with_proof_rows do
+    """
+    ## Codex Workpad
+
+    ### Validation
+    - [x] preflight: `make symphony-preflight`
+    - [x] targeted tests: `make team-master-ui-e2e`
+    - [x] ui runtime proof: `make team-master-ui-e2e`
+    - [x] visual artifact: `screenshot.png`
     - [x] repo validation: `make symphony-validate`
     """
   end

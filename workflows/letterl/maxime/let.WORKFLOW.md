@@ -880,7 +880,7 @@ Run `make symphony-preflight` once per run before treating auth/env/tooling gaps
 
 - Backend-only changes: run targeted tests for the touched modules and at least `make symphony-validate`.
 - Stateful, `task_v3`, database, or schema changes: run targeted pytest, `poetry run pytest tests/integration/test_task_v3_stateful_repeatability.py -v -m integration`, and `poetry run alembic upgrade head`.
-- Hosted UI or frontend changes: run `make team-master-ui-e2e`; if the change is app-touching, use the `launch-app` skill, verify `/health` and `/api/dashboard`, and capture runtime evidence.
+- Hosted UI, frontend, or operator-facing changes: run `make team-master-ui-e2e`; if the change is app-touching, use the `launch-app` skill, verify `/health` and `/api/dashboard`, capture runtime evidence, and record checked `ui runtime proof` plus `visual artifact` validation rows.
 - Repo-wide infra or runtime changes: run `make test` plus the relevant targeted smoke checks.
 - Ticket-authored validation or test-plan steps are mandatory on top of this matrix.
 - Only move to `Blocked` when the task requires a matrix item that still cannot run after `make symphony-preflight` identifies the missing capability.
@@ -981,6 +981,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - when issue `## Proof Mapping` uses an AM-specific target such as `validation:am-1`, add and check the matching validation row `am-1`; generic `targeted tests` does not satisfy that AM-specific target;
    - when the shipped diff is DB/schema/stateful, add and check the canonical validation row `stateful proof` with the concrete migration/repository command that was run; `repo validation` and AM-specific rows do not replace `stateful proof` for this change class;
    - when the shipped diff is docs/prose-only, including a root-level `.md` smoke artifact, add and check the canonical validation row `docs review` with the concrete review/format/content command that was run; `repo validation` and AM-specific rows do not replace `docs review` for this change class;
+   - when the shipped diff is hosted UI, frontend, or operator-facing, add and check the canonical validation rows `ui runtime proof` and `visual artifact` with concrete runtime/visual evidence; `repo validation`, `targeted tests`, and AM-specific rows do not replace `ui runtime proof` or `visual artifact` for this change class;
    - when docs/prose smoke work creates a new root-level `.md` artifact (for example `hello-world-smoke.md`), upload that file to Linear attachments and add a checked uploaded-attachment row with a concrete claim in `### Artifacts`;
    - revert every temporary proof edit before commit or push;
    - if app-touching, capture runtime evidence and upload it to Linear as issue attachments;
@@ -1200,6 +1201,8 @@ and checkpoint semantics come from `docs/policy/project-contract.md`.
 - [ ] am-<id>: `<command proving AM-<id>>` (repeat one checked row for each issue `Proof Mapping` target like `validation:am-<id>`)
 - [ ] docs review: `<command>` (docs/prose-only changes; never mark this item as `n/a` when required)
 - [ ] stateful proof: `<command>` (stateful/DB/schema changes)
+- [ ] ui runtime proof: `<command>` (hosted UI/frontend/operator-facing changes)
+- [ ] visual artifact: `<artifact title or path>` (hosted UI/frontend/operator-facing changes)
 - [ ] runtime smoke: `<command>` (runtime/infra/workflow-contract/handoff changes)
 - [ ] repo validation: `make symphony-validate`
 
