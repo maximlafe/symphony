@@ -678,6 +678,85 @@ Instructions:
 - Do not reread injected issue description/comments/attachments unless you can name the exact missing, stale, or contradictory fact and the smallest source that can resolve it.
 - Move state only when the matching quality bar is satisfied.
 
+## Follow-up issue policy
+
+When an agent discovers meaningful out-of-scope improvements, defects, or
+follow-on work, it must preserve the current issue scope and create a separate
+Linear follow-up issue instead of absorbing that work into the active task.
+Trivial observations that do not affect correctness, delivery, or review do not
+require task creation.
+
+Follow-up issue creation is agent/workflow behavior backed by Linear tooling.
+The follow-up issue must use:
+
+- state `Backlog`;
+- team `LET`;
+- project semantics according to this local workflow policy and the current
+  routing metadata;
+- `related` relation to the current issue in all cases;
+- `blockedBy` only when the follow-up is blocked by the current issue. The
+  dependency direction is from the follow-up to the current issue; do not add
+  `blockedBy` for ordinary related work.
+
+The agent must not claim the follow-up issue was created unless the Linear write
+succeeded. If Linear write tooling or auth is unavailable, run
+`make symphony-preflight` first. If preflight confirms the missing capability,
+record a classified `Checkpoint` with `checkpoint_type: human-action` or
+`decision` as appropriate, move to `Blocked` when required by the current stage,
+and state the exact unblock action instead of fabricating a follow-up.
+
+The follow-up issue body must be a concise task-spec with enough information for
+Backlog triage and future execution:
+
+```md
+## Проблема
+
+What is wrong or missing and why it matters.
+
+## Цель
+
+Expected outcome.
+
+## Скоуп
+
+- In-scope change or investigation boundary.
+- Non-goal when relevant.
+
+## Критерии приемки
+
+- Reviewable acceptance criterion.
+
+## Acceptance Matrix
+
+| id | scenario | expected_outcome | proof_type | proof_target | proof_semantic | required_before |
+| --- | --- | --- | --- | --- | --- | --- |
+| AM-1 | <scenario> | <expected outcome> | test | <command or artifact> | run_executed | review |
+
+## Proof Mapping
+
+- AM-1 -> validation:am-1
+
+## Validation
+
+- Concrete validation command or artifact check expected from the future task.
+
+## Risk / Rollback
+
+- Main risk and rollback path.
+
+## Symphony
+
+Repo: <owner/name>
+Base branch: <branch>
+Working branch: <branch when known>
+```
+
+For execution-ready follow-ups, `Acceptance Matrix`, `Proof Mapping`,
+validation, `Risk / Rollback`, and classified handoff semantics must remain
+compatible with `docs/policy/project-contract.md`. Do not put progress logs,
+managed checkboxes, or current-task workpad content into the follow-up issue
+description.
+
 ## Hegemonikon policy integration
 
 - Canonical policy source: `/Users/lafe/.codex/skills/policy/hegemonikon.md`.

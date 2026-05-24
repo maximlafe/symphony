@@ -1,10 +1,10 @@
-.PHONY: help test symphony-acceptance-preflight symphony-bootstrap symphony-dashboard-checks symphony-handoff-check symphony-live-e2e symphony-preflight symphony-runtime-smoke symphony-validate symphony-nginx-proxy-contract symphony-nginx-proxy-smoke
+.PHONY: help test symphony-acceptance-preflight symphony-bootstrap symphony-dashboard-checks symphony-follow-up-policy-check symphony-handoff-check symphony-live-e2e symphony-preflight symphony-runtime-smoke symphony-validate symphony-nginx-proxy-contract symphony-nginx-proxy-smoke
 
 MISE ?= mise
 ELIXIR_DIR ?= elixir
 
 help:
-	@echo "Targets: test, symphony-preflight, symphony-acceptance-preflight, symphony-bootstrap, symphony-dashboard-checks, symphony-handoff-check, symphony-runtime-smoke, symphony-validate, symphony-live-e2e, symphony-nginx-proxy-contract, symphony-nginx-proxy-smoke"
+	@echo "Targets: test, symphony-preflight, symphony-acceptance-preflight, symphony-bootstrap, symphony-dashboard-checks, symphony-follow-up-policy-check, symphony-handoff-check, symphony-runtime-smoke, symphony-validate, symphony-live-e2e, symphony-nginx-proxy-contract, symphony-nginx-proxy-smoke"
 
 test: symphony-validate symphony-nginx-proxy-contract
 
@@ -64,7 +64,31 @@ symphony-dashboard-checks:
 symphony-runtime-smoke:
 	cd $(ELIXIR_DIR) && $(MISE) exec -- $(MAKE) runtime-smoke SCENARIO="$(SCENARIO)"
 
-symphony-handoff-check:
+symphony-follow-up-policy-check:
+	@awk '\
+		/^## Follow-up issue policy[[:space:]]*$$/ { in_section = 1 } \
+		in_section && /^## Hegemonikon policy integration[[:space:]]*$$/ { in_section = 0 } \
+		in_section { section = section "\n" $$0 } \
+		END { \
+			required[1] = "Follow-up issue policy"; \
+			required[2] = "meaningful out-of-scope"; \
+			required[3] = "Backlog"; \
+			required[4] = "related"; \
+			required[5] = "blockedBy"; \
+			required[6] = "Acceptance Matrix"; \
+			required[7] = "Proof Mapping"; \
+			required[8] = "make symphony-preflight"; \
+			required[9] = "docs/policy/project-contract.md"; \
+			for (i = 1; i <= 9; i++) { \
+				if (index(section, required[i]) == 0) { \
+					print "Follow-up issue policy missing marker: " required[i] > "/dev/stderr"; \
+					missing = 1; \
+				} \
+			} \
+			if (missing) exit 1; \
+		}' workflows/letterl/maxime/let.WORKFLOW.md
+
+symphony-handoff-check: symphony-follow-up-policy-check
 	@if [ -z "$$ISSUE_ID" ]; then \
 		echo "\`ISSUE_ID\` must be set."; \
 		exit 1; \
