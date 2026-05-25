@@ -11,6 +11,7 @@ defmodule SymphonyElixir.AgentRunner do
   alias SymphonyElixir.ErrorClassifier
   alias SymphonyElixir.HandoffCheck
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Linear.Telemetry, as: LinearTelemetry
   alias SymphonyElixir.PromptBuilder
   alias SymphonyElixir.Tracker
   alias SymphonyElixir.Workspace
@@ -29,6 +30,7 @@ defmodule SymphonyElixir.AgentRunner do
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
     trace_id = trace_id(issue, opts)
+    LinearTelemetry.reset_current_process_summary()
 
     issue_with_trace =
       case hydrate_issue_for_execution(issue, Keyword.get(opts, :issue_for_execution_fetcher)) do
@@ -38,6 +40,14 @@ defmodule SymphonyElixir.AgentRunner do
         {:error, reason} ->
           raise_run_error(issue, {:issue_execution_context_hydration_failed, reason})
       end
+
+    maybe_send_linear_graphql_summary(
+      codex_update_recipient,
+      issue_with_trace,
+      :execution_hydration,
+      trace_id,
+      LinearTelemetry.consume_current_process_summary()
+    )
 
     pre_run_hook_window? = pre_run_hook_window_enabled?()
 
@@ -166,6 +176,29 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp maybe_send_pre_run_hook_phase_update(_recipient, _issue, _phase, _trace_id, _pre_run_hook_window?),
     do: :ok
+
+  defp maybe_send_linear_graphql_summary(recipient, issue, phase, trace_id, %{request_count: count} = summary)
+       when is_pid(recipient) and count > 0 do
+    issue_id = issue_id(issue)
+
+    if is_binary(issue_id) do
+      send(recipient, {
+        :codex_worker_update,
+        issue_id,
+        %{
+          event: :linear_graphql_summary,
+          timestamp: DateTime.utc_now(),
+          trace_id: trace_id,
+          linear_graphql_phase: phase,
+          linear_graphql_summary: LinearTelemetry.summarize(summary)
+        }
+      })
+    end
+
+    :ok
+  end
+
+  defp maybe_send_linear_graphql_summary(_recipient, _issue, _phase, _trace_id, _summary), do: :ok
 
   defp pre_run_hook_window_enabled? do
     hooks = Config.settings!().hooks

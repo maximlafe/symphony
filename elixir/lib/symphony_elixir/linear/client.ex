@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   require Logger
-  alias SymphonyElixir.{AcceptanceCapability, Config, Linear.Issue, RiskyTaskClassifier}
+  alias SymphonyElixir.{AcceptanceCapability, Config, Linear.Issue, Linear.Telemetry, RiskyTaskClassifier}
 
   @issue_page_size 50
   @execution_comment_page_size 10
@@ -16,6 +16,7 @@ defmodule SymphonyElixir.Linear.Client do
   @linear_upload_host "uploads.linear.app"
   @linear_upload_url_regex ~r/https?:\/\/uploads\.linear\.app\/[^\s<>\]\[(){}"']+/u
   @ingested_attachment_body_private_key :symphony_linear_ingested_attachment_body
+  @viewer_cache_key {__MODULE__, :viewer_assignee_filter}
 
   @text_attachment_extensions MapSet.new([
                                 "csv",
@@ -317,23 +318,33 @@ defmodule SymphonyElixir.Linear.Client do
       when is_binary(query) and is_map(variables) and is_list(opts) do
     payload = build_graphql_payload(query, variables, Keyword.get(opts, :operation_name))
     request_fun = Keyword.get(opts, :request_fun, &post_graphql_request/2)
+    operation_name = graphql_operation_name(payload, query)
+    started_at = System.monotonic_time(:millisecond)
 
-    with {:ok, headers} <- graphql_headers(),
-         {:ok, %{status: 200, body: body}} <- request_fun.(payload, headers) do
-      {:ok, body}
-    else
-      {:ok, response} ->
-        Logger.error(
-          "Linear GraphQL request failed status=#{response.status}" <>
-            linear_error_context(payload, response)
-        )
+    result =
+      with {:ok, headers} <- graphql_headers(),
+           {:ok, %{status: 200, body: body}} <- request_fun.(payload, headers) do
+        {:ok, body}
+      else
+        {:ok, response} ->
+          Logger.error(
+            "Linear GraphQL request failed status=#{response.status}" <>
+              linear_error_context(payload, response)
+          )
 
-        {:error, {:linear_api_status, response.status}}
+          {:error, {:linear_api_status, response.status, response_body_size(response)}}
 
-      {:error, reason} ->
-        Logger.error("Linear GraphQL request failed: #{inspect(reason)}")
-        {:error, {:linear_api_request, reason}}
-    end
+        {:error, :missing_linear_api_token} ->
+          {:error, :missing_linear_api_token}
+
+        {:error, reason} ->
+          Logger.error("Linear GraphQL request failed: #{inspect(reason)}")
+          {:error, {:linear_api_request, reason}}
+      end
+
+    result
+    |> emit_graphql_telemetry(operation_name, started_at)
+    |> normalize_graphql_result()
   end
 
   @spec fetch_issue_for_execution(String.t()) :: {:ok, Issue.t()} | {:error, term()}
@@ -349,11 +360,15 @@ defmodule SymphonyElixir.Linear.Client do
         {:error, :missing_linear_api_token}
 
       true ->
-        case graphql(@execution_issue_query, %{
-               id: trimmed,
-               attachmentFirst: @execution_attachment_page_size,
-               commentFirst: @execution_comment_page_size
-             }) do
+        case graphql(
+               @execution_issue_query,
+               %{
+                 id: trimmed,
+                 attachmentFirst: @execution_attachment_page_size,
+                 commentFirst: @execution_comment_page_size
+               },
+               operation_name: "SymphonyLinearExecutionIssue"
+             ) do
           {:ok, body} ->
             decode_execution_issue_response(body,
               attachment_download_fun: linear_attachment_download_fun(tracker.api_key)
@@ -392,6 +407,31 @@ defmodule SymphonyElixir.Linear.Client do
   @doc false
   @spec next_page_cursor_for_test(map()) :: {:ok, String.t()} | :done | {:error, term()}
   def next_page_cursor_for_test(page_info) when is_map(page_info), do: next_page_cursor(page_info)
+
+  @doc false
+  @spec clear_viewer_cache_for_test() :: :ok
+  def clear_viewer_cache_for_test do
+    :persistent_term.erase(@viewer_cache_key)
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
+  @doc false
+  @spec routing_assignee_filter_for_test() :: {:ok, map() | nil} | {:error, term()}
+  def routing_assignee_filter_for_test, do: routing_assignee_filter()
+
+  @doc false
+  @spec resolve_viewer_assignee_filter_for_test((String.t(), map() -> {:ok, map()} | {:error, term()})) ::
+          {:ok, map()} | {:error, term()}
+  def resolve_viewer_assignee_filter_for_test(graphql_fun) when is_function(graphql_fun, 2) do
+    cache_key = viewer_cache_key()
+
+    case cached_viewer_assignee_filter(cache_key) do
+      {:ok, assignee_filter} -> {:ok, assignee_filter}
+      :miss -> resolve_viewer_assignee_filter(cache_key, graphql_fun)
+    end
+  end
 
   @doc false
   @spec merge_issue_pages_for_test([[Issue.t()]]) :: [Issue.t()]
@@ -595,6 +635,64 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp maybe_put_operation_name(payload, _operation_name), do: payload
+
+  defp graphql_operation_name(%{"operationName" => operation_name}, _query)
+       when is_binary(operation_name) and operation_name != "" do
+    bounded_graphql_operation_name(operation_name)
+  end
+
+  defp graphql_operation_name(_payload, query) when is_binary(query) do
+    case Regex.run(~r/\b(?:query|mutation)\s+([A-Za-z_][A-Za-z0-9_]*)/, query) do
+      [_match, operation_name] -> bounded_graphql_operation_name(operation_name)
+      _ -> "anonymous"
+    end
+  end
+
+  defp bounded_graphql_operation_name("SymphonyLinear" <> _rest = operation_name)
+       when byte_size(operation_name) <= 80,
+       do: operation_name
+
+  defp bounded_graphql_operation_name(_operation_name), do: "anonymous"
+
+  defp emit_graphql_telemetry(result, operation_name, started_at) do
+    latency_ms = max(0, System.monotonic_time(:millisecond) - started_at)
+    {status, response_size_bytes} = graphql_telemetry_status_and_size(result)
+    Telemetry.emit_graphql(operation_name, latency_ms, response_size_bytes, status)
+    result
+  end
+
+  defp graphql_telemetry_status_and_size({:ok, body}) do
+    status =
+      case body do
+        %{"errors" => errors} when is_list(errors) and errors != [] -> "failure"
+        %{errors: errors} when is_list(errors) and errors != [] -> "failure"
+        _ -> "success"
+      end
+
+    {status, encoded_size(body)}
+  end
+
+  defp graphql_telemetry_status_and_size({:error, {:linear_api_status, _status, response_size_bytes}}),
+    do: {"failure", response_size_bytes}
+
+  defp graphql_telemetry_status_and_size({:error, _reason}), do: {"failure", 0}
+
+  defp normalize_graphql_result({:error, {:linear_api_status, status, _response_size_bytes}}),
+    do: {:error, {:linear_api_status, status}}
+
+  defp normalize_graphql_result(result), do: result
+
+  defp response_body_size(%{body: body}), do: encoded_size(body)
+  defp response_body_size(_response), do: 0
+
+  defp encoded_size(value) when is_binary(value), do: byte_size(value)
+
+  defp encoded_size(value) do
+    case Jason.encode(value) do
+      {:ok, encoded} -> byte_size(encoded)
+      {:error, _reason} -> value |> inspect(limit: 20, printable_limit: @max_error_body_log_bytes) |> byte_size()
+    end
+  end
 
   defp linear_error_context(payload, response) when is_map(payload) do
     operation_name =
@@ -851,14 +949,34 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp resolve_viewer_assignee_filter do
-    case graphql(@viewer_query, %{}) do
+    cache_key = viewer_cache_key()
+
+    case cached_viewer_assignee_filter(cache_key) do
+      {:ok, assignee_filter} ->
+        {:ok, assignee_filter}
+
+      :miss ->
+        resolve_viewer_assignee_filter(cache_key)
+    end
+  end
+
+  defp resolve_viewer_assignee_filter(cache_key) do
+    resolve_viewer_assignee_filter(cache_key, fn query, variables ->
+      graphql(query, variables, operation_name: "SymphonyLinearViewer")
+    end)
+  end
+
+  defp resolve_viewer_assignee_filter(cache_key, graphql_fun) when is_function(graphql_fun, 2) do
+    case graphql_fun.(@viewer_query, %{}) do
       {:ok, %{"data" => %{"viewer" => viewer}}} when is_map(viewer) ->
         case assignee_id(viewer) do
           nil ->
             {:error, :missing_linear_viewer_identity}
 
           viewer_id ->
-            {:ok, %{configured_assignee: "me", match_values: MapSet.new([viewer_id])}}
+            assignee_filter = %{configured_assignee: "me", match_values: MapSet.new([viewer_id])}
+            :persistent_term.put(@viewer_cache_key, {cache_key, assignee_filter})
+            {:ok, assignee_filter}
         end
 
       {:ok, _body} ->
@@ -867,6 +985,20 @@ defmodule SymphonyElixir.Linear.Client do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp cached_viewer_assignee_filter(cache_key) do
+    case :persistent_term.get(@viewer_cache_key, :miss) do
+      {^cache_key, %{configured_assignee: "me"} = assignee_filter} -> {:ok, assignee_filter}
+      _ -> :miss
+    end
+  end
+
+  defp viewer_cache_key do
+    tracker = Config.settings!().tracker
+    token_hash = :crypto.hash(:sha256, to_string(tracker.api_key)) |> Base.encode16(case: :lower)
+
+    {tracker.endpoint || "", token_hash}
   end
 
   defp normalize_assignee_match_value(value) when is_binary(value) do

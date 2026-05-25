@@ -33,6 +33,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   alias SymphonyElixir.Codex.{AccountProbe, Accounts}
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Linear.Telemetry, as: LinearTelemetry
 
   @continuation_base_delay_ms 5_000
   @continuation_max_delay_ms 300_000
@@ -124,7 +125,8 @@ defmodule SymphonyElixir.Orchestrator do
       codex_totals: nil,
       codex_token_reason_totals: nil,
       codex_rate_limits: nil,
-      codex_dispatch_reason: nil
+      codex_dispatch_reason: nil,
+      last_linear_graphql_summary: nil
     ]
   end
 
@@ -176,7 +178,8 @@ defmodule SymphonyElixir.Orchestrator do
       codex_totals: @empty_codex_totals,
       codex_token_reason_totals: @empty_token_reason_totals,
       codex_rate_limits: nil,
-      codex_dispatch_reason: nil
+      codex_dispatch_reason: nil,
+      last_linear_graphql_summary: nil
     }
 
     state =
@@ -234,11 +237,18 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
+    LinearTelemetry.reset_current_process_summary()
     state = maybe_refresh_codex_accounts(state, :poll)
     state = maybe_dispatch(state)
     state = run_workspace_housekeeping(state, :poll)
+    linear_graphql_summary = LinearTelemetry.consume_current_process_summary()
     state = schedule_tick(state, state.poll_interval_ms)
-    state = %{state | poll_check_in_progress: false}
+
+    state = %{
+      state
+      | poll_check_in_progress: false,
+        last_linear_graphql_summary: LinearTelemetry.summarize(linear_graphql_summary)
+    }
 
     notify_dashboard()
     {:noreply, state}
@@ -6347,6 +6357,7 @@ defmodule SymphonyElixir.Orchestrator do
           verification_checked_at: Map.get(metadata, :verification_checked_at),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
+        |> maybe_put_linear_graphql_summary(metadata)
         |> Map.merge(runtime_fields)
         |> TelemetrySchema.put_runtime_payload(metadata)
       end)
@@ -6384,7 +6395,8 @@ defmodule SymphonyElixir.Orchestrator do
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
-         poll_interval_ms: state.poll_interval_ms
+         poll_interval_ms: state.poll_interval_ms,
+         linear_graphql: LinearTelemetry.summarize(state.last_linear_graphql_summary)
        }
      }, state}
   end
@@ -6477,7 +6489,8 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
-        turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
+        turn_count: turn_count_for_update(turn_count, running_entry.session_id, update),
+        linear_graphql: linear_graphql_summary_for_update(Map.get(running_entry, :linear_graphql), update)
       })
       |> apply_routing_update(update)
       |> apply_verification_update(update)
@@ -6485,6 +6498,43 @@ defmodule SymphonyElixir.Orchestrator do
       |> RunPhase.apply_update(update)
 
     {updated_running_entry, token_delta}
+  end
+
+  defp maybe_put_linear_graphql_summary(snapshot, metadata) do
+    case Map.get(metadata, :linear_graphql) do
+      %{} = summary -> Map.put(snapshot, :linear_graphql, LinearTelemetry.summarize(summary))
+      _ -> snapshot
+    end
+  end
+
+  defp linear_graphql_summary_for_update(current_summary, update) do
+    case Map.get(update, :linear_graphql_summary) || Map.get(update, "linear_graphql_summary") do
+      %{} = summary -> merge_linear_graphql_summaries(current_summary, summary)
+      _ -> current_summary
+    end
+  end
+
+  defp merge_linear_graphql_summaries(nil, summary), do: LinearTelemetry.summarize(summary)
+
+  defp merge_linear_graphql_summaries(current, summary) do
+    current = LinearTelemetry.summarize(current)
+    summary = LinearTelemetry.summarize(summary)
+
+    %{
+      request_count: current.request_count + summary.request_count,
+      total_latency_ms: current.total_latency_ms + summary.total_latency_ms,
+      total_response_size_bytes: current.total_response_size_bytes + summary.total_response_size_bytes,
+      operations:
+        Map.merge(current.operations, summary.operations, fn _operation_name, left, right ->
+          %{
+            request_count: left.request_count + right.request_count,
+            total_latency_ms: left.total_latency_ms + right.total_latency_ms,
+            total_response_size_bytes: left.total_response_size_bytes + right.total_response_size_bytes,
+            success_count: left.success_count + right.success_count,
+            failure_count: left.failure_count + right.failure_count
+          }
+        end)
+    }
   end
 
   defp integrate_worker_phase_update(running_entry, %{phase: phase} = update) do

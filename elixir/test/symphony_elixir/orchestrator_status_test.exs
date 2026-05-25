@@ -104,6 +104,26 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     defp normalize_state(_state), do: ""
   end
 
+  defmodule LinearTelemetryClient do
+    alias SymphonyElixir.Linear.Issue
+    alias SymphonyElixir.Linear.Telemetry, as: LinearTelemetry
+
+    def fetch_candidate_issues do
+      LinearTelemetry.emit_graphql("SymphonyLinearViewer", 3, 40, "success")
+      LinearTelemetry.emit_graphql("SymphonyLinearPoll", 5, 120, "success")
+      {:ok, configured_issues()}
+    end
+
+    def fetch_issues_by_states(_states), do: {:ok, configured_issues()}
+    def fetch_issue_states_by_ids(_issue_ids), do: {:ok, []}
+    def fetch_issue_for_execution(_issue_id_or_identifier), do: {:error, :issue_not_found}
+    def graphql(_query, _variables), do: {:ok, %{"data" => %{}}}
+
+    defp configured_issues do
+      Application.get_env(:symphony_elixir, :linear_telemetry_client_issues, [])
+    end
+  end
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -122,6 +142,70 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert Orchestrator.snapshot(server_name, 10) == :timeout
 
     send(pid, :stop)
+  end
+
+  test "orchestrator snapshot exposes Linear GraphQL counts from latest poll" do
+    previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    previous_issues = Application.get_env(:symphony_elixir, :linear_telemetry_client_issues)
+
+    try do
+      Application.put_env(:symphony_elixir, :linear_client_module, LinearTelemetryClient)
+      Application.put_env(:symphony_elixir, :linear_telemetry_client_issues, [])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "linear",
+        tracker_api_token: "token",
+        tracker_project_slug: "symphony"
+      )
+
+      orchestrator_name = Module.concat(__MODULE__, :LinearTelemetryOrchestrator)
+
+      {:ok, pid} =
+        Orchestrator.start_link(
+          name: orchestrator_name,
+          codex_account_probe_fun: fn accounts, _opts ->
+            Enum.map(accounts, fn account ->
+              %{
+                id: account.id,
+                codex_home: account.codex_home,
+                explicit?: Map.get(account, :explicit?, true),
+                checked_at: DateTime.utc_now(),
+                healthy: true,
+                health_reason: nil,
+                auth_mode: "device_code",
+                email: "worker@example.com",
+                plan_type: "plus",
+                requires_openai_auth: true,
+                rate_limits: nil,
+                account: nil,
+                missing_windows_mins: [],
+                insufficient_windows_mins: []
+              }
+            end)
+          end,
+          run_startup_housekeeping?: false
+        )
+
+      on_exit(fn -> stop_orchestrator(pid) end)
+      send(pid, :run_poll_cycle)
+
+      wait_for_orchestrator_state(pid, fn state ->
+        case Map.get(state, :last_linear_graphql_summary) do
+          %{request_count: 2} -> true
+          _ -> false
+        end
+      end)
+
+      assert %{polling: %{linear_graphql: summary}} = Orchestrator.snapshot(orchestrator_name, 1_000)
+      assert summary.request_count == 2
+      assert summary.total_latency_ms == 8
+      assert summary.total_response_size_bytes == 160
+      assert summary.operations["SymphonyLinearViewer"].request_count == 1
+      assert summary.operations["SymphonyLinearPoll"].request_count == 1
+    after
+      restore_app_env(:linear_client_module, previous_client_module)
+      restore_app_env(:linear_telemetry_client_issues, previous_issues)
+    end
   end
 
   test "orchestrator snapshot reflects last codex update and session id" do
@@ -4546,6 +4630,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
+
+  defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
   defp healthy_probe_status(account) do
     account_id = Map.fetch!(account, :id)
