@@ -5168,6 +5168,98 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "resume checkpoint head with fallback context is ignored for expected head comparison" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-fallback-checkpoint-head-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-fallback-checkpoint-head"
+    issue_identifier = "MT-FALLBACK-CHECKPOINT-HEAD"
+    trace_id = "trace-fallback-checkpoint-head"
+    stale_checkpoint_head = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: issue_id,
+          identifier: issue_identifier,
+          title: "Ignore fallback checkpoint head",
+          description: "Expected head should come from branch when checkpoint has fallback context",
+          state: "In Progress",
+          url: "https://example.org/issues/#{issue_identifier}",
+          labels: []
+        }
+      ])
+
+      {runtime_head_sha, expected_head_sha} =
+        create_non_behind_mismatch_workspace!(workspace_root, issue_identifier, "merge/diverged-03")
+
+      orchestrator_name = Module.concat(__MODULE__, :FallbackCheckpointHeadOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      retry_token = make_ref()
+
+      :sys.replace_state(pid, fn _ ->
+        base_dispatch_state("primary")
+        |> Map.put(:poll_interval_ms, initial_state.poll_interval_ms)
+        |> Map.put(:retry_attempts, %{
+          issue_id => %{
+            attempt: 1,
+            timer_ref: nil,
+            retry_token: retry_token,
+            due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+            identifier: issue_identifier,
+            trace_id: trace_id,
+            error: "retry mismatch workspace head",
+            resume_checkpoint: %{
+              "head" => stale_checkpoint_head,
+              "resume_ready" => true,
+              "resume_mode" => "resume_checkpoint",
+              "resume_fallback_reason" => "fallback_reread",
+              "fallback_reasons" => []
+            }
+          }
+        })
+      end)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "selected_rule: `stale_workspace_head`"
+      assert blocker_body =~ "reason=diverged"
+      assert blocker_body =~ runtime_head_sha
+      assert blocker_body =~ expected_head_sha
+      refute blocker_body =~ stale_checkpoint_head
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "rework stale workspace head reconciles before dispatch" do
     test_root =
       Path.join(
@@ -6076,6 +6168,54 @@ defmodule SymphonyElixir.CoreTest do
         Process.exit(worker_pid, :kill)
       end
     end
+  end
+
+  test "failed verification manifest without missing_items schedules recoverable retry" do
+    issue_id = "issue-verification-empty-missing-items"
+    issue = %Issue{id: issue_id, identifier: "LET-EMPTY-MISSING", state: "In Progress"}
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :kill)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    state =
+      base_dispatch_state("primary")
+      |> Map.put(:running, %{
+        issue_id => %{
+          pid: worker_pid,
+          ref: make_ref(),
+          identifier: issue.identifier,
+          issue: issue,
+          trace_id: "trace-verification-empty-missing-items",
+          session_id: "thread-verification-empty-missing-items",
+          codex_account_id: "primary",
+          run_phase: :editing,
+          started_at: DateTime.utc_now()
+        }
+      })
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+
+    update =
+      handoff_check_tool_update(%{
+        "passed" => false,
+        "summary" => "required handoff contract evidence is missing or invalid",
+        "missing_items" => [],
+        "checked_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+      })
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_info({:codex_worker_update, issue_id, update}, state)
+
+    assert %{^issue_id => retry_entry} = updated_state.retry_attempts
+    assert retry_entry.failure_class == "verification_recoverable_drift"
+    assert retry_entry.retry_failover_decision[:selected_rule] == "recoverable_drift"
+    refute Map.has_key?(updated_state.running, issue_id)
+    refute_received {:memory_tracker_state_update, ^issue_id, "Blocked"}
   end
 
   test "passed symphony_handoff_check manifest updates metadata without stopping active run" do
