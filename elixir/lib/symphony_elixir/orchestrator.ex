@@ -557,6 +557,19 @@ defmodule SymphonyElixir.Orchestrator do
        when is_map(running_entry) and is_map(manifest) do
     context = verification_guard_failure_context(running_entry, manifest)
 
+    if context.missing_items == [] do
+      recoverable_verification_guard_decision(
+        context,
+        failure_attempt,
+        "verification guard failed for `#{context.guard_name}` without structured missing_items"
+      )
+    else
+      verification_guard_failure_decision_for_manifest(context, manifest, failure_attempt)
+    end
+  end
+
+  defp verification_guard_failure_decision_for_manifest(context, manifest, failure_attempt)
+       when is_map(context) and is_map(manifest) do
     if HandoffFailure.recoverable_manifest?(manifest) do
       recoverable_verification_guard_decision(context, failure_attempt)
     else
@@ -658,11 +671,16 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
-  defp recoverable_verification_guard_decision(context, failure_attempt) when is_map(context) do
+  defp recoverable_verification_guard_decision(context, failure_attempt, reason_override \\ nil)
+       when is_map(context) do
+    reason =
+      reason_override ||
+        "verification guard recoverable drift for `#{context.guard_name}`: #{context.summary}"
+
     if failure_attempt <= @verification_recoverable_drift_max_attempts do
       RetryFailoverDecision.decide(%{
         recoverable_drift: %{
-          reason: "verification guard recoverable drift for `#{context.guard_name}`: #{context.summary}",
+          reason: reason,
           log_fields:
             Map.merge(context.log_fields, %{
               handoff_failure_kind: "recoverable_drift",
@@ -5682,13 +5700,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp checkpoint_head_usable_for_dispatch?(%{} = resume_checkpoint) do
+    resume_mode = checkpoint_resume_mode(resume_checkpoint)
+    resume_fallback_reason = checkpoint_resume_fallback_reason(resume_checkpoint)
+
     resume_ready =
       Map.get(resume_checkpoint, "resume_ready", Map.get(resume_checkpoint, :resume_ready))
 
     fallback_reasons =
       Map.get(resume_checkpoint, "fallback_reasons", Map.get(resume_checkpoint, :fallback_reasons, []))
 
-    resume_ready == true and is_list(fallback_reasons) and fallback_reasons == []
+    resume_ready == true and
+      resume_mode == "resume_checkpoint" and
+      is_nil(resume_fallback_reason) and
+      is_list(fallback_reasons) and
+      fallback_reasons == []
   end
 
   defp checkpoint_head_usable_for_dispatch?(_resume_checkpoint), do: false
