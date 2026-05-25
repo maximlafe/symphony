@@ -24,6 +24,19 @@ defmodule SymphonyElixir.HandoffFailureTest do
            } = HandoffFailure.classify(false, missing)
   end
 
+  test "classify marks missing pull request snapshot as recoverable drift" do
+    missing = ["pull request snapshot is missing"]
+
+    assert %{
+             "kind" => "recoverable_drift",
+             "recoverable" => true,
+             "recoverable_items" => ^missing,
+             "hard_items" => []
+           } = HandoffFailure.classify(false, missing)
+
+    assert HandoffFailure.recoverable_manifest?(%{"missing_items" => missing})
+  end
+
   test "classify treats LET-759 proof row drift as recoverable" do
     missing = [
       "validation checklist is missing a checked `red proof` item",
