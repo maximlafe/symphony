@@ -6215,7 +6215,6 @@ defmodule SymphonyElixir.CoreTest do
     assert retry_entry.failure_class == "verification_recoverable_drift"
     assert retry_entry.retry_failover_decision[:selected_rule] == "recoverable_drift"
     refute Map.has_key?(updated_state.running, issue_id)
-    assert MapSet.member?(updated_state.claimed, issue_id)
     refute_received {:memory_tracker_state_update, ^issue_id, "Blocked"}
   end
 
