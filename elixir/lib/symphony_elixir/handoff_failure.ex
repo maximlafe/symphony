@@ -32,7 +32,8 @@ defmodule SymphonyElixir.HandoffFailure do
     ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not checked in `Artifacts`$/,
     ~r/^acceptance matrix item `[^`]+` maps to artifact `[^`]+` that is not uploaded in Linear attachments$/,
     ~r/^acceptance matrix item `[^`]+` mapping drift: use canonical validation label /,
-    ~r/^validation checklist is missing a checked `(#{@recoverable_validation_label_pattern})` item$/
+    ~r/^validation checklist is missing a checked `(#{@recoverable_validation_label_pattern})` item$/,
+    ~r/^pull request snapshot is missing$/
   ]
 
   @spec classify(boolean(), term()) :: map()

@@ -5078,6 +5078,96 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "stale non-ready resume checkpoint head is ignored for expected head comparison" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-stale-checkpoint-head-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-stale-checkpoint-head"
+    issue_identifier = "MT-STALE-CHECKPOINT-HEAD"
+    trace_id = "trace-stale-checkpoint-head"
+    stale_checkpoint_head = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_api_token: nil,
+        workspace_root: workspace_root,
+        codex_command: "sleep 60",
+        codex_read_timeout_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: issue_id,
+          identifier: issue_identifier,
+          title: "Ignore non-ready checkpoint head",
+          description: "Expected head should come from branch when checkpoint is not ready",
+          state: "In Progress",
+          url: "https://example.org/issues/#{issue_identifier}",
+          labels: []
+        }
+      ])
+
+      {runtime_head_sha, expected_head_sha} =
+        create_non_behind_mismatch_workspace!(workspace_root, issue_identifier, "merge/diverged-02")
+
+      orchestrator_name = Module.concat(__MODULE__, :StaleCheckpointHeadOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+      retry_token = make_ref()
+
+      :sys.replace_state(pid, fn _ ->
+        base_dispatch_state("primary")
+        |> Map.put(:poll_interval_ms, initial_state.poll_interval_ms)
+        |> Map.put(:retry_attempts, %{
+          issue_id => %{
+            attempt: 1,
+            timer_ref: nil,
+            retry_token: retry_token,
+            due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+            identifier: issue_identifier,
+            trace_id: trace_id,
+            error: "retry mismatch workspace head",
+            resume_checkpoint: %{
+              "head" => stale_checkpoint_head,
+              "resume_ready" => false,
+              "fallback_reasons" => ["resume checkpoint `head` mismatch"]
+            }
+          }
+        })
+      end)
+
+      send(pid, {:retry_issue, issue_id, retry_token})
+
+      assert_receive {:memory_tracker_comment, ^issue_id, blocker_body}, 500
+      assert blocker_body =~ "selected_rule: `stale_workspace_head`"
+      assert blocker_body =~ "reason=diverged"
+      assert blocker_body =~ runtime_head_sha
+      assert blocker_body =~ expected_head_sha
+      refute blocker_body =~ stale_checkpoint_head
+      assert_receive {:memory_tracker_state_update, ^issue_id, "Blocked"}, 500
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "rework stale workspace head reconciles before dispatch" do
     test_root =
       Path.join(

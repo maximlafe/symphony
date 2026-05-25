@@ -5674,8 +5674,24 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_expected_head_sha(workspace, execution_branch, _retry_delay_type, resume_checkpoint) do
-    checkpoint_head(resume_checkpoint) || resolve_expected_head_sha(workspace, execution_branch)
+    if checkpoint_head_usable_for_dispatch?(resume_checkpoint) do
+      checkpoint_head(resume_checkpoint) || resolve_expected_head_sha(workspace, execution_branch)
+    else
+      resolve_expected_head_sha(workspace, execution_branch)
+    end
   end
+
+  defp checkpoint_head_usable_for_dispatch?(%{} = resume_checkpoint) do
+    resume_ready =
+      Map.get(resume_checkpoint, "resume_ready", Map.get(resume_checkpoint, :resume_ready))
+
+    fallback_reasons =
+      Map.get(resume_checkpoint, "fallback_reasons", Map.get(resume_checkpoint, :fallback_reasons, []))
+
+    resume_ready == true and is_list(fallback_reasons) and fallback_reasons == []
+  end
+
+  defp checkpoint_head_usable_for_dispatch?(_resume_checkpoint), do: false
 
   defp block_stale_workspace_head(
          %State{} = state,
