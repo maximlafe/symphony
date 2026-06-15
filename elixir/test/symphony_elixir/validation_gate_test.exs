@@ -128,6 +128,24 @@ defmodule SymphonyElixir.ValidationGateTest do
              "runtime_smoke",
              "repo_validation"
            ]
+
+    assert {:ok, ui_mixed} =
+             ValidationGate.requirements(["docs_only", "backend_only", "ui", "runtime_contract"], "final")
+
+    assert ui_mixed["change_classes"] == ["docs_only", "backend_only", "ui", "runtime_contract"]
+    assert ui_mixed["strictest_change_class"] == "runtime_contract"
+    assert ui_mixed["requires_final_gate"] == true
+
+    assert ui_mixed["required_checks"] == [
+             "preflight",
+             "targeted_tests",
+             "ui_runtime_proof",
+             "visual_artifact",
+             "runtime_smoke",
+             "repo_validation"
+           ]
+
+    refute "docs_review" in ui_mixed["required_checks"]
   end
 
   test "normalizes proof labels from workpad-style text" do
