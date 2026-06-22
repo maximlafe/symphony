@@ -1251,6 +1251,68 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
     assert payload.checkpoint["controller_finalizer"]["status"] == "succeeded"
   end
 
+  test "run/3 refreshes execution issue attachments before proof contract guard" do
+    issue = %Issue{
+      id: "issue-refresh-attachments",
+      identifier: "LET-462-REFRESH-ATTACHMENTS",
+      state: "In Progress",
+      description: """
+      ## Acceptance Matrix
+
+      | id | scenario | expected_outcome | proof_type | proof_target | proof_semantic |
+      | -- | -- | -- | -- | -- | -- |
+      | AM-1 | attachment proof | uploaded attachment mapping is required | artifact | runtime-proof.log | run_executed |
+      """
+    }
+
+    refreshed_issue = %{
+      issue
+      | attachments: [
+          %{
+            "title" => "runtime-proof.log",
+            "url" => "https://uploads.linear.app/workspace/runtime-proof.log"
+          },
+          %{
+            "title" => "PR #216",
+            "url" => "https://github.com/acme/symphony/pull/216",
+            "source_type" => "github",
+            "metadata" => %{"kind" => "pull_request"}
+          }
+        ]
+    }
+
+    _workspace = create_workspace!(issue.identifier, workpad_body: valid_artifact_proof_mapping_workpad())
+
+    checkpoint = %{
+      "head" => "head-refresh-attachments",
+      "open_pr" => %{"number" => 216, "url" => "https://github.com/acme/symphony/pull/216"},
+      "changed_files" => ["elixir/lib/symphony_elixir/error_classifier.ex"]
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/216",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => {:ok, %{"manifest" => %{"passed" => true, "manifest_path" => ".symphony/verification/handoff-manifest.json"}}}
+    }
+
+    assert {:ok, payload} =
+             run_finalizer(issue, checkpoint, script,
+               issue_for_execution_fetcher: fn "LET-462-REFRESH-ATTACHMENTS" ->
+                 {:ok, refreshed_issue}
+               end
+             )
+
+    assert payload.checkpoint["controller_finalizer"]["status"] == "succeeded"
+  end
+
   test "run/3 keeps working when workpad disappears after sync and file read fails" do
     issue = %Issue{id: "issue-proof-workpad-gone", identifier: "LET-462-PROOF-WORKPAD-GONE", state: "In Progress"}
     workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())
@@ -1656,6 +1718,52 @@ defmodule SymphonyElixir.ControllerFinalizerTest do
                checkpoint,
                script,
                execution_attempt_token: "run-token-208"
+             )
+
+    assert payload.reason == "controller finalizer completed successfully"
+  end
+
+  test "run/3 prefers checkpoint execution attempt token for resumed handoff check" do
+    issue = %Issue{id: "issue-checkpoint-token-forward", identifier: "LET-716-CHECKPOINT-TOKEN", state: "In Progress"}
+    _workspace = create_workspace!(issue.identifier, workpad_body: validation_workpad())
+
+    checkpoint = %{
+      "head" => "head-checkpoint-token-forward",
+      "execution_attempt_token" => "run-token-from-checkpoint",
+      "open_pr" => %{"number" => 217, "url" => "https://github.com/acme/symphony/pull/217"}
+    }
+
+    script = %{
+      "sync_workpad" => {:ok, %{"comment_id" => "workpad-comment"}},
+      "github_wait_for_checks" => {:ok, %{"all_green" => true, "pending_checks" => [], "failed_checks" => [], "checks" => []}},
+      "github_pr_snapshot" =>
+        {:ok,
+         %{
+           "url" => "https://github.com/acme/symphony/pull/217",
+           "state" => "OPEN",
+           "has_pending_checks" => false,
+           "has_actionable_feedback" => false
+         }},
+      "symphony_handoff_check" => fn _args, tool_opts ->
+        assert tool_opts[:execution_attempt_token] == "run-token-from-checkpoint"
+
+        {:ok,
+         %{
+           "manifest" => %{
+             "passed" => true,
+             "summary" => "ok",
+             "manifest_path" => ".symphony/verification/handoff-manifest.json"
+           }
+         }}
+      end
+    }
+
+    assert {:ok, payload} =
+             run_finalizer(
+               issue,
+               checkpoint,
+               script,
+               execution_attempt_token: "run-token-from-manual-retry"
              )
 
     assert payload.reason == "controller finalizer completed successfully"

@@ -328,7 +328,9 @@ defmodule SymphonyElixir.ControllerFinalizer do
   end
 
   defp run_handoff_check(context, checkpoint, snapshot, opts) do
-    case call_tool("symphony_handoff_check", handoff_args(context), context.workspace, opts) do
+    handoff_opts = opts_with_checkpoint_execution_attempt_token(opts, checkpoint)
+
+    case call_tool("symphony_handoff_check", handoff_args(context), context.workspace, handoff_opts) do
       {:error, error} ->
         retry_or_fallback(checkpoint, error)
 
@@ -451,6 +453,7 @@ defmodule SymphonyElixir.ControllerFinalizer do
   defp build_context(issue, checkpoint, opts) do
     issue_id = issue_id(issue)
     identifier = issue_identifier(issue)
+    issue = refresh_issue_for_execution(issue, identifier, opts)
     workspace = resolve_workspace_path(identifier)
     pr_number = checkpoint_pr_number(checkpoint)
 
@@ -907,6 +910,19 @@ defmodule SymphonyElixir.ControllerFinalizer do
     end
   end
 
+  defp refresh_issue_for_execution(issue, identifier, opts) do
+    if issue_attachments(issue) == [] and non_empty_binary?(identifier) do
+      fetcher = Keyword.get(opts, :issue_for_execution_fetcher, &Tracker.fetch_issue_for_execution/1)
+
+      case fetcher.(identifier) do
+        {:ok, refreshed_issue} -> refreshed_issue
+        _ -> issue
+      end
+    else
+      issue
+    end
+  end
+
   defp normalize_attachments(attachments) when is_list(attachments) do
     Enum.map(attachments, fn
       %{} = attachment ->
@@ -924,6 +940,19 @@ defmodule SymphonyElixir.ControllerFinalizer do
 
   defp normalize_attachment_source_type(attachment) when is_map(attachment),
     do: attachment["source_type"] || attachment[:source_type] || attachment["sourceType"] || attachment[:sourceType]
+
+  defp opts_with_checkpoint_execution_attempt_token(opts, checkpoint) when is_list(opts) do
+    case checkpoint_execution_attempt_token(checkpoint) do
+      token when is_binary(token) and token != "" -> Keyword.put(opts, :execution_attempt_token, token)
+      _ -> opts
+    end
+  end
+
+  defp checkpoint_execution_attempt_token(%{} = checkpoint) do
+    checkpoint["execution_attempt_token"] || checkpoint[:execution_attempt_token]
+  end
+
+  defp checkpoint_execution_attempt_token(_checkpoint), do: nil
 
   defp checkpoint_pr_number(checkpoint) when is_map(checkpoint) do
     case checkpoint["open_pr"] do
