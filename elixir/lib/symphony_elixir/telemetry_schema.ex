@@ -65,6 +65,13 @@ defmodule SymphonyElixir.TelemetrySchema do
     :validation_guard_reason
   ]
   @execution_head_fields [:runtime_head_sha, :expected_head_sha, :head_relation]
+  @linear_graphql_fields [
+    :linear_graphql_operation_name,
+    :linear_graphql_status,
+    :linear_graphql_request_count,
+    :linear_graphql_latency_ms,
+    :linear_graphql_response_size_bytes
+  ]
   @all_fields Enum.uniq(
                 @cost_fields ++
                   @retry_dedupe_fields ++
@@ -75,7 +82,8 @@ defmodule SymphonyElixir.TelemetrySchema do
                   @wait_fields ++
                   @checkpoint_fields ++
                   @validation_guard_fields ++
-                  @execution_head_fields
+                  @execution_head_fields ++
+                  @linear_graphql_fields
               )
 
   @spec logger_metadata_fields() :: [atom()]
@@ -100,6 +108,7 @@ defmodule SymphonyElixir.TelemetrySchema do
     |> Map.merge(lifecycle_fields(source))
     |> Map.merge(continuation_fields(source))
     |> Map.merge(validation_guard_fields(source))
+    |> Map.merge(linear_graphql_fields(source))
     |> Map.merge(retry_dedupe_fields(source))
     |> Map.merge(retry_failover_fields(source))
     |> Map.merge(failover_fields(source))
@@ -427,6 +436,17 @@ defmodule SymphonyElixir.TelemetrySchema do
 
   defp validation_guard_fields(source), do: validation_guard_payload(source)
 
+  defp linear_graphql_fields(source) do
+    %{
+      "linear_graphql_operation_name" => normalize_string(fetch(source, :linear_graphql_operation_name)),
+      "linear_graphql_status" => normalize_string(fetch(source, :linear_graphql_status)),
+      "linear_graphql_request_count" => normalize_positive_integer(fetch(source, :linear_graphql_request_count)),
+      "linear_graphql_latency_ms" => normalize_non_negative_integer(fetch(source, :linear_graphql_latency_ms)),
+      "linear_graphql_response_size_bytes" => normalize_non_negative_integer(fetch(source, :linear_graphql_response_size_bytes))
+    }
+    |> reject_nil_values()
+  end
+
   defp head_fields(source) do
     runtime_head_sha = normalize_string(fetch(source, :runtime_head_sha))
     expected_head_sha = normalize_string(fetch(source, :expected_head_sha))
@@ -502,6 +522,9 @@ defmodule SymphonyElixir.TelemetrySchema do
 
   defp normalize_positive_integer(value) when is_integer(value) and value > 0, do: value
   defp normalize_positive_integer(_value), do: nil
+
+  defp normalize_non_negative_integer(value) when is_integer(value) and value >= 0, do: value
+  defp normalize_non_negative_integer(_value), do: nil
 
   defp wait_mode_for_phase("waiting ci"), do: "ci"
   defp wait_mode_for_phase("waiting external"), do: "external"

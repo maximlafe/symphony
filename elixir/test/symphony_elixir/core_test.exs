@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Linear.Telemetry, as: LinearTelemetry
+
   defmodule EscalationFailureLinearClient do
     alias SymphonyElixir.Linear.Issue
 
@@ -7001,6 +7003,95 @@ defmodule SymphonyElixir.CoreTest do
       restore_app_env(:hydration_linear_issues, previous_issues)
       restore_app_env(:hydration_linear_recipient, previous_recipient)
       restore_app_env(:hydration_linear_fetch_issue_for_execution_result, previous_result)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner reports eager execution hydration GraphQL telemetry before first prompt" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-hydration-telemetry-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(test_root)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-hydration-telemetry"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-hydration-telemetry"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "linear",
+        tracker_api_token: "token",
+        tracker_project_slug: "symphony",
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        prompt: "Ticket {{ issue.identifier }}"
+      )
+
+      issue = %Issue{
+        id: "issue-hydration-telemetry",
+        identifier: "LET-726",
+        title: "Hydration telemetry",
+        description: "Hydration remains eager but measured",
+        state: "In Progress",
+        url: "https://example.org/issues/LET-726",
+        labels: []
+      }
+
+      fetcher = fn "issue-hydration-telemetry" ->
+        LinearTelemetry.emit_graphql("SymphonyLinearExecutionIssue", 7, 123, "success")
+        {:ok, %{issue | attachments: [], comments: []}}
+      end
+
+      assert :ok =
+               AgentRunner.run(issue, self(),
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 issue_for_execution_fetcher: fetcher
+               )
+
+      assert_receive {:codex_worker_update, "issue-hydration-telemetry",
+                      %{
+                        event: :linear_graphql_summary,
+                        linear_graphql_phase: :execution_hydration,
+                        linear_graphql_summary: %{
+                          request_count: 1,
+                          operations: %{
+                            "SymphonyLinearExecutionIssue" => %{
+                              request_count: 1,
+                              total_latency_ms: 7,
+                              total_response_size_bytes: 123,
+                              success_count: 1
+                            }
+                          }
+                        }
+                      }}
+    after
       File.rm_rf(test_root)
     end
   end

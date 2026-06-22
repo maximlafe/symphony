@@ -241,6 +241,22 @@ defmodule SymphonyElixir.TelemetrySchemaTest do
            }
   end
 
+  test "runtime_payload includes bounded Linear GraphQL telemetry keys" do
+    assert TelemetrySchema.runtime_payload(%{
+             linear_graphql_operation_name: "SymphonyLinearViewer",
+             linear_graphql_status: :success,
+             linear_graphql_request_count: 1,
+             linear_graphql_latency_ms: 12,
+             linear_graphql_response_size_bytes: 345
+           }) == %{
+             "linear_graphql_operation_name" => "SymphonyLinearViewer",
+             "linear_graphql_status" => "success",
+             "linear_graphql_request_count" => 1,
+             "linear_graphql_latency_ms" => 12,
+             "linear_graphql_response_size_bytes" => 345
+           }
+  end
+
   test "runtime_payload reads retry/failover decision aliases from flat keys or nested metadata" do
     assert TelemetrySchema.runtime_payload(%{
              retry_failover_selected_rule: :stale_workspace_head,
